@@ -137,7 +137,7 @@ class TestConfigValidateCommand:
 
     def test_config_validate_detects_missing_required_options(self, tmp_path):
         """Test that config validate command detects missing required options."""
-        import toml
+        import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
@@ -150,8 +150,8 @@ class TestConfigValidateCommand:
                 }
             },
         }
-        with open(config_file, "w", encoding="utf-8") as fh:
-            toml.dump(data, fh)
+        with open(config_file, "wb") as fh:
+            tomli_w.dump(data, fh)
 
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
@@ -161,7 +161,7 @@ class TestConfigValidateCommand:
 
     def test_config_validate_passes_with_required_options(self, tmp_path):
         """Test that config validate command passes with all required options."""
-        import toml
+        import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
@@ -186,8 +186,8 @@ class TestConfigValidateCommand:
                 },
             },
         }
-        with open(config_file, "w", encoding="utf-8") as fh:
-            toml.dump(data, fh)
+        with open(config_file, "wb") as fh:
+            tomli_w.dump(data, fh)
 
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
@@ -196,7 +196,7 @@ class TestConfigValidateCommand:
 
     def test_config_validate_multiple_backends_missing_options(self, tmp_path):
         """Test validation with multiple backends with missing options."""
-        import toml
+        import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
@@ -219,8 +219,8 @@ class TestConfigValidateCommand:
                 },
             },
         }
-        with open(config_file, "w", encoding="utf-8") as fh:
-            toml.dump(data, fh)
+        with open(config_file, "wb") as fh:
+            tomli_w.dump(data, fh)
 
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
@@ -232,7 +232,7 @@ class TestConfigValidateCommand:
 
     def test_config_validate_backends_with_no_required_options(self, tmp_path):
         """Test validation with backends that have no required options."""
-        import toml
+        import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
@@ -265,8 +265,8 @@ class TestConfigValidateCommand:
                 },
             },
         }
-        with open(config_file, "w", encoding="utf-8") as fh:
-            toml.dump(data, fh)
+        with open(config_file, "wb") as fh:
+            tomli_w.dump(data, fh)
 
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
@@ -275,7 +275,7 @@ class TestConfigValidateCommand:
 
     def test_config_validate_custom_backend_with_backend_type(self, tmp_path):
         """Test validation with custom backend using backend_type."""
-        import toml
+        import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
@@ -289,8 +289,8 @@ class TestConfigValidateCommand:
                 }
             },
         }
-        with open(config_file, "w", encoding="utf-8") as fh:
-            toml.dump(data, fh)
+        with open(config_file, "wb") as fh:
+            tomli_w.dump(data, fh)
 
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])

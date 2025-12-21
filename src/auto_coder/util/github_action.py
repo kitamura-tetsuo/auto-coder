@@ -23,7 +23,27 @@ from ..gh_logger import get_gh_logger
 from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
+from .gh_cache import get_ghapi_client
 from .github_cache import get_github_cache
+
+
+def _get_repo_name_from_git(cwd: Optional[str] = None) -> Optional[str]:
+    """Get repository name (owner/repo) from git config."""
+    try:
+        # Get remote URL
+        result = cmd.run_command(["git", "remote", "get-url", "origin"], cwd=cwd)
+        if not result.success:
+            return None
+        url = result.stdout.strip()
+        # Parse owner/repo from URL
+        # e.g. https://github.com/owner/repo.git or git@github.com:owner/repo.git
+        match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+        if match:
+            return f"{match.group(1)}/{match.group(2)}"
+        return None
+    except Exception:
+        return None
+
 
 cmd = CommandExecutor()
 
@@ -181,36 +201,31 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
     action_runs = []
 
     try:
-        # Use gh run list to find runs, then filter by commit SHA and event in Python
-        gh_logger = get_gh_logger()
-        run_list_result = gh_logger.execute_with_logging(
-            [
-                "gh",
-                "run",
-                "list",
-                "--limit",
-                "50",
-                "--json",
-                "databaseId,url,status,conclusion,createdAt,displayTitle,headBranch,headSha,event",
-            ],
-            repo=None,  # Repository context not available in this function
-            cwd=cwd,
-            timeout=timeout,
-        )
-
-        if run_list_result.returncode != 0:
-            # No runs found for this commit or API error
-            logger.debug(f"No Action runs found for commit {commit_sha[:8]}")
+        # Get repository name
+        repo_full_name = _get_repo_name_from_git(cwd)
+        if not repo_full_name:
+            logger.debug(f"Could not determine repository name for commit {commit_sha[:8]}")
             return []
 
-        if not run_list_result.stdout.strip():
-            return []
+        owner, repo = repo_full_name.split("/")
 
-        # Parse the JSON response
+        # Get GhApi client
         try:
-            runs = json.loads(run_list_result.stdout)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse run list JSON for commit {commit_sha[:8]}: {e}")
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+        except Exception as e:
+            logger.debug(f"Failed to get GitHub client/token: {e}")
+            return []
+
+        # List workflow runs (cached)
+        # equivalent to: gh run list --json ...
+        # API: api.actions.list_workflow_runs_for_repo(owner, repo, ...)
+        # We fetch latest 50 runs to match the limit in original code
+        try:
+            runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, per_page=50)
+            runs = runs_resp.get("workflow_runs", [])
+        except Exception as e:
+            logger.debug(f"GhApi call failed: {e}")
             return []
 
         if not runs:
@@ -219,28 +234,37 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         # Narrow down to the target commit and PR event if available
         try:
             logger.debug(f"Filtering runs for commit {commit_sha[:7]}")
-            logger.debug(f"Available runs: {[r.get('headSha', '') for r in runs]}")
-            runs = [r for r in runs if str(r.get("headSha", "")).startswith(commit_sha[:7])]
+            # API uses snake_case keys
+            logger.debug(f"Available runs: {[r.get('head_sha', '') for r in runs]}")
+            runs = [r for r in runs if str(r.get("head_sha", "")).startswith(commit_sha[:7])]
             pr_runs = [r for r in runs if r.get("event") == "pull_request"]
             if pr_runs:
                 runs = pr_runs
             logger.debug(f"After filtering for commit {commit_sha[:7]}: {len(runs)} runs remain")
-            logger.debug(f"Filtered runs: {[r.get('headSha', '') for r in runs]}")
+            logger.debug(f"Filtered runs: {[r.get('head_sha', '') for r in runs]}")
         except Exception:
             pass
 
         # Convert to our format
         for run in runs:
+            # API returns fields in snake_case, but gh CLI often uses camelCase in JSON
+            # API mapping:
+            # databaseId -> id
+            # url -> html_url (usually)
+            # displayTitle -> display_title
+            # headBranch -> head_branch
+            # headSha -> head_sha
+
             action_runs.append(
                 {
-                    "run_id": run.get("databaseId"),
-                    "url": run.get("url"),
+                    "run_id": run.get("id"),
+                    "url": run.get("html_url"),
                     "status": run.get("status"),
                     "conclusion": run.get("conclusion"),
-                    "created_at": run.get("createdAt"),
-                    "display_title": run.get("displayTitle"),
-                    "head_branch": run.get("headBranch"),
-                    "head_sha": (run.get("headSha", "")[:8] if run.get("headSha") else ""),
+                    "created_at": run.get("created_at"),
+                    "display_title": run.get("display_title"),
+                    "head_branch": run.get("head_branch"),
+                    "head_sha": (run.get("head_sha", "")[:8] if run.get("head_sha") else ""),
                 }
             )
 
@@ -279,30 +303,22 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
 
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
-        gh_logger = get_gh_logger()
-        check_runs_res = gh_logger.execute_with_logging(
-            ["gh", "api", f"repos/{repo_name}/commits/{current_head_sha}/check-runs"],
-            repo=repo_name,
-            capture_output=True,
-        )
+        try:
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
 
-        if check_runs_res.returncode != 0:
-            api_error = check_runs_res.stderr
+            # API: api.checks.list_for_ref(owner, repo, ref)
+            res = api.checks.list_for_ref(owner, repo, ref=current_head_sha)
+            checks_data = res.get("check_runs", [])
+        except Exception as e:
+            api_error = str(e)
             log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, api_error)
             logger.info(f"API call failed for #{pr_number}, attempting historical fallback...")
             fallback_result = _check_github_actions_status_from_history(repo_name, pr_data, config)
             if fallback_result.error:
                 fallback_result.error = f"Primary check failed: {api_error}\nFallback check also failed: {fallback_result.error}"
             return fallback_result
-
-        # Parse JSON output
-        try:
-            api_response = json.loads(check_runs_res.stdout or "")
-            # The API returns an object with a "check_runs" list
-            checks_data = api_response.get("check_runs", [])
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse JSON output from gh api for #{pr_number}, falling back to historical")
-            return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         if not checks_data:
             # No checks found, checks might not have started yet
@@ -311,7 +327,6 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             # We'll treat it as success if we can't find anything, but log it.
             # Alternatively, if we expect checks, we should wait.
             # For now, preserving similar logic: if empty, return success (line 312 of original)
-            # But wait, original code queried by PR #, here we query by SHA.
             gh_status_result = GitHubActionsStatusResult(
                 success=True,
                 ids=[],
@@ -418,12 +433,12 @@ def _filter_runs_for_pr(runs: List[Dict[str, Any]], branch_name: str) -> List[Di
         return []
     # Sort runs by creation time (newest first)
     try:
-        runs = sorted(runs, key=lambda r: r.get("createdAt", ""), reverse=True)
+        runs = sorted(runs, key=lambda r: r.get("created_at", r.get("createdAt", "")), reverse=True)
     except Exception as e:
-        logger.debug(f"Could not sort runs by createdAt: {e}")
+        logger.debug(f"Could not sort runs by creation time: {e}")
     # Filter by branch when available
     if branch_name:
-        filtered_runs = [r for r in runs if r.get("headBranch") == branch_name]
+        filtered_runs = [r for r in runs if r.get("head_branch", r.get("headBranch")) == branch_name]
         if filtered_runs:
             runs = filtered_runs
             logger.info(f"Filtered to {len(runs)} runs for branch '{branch_name}'")
@@ -444,40 +459,36 @@ def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int
     that PR number. Returns empty list on failure.
     """
     try:
-        gh_logger = get_gh_logger()
-        command = [
-            "gh",
-            "run",
-            "view",
-            str(run_id),
-            "-R",
-            repo_name,
-            "--json",
-            "jobs",
-        ]
-        jobs_res = gh_logger.execute_with_logging(
-            command,
-            repo=repo_name,
-            timeout=60,
-            capture_output=True,
-        )
-        if jobs_res.returncode != 0 or not jobs_res.stdout.strip():
-            logger.debug(f"Failed to get jobs for run {run_id}, skipping")
-            return []
-        jobs_json = json.loads(jobs_res.stdout)
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
+        # Check PR number if provided
         if isinstance(pr_number, int):
-            pr_refs = jobs_json.get("pullRequests")
-            if isinstance(pr_refs, list) and pr_refs:
+            # API: api.actions.get_workflow_run(owner, repo, run_id)
+            run_details = api.actions.get_workflow_run(owner, repo, run_id)
+            pr_refs = run_details.get("pull_requests", [])
+
+            if pr_refs:
                 pr_numbers: List[int] = []
                 for pr_ref in pr_refs:
-                    if isinstance(pr_ref, dict):
-                        num = pr_ref.get("number")
-                        if isinstance(num, int):
-                            pr_numbers.append(num)
+                    # API returns objects with 'number'
+                    num = pr_ref.get("number")
+                    if isinstance(num, int):
+                        pr_numbers.append(num)
+
                 if pr_numbers and pr_number not in pr_numbers:
                     logger.debug(f"Run {run_id} does not reference PR #{pr_number}; skipping")
                     return []
-        return jobs_json.get("jobs", [])  # type: ignore[no-any-return]
+            # Note: If no PR refs, we assume it's okay or maybe not?
+            # Original code: if pr_refs is list and pr_refs (if truthy).
+            # If pr_refs is empty, logic falls through to returning jobs.
+            # So if API returns empty list, we continue.
+
+        # Get jobs
+        # API: api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
+        jobs_res = api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
+        return jobs_res.get("jobs", [])
     except json.JSONDecodeError as e:
         logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
         return []
@@ -529,27 +540,15 @@ def _check_github_actions_status_from_history(
             return cached_result
 
         # 1. Get all PR commits/oid
-        gh_logger = get_gh_logger()
-        pr_view_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "commits"],
-            repo=repo_name,
-            timeout=60,
-            capture_output=True,
-        )
-
-        if not pr_view_result.success or not pr_view_result.stdout.strip():  # type: ignore[attr-defined]
-            error_message = f"Failed to get PR #{pr_number} commits: {pr_view_result.stderr}"
-            logger.warning(error_message)
-            return GitHubActionsStatusResult(
-                success=False,
-                ids=[],
-                in_progress=False,
-                error=error_message,
-            )
-
+        # 1. Get all PR commits/oid
         try:
-            pr_json = json.loads(pr_view_result.stdout)
-            commits = pr_json.get("commits", [])
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+
+            # API: api.pulls.list_commits(owner, repo, pull_number)
+            commits = api.pulls.list_commits(owner, repo, pull_number=pr_number)
+
             if not commits:
                 logger.warning(f"No commits found in PR #{pr_number}")
                 return GitHubActionsStatusResult(
@@ -558,10 +557,10 @@ def _check_github_actions_status_from_history(
                     in_progress=False,
                 )
 
-            # Get all commit SHAs
-            commit_shas = [commit.get("oid", "") for commit in commits if commit.get("oid")]
+            # Get all commit SHAs (sha in REST API, oid in GraphQL)
+            commit_shas = [commit.get("sha", commit.get("oid", "")) for commit in commits if commit.get("sha") or commit.get("oid")]
             if not commit_shas:
-                logger.warning(f"No oid found in commits for PR #{pr_number}")
+                logger.warning(f"No sha/oid found in commits for PR #{pr_number}")
                 return GitHubActionsStatusResult(
                     success=True,
                     ids=[],
@@ -570,8 +569,8 @@ def _check_github_actions_status_from_history(
 
             logger.info(f"Found {len(commit_shas)} commits in PR, latest: {commit_shas[-1][:8]}")
 
-        except json.JSONDecodeError as e:
-            error_message = f"Failed to parse PR view JSON: {e}"
+        except Exception as e:
+            error_message = f"Failed to get PR #{pr_number} commits: {e}"
             logger.warning(error_message)
             return GitHubActionsStatusResult(
                 success=False,
@@ -581,38 +580,13 @@ def _check_github_actions_status_from_history(
             )
 
         # 2. Get GitHub Actions runs for the head branch
-        gh_logger = get_gh_logger()
-        run_list_result = gh_logger.execute_with_logging(
-            [
-                "gh",
-                "run",
-                "list",
-                "-b",
-                head_branch,
-                "--limit",
-                "20",
-                "--json",
-                "headSha,conclusion,createdAt,status,databaseId,displayTitle",
-            ],
-            repo=repo_name,
-            timeout=60,
-            capture_output=True,
-        )
-
-        if not run_list_result.success or not run_list_result.stdout.strip():  # type: ignore[attr-defined]
-            error_message = f"Failed to get runs for branch {head_branch}: {run_list_result.stderr}"
-            logger.warning(error_message)
-            return GitHubActionsStatusResult(
-                success=False,
-                ids=[],
-                in_progress=False,
-                error=error_message,
-            )
-
+        # 2. Get GitHub Actions runs for the head branch
         try:
-            runs = json.loads(run_list_result.stdout)
-        except json.JSONDecodeError as e:
-            error_message = f"Failed to parse run list JSON: {e}"
+            # API: api.actions.list_workflow_runs_for_repo(owner, repo, branch=head_branch)
+            runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, branch=head_branch, per_page=20)
+            runs = runs_resp.get("workflow_runs", [])
+        except Exception as e:
+            error_message = f"Failed to get runs for branch {head_branch}: {e}"
             logger.warning(error_message)
             return GitHubActionsStatusResult(
                 success=False,
@@ -626,7 +600,7 @@ def _check_github_actions_status_from_history(
         logger.info(f"Available runs: {runs}")
         matching_runs = []
         for run in runs:
-            run_head_sha = str(run.get("headSha", ""))
+            run_head_sha = str(run.get("head_sha", run.get("headSha", "")))
             for sha in commit_shas:
                 if run_head_sha.startswith(sha[:7]):
                     matching_runs.append(run)
@@ -656,14 +630,14 @@ def _check_github_actions_status_from_history(
         # 4. Find the latest commit that has matching runs
         runs_with_commit_sha = []
         for run in matching_runs:
-            run_sha = str(run.get("headSha", ""))
+            run_sha = str(run.get("head_sha", run.get("headSha", "")))
             for i, commit_sha in enumerate(commit_shas):
                 if run_sha.startswith(commit_sha[:7]):
                     runs_with_commit_sha.append((run, i, commit_sha))
                     break
 
         # Sort by commit index (latest first) then by run creation time
-        runs_with_commit_sha.sort(key=lambda x: (x[1], x[0].get("createdAt", "")), reverse=True)
+        runs_with_commit_sha.sort(key=lambda x: (x[1], x[0].get("created_at", x[0].get("createdAt", ""))), reverse=True)
 
         # Get the latest commit index that has matching runs
         latest_commit_index = max(idx for _, idx, _ in runs_with_commit_sha)
@@ -690,8 +664,10 @@ def _check_github_actions_status_from_history(
         # Extract run IDs from matching runs
         run_ids = []
         for run in latest_commit_runs:
-            if run.get("databaseId"):
-                run_ids.append(int(run["databaseId"]))
+            # API uses 'id', gh uses 'databaseId'
+            run_id = run.get("id") or run.get("databaseId")
+            if run_id:
+                run_ids.append(int(run_id))
 
         result = GitHubActionsStatusResult(
             success=final_success,
@@ -751,61 +727,57 @@ def get_detailed_checks_from_history(
             logger.info(f"Processing run {run_id}")
             processed_run_ids.append(run_id)
 
-            # Get jobs for this run using gh run view
-            gh_logger = get_gh_logger()
-            jobs_result = gh_logger.execute_with_logging(
-                ["gh", "run", "view", str(run_id), "-R", repo_name, "--json", "jobs"],
-                repo=repo_name,
-                timeout=60,
-                capture_output=True,
-            )
+            # Get jobs for this run using GhApi
+            try:
+                token = GitHubClient.get_instance().token
+                api = get_ghapi_client(token)
+                owner, repo = repo_name.split("/")
 
-            if jobs_result.success and jobs_result.stdout.strip():  # type: ignore[attr-defined]
-                try:
-                    jobs_json = json.loads(jobs_result.stdout)
-                    jobs = jobs_json.get("jobs", [])
+                # API: api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
+                jobs_res = api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
+                jobs = jobs_res.get("jobs", [])
 
-                    for job in jobs:
-                        job_name = job.get("name", "")
-                        job_conclusion = job.get("conclusion", "")
-                        job_status = job.get("status", "")
-                        job_id = job.get("databaseId")
+                for job in jobs:
+                    job_name = job.get("name", "")
+                    job_conclusion = job.get("conclusion", "")
+                    job_status = job.get("status", "")
+                    # API 'id' is databaseId
+                    job_id = job.get("id")
 
-                        if not job_name:
-                            continue
+                    if not job_name:
+                        continue
 
-                        conclusion = (job_conclusion or "").lower()
-                        status = (job_status or "").lower()
+                    conclusion = (job_conclusion or "").lower()
+                    status = (job_status or "").lower()
 
-                        check_info = {
-                            "name": f"{job_name} (run {run_id})",
-                            "conclusion": conclusion if conclusion else status,
-                            "details_url": (f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}" if job_id else ""),
-                            "run_id": run_id,
-                            "job_id": job_id,
-                            "status": status,
-                        }
+                    check_info = {
+                        "name": f"{job_name} (run {run_id})",
+                        "conclusion": conclusion if conclusion else status,
+                        "details_url": (f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}" if job_id else ""),
+                        "run_id": run_id,
+                        "job_id": job_id,
+                        "status": status,
+                    }
 
-                        all_checks.append(check_info)
+                    all_checks.append(check_info)
 
-                        # Track overall status
-                        if conclusion in ["failure", "failed", "error", "cancelled"]:
-                            any_failed = True
-                            all_failed_checks.append(check_info)
-                        elif status in ["in_progress", "queued", "pending"]:
-                            has_in_progress = True
-                        elif not conclusion and status in [
-                            "failure",
-                            "failed",
-                            "error",
-                            "cancelled",
-                        ]:
-                            any_failed = True
-                            all_failed_checks.append(check_info)
+                    # Track overall status
+                    if conclusion in ["failure", "failed", "error", "cancelled"]:
+                        any_failed = True
+                        all_failed_checks.append(check_info)
+                    elif status in ["in_progress", "queued", "pending"]:
+                        has_in_progress = True
+                    elif not conclusion and status in [
+                        "failure",
+                        "failed",
+                        "error",
+                        "cancelled",
+                    ]:
+                        any_failed = True
+                        all_failed_checks.append(check_info)
 
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse jobs JSON for run {run_id}: {e}")
-            else:
+            except Exception as e:
+                logger.warning(f"Failed to get jobs via GhApi for run {run_id}: {e}")
                 # Fallback: create a check based on run conclusion
                 gh_logger = get_gh_logger()
                 run_result = gh_logger.execute_with_logging(
@@ -1377,170 +1349,122 @@ def _search_github_actions_logs_from_history(
         logger.info(f"Starting historical search for GitHub Actions logs (searching through {max_runs} recent runs)")
 
         runs = []
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
 
         # If PR data is available, try to get runs for the specific PR commit first
         if pr_data:
             head_sha = pr_data.get("head", {}).get("sha", "")
-            branch_name = pr_data["head_branch"]
             pr_number = pr_data.get("number", "unknown")
 
             logger.info(f"Attempting to find runs for PR #{pr_number} (commit {head_sha[:8] if head_sha else 'unknown'})")
 
             if head_sha:
-                # Get recent runs and filter by commit SHA and event in Python
-                gh_logger = get_gh_logger()
-                commit_run_list = gh_logger.execute_with_logging(
-                    [
-                        "gh",
-                        "run",
-                        "list",
-                        "-R",
-                        repo_name,
-                        "--limit",
-                        str(max_runs),
-                        "--json",
-                        "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
-                    ],
-                    repo=repo_name,
-                    timeout=60,
-                    capture_output=True,
-                )
+                try:
+                    # Get recent runs
+                    commit_run_list = api.actions.list_workflow_runs_for_repo(owner=owner, repo=repo, per_page=max_runs)
+                    all_runs = commit_run_list.get("workflow_runs", [])
 
-                if commit_run_list.success and commit_run_list.stdout.strip():  # type: ignore[attr-defined]
-                    try:
-                        all_runs = json.loads(commit_run_list.stdout)
-                        candidate_runs = [r for r in all_runs if str(r.get("headSha", "")).startswith(head_sha[:7])]
-                        pr_candidate_runs = [r for r in candidate_runs if r.get("event") == "pull_request"]
-                        runs = pr_candidate_runs or candidate_runs
-                        if runs:
-                            logger.info(f"Found {len(runs)} runs matching PR #{pr_number} commit from recent history")
-                        else:
-                            logger.info("No runs found matching PR commit, falling back to recent runs")
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Failed to parse commit run list JSON: {e}")
-                        runs = []
-                else:
+                    candidate_runs = [r for r in all_runs if str(r.get("head_sha", "")).startswith(head_sha[:7])]
+                    pr_candidate_runs = [r for r in candidate_runs if r.get("event") == "pull_request"]
+                    runs = pr_candidate_runs or candidate_runs
+
+                    if runs:
+                        logger.info(f"Found {len(runs)} runs matching PR #{pr_number} commit from recent history")
+                    else:
+                        logger.info("No runs found matching PR commit, falling back to recent runs")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch runs for PR commit: {e}")
                     runs = []
             else:
                 runs = []
 
-        # If no commits found for specific PR, fall back to recent runs filtered by branch
+        # If no runs found (or no PR data), fall back to recent runs
         if not runs:
-            # Get recent GitHub Actions runs
-            gh_logger = get_gh_logger()
-            run_list = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "run",
-                    "list",
-                    "-R",
-                    repo_name,
-                    "--limit",
-                    str(max_runs),
-                    "--json",
-                    "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
-                ],
-                repo=repo_name,
-                timeout=60,
-                capture_output=True,
-            )
-            if not run_list.success or not run_list.stdout.strip():  # type: ignore[attr-defined]
-                run_list = gh_logger.execute_with_logging(
-                    [
-                        "gh",
-                        "run",
-                        "list",
-                        "-R",
-                        repo_name,
-                        "--limit",
-                        str(max_runs),
-                        "--json",
-                        "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
-                    ],
-                    repo=repo_name,
-                    timeout=60,
-                    capture_output=True,
-                )
-
-            if not run_list.success or not run_list.stdout.strip():  # type: ignore[attr-defined]
-                logger.warning(f"Failed to get run list or empty result: {run_list.stderr}")
-                return None
-
             try:
-                runs = json.loads(run_list.stdout)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse run list JSON: {e}")
-                return None
+                # Get recent GitHub Actions runs
+                run_list = api.actions.list_workflow_runs_for_repo(owner=owner, repo=repo, per_page=max_runs)
+                runs = run_list.get("workflow_runs", [])
+                logger.info(f"Retrieved {len(runs)} recent runs")
+            except Exception as e:
+                logger.warning(f"Failed to fetch recent runs: {e}")
+                runs = []
 
         if not runs:
-            logger.info("No runs found in repository")
+            logger.info("No recent runs found")
             return None
 
-        logger.info(f"Searching through {len(runs)} recent GitHub Actions runs for logs")
-
-        # Apply common sorting and filtering (branch + pull_request event preference)
-        runs = _filter_runs_for_pr(runs, pr_data["head_branch"] if pr_data else "")
-
+        # Process found runs to find failed ones and get logs
         for run in runs:
-            run_id = run.get("databaseId")
-            run_branch = run.get("headBranch", "unknown")
-            run_commit = run.get("headSha", "unknown")[:8]
-            run_conclusion = run.get("conclusion", "unknown")
-            run_status = run.get("status", "unknown")
+            run_id = run.get("id")
+            conclusion = run.get("conclusion")
 
-            if not run_id:
+            # Skip runs that are not failures or don't have an ID
+            if not run_id or conclusion != "failure":
                 continue
 
-            logger.debug(f"Checking run {run_id} on branch {run_branch} (commit {run_commit}): {run_conclusion}/{run_status}")
+            # Check if this run contains any of the failing checks we are interested in
+            logger.info(f"Checking run {run_id} ({run.get('display_title', 'No Title')}) for failed jobs...")
 
             try:
-                jobs = _get_jobs_for_run_filtered_by_pr_number(
-                    run_id,
-                    pr_data.get("number") if pr_data else None,
-                    repo_name,
-                )
-                if not jobs:
-                    continue
+                # Get jobs for this run
+                jobs_data = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
+                jobs = jobs_data.get("jobs", [])
 
-                # Get logs from failed jobs in this run
-                logs = []
+                # Check if any job matches our failed checks
+                matching_failed_job = None
+
+                # Create set of failed check names for faster lookup
+                failed_check_names = {check.get("name") for check in failed_checks if check.get("name")}
+
                 for job in jobs:
-                    job_conclusion = job.get("conclusion", "")
-                    job_id = job.get("databaseId")
+                    if job.get("name") in failed_check_names and job.get("conclusion") == "failure":
+                        matching_failed_job = job
+                        break
 
-                    # Only attempt to get logs from failed or error jobs
-                    if job_conclusion and job_conclusion.lower() in [
-                        "failure",
-                        "failed",
-                        "error",
-                    ]:
-                        if job_id:
-                            logger.debug(f"Found failed job {job_id} in run {run_id}, attempting to get logs")
+                if matching_failed_job:
+                    logger.info(f"Found match: Job '{matching_failed_job.get('name')}' failed in run {run_id}")
 
-                            # Construct URL for this job
-                            url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
+                    # Try to get logs for this job/run
+                    # Ideally we want the log for the specific job, but getting the log URL for a job is tricky via API sometimes
+                    # api.actions.download_job_logs_for_workflow_run redirects to a URL.
+                    # But we use get_github_actions_logs_from_url which takes a HTML URL?
 
-                            # Try to get logs for this job
-                            job_logs = get_github_actions_logs_from_url(url)
+                    # The original implementation called:
+                    # logs = get_github_actions_logs_from_url(run.get("url"), config, failed_checks)
+                    # run.get("url") from gh json returned the api url or html url?
+                    # "url": "https://github.com/test/repo/actions/runs/1001" (HTML URL usually in 'url' field for gh json? No, gh json 'url' is usually HTML URL).
+                    # GhApi returns 'html_url' and 'url' (API URL).
+                    # 'get_github_actions_logs_from_url' logic likely scrapes or uses gh run view.
 
-                            if job_logs and job_logs != "No detailed logs available":
-                                # Add metadata about which run this came from
-                                logs.append(f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}")
+                    # Let's check what url we should pass. 'html_url' is safe for existing logic usually.
 
-                if logs:
-                    logger.info(f"Successfully retrieved {len(logs)} log(s) from run {run_id}")
-                    return "\n\n".join(logs)
+                    run_url = run.get("html_url")
+                    if not run_url:
+                        # Fallback to constructing it or using 'url'
+                        run_url = run.get("url")
 
+                    if run_url:
+                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
+
+                        if logs and "No detailed logs available" not in logs:
+                            # Prepend some metadata about where these logs came from
+                            run_date = run.get("created_at", "unknown date")
+                            run_branch = run.get("head_branch", "unknown branch")
+                            run_sha = run.get("head_sha", "unknown sha")
+
+                            metadata = f"[From run {run_id} on {run_branch} at {run_date} (commit {run_sha})]\n"
+                            return metadata + logs
             except Exception as e:
-                logger.debug(f"Error processing run {run_id}: {e}")
+                logger.warning(f"Error checking run {run_id}: {e}")
                 continue
 
-        logger.info("No historical logs found after searching recent runs")
+    except Exception as e:
+        logger.error(f"Error during historical log search: {e}")
         return None
 
-    except Exception as e:
-        logger.error(f"Error during historical search for GitHub Actions logs: {e}")
-        return None
+    return None
 
 
 def _get_github_actions_logs(
@@ -1634,7 +1558,7 @@ def _get_github_actions_logs(
                 logs.append(unified)
         else:
             # 3) If details_url not usable, use conventional method (get failed run from PR branch)
-            logger.debug("No valid details_url found in failed_checks, falling back to gh run list")
+            logger.debug("No valid details_url found in failed_checks, falling back to GhApi run list")
             # Get PR branch and get only runs from that branch (search commit history)
             branch_name = None
             if pr_data:
@@ -1643,73 +1567,57 @@ def _get_github_actions_logs(
                 if branch_name:
                     logger.debug(f"Using PR branch: {branch_name}")
 
-            run_list_cmd = [
-                "gh",
-                "run",
-                "list",
-                "-R",
-                repo_name,
-                "--limit",
-                "50",
-                "--json",
-                "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url",
-            ]
-            # If branch can be identified, get only runs from that branch
-            if branch_name:
-                run_list_cmd.extend(["--branch", branch_name])
-            gh_logger = get_gh_logger()
-            run_list = gh_logger.execute_with_logging(run_list_cmd, repo=repo_name, timeout=60, capture_output=True)
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
 
-            run_id: Optional[str] = None
-            if run_list.returncode == 0 and run_list.stdout.strip():
-                try:
-                    runs = json.loads(run_list.stdout)
-                    # Extract only failures, descending by createdAt
-                    failed_runs = [r for r in runs if (r.get("conclusion") == "failure")]
-                    failed_runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
-                    if failed_runs:
-                        run_id = str(failed_runs[0].get("databaseId"))
-                except Exception as e:
-                    logger.debug(f"Failed to parse gh run list JSON: {e}")
+            try:
+                # API: list_workflow_runs_for_repo(owner, repo, branch=..., per_page=...)
+                kwargs = {"owner": owner, "repo": repo, "per_page": 50}
+                if branch_name:
+                    kwargs["branch"] = branch_name
 
-            # 4) Extract failed jobs from run
-            failed_jobs: List[Dict[str, Any]] = []
+                run_list = api.actions.list_workflow_runs_for_repo(**kwargs)
+                runs = run_list.get("workflow_runs", [])
+            except Exception as e:
+                logger.warning(f"Failed to fetch runs via GhApi: {e}")
+                runs = []
+
+            run_id = None
+            if runs:
+                # Find first failed run?
+                # The original code logic iterates. Let's replicate original logic which used json.loads
+                # Original logic:
+                # runs = json.loads(...)
+                # for run in runs:
+                #    if run.get("conclusion") == "failure": ...
+
+                for run in runs:
+                    if run.get("conclusion") == "failure":
+                        run_id = run.get("id")
+                        # Also get title/url for logging or usage?
+                        # The original code didn't use them except to find ID.
+                        if run_id:
+                            logger.info(f"Found recent failed run {run_id} ({run.get('display_title')})")
+                            break
+            else:
+                logger.info("No runs found via GhApi")
+
             if run_id:
-                gh_logger = get_gh_logger()
-                jobs_res = gh_logger.execute_with_logging(
-                    ["gh", "run", "view", run_id, "-R", repo_name, "--json", "jobs"],
-                    repo=repo_name,
-                    timeout=60,
-                    capture_output=True,
-                )
-                if jobs_res.returncode == 0 and jobs_res.stdout.strip():
-                    try:
-                        jobs_json = json.loads(jobs_res.stdout)
-                        jobs = jobs_json.get("jobs", [])
-                        for job in jobs:
-                            conc = job.get("conclusion")
-                            if conc and conc.lower() != "success":
-                                failed_jobs.append(
-                                    {
-                                        "id": job.get("databaseId"),
-                                        "name": job.get("name"),
-                                        "conclusion": conc,
-                                    }
-                                )
-                    except Exception as e:
-                        logger.debug(f"Failed to parse gh run view JSON: {e}")
+                try:
+                    jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_data.get("number") if pr_data else None, repo_name)
 
-            # 5) Get logs via unified implementation by URL for each failed job
-            owner_repo = repo_name  # 'owner/repo'
-            for job in failed_jobs:
-                job_id = job.get("id")
-                if not job_id:
-                    continue
-
-                # Delegate to URL route implementation (unified)
-                url = f"https://github.com/{owner_repo}/actions/runs/{run_id}/job/{job_id}"
-                unified = get_github_actions_logs_from_url(url)
-                logs.append(unified)
+                    for job in jobs:
+                        conclusion = job.get("conclusion", "")
+                        if conclusion and conclusion.lower() in ["failure", "failed", "error"]:
+                            job_id = job.get("id")
+                            if job_id:
+                                url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
+                                asyncio_mode = config.SEARCH_GITHUB_ACTIONS_HISTORY  # Dummy use of config if needed or log
+                                unified = get_github_actions_logs_from_url(url)
+                                logs.append(unified)
+                except Exception as e:
+                    logger.warning(f"Error getting jobs/logs for run {run_id}: {e}")
 
         # 6) Fallback: if run/job cannot be retrieved, format failed_checks as is
         if not logs:

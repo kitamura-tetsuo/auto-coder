@@ -2,11 +2,12 @@
 
 import os
 import tempfile
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import toml
+import tomli_w
 
 from src.auto_coder.llm_backend_config import (
     BackendConfig,
@@ -416,8 +417,8 @@ class TestLLMBackendConfiguration:
                     }
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
             qwen_config = config.get_backend_config("qwen")
@@ -433,8 +434,8 @@ class TestLLMBackendConfiguration:
             config_file = Path(tmpdir) / "dotted_keys.toml"
             # This structure mimics [grok-4.1-fast] which TOML parses as nested dicts
             data = {"grok-4": {"1-fast": {"enabled": True, "model": "x-ai/grok-4.1-fast:free", "backend_type": "codex", "openai_base_url": "https://openrouter.ai/api/v1"}}, "deepseek": {"coder": {"v2": {"enabled": True, "backend_type": "codex"}}}}
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 
@@ -721,8 +722,8 @@ class TestLLMBackendConfiguration:
             config.save_to_file(str(config_file))
 
             # Read and parse TOML directly
-            with open(config_file, "r") as f:
-                data = toml.load(f)
+            with open(config_file, "rb") as f:
+                data = tomllib.load(f)
 
             # Verify structure
             assert "backend" in data
@@ -882,8 +883,8 @@ class TestLLMBackendConfiguration:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -925,8 +926,8 @@ class TestLLMBackendConfiguration:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -974,8 +975,8 @@ class TestLLMBackendConfiguration:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -1017,8 +1018,8 @@ class TestLLMBackendConfiguration:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -1062,8 +1063,8 @@ class TestLLMBackendConfiguration:
             config_file = Path(tmpdir) / "invalid.toml"
 
             # Write invalid TOML content
-            with open(config_file, "w") as f:
-                f.write("invalid toml syntax [[[")
+            with open(config_file, "wb") as f:
+                f.write(b"invalid toml syntax [[[")
 
             # Should raise ValueError
             with pytest.raises(ValueError, match="Error loading configuration"):
@@ -1133,8 +1134,8 @@ class TestLLMBackendConfiguration:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -1218,7 +1219,7 @@ class TestConfigErrorHandling:
             config.save_to_file(str(config_file))
 
             # Now mock toml.load to raise PermissionError during loading
-            with patch("toml.load", side_effect=PermissionError("Permission denied")):
+            with patch("tomllib.load", side_effect=PermissionError("Permission denied")):
                 with pytest.raises(ValueError, match="Error loading configuration"):
                     LLMBackendConfiguration.load_from_file(str(config_file))
 
@@ -1851,8 +1852,8 @@ class TestConfigurationPriorityLogic:
                     }
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
             grok_config = config.get_backend_config("grok-4.1-fast")
@@ -1868,8 +1869,8 @@ class TestConfigurationPriorityLogic:
             config_file = Path(tmpdir) / "dotted_model_provider.toml"
             # This structure mimics [grok-4.1-fast] which TOML parses as nested dicts
             data = {"grok-4": {"1-fast": {"enabled": True, "model": "x-ai/grok-4.1-fast:free", "backend_type": "codex", "model_provider": "openrouter"}}}
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 
@@ -1902,8 +1903,8 @@ class TestConfigurationPriorityLogic:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -2039,8 +2040,8 @@ enabled = true
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             # Load the configuration
             config = LLMBackendConfiguration.load_from_file(str(config_file))
@@ -2150,8 +2151,8 @@ class TestBackendWithHighScore:
                     "providers": ["fallback-provider"],
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 
@@ -2183,8 +2184,8 @@ class TestBackendWithHighScore:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 
@@ -2238,8 +2239,8 @@ class TestBackendWithHighScore:
             assert config_file.exists()
 
             # Load and verify
-            with open(config_file, "r") as f:
-                data = toml.load(f)
+            with open(config_file, "rb") as f:
+                data = tomllib.load(f)
 
             # Verify no backend_with_high_score section in the file
             assert "backend_with_high_score" not in data
@@ -2535,8 +2536,8 @@ class TestOptionInheritance:
                     },
                 },
             }
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(data, fh)
+            with open(config_file, "wb") as fh:
+                tomli_w.dump(data, fh)
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 

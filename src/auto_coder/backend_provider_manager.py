@@ -40,11 +40,10 @@ Features:
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
-
-import toml
 
 
 @dataclass
@@ -156,8 +155,8 @@ class BackendProviderManager:
             return
 
         try:
-            with open(metadata_file, "r") as f:
-                self._metadata_cache = toml.load(f)
+            with open(metadata_file, "rb") as f:
+                self._metadata_cache = tomllib.load(f)
         except Exception as e:
             # If there's an error loading, treat as empty
             # This allows the system to degrade gracefully

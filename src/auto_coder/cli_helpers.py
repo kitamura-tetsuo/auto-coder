@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
 
 import click
-import toml
 
 from .aider_client import AiderClient
 from .auggie_client import AuggieClient

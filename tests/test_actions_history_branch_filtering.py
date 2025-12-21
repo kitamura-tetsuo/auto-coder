@@ -1,20 +1,19 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
-def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
-    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
-
-
-def test_history_uses_branch_filter_when_commit_runs_empty():
+# Mock GitHubClient to avoid token error
+@patch("src.auto_coder.util.github_action.GitHubClient")
+def test_history_uses_branch_filter_when_commit_runs_empty(mock_gh_client):
     """Verify that branch filtering works correctly and only references the correct PR's runs.
 
     Regression: Prevent PR #73's history check from incorrectly referencing PR #133's Run.
     """
+    mock_gh_client.get_instance.return_value.token = "dummy_token"
     config = AutomationConfig()
 
     pr_data = {
@@ -32,33 +31,32 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
 
     run_list_payload = [
         {
-            "databaseId": other_pr_run_id,
-            "headBranch": "pr-133-branch",
+            "id": other_pr_run_id,  # API uses id not databaseId
+            "head_branch": "pr-133-branch",  # API snake_case
             "conclusion": "success",
-            "createdAt": "2025-11-05T10:00:00Z",
+            "created_at": "2025-11-05T10:00:00Z",  # API snake_case
             "status": "completed",
-            "displayTitle": "CI",
-            "url": f"https://github.com/owner/repo/actions/runs/{other_pr_run_id}",
-            "headSha": "133deadbeef",
+            "display_title": "CI",  # API snake_case
+            "html_url": f"https://github.com/owner/repo/actions/runs/{other_pr_run_id}",  # API html_url
+            "head_sha": "133deadbeef",  # API snake_case
         },
         {
-            "databaseId": target_pr_run_id,
-            "headBranch": "pr-73-branch",
+            "id": target_pr_run_id,
+            "head_branch": "pr-73-branch",
             "conclusion": "success",
-            "createdAt": "2025-11-04T10:00:00Z",
+            "created_at": "2025-11-04T10:00:00Z",
             "status": "completed",
-            "displayTitle": "CI",
-            "url": f"https://github.com/owner/repo/actions/runs/{target_pr_run_id}",
-            "headSha": "73cafebabe",
+            "display_title": "CI",
+            "html_url": f"https://github.com/owner/repo/actions/runs/{target_pr_run_id}",
+            "head_sha": "73cafebabe",
         },
     ]
-    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
     # 3) run view (jobs) should reference only target PR's Run
     jobs_payload_target = {
         "jobs": [
             {
-                "databaseId": 54321000000,
+                "id": 54321000000,  # API id
                 "name": "CI",
                 "conclusion": "success",
                 "status": "completed",
@@ -66,40 +64,24 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         ]
     }
 
-    def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "pr", "view"]:
-            # Return PR commit information
-            return _cmd_result(
-                True,
-                stdout=json.dumps(
-                    {
-                        "commits": [
-                            {
-                                "oid": "73cafebabe",
-                            }
-                        ]
-                    }
-                ),
-                stderr="",
-                returncode=0,
-            )
-        if cmd[:3] == ["gh", "run", "list"]:
-            # Return runs on first (and only) call - the implementation queries by branch
-            return run_list_result
-        if cmd[:3] == ["gh", "run", "view"]:
-            run_id = int(cmd[3])
-            if run_id == target_pr_run_id:
-                return _cmd_result(
-                    True,
-                    stdout=json.dumps(jobs_payload_target),
-                    stderr="",
-                    returncode=0,
-                )
-            # In case it fetches another PR's Run, return empty
-            return _cmd_result(True, stdout=json.dumps({"jobs": []}), stderr="", returncode=0)
-        raise AssertionError(f"Unexpected command: {cmd}")
+    mock_api = MagicMock()
+    # 1. list_commits
+    # Returns list of commits (dicts)
+    mock_api.pulls.list_commits.return_value = [{"sha": "73cafebabe"}]
 
-    with patch("auto_coder.gh_logger.subprocess.run", side_effect=side_effect):
+    # 2. list_workflow_runs_for_repo
+    # Returns dict with workflow_runs
+    mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": run_list_payload}
+
+    # 3. list_jobs_for_workflow_run
+    def list_jobs_side_effect(owner, repo, run_id):
+        if run_id == target_pr_run_id:
+            return jobs_payload_target
+        return {"jobs": []}
+
+    mock_api.actions.list_jobs_for_workflow_run.side_effect = list_jobs_side_effect
+
+    with patch("src.auto_coder.util.github_action.get_ghapi_client", return_value=mock_api):
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
@@ -107,8 +89,10 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
     assert isinstance(result.ids, list)
 
 
-def test_history_filters_to_branch_even_with_head_sha_present():
+@patch("src.auto_coder.util.github_action.GitHubClient")
+def test_history_filters_to_branch_even_with_head_sha_present(mock_gh_client):
     """Verify that branch filtering works correctly and filters to the correct branch."""
+    mock_gh_client.get_instance.return_value.token = "dummy_token"
     config = AutomationConfig()
 
     pr_data = {
@@ -123,32 +107,31 @@ def test_history_filters_to_branch_even_with_head_sha_present():
     # Mix same branch (push) and different branches (PR)
     run_list_payload = [
         {
-            "databaseId": 3001,
-            "headBranch": "other-branch",
+            "id": 3001,
+            "head_branch": "other-branch",
             "conclusion": "failure",
-            "createdAt": "2025-11-05T10:00:00Z",
+            "created_at": "2025-11-05T10:00:00Z",
             "status": "completed",
-            "displayTitle": "CI",
-            "url": "https://github.com/owner/repo/actions/runs/3001",
-            "headSha": "deadbeef",
+            "display_title": "CI",
+            "html_url": "https://github.com/owner/repo/actions/runs/3001",
+            "head_sha": "deadbeef",
         },
         {
-            "databaseId": 3000,
-            "headBranch": "fix-branch",
+            "id": 3000,
+            "head_branch": "fix-branch",
             "conclusion": "success",
-            "createdAt": "2025-11-04T10:00:00Z",
+            "created_at": "2025-11-04T10:00:00Z",
             "status": "completed",
-            "displayTitle": "CI",
-            "url": "https://github.com/owner/repo/actions/runs/3000",
-            "headSha": "cafebabe",
+            "display_title": "CI",
+            "html_url": "https://github.com/owner/repo/actions/runs/3000",
+            "head_sha": "cafebabe",
         },
     ]
-    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
     jobs_payload = {
         "jobs": [
             {
-                "databaseId": 777,
+                "id": 777,
                 "name": "CI",
                 "conclusion": "success",
                 "status": "completed",
@@ -156,34 +139,22 @@ def test_history_filters_to_branch_even_with_head_sha_present():
         ]
     }
 
-    def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "pr", "view"]:
-            # Return PR commit information
-            return _cmd_result(
-                True,
-                stdout=json.dumps(
-                    {
-                        "commits": [
-                            {
-                                "oid": "abc123def456",
-                            }
-                        ]
-                    }
-                ),
-                stderr="",
-                returncode=0,
-            )
-        if cmd[:3] == ["gh", "run", "list"]:
-            # Return runs on first (and only) call - the implementation queries by branch
-            return run_list_result
-        if cmd[:3] == ["gh", "run", "view"]:
-            # Should reference only 3000 filtered by branch
-            run_id = int(cmd[3])
-            assert run_id == 3000, f"unexpected run viewed: {run_id}"
-            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
-        raise AssertionError(f"Unexpected command: {cmd}")
+    mock_api = MagicMock()
+    # 1. list_commits
+    mock_api.pulls.list_commits.return_value = [{"sha": "abc123def456"}]
 
-    with patch("auto_coder.gh_logger.subprocess.run", side_effect=side_effect):
+    # 2. list_workflow_runs_for_repo
+    mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": run_list_payload}
+
+    # 3. list_jobs_for_workflow_run
+    def list_jobs_side_effect(owner, repo, run_id):
+        if run_id == 3000:
+            return jobs_payload
+        return {"jobs": []}
+
+    mock_api.actions.list_jobs_for_workflow_run.side_effect = list_jobs_side_effect
+
+    with patch("src.auto_coder.util.github_action.get_ghapi_client", return_value=mock_api):
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True

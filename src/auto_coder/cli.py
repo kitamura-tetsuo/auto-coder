@@ -6,7 +6,10 @@ import sys
 from os import PathLike
 from typing import IO
 
+print(f"DEBUG: sys.executable = {sys.executable}", file=sys.stderr)
+
 import click
+
 
 try:
     from dotenv import load_dotenv

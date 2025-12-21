@@ -85,7 +85,7 @@
                 // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
             ],
-            "python": "${command:python.interpreterPath}",
+            "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }

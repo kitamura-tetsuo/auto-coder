@@ -7,12 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-try:  # Python 3.11+ ships with tomllib
-    import tomllib  # type: ignore[attr-defined]
-except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreters
-    from tomli import tomllib as _tomllib  # type: ignore[import]
-
-    tomllib = _tomllib
+import tomllib
 
 from .logger_config import get_logger
 

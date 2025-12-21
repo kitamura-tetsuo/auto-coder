@@ -37,19 +37,20 @@ class TestGitHubActionCaching(unittest.TestCase):
         # Verify API was NOT called (mock logger shouldn't be used)
         mock_get_gh_logger.assert_not_called()
 
-    @patch("src.auto_coder.util.github_action.get_gh_logger")
-    def test_check_github_actions_status_populates_cache(self, mock_get_gh_logger):
+    @patch("src.auto_coder.util.github_action.GitHubClient")
+    @patch("src.auto_coder.util.github_action.get_ghapi_client")
+    def test_check_github_actions_status_populates_cache(self, mock_get_ghapi_client, mock_github_client):
         """Test that _check_github_actions_status populates the cache on miss."""
         repo_name = "owner/repo"
         pr_data = {"number": 124, "head": {"sha": "def5678"}}
 
+        # Setup mock GitHubClient token
+        mock_github_client.get_instance.return_value.token = "dummy_token"
+
         # Mock API response
-        mock_logger_instance = MagicMock()
-        mock_get_gh_logger.return_value = mock_logger_instance
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = '{"check_runs": []}'  # Empty checks
-        mock_logger_instance.execute_with_logging.return_value = mock_result
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_api.checks.list_for_ref.return_value = {"check_runs": []}  # Empty checks
 
         # Call function
         result = _check_github_actions_status(repo_name, pr_data, self.config)
@@ -62,8 +63,8 @@ class TestGitHubActionCaching(unittest.TestCase):
         self.assertIsNotNone(cached_result)
         self.assertEqual(cached_result.success, True)  # Empty checks = success in this logic
 
-    @patch("src.auto_coder.util.github_action.get_gh_logger")
-    def test_check_github_actions_status_from_history_uses_cache(self, mock_get_gh_logger):
+    @patch("src.auto_coder.util.github_action.get_ghapi_client")
+    def test_check_github_actions_status_from_history_uses_cache(self, mock_get_ghapi_client):
         """Test that _check_github_actions_status_from_history uses the cache."""
         repo_name = "owner/repo"
         pr_data = {"number": 125, "head_branch": "feature-branch"}
@@ -81,7 +82,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         self.assertIs(result, expected_result)
 
         # Verify API was NOT called
-        mock_get_gh_logger.assert_not_called()
+        mock_get_ghapi_client.assert_not_called()
 
 
 if __name__ == "__main__":

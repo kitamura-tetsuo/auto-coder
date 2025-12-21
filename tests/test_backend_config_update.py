@@ -3,7 +3,6 @@ import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
-import toml
 
 from src.auto_coder.cli_helpers import create_high_score_backend_manager
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration

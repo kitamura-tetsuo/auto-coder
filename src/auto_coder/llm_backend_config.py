@@ -3,12 +3,13 @@ Configuration management for LLM backends using TOML files.
 """
 
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
-import toml
+import tomli_w
 
 from .logger_config import get_logger
 
@@ -224,8 +225,8 @@ class LLMBackendConfiguration:
             return config
 
         try:
-            with open(config_path, "r") as f:
-                data = toml.load(f)
+            with open(config_path, "rb") as f:
+                data = tomllib.load(f)
             return cls._load_from_data(data, config_path=config_path)
         except Exception as e:
             raise ValueError(f"Error loading configuration from {config_path}: {e}")
@@ -435,7 +436,7 @@ class LLMBackendConfiguration:
         # Prepare data for TOML
         backend_data = {}
         for name, config in self.backends.items():
-            backend_data[name] = {
+            raw_config = {
                 "enabled": config.enabled,
                 "model": config.model,
                 "api_key": config.api_key,
@@ -462,12 +463,13 @@ class LLMBackendConfiguration:
                 "options_explicitly_set": config.options_explicitly_set,
                 "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
             }
+            backend_data[name] = {k: v for k, v in raw_config.items() if v is not None}
 
         # Prepare backend_with_high_score data
         backend_with_high_score_data = {}
         if self.backend_with_high_score:
             config = self.backend_with_high_score
-            backend_with_high_score_data = {
+            raw_config = {
                 "name": config.name,
                 "enabled": config.enabled,
                 "model": config.model,
@@ -495,6 +497,7 @@ class LLMBackendConfiguration:
                 "options_explicitly_set": config.options_explicitly_set,
                 "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
             }
+            backend_with_high_score_data = {k: v for k, v in raw_config.items() if v is not None}
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend}, "backends": backend_data}
 
@@ -503,8 +506,8 @@ class LLMBackendConfiguration:
             data["backend_with_high_score"] = backend_with_high_score_data
 
         # Write TOML file
-        with open(config_path, "w") as f:
-            toml.dump(data, f)
+        with open(config_path, "wb") as f:
+            tomli_w.dump(data, f)
 
     def get_backend_config(self, backend_name: str) -> Optional[BackendConfig]:
         """Get configuration for a specific backend."""
@@ -663,8 +666,8 @@ def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
     if config_path:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 jules_config = data.get("jules", {})
                 if "enabled" in jules_config:
@@ -686,8 +689,8 @@ def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
     for config_path in config_paths:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 # Check for [jules] section
                 jules_config = data.get("jules", {})
@@ -740,8 +743,8 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     if config_path:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 jules_config = data.get("jules", {})
                 if "enabled_fallback_to_local" in jules_config:
@@ -763,8 +766,8 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     for config_path in config_paths:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 # Check for [jules] section
                 jules_config = data.get("jules", {})
@@ -798,8 +801,8 @@ def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None)
     if config_path:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 process_issues_config = data.get("process_issues", {})
                 if "sleep_time" in process_issues_config:
@@ -819,8 +822,8 @@ def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None)
     for config_path in config_paths:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 process_issues_config = data.get("process_issues", {})
                 if "sleep_time" in process_issues_config:
@@ -851,8 +854,8 @@ def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] =
     if config_path:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 process_issues_config = data.get("process_issues", {})
                 if "empty_sleep_time" in process_issues_config:
@@ -872,8 +875,8 @@ def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] =
     for config_path in config_paths:
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    data = toml.load(f)
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
 
                 process_issues_config = data.get("process_issues", {})
                 if "empty_sleep_time" in process_issues_config:

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import toml
+import tomli_w
 
 from src.auto_coder.backend_provider_manager import (
     BackendProviderManager,
@@ -150,8 +150,8 @@ class TestBackendProviderManager:
                 }
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
             manager.load_provider_metadata()
@@ -195,8 +195,8 @@ class TestBackendProviderManager:
                 }
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
 
@@ -228,8 +228,8 @@ class TestBackendProviderManager:
                 }
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
             names = manager.get_all_provider_names("claude")
@@ -250,8 +250,8 @@ class TestBackendProviderManager:
                 }
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
 
@@ -311,8 +311,8 @@ class TestBackendProviderManager:
                 }
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
 
@@ -355,8 +355,8 @@ class TestBackendProviderManager:
                 }
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
 
@@ -377,8 +377,8 @@ class TestBackendProviderManager:
             metadata_file = Path(tmpdir) / "invalid_metadata.toml"
 
             # Write invalid TOML
-            with open(metadata_file, "w") as f:
-                f.write("invalid toml syntax [[[")
+            with open(metadata_file, "wb") as f:
+                f.write(b"invalid toml syntax [[[")
 
             manager = BackendProviderManager(str(metadata_file))
             manager.load_provider_metadata()
@@ -413,8 +413,8 @@ class TestBackendProviderManager:
                 },
             }
 
-            with open(metadata_file, "w") as f:
-                toml.dump(metadata, f)
+            with open(metadata_file, "wb") as f:
+                tomli_w.dump(metadata, f)
 
             manager = BackendProviderManager(str(metadata_file))
 
