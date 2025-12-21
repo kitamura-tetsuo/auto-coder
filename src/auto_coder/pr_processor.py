@@ -1493,7 +1493,7 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
         True if the PR is created by Jules, False otherwise
     """
     # Check author first
-    pr_author = _get_pr_author_login(pr_data) or ""
+    pr_author = get_pr_author_login(pr_data) or ""
     if pr_author.startswith("google-labs-jules"):
         return True
 
