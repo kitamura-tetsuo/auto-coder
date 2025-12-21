@@ -642,5 +642,18 @@ def test_progress_footer_elapsed_time_hours():
         assert "[1h 01m 05s]" in formatted
 
 
+def test_progress_footer_without_number():
+    """Test progress footer without item number (generic message)."""
+    footer = ProgressFooter()
+    # Test "Waiting" type
+    formatted = footer._format_footer("Waiting", None)
+
+    # Should contain label but no number
+    assert "Waiting" in formatted
+    assert "#" not in formatted
+    # Should use cyan color (default fallback)
+    assert "\033[96m" in formatted
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

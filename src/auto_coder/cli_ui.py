@@ -60,3 +60,27 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
         click.echo(f"{key_display} : {val_display}")
 
     click.echo("")  # Add spacing after summary
+
+
+def sleep_with_countdown(seconds: int, message: str) -> None:
+    """
+    Sleeps for a specified number of seconds while displaying a countdown in the footer.
+
+    Args:
+        seconds: Number of seconds to sleep.
+        message: Message to display in the footer.
+    """
+    import time
+    from .progress_footer import clear_progress, set_progress_item, get_progress_footer
+
+    footer = get_progress_footer()
+
+    try:
+        # Update every second
+        for i in range(seconds, 0, -1):
+            set_progress_item(f"{message} [{i}s]", None)
+            time.sleep(1)
+            # Advance spinner
+            footer.tick()
+    finally:
+        clear_progress()

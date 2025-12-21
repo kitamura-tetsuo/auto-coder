@@ -23,7 +23,7 @@ class StopLoop(Exception):
 @patch("src.auto_coder.cli_commands_main.get_llm_config")
 @patch("src.auto_coder.cli_commands_main.GitHubClient")
 @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-@patch("time.sleep")
+@patch("src.auto_coder.cli_commands_main.sleep_with_countdown")
 @patch("src.auto_coder.llm_backend_config.get_process_issues_empty_sleep_time_from_config")
 @patch("src.auto_coder.llm_backend_config.get_process_issues_sleep_time_from_config")
 @patch("src.auto_coder.cli_commands_main.get_current_branch")
@@ -45,7 +45,7 @@ def test_process_issues_sleep_logic(
     mock_get_branch,
     mock_get_short_sleep,
     mock_get_empty_sleep,
-    mock_sleep,
+    mock_sleep_countdown,
     mock_engine_cls,
     mock_gh_cls,
     mock_config,
@@ -87,7 +87,7 @@ def test_process_issues_sleep_logic(
     mock_config_instance.get_backend_config.return_value = MagicMock(api_key="dummy")
 
     # Mock sleep to raise exception to break loop
-    mock_sleep.side_effect = StopLoop()
+    mock_sleep_countdown.side_effect = StopLoop()
 
     runner = CliRunner()
     result = runner.invoke(process_issues, ["--repo", "owner/repo", "--github-token", "dummy", "--disable-graphrag"])
@@ -98,6 +98,7 @@ def test_process_issues_sleep_logic(
 
     # Check correct sleep time was used
     if expected_sleep_type == "short":
-        mock_sleep.assert_called_with(SHORT_SLEEP)
+        # Check first argument (seconds)
+        assert mock_sleep_countdown.call_args[0][0] == SHORT_SLEEP
     else:
-        mock_sleep.assert_called_with(EMPTY_SLEEP)
+        assert mock_sleep_countdown.call_args[0][0] == EMPTY_SLEEP

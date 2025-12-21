@@ -57,14 +57,14 @@ class ProgressFooter:
     def _format_footer(
         self,
         item_type: str,
-        item_number: int,
+        item_number: Optional[int],
     ) -> str:
         """
         Format the footer string with nested stages from stack.
 
         Args:
             item_type: Type of item being processed ("PR" or "Issue")
-            item_number: Number of the PR or Issue
+            item_number: Number of the PR or Issue (optional)
 
         Returns:
             Formatted footer string
@@ -93,15 +93,21 @@ class ProgressFooter:
 
         # Build the main item display with color based on item_type
         spinner = self._spinner_frames[self._spinner_idx] + " "
-        if item_type.upper() == "PR":
-            # PR: cyan color
-            main_display = f"{c_cyan}{spinner}[{sym_pr} #{item_number}"
-        elif item_type.upper() == "ISSUE":
-            # Issue: light purple/magenta
-            main_display = f"{c_magenta}{spinner}[{sym_issue} #{item_number}"
+
+        if item_number is not None:
+            if item_type.upper() == "PR":
+                # PR: cyan color
+                main_display = f"{c_cyan}{spinner}[{sym_pr} #{item_number}"
+            elif item_type.upper() == "ISSUE":
+                # Issue: light purple/magenta
+                main_display = f"{c_magenta}{spinner}[{sym_issue} #{item_number}"
+            else:
+                # Fallback: use cyan
+                main_display = f"{c_cyan}{spinner}[{item_type} #{item_number}"
         else:
-            # Fallback: use cyan
-            main_display = f"{c_cyan}{spinner}[{item_type} #{item_number}"
+            # Just show item_type as label (e.g. "Waiting...")
+            # Use cyan for generic system messages
+            main_display = f"{c_cyan}{spinner}[{item_type}"
 
         # Add branch name if available (in dark red)
         if self._branch_name:
@@ -179,7 +185,7 @@ class ProgressFooter:
     def set_item(
         self,
         item_type: str,
-        item_number: int,
+        item_number: Optional[int],
         related_issues: Optional[list[int]] = None,
         branch_name: Optional[str] = None,
     ) -> None:
@@ -188,7 +194,7 @@ class ProgressFooter:
 
         Args:
             item_type: Type of item being processed ("PR" or "Issue")
-            item_number: Number of the PR or Issue
+            item_number: Number of the PR or Issue (optional)
             related_issues: List of related issue numbers
             branch_name: Branch name to display
         """
@@ -209,7 +215,7 @@ class ProgressFooter:
 
     def _render_footer(self) -> None:
         """Render the footer from current state (must be called with lock held)."""
-        if self._current_item_type and self._current_item_number:
+        if self._current_item_type:
             self._current_footer = self._format_footer(self._current_item_type, self._current_item_number)
         else:
             self._current_footer = None
@@ -341,7 +347,7 @@ def setup_progress_footer_logging() -> None:
 
 def set_progress_item(
     item_type: str,
-    item_number: int,
+    item_number: Optional[int],
     related_issues: Optional[list[int]] = None,
     branch_name: Optional[str] = None,
 ) -> None:
@@ -350,7 +356,7 @@ def set_progress_item(
 
     Args:
         item_type: Type of item being processed ("PR" or "Issue")
-        item_number: Number of the PR or Issue
+        item_number: Number of the PR or Issue (optional)
         related_issues: List of related issue numbers
         branch_name: Branch name to display
     """
@@ -402,7 +408,7 @@ class ProgressContext:
     def __init__(
         self,
         item_type: str,
-        item_number: int,
+        item_number: Optional[int],
         initial_stage: str,
         related_issues: Optional[list[int]] = None,
         branch_name: Optional[str] = None,
