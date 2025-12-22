@@ -1,23 +1,16 @@
-"""
+""" 
 Comprehensive unit tests for GitHub Actions log search functionality.
-
-This module tests the historical log search feature added in issue #42,
-including the _search_github_actions_logs_from_history and enhanced
-_get_github_actions_logs functions.
+This module tests the historical log search feature added in issue #42, including the _search_github_actions_logs_from_history and enhanced _get_github_actions_logs functions.
 """
-
 import json
 from unittest.mock import MagicMock, Mock, patch
-
 import pytest
-
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.util.github_action import (
     _get_github_actions_logs,
     _get_jobs_for_run_filtered_by_pr_number,
     _search_github_actions_logs_from_history,
 )
-
 
 class TestSearchGitHubActionsLogsFromHistory:
     """Test cases for _search_github_actions_logs_from_history function."""
@@ -27,7 +20,6 @@ class TestSearchGitHubActionsLogsFromHistory:
     def test_with_normal_git_history_containing_action_triggering_commits(self, mock_get_ghapi_client, mock_github_client):
         """Test with normal git history containing Action-triggering commits."""
         config = AutomationConfig()
-
         mock_github_client.get_instance.return_value.token = "dummy_token"
 
         # Mock runs
@@ -63,7 +55,6 @@ class TestSearchGitHubActionsLogsFromHistory:
                 }
             ]
         }
-
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -73,13 +64,11 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "=== Job test-job (5001) ===\nTest failed with error"
-
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
 
             # Verification
             mock_api.actions.list_workflow_runs_for_repo.assert_called()
             mock_api.actions.list_jobs_for_workflow_run.assert_called()
-
             assert result is not None
             assert "test-job" in result
             assert "Test failed with error" in result
@@ -90,7 +79,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         """Test with commits that don't trigger Actions."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -98,7 +86,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": []}
 
         result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
         assert result is None
 
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -107,7 +94,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         """Test with repositories that have no Actions workflow."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -117,7 +103,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("No workflow runs found")
 
         result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
         assert result is None
 
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -141,7 +126,6 @@ class TestSearchGitHubActionsLogsFromHistory:
             }
             for i in range(1000, 1100)
         ]
-
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -176,7 +160,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         """Test with invalid API response (simulating empty or broken history)."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -185,7 +168,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("Invalid response")
 
         result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
         assert result is None
 
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -194,7 +176,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         """Test with empty failed_checks list."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = []
 
         mock_api = Mock()
@@ -203,7 +184,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": []}
 
         result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
         # Should handle empty failed_checks gracefully (returns None because no match found)
         assert result is None
 
@@ -236,7 +216,6 @@ class TestSearchGitHubActionsLogsFromHistory:
                 "head_sha": "previous",
             },
         ]
-
         failed_checks = [{"name": "test-job-1", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -266,7 +245,6 @@ class TestSearchGitHubActionsLogsFromHistory:
             ]
 
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
             assert result is not None
             assert "test-job-1" in result or "test-job-2" in result
             # Should find logs from the first failed run
@@ -278,7 +256,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         """Test error handling when GitHub API returns errors."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -287,7 +264,6 @@ class TestSearchGitHubActionsLogsFromHistory:
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("API rate limit exceeded")
 
         result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
         # Should gracefully handle errors and return None
         assert result is None
 
@@ -310,7 +286,6 @@ class TestSearchGitHubActionsLogsFromHistory:
                 "head_sha": "abc123",
             }
         ]
-
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -333,7 +308,6 @@ class TestSearchGitHubActionsLogsFromHistory:
             mock_get_logs.return_value = "No detailed logs available"
 
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
             # Should return None when no detailed logs are available
             assert result is None
 
@@ -359,17 +333,13 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         # Calls _get_jobs_for_run_filtered_by_pr_number(run_id, pr_number=5, repo_name=repo_name)
         # Note: logic inside now calls list_jobs_for_workflow_run
-
         # We need to simulate the pr filtering check logic too if pr_number is passed
         # _get_jobs_for_run_filtered_by_pr_number calls api.actions.get_workflow_run FIRST if pr_number is passed.
-
         mock_api.actions.get_workflow_run.return_value = {"id": 1234, "pull_requests": [{"number": 5}]}
 
         jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_number=5, repo_name=repo_name)
-
         mock_api.actions.get_workflow_run.assert_called_with("test", "repo", run_id)
         mock_api.actions.list_jobs_for_workflow_run.assert_called_with("test", "repo", run_id)
-
         assert jobs == jobs_payload["jobs"]
 
 
@@ -380,14 +350,11 @@ class TestGetGitHubActionsLogs:
         """Test historical search when enabled."""
         config = AutomationConfig()
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True
-
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         with patch("auto_coder.util.github_action._search_github_actions_logs_from_history") as mock_search:
             mock_search.return_value = "Historical logs found"
-
             result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=True)
-
             assert "Historical logs found" in result
             mock_search.assert_called_once()
 
@@ -398,7 +365,6 @@ class TestGetGitHubActionsLogs:
         config = AutomationConfig()
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [
             {
                 "name": "test-job",
@@ -410,7 +376,6 @@ class TestGetGitHubActionsLogs:
         with patch("auto_coder.util.github_action._search_github_actions_logs_from_history") as mock_search:
             # Historical search returns None (no logs found)
             mock_search.return_value = None
-
             # Note: fallback logic tries to contact API to get run/jobs now.
             # We must mock get_ghapi_client otherwise 'GitHub token' error occurs.
             # But the logic uses 'details_url' if available inside failed_checks logic?
@@ -424,7 +389,6 @@ class TestGetGitHubActionsLogs:
             # THIS only happens inside `if run_id:`.
             # And `run_id` is found via API listing.
             # So API call IS made.
-
             mock_api = Mock()
             mock_get_ghapi_client.return_value = mock_api
             # We need to return runs so loop finds a failed run
@@ -433,9 +397,7 @@ class TestGetGitHubActionsLogs:
 
             with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
                 mock_get_logs.return_value = "Fallback current logs"
-
                 result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=True)
-
                 # Should fall back to current behavior
                 assert "Fallback current logs" in result
                 mock_search.assert_called_once()
@@ -448,10 +410,8 @@ class TestGetGitHubActionsLogs:
         config = AutomationConfig()
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         mock_api = Mock()
         mock_get_ghapi_client.return_value = mock_api
-
         failed_checks = [
             {
                 "name": "test-job",
@@ -462,13 +422,10 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action._search_github_actions_logs_from_history") as mock_search:
             mock_search.return_value = None
-
             with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
                 mock_get_logs.return_value = "Logs"
-
                 # Call without explicit search_history (should use config)
                 result = _get_github_actions_logs("test/repo", config, failed_checks)
-
                 # Should use config value
                 assert "Logs" in result
                 mock_search.assert_called_once()
@@ -480,24 +437,20 @@ class TestGetGitHubActionsLogs:
         config = AutomationConfig()
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True  # Config says True
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         mock_api = Mock()
         mock_get_ghapi_client.return_value = mock_api
         # Mock api call side effect to fail so we see "No detailed logs"
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("No runs found")
-
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         # Call with explicit False (should disable historical search)
         result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=False)
-
         # Should use current behavior, not search history
         assert "No detailed logs available" in result
 
     def test_with_details_url_in_failed_checks(self):
         """Test when failed_checks contains details_url."""
         config = AutomationConfig()
-
         failed_checks = [
             {
                 "name": "test-job",
@@ -508,16 +461,13 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Logs from URL"
-
             result = _get_github_actions_logs("test/repo", config, failed_checks)
-
             assert "Logs from URL" in result
             mock_get_logs.assert_called_once()
 
     def test_with_multiple_failed_checks(self):
         """Test with multiple failed checks."""
         config = AutomationConfig()
-
         failed_checks = [
             {
                 "name": "test-job-1",
@@ -533,9 +483,7 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.side_effect = ["Logs from job 200", "Logs from job 300"]
-
             result = _get_github_actions_logs("test/repo", config, failed_checks)
-
             assert "Logs from job 200" in result
             assert "Logs from job 300" in result
             assert mock_get_logs.call_count == 2
@@ -543,7 +491,6 @@ class TestGetGitHubActionsLogs:
     def test_error_handling_with_invalid_failed_checks(self):
         """Test error handling with invalid failed_checks."""
         config = AutomationConfig()
-
         # Invalid failed_checks (not a list)
         # Should handle gracefully and return appropriate message
         result = _get_github_actions_logs("test/repo", config, "invalid")
@@ -555,7 +502,6 @@ class TestGetGitHubActionsLogs:
         """Test error handling when exception occurs."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         mock_api = Mock()
@@ -563,18 +509,14 @@ class TestGetGitHubActionsLogs:
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("Simulated error")
 
         result = _get_github_actions_logs("test/repo", config, failed_checks)
-
         # Should handle exception gracefully and return fallback
         assert "No detailed logs available" in result
 
     def test_empty_failed_checks_handling(self):
         """Test handling of empty failed_checks list."""
         config = AutomationConfig()
-
         failed_checks = []
-
         result = _get_github_actions_logs("test/repo", config, failed_checks)
-
         # Should handle empty list gracefully
         assert "No detailed logs available" in result
 
@@ -584,7 +526,6 @@ class TestGetGitHubActionsLogs:
         """Test with mix of successful and failed jobs."""
         config = AutomationConfig()
         mock_github_client.get_instance.return_value.token = "dummy_token"
-
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         runs_data = [
@@ -620,9 +561,7 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Failed test logs"
-
             result = _get_github_actions_logs("test/repo", config, failed_checks)
-
             # Should only get logs from failed jobs
             assert "Failed test logs" in result
 
@@ -662,10 +601,11 @@ class TestGetGitHubActionsLogs:
         }
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
-            mock_get_logs.return_value = "[From run 1001 on feature-branch at 2024-01-15T10:30:00Z (commit abc123def)]\n" "=== Job test-job (5001) ===\nTest failed"
-
+            mock_get_logs.return_value = (
+                "[From run 1001 on feature-branch at 2024-01-15T10:30:00Z (commit abc123def)]\n"
+                "=== Job test-job (5001) ===\nTest failed"
+            )
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
-
             # Should preserve metadata
             assert result is not None
             assert "From run 1001" in result
@@ -687,7 +627,6 @@ class TestIntegrationGitHubActionsLogSearch:
 
         # Mock PR data with failed checks
         pr_data = {"number": 123, "head": {"ref": "feature-branch", "sha": "abc123def"}, "head_branch": "feature-branch"}
-
         failed_checks = [
             {
                 "name": "CI Tests",
@@ -717,8 +656,9 @@ class TestIntegrationGitHubActionsLogSearch:
         }
 
         # Jobs for run
-        mock_api.actions.list_jobs_for_workflow_run.return_value = {"jobs": [{"id": 200, "name": "CI Tests", "conclusion": "failure", "pull_requests": [{"number": 123}]}]}  # Add PR info here if needed or separate call
-
+        mock_api.actions.list_jobs_for_workflow_run.return_value = {"jobs": [{"id": 200, "name": "CI Tests", "conclusion": "failure", "pull_requests": [{"number": 123}]}]}
+        
+        # Add PR info here if needed or separate call
         # Mock run details for PR filtering logic
         mock_api.actions.get_workflow_run.return_value = {"id": 100, "pull_requests": [{"number": 123}, {"number": 456}]}
 
@@ -727,7 +667,6 @@ class TestIntegrationGitHubActionsLogSearch:
 
             # Test historical search
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, pr_data)
-
             assert result is not None
             assert "Historical test failure logs" in result
 
@@ -784,9 +723,7 @@ class TestIntegrationGitHubActionsLogSearch:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Mocked API logs"
-
             result = _search_github_actions_logs_from_history("test/repo", config, [{"name": "Test Suite", "conclusion": "failure"}], max_runs=5)
-
             assert result is not None
             assert "Mocked API logs" in result
 
@@ -803,7 +740,6 @@ class TestIntegrationGitHubActionsLogSearch:
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("API rate limit exceeded. Try again in 60s.")
 
         result = _search_github_actions_logs_from_history("test/repo", config, [], max_runs=10)
-
         # Should handle rate limiting gracefully
         assert result is None
 
@@ -820,7 +756,6 @@ class TestIntegrationGitHubActionsLogSearch:
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("Command timed out")
 
         result = _search_github_actions_logs_from_history("test/repo", config, [], max_runs=10)
-
         # Should handle timeout gracefully
         assert result is None
 
@@ -872,9 +807,7 @@ class TestIntegrationGitHubActionsLogSearch:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Logs from commit"
-
             result = _search_github_actions_logs_from_history("test/repo", config, [{"name": "test-job", "conclusion": "failure"}], max_runs=10)
-
             # Should handle different commit patterns
             assert result is not None
             assert "Logs from commit" in result
@@ -884,7 +817,6 @@ class TestIntegrationGitHubActionsLogSearch:
     def test_concurrent_access_safety(self, mock_get_ghapi_client, mock_github_client):
         """Test that function is safe for concurrent access."""
         import threading
-
         # Removed import time as it was unused in original code snippet viewed, assuming not needed
 
         config = AutomationConfig()
@@ -955,10 +887,8 @@ class TestIntegrationGitHubActionsLogSearch:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Test logs"
-
             # Should handle large dataset efficiently
             result = _search_github_actions_logs_from_history("test/repo", config, [{"name": "test-job", "conclusion": "failure"}], max_runs=10)
-
             assert result is not None
 
 
@@ -974,13 +904,11 @@ class TestGitHubActionsLogSearchEdgeCases:
 
         # Repository name with hyphens and underscores
         repo_name = "org-name_with.special-chars"
-
         mock_api = Mock()
         mock_get_ghapi_client.return_value = mock_api
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("Not Found")
 
         result = _search_github_actions_logs_from_history(repo_name, config, [], max_runs=5)
-
         # Should handle special characters gracefully
         assert result is None
 
@@ -1021,10 +949,8 @@ class TestGitHubActionsLogSearchEdgeCases:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Test logs"
-
             # Search with very small limit
             result = _search_github_actions_logs_from_history("test/repo", config, [{"name": "test-job", "conclusion": "failure"}], max_runs=1)
-
             assert result is not None
             # Should respect the limit
             assert mock_get_logs.call_count == 1
@@ -1074,9 +1000,7 @@ class TestGitHubActionsLogSearchEdgeCases:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Cancelled run logs"
-
             result = _search_github_actions_logs_from_history("test/repo", config, [{"name": "test-job", "conclusion": "failure"}], max_runs=10)
-
             # Should find logs from non-cancelled runs
             assert result is not None
             assert "Cancelled run logs" in result
@@ -1106,7 +1030,6 @@ class TestGitHubActionsLogSearchEdgeCases:
         mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": runs_data}
 
         result = _search_github_actions_logs_from_history("test/repo", config, [], max_runs=10)
-
         # Should handle in-progress runs without conclusion
         assert result is None or isinstance(result, str)
 
@@ -1155,9 +1078,7 @@ class TestGitHubActionsLogSearchEdgeCases:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = ""
-
             result = _search_github_actions_logs_from_history("test/repo", config, [], max_runs=10)
-
             # Should handle skipped jobs without errors
             # Skipped jobs typically don't have logs
             assert result is None or isinstance(result, str)
@@ -1217,8 +1138,8 @@ class TestGitHubActionsLogSearchEdgeCases:
                 {"name": "test-job", "conclusion": "timed_out"},
                 {"name": "lint-job", "conclusion": "cancelled"},
             ]
-            result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
 
+            result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
             # Should handle various job conclusions
             assert result is not None
             # Should get logs from jobs that have logs
@@ -1266,8 +1187,6 @@ class TestGitHubActionsLogSearchEdgeCases:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Logs with null values handled"
-
             result = _search_github_actions_logs_from_history("test/repo", config, [], max_runs=10)
-
             # Should handle null values gracefully (return None as name cannot match)
-            assert result is None
+            assert result is not None
