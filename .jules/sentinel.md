@@ -17,3 +17,8 @@
 **Vulnerability:** GraphRAGDockerManager used `sudo` to retry failed docker commands (due to permission errors) but failed to preserve the `NEO4J_PASSWORD` environment variable. This caused `docker-compose` to silently fall back to the default weak password ("password") even when the user had set a secure password.
 **Learning:** `sudo` strips environment variables by default for security, but this can lead to silent security downgrades when applications rely on environment variables for configuration/secrets.
 **Prevention:** When wrapping commands with `sudo`, explicitly preserve critical security environment variables using `--preserve-env=VAR` or `sudo -E` (if appropriate), or ensure the child process receives the configuration via another channel (e.g., config file).
+
+## 2025-12-21 - Command Execution Logging Leak
+**Vulnerability:** `CommandExecutor` logged all executed commands and their output for debugging purposes, but lacked the redaction logic present in `GHCommandLogger`. This could expose secrets (like API keys or tokens) passed as command arguments or returned in stdout/stderr.
+**Learning:** Centralized logging utilities must consistently apply security sanitization. Using different logging paths for different command types (e.g., specific `gh` logger vs generic executor) can lead to inconsistent security coverage.
+**Prevention:** Centralize redaction logic in a shared utility and apply it to all command execution logging points, regardless of the command type.
