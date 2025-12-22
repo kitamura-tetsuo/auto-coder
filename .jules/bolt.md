@@ -1,3 +1,3 @@
-## 2024-05-23 - [N+1 GitHub API Calls in PR Processing]
-**Learning:** Processing multiple PRs triggers individual API calls for each PR's CI status (`gh api .../check-runs`), causing significant latency and rate limit usage.
-**Action:** Implemented `preload_github_actions_status` to batch-fetch workflow runs for all PRs in a single `gh run list` call, populating the cache upfront.
+## 2024-05-24 - [N+1 GitHub API Calls in Issue Candidate Fetching]
+**Learning:** `AutomationEngine._get_candidates` was making 4+ API calls per issue (details, sub-issues, parent, linked PRs) because `get_open_issues` returned a list of objects requiring lazy loading or separate queries. This scaled linearly with the number of issues (N+1).
+**Action:** Implemented `GitHubClient.get_open_issues_json` using GraphQL to fetch all necessary issue metadata (including sub-issue status, parent linkage, and linked PRs) in a single batched query. Updated `AutomationEngine` to use this efficient method, reducing API calls from ~1+4N to ~1.

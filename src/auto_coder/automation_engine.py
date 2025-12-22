@@ -378,30 +378,55 @@ class AutomationEngine:
             should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2)
 
             if should_collect_issues:
-                # Collect issue candidates
-                issues = self.github.get_open_issues(repo_name)
-                for issue in issues:
-                    issue_data = self.github.get_issue_details(issue)
+                # Collect issue candidates using optimized JSON/GraphQL method
+                issues = self.github.get_open_issues_json(repo_name)
+
+                # Pre-calculate issues referenced by existing PR candidates
+                issues_referenced_by_prs = set()
+                for cand in candidates:
+                    if cand.type == "pr":
+                        issues_referenced_by_prs.update(cand.related_issues)
+
+                # Build map of parent -> open children for efficient sibling checking
+                parent_to_children = {}
+                for issue_data in issues:
+                    parent_num = issue_data.get("parent_issue_number")
+                    if parent_num:
+                        if parent_num not in parent_to_children:
+                            parent_to_children[parent_num] = []
+                        # Ensure issue number is int
+                        i_num = issue_data.get("number")
+                        if isinstance(i_num, int):
+                            parent_to_children[parent_num].append(i_num)
+
+                # Sort children lists
+                for p in parent_to_children:
+                    parent_to_children[p].sort()
+
+                for issue_data in issues:
                     labels = issue_data.get("labels", []) or []
 
                     # Filter out issues created within the last 10 minutes
                     created_at_str = issue_data.get("created_at")
                     if created_at_str:
-                        # Parse the timestamp string
-                        # Example: "2024-07-15T12:34:56Z"
-                        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                        try:
+                            # Parse the timestamp string
+                            # Example: "2024-07-15T12:34:56Z"
+                            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
 
-                        # Ensure it's timezone-aware (UTC)
-                        if created_at.tzinfo is None:
-                            created_at = created_at.replace(tzinfo=timezone.utc)
+                            # Ensure it's timezone-aware (UTC)
+                            if created_at.tzinfo is None:
+                                created_at = created_at.replace(tzinfo=timezone.utc)
 
-                        # Get current time in UTC
-                        now_utc = datetime.now(timezone.utc)
+                            # Get current time in UTC
+                            now_utc = datetime.now(timezone.utc)
 
-                        # If created within the last 10 minutes, skip
-                        if now_utc - created_at < timedelta(minutes=10):
-                            logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 10 minutes ago")
-                            continue
+                            # If created within the last 10 minutes, skip
+                            if now_utc - created_at < timedelta(minutes=10):
+                                logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 10 minutes ago")
+                                continue
+                        except Exception as e:
+                            logger.warning(f"Error parsing date for issue #{issue_data.get('number')}: {e}")
 
                     # Skip if has sub-issues or linked PR
                     number = issue_data.get("number")
@@ -423,21 +448,29 @@ class AutomationEngine:
                             continue
 
                     # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
-                    if self.github.get_open_sub_issues(repo_name, number):
+                    # Use pre-fetched flag from GraphQL
+                    if issue_data.get("has_open_sub_issues"):
                         continue
 
                     # Check for elder sibling dependency: if this issue is a sub-issue,
                     # ensure no elder sibling (sub-issue with lower number) is still open
-                    parent_issue = self.github.get_parent_issue(repo_name, number)
-                    if parent_issue is not None:
-                        open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue)
+                    parent_issue_num = issue_data.get("parent_issue_number")
+                    if parent_issue_num is not None:
+                        # Use in-memory map instead of API calls
+                        siblings = parent_to_children.get(parent_issue_num, [])
                         # Filter to only sibling sub-issues (exclude current issue)
-                        elder_siblings = [s for s in open_sub_issues if s < number]
+                        elder_siblings = [s for s in siblings if s < number]
                         if elder_siblings:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    if self.github.has_linked_pr(repo_name, number):
+                    # Check if issue has linked PR
+                    # 1. Check GraphQL-reported linked PRs
+                    if issue_data.get("linked_pr_numbers"):
+                        continue
+
+                    # 2. Check if referenced by any current PR candidates
+                    if number in issues_referenced_by_prs:
                         continue
 
                     # Calculate priority
