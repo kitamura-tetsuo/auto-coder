@@ -650,12 +650,17 @@ def build_backend_manager_from_config(
     config = get_llm_config()
 
     # Get active backends from configuration, filtered by CLI backends if provided
+    # Get active backends from configuration, filtered by CLI backends if provided
     all_configured_backends = config.get_active_backends()
     if cli_backends:
-        # Filter to only CLI-specified backends that are also enabled in config
-        selected_backends = [backend for backend in cli_backends if backend in all_configured_backends]
-        # Primary backend should be the first CLI-specified backend that's enabled
-        primary_backend = next((backend for backend in cli_backends if backend in all_configured_backends), config.default_backend)
+        # Filter to only CLI-specified backends that are also enabled in config OR exist in backends map
+        selected_backends = []
+        for backend in cli_backends:
+            if backend in all_configured_backends or config.get_backend_config(backend):
+                selected_backends.append(backend)
+        
+        # Primary backend should be the first CLI-specified valid backend
+        primary_backend = next((b for b in selected_backends), config.default_backend)
     else:
         # Use all configured backends
         selected_backends = all_configured_backends

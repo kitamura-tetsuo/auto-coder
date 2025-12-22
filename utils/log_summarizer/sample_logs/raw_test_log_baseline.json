@@ -1,0 +1,5 @@
+{
+  "source_file": "utils/log_summarizer/sample_logs/raw_test_log.json",
+  "method": "candidate_baseline",
+  "summary": "2023-10-27 10:00:05 ERROR ConnectionRefusedError: Unable to connect to database at 127.0.0.1:5432\n2023-10-27 10:00:05 ERROR Traceback (most recent call last):\n2023-10-27 10:00:10 CRITICAL Fatal Exception: Database connection failed 5 times in a row."
+}

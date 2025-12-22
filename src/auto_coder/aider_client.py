@@ -141,6 +141,9 @@ class AiderClient(LLMClientBase):
             # Explicitly pass model if configured and not the internal default
             if self.model_name and self.model_name != "aider":
                 cmd.extend(["--model", self.model_name])
+            
+            # Always run in non-interactive mode
+            cmd.append("--yes")
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
@@ -193,9 +196,12 @@ class AiderClient(LLMClientBase):
             if self.openrouter_base_url:
                 env["OPENROUTER_BASE_URL"] = self.openrouter_base_url
 
-            # Ensure Aider doesn't try to open a GUI or browser
+            # Ensure Aider doesn't try to open a GUI or browser or check for updates
             env["AIDER_GUI"] = "false"
             env["AIDER_BROWSER"] = "false"
+            env["AIDER_CHECK_UPDATE"] = "false"
+            env["AIDER_ANALYTICS"] = "false"
+            env["AIDER_NO_STREAM"] = "true"  # Ensure no streaming characters that might confuse parsing
 
             result = CommandExecutor.run_command(
                 cmd,
