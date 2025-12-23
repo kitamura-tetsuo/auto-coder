@@ -3,6 +3,8 @@ UI helper functions for the CLI.
 """
 
 import os
+import sys
+import time
 from typing import Any, Dict
 
 import click
@@ -60,3 +62,63 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
         click.echo(f"{key_display} : {val_display}")
 
     click.echo("")  # Add spacing after summary
+
+
+def sleep_with_countdown(seconds: int, message: str = "Sleeping") -> None:
+    """
+    Sleeps for a specified number of seconds, displaying a countdown.
+
+    Args:
+        seconds: Number of seconds to sleep.
+        message: Message to display before the countdown.
+    """
+    if seconds <= 0:
+        return
+
+    # Check for NO_COLOR or non-interactive terminal
+    no_color = "NO_COLOR" in os.environ
+    # We use sys.stdout.isatty() to check if we are in an interactive terminal
+    is_tty = sys.stdout.isatty()
+
+    if not is_tty:
+        # Fallback for non-interactive environments
+        time.sleep(seconds)
+        return
+
+    try:
+        # Save cursor
+        sys.stdout.write("\0337")
+
+        for remaining in range(seconds, 0, -1):
+            # Calculate minutes and seconds
+            minutes, secs = divmod(remaining, 60)
+
+            # Create time string
+            if minutes > 0:
+                time_str = f"{minutes}m {secs:02d}s"
+            else:
+                time_str = f"{secs}s"
+
+            # Create countdown string with color
+            if not no_color:
+                # Use cyan for the message and yellow for the time
+                msg_display = click.style(f"⏳ {message}", fg="cyan")
+                time_display = click.style(time_str, fg="yellow", bold=True)
+                countdown_str = f"\r{msg_display}: {time_display}   "
+            else:
+                countdown_str = f"\r{message}: {time_str}   "
+
+            sys.stdout.write(countdown_str)
+            sys.stdout.flush()
+            time.sleep(1)
+
+        # Clear the line after countdown is done
+        sys.stdout.write("\r\033[K")  # Return to start and clear line
+        sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        # Restore cursor and re-raise
+        sys.stdout.write("\0338")
+        sys.stdout.write("\033[K")
+        sys.stdout.flush()
+        raise

@@ -23,7 +23,7 @@ class StopLoop(Exception):
 @patch("src.auto_coder.cli_commands_main.get_llm_config")
 @patch("src.auto_coder.cli_commands_main.GitHubClient")
 @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-@patch("time.sleep")
+@patch("src.auto_coder.cli_commands_main.sleep_with_countdown")
 @patch("src.auto_coder.llm_backend_config.get_process_issues_empty_sleep_time_from_config")
 @patch("src.auto_coder.llm_backend_config.get_process_issues_sleep_time_from_config")
 @patch("src.auto_coder.cli_commands_main.get_current_branch")
@@ -98,6 +98,6 @@ def test_process_issues_sleep_logic(
 
     # Check correct sleep time was used
     if expected_sleep_type == "short":
-        mock_sleep.assert_called_with(SHORT_SLEEP)
+        mock_sleep.assert_called_with(SHORT_SLEEP, "Checking again in")
     else:
-        mock_sleep.assert_called_with(EMPTY_SLEEP)
+        mock_sleep.assert_called_with(EMPTY_SLEEP, "No open items. Checking again in")

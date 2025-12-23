@@ -10,7 +10,7 @@ from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
-from .cli_ui import print_configuration_summary
+from .cli_ui import print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .llm_backend_config import get_llm_config
@@ -339,8 +339,6 @@ def process_issues(
     # Run automation
     gemini_config = config.get_backend_config("gemini")
 
-    import time
-
     from .llm_backend_config import get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
 
     while True:
@@ -361,11 +359,11 @@ def process_issues(
         if not open_issues_exist and not open_prs_exist:
             sleep_time = get_process_issues_empty_sleep_time_from_config()
             logger.info(f"No open issues or PRs found. Sleeping for extended time: {sleep_time} seconds...")
+            sleep_with_countdown(sleep_time, "No open items. Checking again in")
         else:
             sleep_time = get_process_issues_sleep_time_from_config()
             logger.info(f"Processed {processed_issues} issues and {processed_prs} PRs (Open items detected). Sleeping for {sleep_time} seconds...")
-
-        time.sleep(sleep_time)
+            sleep_with_countdown(sleep_time, "Checking again in")
 
     # Close MCP session if present
     try:
