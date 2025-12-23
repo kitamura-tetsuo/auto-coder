@@ -379,9 +379,8 @@ class AutomationEngine:
 
             if should_collect_issues:
                 # Collect issue candidates
-                issues = self.github.get_open_issues(repo_name)
-                for issue in issues:
-                    issue_data = self.github.get_issue_details(issue)
+                issues_data_list = self.github.get_open_issues_json(repo_name)
+                for issue_data in issues_data_list:
                     labels = issue_data.get("labels", []) or []
 
                     # Filter out issues created within the last 10 minutes
@@ -423,21 +422,30 @@ class AutomationEngine:
                             continue
 
                     # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
-                    if self.github.get_open_sub_issues(repo_name, number):
+                    # Use enhanced field from GraphQL
+                    if issue_data.get("has_open_sub_issues"):
                         continue
 
                     # Check for elder sibling dependency: if this issue is a sub-issue,
                     # ensure no elder sibling (sub-issue with lower number) is still open
-                    parent_issue = self.github.get_parent_issue(repo_name, number)
-                    if parent_issue is not None:
-                        open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue)
+                    parent_issue_number = issue_data.get("parent_issue_number")
+                    if parent_issue_number is not None:
+                        # We still need to check open sub-issues of parent, but the cache should be populated now
+                        # by get_open_issues_json for the parent (since parent is also an issue)
+                        # NOTE: This assumes the parent issue is also OPEN and fetched in the same batch.
+                        # If the parent is CLOSED, get_open_sub_issues will make an API call (cached).
+                        # If the parent is OPEN, its sub-issue list is in cache.
+                        open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
                         # Filter to only sibling sub-issues (exclude current issue)
                         elder_siblings = [s for s in open_sub_issues if s < number]
                         if elder_siblings:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    if self.github.has_linked_pr(repo_name, number):
+                    # Use enhanced field from GraphQL for linked PRs
+                    linked_pr_numbers = issue_data.get("linked_pr_numbers")
+                    if linked_pr_numbers:
+                        logger.info(f"Skipping issue #{number} - linked PRs found: {linked_pr_numbers}")
                         continue
 
                     # Calculate priority

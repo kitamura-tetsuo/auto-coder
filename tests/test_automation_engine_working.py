@@ -41,7 +41,7 @@ class TestAutomationEngine:
 
             # Setup - Mock GitHub client methods needed for operation
             mock_github_client.get_open_pull_requests.return_value = []
-            mock_github_client.get_open_issues.return_value = []
+            mock_github_client.get_open_issues_json.return_value = []
             mock_github_client.disable_labels = False
 
             config = AutomationConfig()
@@ -87,7 +87,17 @@ class TestAutomationEngine:
 
             # Setup - Create one issue candidate so processing path is exercised
             mock_github_client.get_open_pull_requests.return_value = []
-            mock_github_client.get_open_issues.return_value = ["dummy"]
+            mock_github_client.get_open_issues_json.return_value = [{
+                "number": 123,
+                "title": "Dummy issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            }]
             mock_github_client.get_issue_details.return_value = sample_issue_data
             mock_github_client.get_open_sub_issues.return_value = []
             mock_github_client.has_linked_pr.return_value = False

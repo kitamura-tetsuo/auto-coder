@@ -30,7 +30,7 @@ class TestUnmergeablePRPriority:
             Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Mergeable PR (passing)
         ]
 
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # Mock PR details
         pr_data = {
@@ -114,7 +114,7 @@ class TestUnmergeablePRPriority:
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Regular unmergeable PR
         ]
 
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # Mock PR details
         pr_data = {
@@ -206,9 +206,29 @@ class TestUnmergeablePRPriority:
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Regular unmergeable
         ]
 
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-07T00:00:00Z"),  # Regular issue
-            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue
+        mock_github_client.get_open_issues_json.return_value = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-07T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": ["urgent"],
+                "state": "open",
+                "created_at": "2024-01-06T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
         ]
 
         # Mock PR details
@@ -333,7 +353,7 @@ class TestPriorityBackwardCompatibility:
             Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Unmergeable PR
         ]
 
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # Mock PR details
         pr_data = {
@@ -410,7 +430,7 @@ class TestPriorityBackwardCompatibility:
             Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Urgent unmergeable
         ]
 
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # Mock PR details
         pr_data = {
@@ -489,7 +509,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_open_pull_requests.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
         ]
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # PR details: unmergeable but checks pass
         pr_data = {
@@ -540,7 +560,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_open_pull_requests.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
         ]
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # PR details: unmergeable AND checks fail
         pr_data = {
@@ -591,7 +611,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_open_pull_requests.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
         ]
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # PR details: mergeable but checks fail
         pr_data = {
@@ -642,7 +662,7 @@ class TestPriorityEdgeCases:
         mock_github_client.get_open_pull_requests.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
         ]
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # PR details: mergeable and checks pass
         pr_data = {
@@ -702,7 +722,7 @@ class TestPriorityIntegration:
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Regular issue
         ]
 
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # Mock PR details
         pr_data = {
@@ -803,7 +823,7 @@ class TestPriorityIntegration:
             }
 
         mock_github_client.get_open_pull_requests.return_value = prs
-        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_open_issues_json.return_value = []
 
         # Mock bulk fetch via get_open_prs_json
         mock_github_client.get_open_prs_json.return_value = list(pr_data_map.values())

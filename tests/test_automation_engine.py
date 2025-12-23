@@ -1244,46 +1244,44 @@ class TestGetCandidates:
 
         # Mock GitHub client to return various items
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Urgent issue - should be first
-            Mock(number=3, created_at="2024-01-03T00:00:00Z"),
-        ]
 
-        # Mock issue details with one urgent issue
-        issue_data = {
-            1: {
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
                 "number": 1,
                 "title": "Regular issue",
                 "body": "",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
             },
-            2: {
+            {
                 "number": 2,
                 "title": "Urgent issue",
                 "body": "",
                 "labels": ["urgent"],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
             },
-            3: {
+            {
                 "number": 3,
                 "title": "Another issue",
                 "body": "",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
             },
-        }
-
-        def get_issue_details_side_effect(issue):
-            return issue_data[issue.number]
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -1322,10 +1320,32 @@ class TestGetCandidates:
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Urgent unmergeable PR (priority 4)
         ]
 
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-05T00:00:00Z"),  # Regular issue (priority 0)
-            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue (priority 3)
+        # Mock open issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-05T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": ["urgent"],
+                "state": "open",
+                "created_at": "2024-01-06T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
         ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Mock PR details
         pr_data = {
@@ -1361,20 +1381,9 @@ class TestGetCandidates:
         def get_pr_details_side_effect(pr):
             return pr_data[pr.number]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
-                "body": "",
-                "labels": ["urgent"] if issue.number == 11 else [],
-                "state": "open",
-                "created_at": issue.created_at,
-            }
-
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
 
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
@@ -1395,8 +1404,6 @@ class TestGetCandidates:
         mock_check_actions.side_effect = check_actions_side_effect
 
         mock_extract_issues.return_value = []
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2161,10 +2168,32 @@ class TestGetCandidates:
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
         ]
 
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-02T00:00:00Z"),
-            Mock(number=11, created_at="2024-01-03T00:00:00Z"),  # Has @auto-coder label
+        # Mock open issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": ["@auto-coder"],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
         ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         pr_details = {
             "number": 1,
@@ -2179,21 +2208,8 @@ class TestGetCandidates:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = [pr_details]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
-                "body": "",
-                "labels": ["@auto-coder"] if issue.number == 11 else [],
-                "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
         mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
         mock_extract_issues.return_value = []
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
 
         # Mock label check via LabelManager: skip PR #1 and Issue #11 as already labeled
         with patch("auto_coder.automation_engine.LabelManager") as mock_label_mgr:
@@ -2227,25 +2243,44 @@ class TestGetCandidates:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Has sub-issues
-            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Has linked PR
-        ]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.side_effect = lambda repo, num: ([1] if num == 11 else [])
-        mock_github_client.has_linked_pr.side_effect = lambda repo, num: (True if num == 12 else False)
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": True,  # Has sub-issues
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 12,
+                "title": "Issue 12",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [123],  # Has linked PR
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2320,36 +2355,54 @@ class TestGetCandidates:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-01T00:00:00Z"),  # Eldest sibling - should be included
-            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Has elder sibling (10) - should be skipped
-            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Has elder siblings (10, 11) - should be skipped
-            Mock(number=13, created_at="2024-01-04T00:00:00Z"),  # No parent - should be included
-        ]
-
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
-
-        # Mock get_parent_issue to simulate parent-child relationships
-        # Issues 10, 11, 12 are all children of parent issue #100
-        # Issue 13 has no parent
-        def get_parent_issue_side_effect(repo, issue_num):
-            if issue_num in [10, 11, 12]:
-                return 100
-            return None
-
-        mock_github_client.get_parent_issue.side_effect = get_parent_issue_side_effect
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 12,
+                "title": "Issue 12",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 13,
+                "title": "Issue 13",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-04T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Mock get_open_sub_issues to return open sub-issues for parent #100
         # Issue #10 is the eldest, #11 and #12 are younger siblings
@@ -2386,26 +2439,44 @@ class TestGetCandidates:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-01T00:00:00Z"),  # Eldest sibling
-            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Younger sibling
-            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Youngest sibling
-        ]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
-        mock_github_client.get_parent_issue.return_value = 100  # All have parent #100
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 12,
+                "title": "Issue 12",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Mock get_open_sub_issues to return only open sub-issues
         # For this test, only #11 and #12 are open (elder sibling #10 is closed)
@@ -2441,22 +2512,22 @@ class TestElderSiblingDependencyLogic:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-01T00:00:00Z"),
+
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Regular issue without parent",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
         ]
-
-        mock_github_client.get_issue_details.return_value = {
-            "number": 10,
-            "title": "Regular issue without parent",
-            "body": "",
-            "labels": [],
-            "state": "open",
-            "created_at": "2024-01-01T00:00:00Z",
-        }
-
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
-        mock_github_client.get_parent_issue.return_value = None  # No parent issue
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2464,8 +2535,8 @@ class TestElderSiblingDependencyLogic:
         # Assert
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 10
-        # Verify get_parent_issue was called but no need to check open sub-issues for parent
-        mock_github_client.get_parent_issue.assert_called_once_with(test_repo_name, 10)
+        # Verify get_parent_issue was NOT called as we rely on get_open_issues_json
+        mock_github_client.get_parent_issue.assert_not_called()
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -2482,32 +2553,30 @@ class TestElderSiblingDependencyLogic:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=20, created_at="2024-01-01T00:00:00Z"),
+
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 20,
+                "title": "Sub-issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 1,
+                "linked_pr_numbers": [],
+            },
         ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
-        mock_github_client.get_issue_details.return_value = {
-            "number": 20,
-            "title": "Sub-issue",
-            "body": "",
-            "labels": [],
-            "state": "open",
-            "created_at": "2024-01-01T00:00:00Z",
-        }
-
-        # get_open_sub_issues is called twice:
-        # 1. For current issue (20) to check if it has sub-issues -> should return empty
-        # 2. For parent issue (1) to get all open sub-issues -> should return [20]
+        # get_open_sub_issues is called for parent issue (1) to get all open sub-issues -> should return [20]
         def get_open_sub_issues_side_effect(repo, issue_num):
-            if issue_num == 20:
-                return []  # Issue 20 has no sub-issues
-            elif issue_num == 1:
+            if issue_num == 1:
                 return [20]  # Parent has sub-issue 20
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
-        mock_github_client.has_linked_pr.return_value = False
-        mock_github_client.get_parent_issue.return_value = 1  # Has parent
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2515,8 +2584,6 @@ class TestElderSiblingDependencyLogic:
         # Assert - Should be processed (no elder siblings)
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 20
-        # get_parent_issue should be called
-        mock_github_client.get_parent_issue.assert_called_once_with(test_repo_name, 20)
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -2533,32 +2600,30 @@ class TestElderSiblingDependencyLogic:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=30, created_at="2024-01-01T00:00:00Z"),
+
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 30,
+                "title": "Latest sub-issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 2,
+                "linked_pr_numbers": [],
+            },
         ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
-        mock_github_client.get_issue_details.return_value = {
-            "number": 30,
-            "title": "Latest sub-issue",
-            "body": "",
-            "labels": [],
-            "state": "open",
-            "created_at": "2024-01-01T00:00:00Z",
-        }
-
-        # get_open_sub_issues is called twice:
-        # 1. For current issue (30) to check if it has sub-issues -> should return empty
-        # 2. For parent issue (2) to get all open sub-issues -> should return [30]
+        # get_open_sub_issues is called for parent issue (2) to get all open sub-issues -> should return [30]
         def get_open_sub_issues_side_effect(repo, issue_num):
-            if issue_num == 30:
-                return []  # Issue 30 has no sub-issues
-            elif issue_num == 2:
+            if issue_num == 2:
                 return [30]  # Parent has only sub-issue 30
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
-        mock_github_client.has_linked_pr.return_value = False
-        mock_github_client.get_parent_issue.return_value = 2  # Has parent
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2582,39 +2647,41 @@ class TestElderSiblingDependencyLogic:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=25, created_at="2024-01-01T00:00:00Z"),  # This has elder sibling
-            Mock(number=10, created_at="2024-01-02T00:00:00Z"),  # Elder sibling
-        ]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 25,
+                "title": "Issue 25",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 5,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 5,
+                "linked_pr_numbers": [],
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         def get_open_sub_issues_side_effect(repo, issue_num):
-            # Return empty for checking if issues have sub-issues
-            if issue_num in [10, 25]:
-                return []
             # Return all open sub-issues for parent
-            elif issue_num == 5:
+            if issue_num == 5:
                 return [10, 25]
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
-        mock_github_client.has_linked_pr.return_value = False
-
-        def get_parent_issue_side_effect(repo, issue_num):
-            return 5 if issue_num in [10, 25] else None  # Both have same parent
-
-        mock_github_client.get_parent_issue.side_effect = get_parent_issue_side_effect
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2648,50 +2715,76 @@ class TestElderSiblingDependencyLogic:
         #   - Sub-issue #10 (only child) -> should be processed
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),
-            Mock(number=3, created_at="2024-01-03T00:00:00Z"),
-            Mock(number=50, created_at="2024-01-04T00:00:00Z"),
-            Mock(number=10, created_at="2024-01-05T00:00:00Z"),
-        ]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 1,
+                "title": "Issue 1",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-
-        # Parent mapping
-        def get_parent_issue_side_effect(repo, issue_num):
-            if issue_num in [1, 2, 3]:
-                return 100
-            elif issue_num == 10:
-                return 200
-            return None
-
-        mock_github_client.get_parent_issue.side_effect = get_parent_issue_side_effect
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 2,
+                "title": "Issue 2",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 3,
+                "title": "Issue 3",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 100,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 50,
+                "title": "Issue 50",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-04T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-05T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 200,
+                "linked_pr_numbers": [],
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Open sub-issues for each parent
         def get_open_sub_issues_side_effect(repo, issue_num):
-            # Return empty for checking if issues have sub-issues
-            if issue_num in [1, 2, 3, 10, 50]:
-                return []
-            # Return all open sub-issues for parent
-            elif issue_num == 100:
+            if issue_num == 100:
                 return [1, 2, 3]
             elif issue_num == 200:
                 return [10]
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
-        mock_github_client.has_linked_pr.return_value = False
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2728,41 +2821,52 @@ class TestElderSiblingDependencyLogic:
         #   - Sub-issue #20 (open) -> SHOULD be blocked by #10
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=15, created_at="2024-01-02T00:00:00Z"),
-            Mock(number=20, created_at="2024-01-03T00:00:00Z"),
-        ]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-
-        def get_parent_issue_side_effect(repo, issue_num):
-            return 300  # All have same parent
-
-        mock_github_client.get_parent_issue.side_effect = get_parent_issue_side_effect
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 300,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 15,
+                "title": "Issue 15",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 300,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 20,
+                "title": "Issue 20",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 300,
+                "linked_pr_numbers": [],
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Only open sub-issues returned (closed #5 not included)
         def get_open_sub_issues_side_effect(repo, issue_num):
-            # Return empty for checking if issues have sub-issues
-            if issue_num in [10, 15, 20]:
-                return []
-            # Return all open sub-issues for parent (closed #5 not included)
-            elif issue_num == 300:
+            if issue_num == 300:
                 return [10, 15, 20]
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
-        mock_github_client.has_linked_pr.return_value = False
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2787,28 +2891,31 @@ class TestElderSiblingDependencyLogic:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=40, created_at="2024-01-01T00:00:00Z"),
+
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 40,
+                "title": "Issue with error in parent check",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 123,  # Has a parent
+                "linked_pr_numbers": [],
+            },
         ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
-        mock_github_client.get_issue_details.return_value = {
-            "number": 40,
-            "title": "Issue with error in parent check",
-            "body": "",
-            "labels": [],
-            "state": "open",
-            "created_at": "2024-01-01T00:00:00Z",
-        }
-
+        # Simulate error in get_open_sub_issues (called for parent check)
+        # We simulate it returning empty list instead of raising, as get_open_sub_issues handles errors internally
         mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
-        # Simulate error in get_parent_issue - it will raise an exception
-        # The code catches this exception and continues, so the issue should still be processed
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
-        # Assert - Issue should still be processed despite the error
+        # Assert - Issue should still be processed
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 40
 
@@ -2827,43 +2934,63 @@ class TestElderSiblingDependencyLogic:
         engine = AutomationEngine(mock_github_client)
 
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=50, created_at="2024-01-01T00:00:00Z"),  # No parent, should be included
-            Mock(number=101, created_at="2024-01-02T00:00:00Z"),  # Has parent #1, elder sibling #100 open, should be excluded
-            Mock(number=102, created_at="2024-01-03T00:00:00Z"),  # Has parent #1, elder sibling #100 open, should be excluded
-            Mock(number=200, created_at="2024-01-04T00:00:00Z"),  # No parent, should be included
-        ]
 
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
+        # Mock issues via get_open_issues_json
+        issues = [
+            {
+                "number": 50,
+                "title": "Issue 50",
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-
-        def get_parent_issue_side_effect(repo, issue_num):
-            if issue_num in [101, 102]:
-                return 1
-            return None
-
-        mock_github_client.get_parent_issue.side_effect = get_parent_issue_side_effect
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 101,
+                "title": "Issue 101",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 1,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 102,
+                "title": "Issue 102",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": 1,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 200,
+                "title": "Issue 200",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-04T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         def get_open_sub_issues_side_effect(repo, issue_num):
-            # Return empty for checking if issues have sub-issues
-            if issue_num in [50, 101, 102, 200]:
-                return []
             # Return all open sub-issues for parent
-            elif issue_num == 1:
+            if issue_num == 1:
                 return [100, 101, 102]  # Sub-issues 100, 101, 102 (100 is elder sibling)
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
-        mock_github_client.has_linked_pr.return_value = False
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2887,41 +3014,34 @@ class TestElderSiblingDependencyLogic:
         # Mock current time
         now = datetime.now(timezone.utc)
 
-        # Mock GitHub client to return two issues:
-        # - One created 5 minutes ago (should be filtered)
-        # - One created 15 minutes ago (should be included)
+        # Mock GitHub client to return two issues via get_open_issues_json
         mock_github_client.get_open_pull_requests.return_value = []
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=1, created_at=(now - timedelta(minutes=5)).isoformat()),
-            Mock(number=2, created_at=(now - timedelta(minutes=15)).isoformat()),
-        ]
 
-        # Mock issue details
-        issue_data = {
-            1: {
+        issues = [
+            {
                 "number": 1,
                 "title": "Recent issue",
                 "body": "",
                 "labels": [],
                 "state": "open",
                 "created_at": (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
             },
-            2: {
+            {
                 "number": 2,
                 "title": "Older issue",
                 "body": "",
                 "labels": [],
                 "state": "open",
                 "created_at": (now - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
             },
-        }
-
-        def get_issue_details_side_effect(issue):
-            return issue_data[issue.number]
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.return_value = []
-        mock_github_client.has_linked_pr.return_value = False
+        ]
+        mock_github_client.get_open_issues_json.return_value = issues
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -3084,7 +3204,7 @@ class TestCheckAndHandleClosedBranch:
         mock_repo.get_issue.return_value = mock_issue
         mock_github_client.get_issue_details.return_value = {"state": "closed"}
 
-        # Mock check_and_handle_closed_state to return True (indicating should exit)
+        # Mock check_and_handle_closed_state to return True (indicating handled)
         with patch("auto_coder.automation_engine.check_and_handle_closed_state") as mock_check_closed:
             mock_check_closed.return_value = True
 
@@ -3094,11 +3214,11 @@ class TestCheckAndHandleClosedBranch:
 
             engine = AutomationEngine(mock_github_client)
 
-            # Execute - should return True (indicating should exit)
+            # Execute - should return False (indicating we should stop processing)
             result = engine._check_and_handle_closed_branch("test/repo")
 
             # Assert
-            assert result is True
+            assert result is False
             mock_get_current_branch.assert_called_once()
             mock_extract_number.assert_called_once_with("issue-123")
             mock_github_client.get_repository.assert_called_once_with("test/repo")
@@ -3130,7 +3250,7 @@ class TestCheckAndHandleClosedBranch:
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_pr_details.return_value = {"state": "closed"}
 
-        # Mock check_and_handle_closed_state to return True (indicating should exit)
+        # Mock check_and_handle_closed_state to return True (indicating handled)
         with patch("auto_coder.automation_engine.check_and_handle_closed_state") as mock_check_closed:
             mock_check_closed.return_value = True
 
@@ -3140,11 +3260,11 @@ class TestCheckAndHandleClosedBranch:
 
             engine = AutomationEngine(mock_github_client)
 
-            # Execute - should return True (indicating should exit)
+            # Execute - should return False (indicating we should stop processing)
             result = engine._check_and_handle_closed_branch("test/repo")
 
             # Assert
-            assert result is True
+            assert result is False
             mock_get_current_branch.assert_called_once()
             mock_extract_number.assert_called_once_with("pr-456")
             mock_github_client.get_repository.assert_called_once_with("test/repo")

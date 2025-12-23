@@ -432,6 +432,134 @@ class GitHubClient:
             logger.error(f"Failed to get open PRs via GraphQL from {repo_name}: {e}")
             raise
 
+    def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get open issues from repository using GraphQL API.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            limit: Maximum number of issues to fetch per page (default: 100)
+
+        Returns:
+            List of issue data dictionaries.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            query = """
+            query($owner: String!, $repo: String!, $cursor: String, $limit: Int) {
+              repository(owner: $owner, name: $repo) {
+                issues(states: OPEN, first: $limit, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+                  nodes {
+                    number
+                    title
+                    body
+                    state
+                    url
+                    createdAt
+                    updatedAt
+                    author { login }
+                    assignees(first: 10) { nodes { login } }
+                    labels(first: 20) { nodes { name } }
+                    comments(first: 0) { totalCount }
+
+                    subIssues(first: 100, states: OPEN) {
+                        nodes { number }
+                        totalCount
+                    }
+                    parent {
+                        ... on Issue {
+                            number
+                        }
+                    }
+                    timelineItems(itemTypes: CONNECTED_EVENT, first: 10) {
+                        nodes {
+                            ... on ConnectedEvent {
+                                source {
+                                    ... on PullRequest {
+                                        number
+                                        state
+                                    }
+                                }
+                            }
+                        }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+            """
+
+            all_issues: List[Dict[str, Any]] = []
+            cursor: Optional[str] = None
+
+            # Header for sub-issues support
+            extra_headers = {"GraphQL-Features": "sub_issues"}
+
+            while True:
+                variables = {"owner": owner, "repo": repo, "limit": limit, "cursor": cursor}
+                data = self.graphql_query(query, variables, extra_headers=extra_headers)
+
+                issues_data = data.get("data", {}).get("repository", {}).get("issues", {})
+                nodes = issues_data.get("nodes", [])
+                page_info = issues_data.get("pageInfo", {})
+
+                for node in nodes:
+                    # Process sub-issues for cache
+                    sub_issue_nodes = node.get("subIssues", {}).get("nodes", [])
+                    open_sub_issue_numbers = [n["number"] for n in sub_issue_nodes if n]
+
+                    # Populate sub-issue cache
+                    # The cache key is (repo_name, issue_number)
+                    self._sub_issue_cache[(repo_name, node["number"])] = open_sub_issue_numbers
+
+                    # Process linked PRs
+                    linked_pr_numbers = []
+                    timeline_items = node.get("timelineItems", {}).get("nodes", [])
+                    for item in timeline_items:
+                        source = item.get("source", {})
+                        if source and source.get("state") == "OPEN":
+                            # It's an open PR
+                            if "number" in source:
+                                linked_pr_numbers.append(source["number"])
+
+                    # Deduplicate linked PR numbers
+                    linked_pr_numbers = list(set(linked_pr_numbers))
+
+                    issue_data = {
+                        "number": node.get("number"),
+                        "title": node.get("title"),
+                        "body": node.get("body") or "",
+                        "state": node.get("state", "").lower(),
+                        "url": node.get("url"),
+                        "created_at": node.get("createdAt"),
+                        "updated_at": node.get("updatedAt"),
+                        "author": node.get("author", {}).get("login") if node.get("author") else None,
+                        "assignees": [a.get("login") for a in node.get("assignees", {}).get("nodes", []) if a],
+                        "labels": [lbl.get("name") for lbl in node.get("labels", {}).get("nodes", []) if lbl],
+                        "comments_count": node.get("comments", {}).get("totalCount", 0),
+                        # Enhanced fields
+                        "has_open_sub_issues": bool(open_sub_issue_numbers),
+                        "parent_issue_number": node.get("parent", {}).get("number") if node.get("parent") else None,
+                        "linked_pr_numbers": linked_pr_numbers,
+                    }
+                    all_issues.append(issue_data)
+
+                if not page_info.get("hasNextPage"):
+                    break
+
+                cursor = page_info.get("endCursor")
+
+            logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via GraphQL")
+            return all_issues
+
+        except Exception as e:
+            logger.error(f"Failed to get open issues via GraphQL from {repo_name}: {e}")
+            raise
+
     def get_issue_details(self, issue: Issue.Issue) -> Dict[str, Any]:
         """Extract detailed information from an issue."""
         return {
