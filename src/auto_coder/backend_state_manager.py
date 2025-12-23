@@ -90,11 +90,10 @@ class BackendStateManager:
 
                 # Write state to temporary file first for atomic operation
                 temp_file_path = state_file_path.with_suffix(".tmp")
-                with open(temp_file_path, "w") as f:
-                    try:
-                        os.chmod(temp_file_path, 0o600)
-                    except OSError:
-                        pass  # Ignore permission errors on systems that don't support it
+
+                # Use os.open to ensure file is created with 600 permissions atomically
+                fd = os.open(str(temp_file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(state_data, f, indent=2)
 
                 # Atomically replace the old file with the new one

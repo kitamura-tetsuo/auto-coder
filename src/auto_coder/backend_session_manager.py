@@ -68,11 +68,9 @@ class BackendSessionManager:
                 payload = asdict(state)
                 temp_file_path = state_file_path.with_suffix(".tmp")
 
-                with open(temp_file_path, "w", encoding="utf-8") as f:
-                    try:
-                        os.chmod(temp_file_path, 0o600)
-                    except OSError:
-                        pass  # Ignore permission errors on systems that don't support it
+                # Use os.open to ensure file is created with 600 permissions atomically
+                fd = os.open(str(temp_file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
 
                 temp_file_path.replace(state_file_path)
