@@ -31,6 +31,7 @@ from .gh_logger import get_gh_logger
 from .git_branch import branch_context, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
+from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -205,7 +206,7 @@ def process_pull_request(
         related_issues = []
         if pr_body:
             # Extract linked issues from PR body
-            related_issues = _extract_linked_issues_from_pr_body(pr_body)
+            related_issues = extract_linked_issues_from_pr_body(pr_body)
 
         with ProgressStage(
             "PR",
@@ -614,7 +615,7 @@ def _trigger_fallback_for_pr_failure(
             logger.debug(f"No PR body found for PR #{pr_data['number']}, cannot extract linked issues")
             return
 
-        linked_issues = _extract_linked_issues_from_pr_body(pr_body)
+        linked_issues = extract_linked_issues_from_pr_body(pr_body)
 
         if not linked_issues:
             logger.debug(f"No linked issues found in PR #{pr_data['number']} body")
@@ -658,11 +659,16 @@ def _apply_pr_actions_directly(
 
         # Create action-oriented prompt (no comments)
         with ProgressStage("Creating prompt"):
-            action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
+            # Create analysis prompt
+            try:
+                prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config, github_client)
+            except Exception:
+                # Fallback for old signature if needed (though we are updating it)
+                prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
             logger.debug(
                 "Prepared PR action prompt for #%s (preview: %s)",
                 pr_data.get("number", "unknown"),
-                action_prompt[:160].replace("\n", " "),
+                prompt[:160].replace("\n", " "),
             )
 
         # Use LLM CLI to analyze and take actions
@@ -670,7 +676,7 @@ def _apply_pr_actions_directly(
 
         # Call LLM client
         with ProgressStage("Running LLM"):
-            response = get_llm_backend_manager()._run_llm_cli(action_prompt)
+            response = get_llm_backend_manager()._run_llm_cli(prompt)
 
         # Process the response
         if response and len(response.strip()) > 0:
@@ -778,12 +784,17 @@ def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> st
         return "Could not retrieve PR diff"
 
 
-def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig) -> str:
+def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig, github_client: Optional[Any] = None) -> str:
     """Create a PR prompt that prioritizes direct code changes over comments with label-based selection."""
+    pr_body = pr_data.get("body") or ""
+
+    # Extract linked issues context
+    linked_issues_context = get_linked_issues_context(github_client, repo_name, pr_body)
+
     # Get commit log since branch creation
     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
-    body_text = (pr_data.get("body") or "")[: config.MAX_PROMPT_SIZE]
+    body_text = pr_body[: config.MAX_PROMPT_SIZE]
     # Extract PR labels for label-based prompt selection
     pr_labels_list = pr_data.get("labels", []) or []
 
@@ -800,6 +811,7 @@ def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff:
         diff_limit=config.MAX_PR_DIFF_SIZE,
         pr_diff=pr_diff,
         commit_log=commit_log or "(No commit history)",
+        linked_issues_context=linked_issues_context,
         labels=pr_labels_list,
         label_prompt_mappings=config.pr_label_prompt_mappings,
         label_priorities=config.label_priorities,
@@ -1275,42 +1287,6 @@ def _update_with_base_branch(
     return actions
 
 
-def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
-    """Extract issue numbers from PR body using GitHub's linking keywords.
-
-    Supports keywords: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved
-    Formats: #123, owner/repo#123
-
-    Args:
-        pr_body: PR description/body text
-
-    Returns:
-        List of issue numbers found in the PR body
-    """
-    if not pr_body:
-        return []
-
-    # GitHub's supported keywords for linking issues
-    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-
-    # Pattern to match: keyword #123 or keyword owner/repo#123
-    # We only extract the issue number, ignoring cross-repo references for now
-    pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
-
-    matches = re.finditer(pattern, pr_body, re.IGNORECASE)
-    issue_numbers = [int(m.group(1)) for m in matches]
-
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_issues = []
-    for num in issue_numbers:
-        if num not in seen:
-            seen.add(num)
-            unique_issues.append(num)
-
-    return unique_issues
-
-
 def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     """Extract Session ID from PR body by looking for session links.
 
@@ -1596,7 +1572,7 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         pr_body = pr_data.get("body", "")
 
         # Extract linked issues
-        linked_issues = _extract_linked_issues_from_pr_body(pr_body)
+        linked_issues = extract_linked_issues_from_pr_body(pr_body)
 
         if not linked_issues:
             logger.debug(f"No linked issues found in PR #{pr_number} body")
@@ -2217,6 +2193,7 @@ def _apply_github_actions_fix(
     config: AutomationConfig,
     github_logs: str,
     test_result: Optional[TestResult] = None,
+    github_client: Optional[Any] = None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
@@ -2253,6 +2230,9 @@ def _apply_github_actions_fix(
 
         logger.info(f"Extracted important errors from GitHub Actions logs for PR #{pr_number}")
 
+        # Extract linked issues context
+        linked_issues_context = get_linked_issues_context(github_client, repo_name, pr_data.get("body", ""))
+
         # Create prompt for GitHub Actions error fix (no commit/push by LLM)
         fix_prompt = render_prompt(
             "pr.github_actions_fix",
@@ -2261,6 +2241,7 @@ def _apply_github_actions_fix(
             pr_title=pr_data.get("title", "Unknown"),
             extracted_errors=extracted_errors,
             commit_log=commit_log or "(No commit history)",
+            linked_issues_context=linked_issues_context,
             # Structured additions (safe if None)
             structured_errors=(test_result.extraction_context if test_result else {}),
             framework_type=(test_result.framework_type if test_result else None),
@@ -2294,6 +2275,7 @@ def _apply_local_test_fix(
     test_result: Dict[str, Any],
     attempt_history: List[Dict[str, Any]],
     backend_manager: Optional[BackendManager] = None,
+    github_client: Optional[Any] = None,
 ) -> Tuple[List[str], str]:
     """Apply fix using local test failure logs.
 
@@ -2354,6 +2336,9 @@ def _apply_local_test_fix(
                     history_parts.append(f"Attempt {attempt_num}:\n" f"  LLM Output: {llm_output_truncated}\n" f"  Test Result: {test_errors_truncated}")
                 history_text = "\n\n".join(history_parts)
 
+            # Extract linked issues context
+            linked_issues_context = get_linked_issues_context(github_client, repo_name, pr_data.get("body", ""))
+
             # Create prompt for local test error fix
             fix_prompt = render_prompt(
                 "pr.local_test_fix",
@@ -2364,6 +2349,7 @@ def _apply_local_test_fix(
                 test_command=test_result.get("command", "pytest -q --maxfail=1"),
                 commit_log=commit_log or "(No commit history)",
                 attempt_history=history_text,
+                linked_issues_context=linked_issues_context,
             )
             logger.debug(
                 "Prepared local test fix prompt for PR #%s (preview: %s)",

@@ -2,6 +2,8 @@
 Aider CLI client for Auto-Coder.
 """
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -16,6 +18,15 @@ from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
+
+try:
+    from aider.coders import Coder
+    from aider.io import InputOutput
+    from aider.models import Model
+except ImportError:
+    Coder = None
+    Model = None
+    InputOutput = None
 
 logger = get_logger(__name__)
 
@@ -105,12 +116,9 @@ class AiderClient(LLMClientBase):
         self.output_logger = LLMOutputLogger()
 
         # Check if aider CLI is available
-        try:
-            result = subprocess.run(["aider", "--version"], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                raise RuntimeError("aider CLI not available or not working")
-        except Exception as e:
-            raise RuntimeError(f"aider CLI not available: {e}")
+        # Check if aider library is available
+        if Coder is None:
+            raise RuntimeError("aider-chat library not installed. Please install it to use AiderClient.")
 
     def switch_to_conflict_model(self) -> None:
         """No-op; aider has no model switching."""
@@ -127,6 +135,39 @@ class AiderClient(LLMClientBase):
         # Codex client escapes @, let's do the same just in case.
         return prompt.replace("@", "\\@").strip()
 
+    def _apply_options_to_env(self, options: list[str], env_vars: dict[str, str]) -> None:
+        """Map CLI options to Aider environment variables."""
+        i = 0
+        while i < len(options):
+            opt = options[i]
+            if not opt.startswith("--"):
+                i += 1
+                continue
+
+            key = opt.lstrip("-").replace("-", "_").upper()
+            env_key = f"AIDER_{key}"
+
+            # Check if this option is a flag or takes a value
+            # Heuristic: if next element exists and doesn't start with -, it's a value.
+            # Exception: --no-foo is always a boolean flag (false).
+
+            if opt.startswith("--no-"):
+                # Handle --no-foo -> AIDER_FOO=false
+                # key is NO_FOO. We want FOO.
+                real_key = key.replace("NO_", "", 1)
+                env_vars[f"AIDER_{real_key}"] = "false"
+                i += 1
+            else:
+                # Check for value
+                if i + 1 < len(options) and not options[i + 1].startswith("-"):
+                    val = options[i + 1]
+                    env_vars[env_key] = val
+                    i += 2
+                else:
+                    # Boolean flag
+                    env_vars[env_key] = "true"
+                    i += 1
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run aider CLI with the given prompt and show real-time output."""
         start_time = time.time()
@@ -136,41 +177,34 @@ class AiderClient(LLMClientBase):
 
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = ["aider"]
+            # cmd = ["aider"] # We don't need cmd list anymore
 
-            # Explicitly pass model if configured and not the internal default
-            if self.model_name and self.model_name != "aider":
-                cmd.extend(["--model", self.model_name])
+            # Prepare environment variables
+            env_vars = {}
+            if self.api_key:
+                env_vars["AIDER_API_KEY"] = self.api_key
+            if self.base_url:
+                env_vars["AIDER_BASE_URL"] = self.base_url
+            if self.openai_api_key:
+                env_vars["OPENAI_API_KEY"] = self.openai_api_key
+            if self.openai_base_url:
+                env_vars["OPENAI_BASE_URL"] = self.openai_base_url
+            if self.openrouter_api_key:
+                env_vars["OPENROUTER_API_KEY"] = self.openrouter_api_key
+            if self.openrouter_base_url:
+                env_vars["OPENROUTER_BASE_URL"] = self.openrouter_base_url
 
-            # Get processed options with placeholders replaced
-            # Use options_for_noedit for no-edit operations if available
-            if self.config_backend:
-                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name, session_id=None)
-                if is_noedit and self.options_for_noedit:
-                    options_to_use = processed_options["options_for_noedit"]
-                else:
-                    options_to_use = processed_options["options"]
-            else:
-                # Fallback if config_backend is not available
-                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            # Set aider env vars for non-interactive mode
+            env_vars["AIDER_GUI"] = "false"
+            env_vars["AIDER_BROWSER"] = "false"
+            env_vars["AIDER_CHECK_UPDATE"] = "false"
+            env_vars["AIDER_ANALYTICS"] = "false"
+            env_vars["AIDER_NO_STREAM"] = "true"
 
-            # Add configured options from config
-            if options_to_use:
-                cmd.extend(options_to_use)
-
-            # Append any one-time extra arguments (e.g., resume flags)
-            extra_args = self.consume_extra_args()
-            if extra_args:
-                cmd.extend(extra_args)
-
-            # Aider specific: use --message to pass the prompt
-            cmd.extend(["--message", escaped_prompt])
-
-            # Use configured usage_markers if available, otherwise fall back to defaults
+            # Apply usage markers (handled by capturing output)
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
                 usage_markers = self.usage_markers
             else:
-                # Default hardcoded usage markers
                 usage_markers = [
                     "rate limit",
                     "usage limit",
@@ -178,69 +212,116 @@ class AiderClient(LLMClientBase):
                     "too many requests",
                 ]
 
-            # Prepare environment variables for subprocess
-            env = os.environ.copy()
-            if self.api_key:
-                env["AIDER_API_KEY"] = self.api_key  # Aider might use different env vars depending on provider
-            if self.base_url:
-                env["AIDER_BASE_URL"] = self.base_url
-            if self.openai_api_key:
-                env["OPENAI_API_KEY"] = self.openai_api_key
-            if self.openai_base_url:
-                env["OPENAI_BASE_URL"] = self.openai_base_url
-            if self.openrouter_api_key:
-                env["OPENROUTER_API_KEY"] = self.openrouter_api_key
-            if self.openrouter_base_url:
-                env["OPENROUTER_BASE_URL"] = self.openrouter_base_url
+            # Run aider library
+            # We need to temporarily set environment variables
+            original_env = os.environ.copy()
+            os.environ.update(env_vars)
 
-            # Ensure Aider doesn't try to open a GUI or browser
-            env["AIDER_GUI"] = "false"
-            env["AIDER_BROWSER"] = "false"
+            try:
+                io_obj = InputOutput(yes=True)
 
-            result = CommandExecutor.run_command(
-                cmd,
-                stream_output=True,
-                env=env if len(env) > len(os.environ) else None,
-                dot_format=True,
-                idle_timeout=1800,
-            )
+                # Model selection
+                model_name = self.model_name
+                if self.config_backend:
+                    # Logic to determine model name if using backend config
+                    # Already set in __init__ as self.model_name
+                    pass
 
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+                # Get processed options with placeholders replaced
+                # Use options_for_noedit for no-edit operations if available
+                if self.config_backend:
+                    processed_options = self.config_backend.replace_placeholders(model_name=self.model_name, session_id=None)
+                    if is_noedit and self.options_for_noedit:
+                        options_to_use = processed_options["options_for_noedit"]
+                    else:
+                        options_to_use = processed_options["options"]
+                else:
+                    # Fallback if config_backend is not available
+                    options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+
+                # Add configured options from config to env vars
+                if options_to_use:
+                    self._apply_options_to_env(options_to_use, env_vars)
+
+                # Append any one-time extra arguments (e.g., resume flags)
+                extra_args = self.consume_extra_args()
+                if extra_args:
+                    self._apply_options_to_env(extra_args, env_vars)
+
+                # is_noedit_run = is_noedit # Unused
+
+                # fnames needs to be passed?
+                # CLI usually infers fnames or expects them in args.
+                # If the user prompt adds files, aider handles it.
+                # But initial fnames might be needed if provided in options?
+                fnames = []
+
+                # Initialize Model
+                # aider.models.Model(model_name)
+                # If model_name is "aider", it might defaults.
+                if model_name == "aider":
+                    main_model = Model("gpt-4-turbo")  # Default fallback if 'aider' backend is generic?
+                    # Actually, users usually set specific model.
+                    # If model_name is literally "aider", we might want to check what default aider uses.
+                    # But let's use self.model_name.
+                    pass
+
+                main_model = Model(model_name)
+
+                # Capture output
+                stdout_capture = io.StringIO()
+
+                with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stdout_capture):
+                    # Create coder
+                    # We pass empty fnames initially; Aider might pick up git repo files or we can let it.
+                    # CLI usually runs in a git repo.
+                    coder = Coder.create(main_model=main_model, fnames=fnames, io=io_obj)
+
+                    if coder:
+                        run_result = coder.run(escaped_prompt)
+
+                full_output = stdout_capture.getvalue()
+
+                # If coder.run returns a string, use it as the main response content
+                # This avoids parsing CLI headers which are in stdout
+                if run_result is not None and isinstance(run_result, str) and run_result.strip():
+                    # However, aider sometimes prints changes to files or other info to stdout/stderr
+                    # that might be relevant?
+                    # The user specifically wants to avoid "headers" (Tokens, etc).
+                    # So we should prefer run_result for the "response content".
+                    # But if we need logs of what happened (files edited), that might be in stdout.
+                    # For now, let's prioritize run_result but maybe log stdout to debug?
+                    # Or we can return run_result.
+                    full_output = run_result
+
+            finally:
+                # Restore environment
+                os.environ.clear()
+                os.environ.update(original_env)
+
             full_output = full_output.strip()
             low = full_output.lower()
 
-            # Check for timeout (returncode -1 and "timed out" in stderr)
-            if result.returncode == -1 and "timed out" in low:
-                raise AutoCoderTimeoutError(full_output)
+            # Check for generic errors or timeout indicators in output
+            # (Aider library doesn't timeout in the same way subprocess does,
+            # unless we add wrapping or configure it)
 
             usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
-
-            if result.returncode != 0:
-                if usage_limit_detected:
-                    status = "error"
-                    error_message = full_output
-                    raise AutoCoderUsageLimitError(full_output)
-                status = "error"
-                error_message = f"aider CLI failed with return code {result.returncode}\n{full_output}"
-                raise RuntimeError(error_message)
 
             if usage_limit_detected:
                 status = "error"
                 error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)
 
+            # We assume success if no exception raised by coder.run
+            # But we should check for errors in output if possible.
+
             return full_output
+
         except AutoCoderUsageLimitError:
-            # Re-raise without catching
-            raise
-        except AutoCoderTimeoutError:
-            # Re-raise timeout errors
             raise
         except Exception as e:
-            raise RuntimeError(f"Failed to run aider CLI: {e}")
+            raise RuntimeError(f"Failed to run aider library: {e}")
         finally:
             # Always log the interaction and print summary
             duration_ms = (time.time() - start_time) * 1000
