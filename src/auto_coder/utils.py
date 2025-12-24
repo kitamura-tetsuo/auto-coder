@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
 from .progress_footer import get_progress_footer
+from .security_utils import redact_string
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
@@ -436,7 +437,8 @@ class CommandExecutor:
                             else:
                                 # Also output stderr at INFO level
                                 # depth=2 to show the caller of _run_with_streaming
-                                logger.opt(depth=2).info(stripped_chunk)
+                                # Redact sensitive information from output logs
+                                logger.opt(depth=2).info(redact_string(stripped_chunk))
 
                         # Optional per-chunk callback for early aborts
                         if on_stream is not None:
@@ -514,6 +516,9 @@ class CommandExecutor:
             timeout = cls.DEFAULT_TIMEOUTS.get(cmd_type, cls.DEFAULT_TIMEOUTS["default"])
 
         command_display = shlex.join(cmd) if cmd else ""
+        # Redact potentially sensitive information from command display
+        command_display = redact_string(command_display)
+
         should_stream = cls._should_stream_output(stream_output)
         log_message = f"Executing command (timeout={timeout}s, stream={should_stream}): {command_display}"
 
