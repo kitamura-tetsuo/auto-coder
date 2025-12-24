@@ -5,7 +5,7 @@ UI helper functions for the CLI.
 import os
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional, TextIO
 
 import click
 
@@ -64,18 +64,22 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
     click.echo("")  # Add spacing after summary
 
 
-def sleep_with_countdown(seconds: int) -> None:
+def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
     Sleep for a specified number of seconds, displaying a countdown.
 
     Args:
         seconds: Number of seconds to sleep.
+        stream: Output stream to write to (defaults to sys.stdout).
     """
+    if stream is None:
+        stream = sys.stdout
+
     if seconds <= 0:
         return
 
     # Check if we are in a non-interactive environment
-    if not sys.stdout.isatty():
+    if not stream.isatty():
         time.sleep(seconds)
         return
 
@@ -100,16 +104,16 @@ def sleep_with_countdown(seconds: int) -> None:
                 # Dim the text (bright_black is usually dark gray)
                 message = click.style(message, fg="bright_black")
 
-            sys.stdout.write(f"\r{message}")
-            sys.stdout.flush()
+            stream.write(f"\r{message}")
+            stream.flush()
             time.sleep(1)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
-        sys.stdout.write("\r" + " " * 80 + "\r")
-        sys.stdout.flush()
+        stream.write("\r" + " " * 80 + "\r")
+        stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        sys.stdout.write("\r" + " " * 80 + "\r")
-        sys.stdout.flush()
+        stream.write("\r" + " " * 80 + "\r")
+        stream.flush()
         raise

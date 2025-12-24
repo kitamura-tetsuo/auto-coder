@@ -17,7 +17,3 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
-
-## 2025-12-20 - Transparent Wait States
-**Learning:** Blocking `sleep` calls in CLI loops create ambiguity ("Is it stuck?"). Replacing them with an active countdown timer provides reassurance, context, and a clear call-to-action (Ctrl+C).
-**Action:** Audit all long polling or retry loops for silent sleeps and replace them with visual countdowns.

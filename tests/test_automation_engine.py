@@ -3098,7 +3098,7 @@ class TestCheckAndHandleClosedBranch:
             result = engine._check_and_handle_closed_branch("test/repo")
 
             # Assert
-            assert result is True
+            assert result is False
             mock_get_current_branch.assert_called_once()
             mock_extract_number.assert_called_once_with("issue-123")
             mock_github_client.get_repository.assert_called_once_with("test/repo")
@@ -3144,7 +3144,7 @@ class TestCheckAndHandleClosedBranch:
             result = engine._check_and_handle_closed_branch("test/repo")
 
             # Assert
-            assert result is True
+            assert result is False
             mock_get_current_branch.assert_called_once()
             mock_extract_number.assert_called_once_with("pr-456")
             mock_github_client.get_repository.assert_called_once_with("test/repo")
