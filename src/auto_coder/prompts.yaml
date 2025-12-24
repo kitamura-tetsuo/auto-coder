@@ -39,7 +39,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-    $linked_issues_context
 
   merge_conflict_resolution: |-
     There are merge conflicts when trying to merge $base_branch branch into PR #$pr_number: $pr_title
@@ -52,7 +51,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
@@ -77,7 +75,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-    $linked_issues_context
 
     Your task is to determine if this merge can be performed WITHOUT DEGRADING CODE QUALITY.
 
@@ -103,8 +100,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     Extracted Important Errors (failed test files and key error details):
     $extracted_errors
@@ -145,8 +140,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     Key Errors:
     $error_summary
@@ -203,8 +196,6 @@ pr:
     Commit History Since Branch Creation:
     $commit_log
 
-    $linked_issues_context
-
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     CRITICAL BREAKING CHANGE DIRECTIVES:
@@ -259,8 +250,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
@@ -317,8 +306,6 @@ pr:
     Commit History Since Branch Creation:
     $commit_log
 
-    $linked_issues_context
-
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     BUG FIX PR DIRECTIVES:
@@ -374,8 +361,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
@@ -434,8 +419,6 @@ pr:
     Commit History Since Branch Creation:
     $commit_log
 
-    $linked_issues_context
-
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     DOCUMENTATION PR DIRECTIVES:
@@ -471,8 +454,6 @@ pr:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     Requirements:
     - Title: A clear, concise title (max 72 characters) that describes the changes
@@ -513,8 +494,6 @@ issue:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
@@ -587,8 +566,6 @@ issue:
     Commit History Since Branch Creation:
     $commit_log
 
-    $linked_issues_context
-
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
     CRITICAL BREAKING CHANGE DIRECTIVES:
@@ -641,8 +618,6 @@ issue:
     $endif
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
@@ -714,8 +689,6 @@ issue:
     $endif
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
@@ -791,8 +764,6 @@ issue:
     Commit History Since Branch Creation:
     $commit_log
 
-    $linked_issues_context
-
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
     DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
@@ -867,8 +838,6 @@ issue:
     $endif
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
@@ -1003,8 +972,6 @@ tests:
 
     Commit History Since Branch Creation:
     $commit_log
-
-    $linked_issues_context
 
     Then, analyze the diff and write a high-quality Git commit message following these rules:
 

@@ -5,8 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_context import extract_linked_issues_from_pr_body
-from src.auto_coder.pr_processor import _close_linked_issues, _merge_pr
+from src.auto_coder.pr_processor import _close_linked_issues, _extract_linked_issues_from_pr_body, _merge_pr
 
 
 class TestExtractLinkedIssues:
@@ -15,31 +14,31 @@ class TestExtractLinkedIssues:
     def test_extract_closes_keyword(self):
         """Test extraction with 'closes' keyword."""
         pr_body = "This PR closes #123"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [123]
 
     def test_extract_fixes_keyword(self):
         """Test extraction with 'fixes' keyword."""
         pr_body = "This PR fixes #456"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [456]
 
     def test_extract_resolves_keyword(self):
         """Test extraction with 'resolves' keyword."""
         pr_body = "This PR resolves #789"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [789]
 
     def test_extract_multiple_keywords(self):
         """Test extraction with multiple keywords."""
         pr_body = "This PR closes #123 and fixes #456"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [123, 456]
 
     def test_extract_case_insensitive(self):
         """Test extraction is case insensitive."""
         pr_body = "This PR Closes #123 and FIXES #456"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [123, 456]
 
     def test_extract_all_keyword_variants(self):
@@ -55,42 +54,42 @@ class TestExtractLinkedIssues:
         resolves #8
         resolved #9
         """
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     def test_extract_with_cross_repo_reference(self):
         """Test extraction with cross-repo reference (owner/repo#123)."""
         pr_body = "This PR closes owner/repo#123"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         # We extract the issue number even for cross-repo references
         assert result == [123]
 
     def test_extract_removes_duplicates(self):
         """Test that duplicate issue numbers are removed."""
         pr_body = "This PR closes #123 and fixes #123"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [123]
 
     def test_extract_empty_body(self):
         """Test extraction with empty body."""
-        result = extract_linked_issues_from_pr_body("")
+        result = _extract_linked_issues_from_pr_body("")
         assert result == []
 
     def test_extract_none_body(self):
         """Test extraction with None body."""
-        result = extract_linked_issues_from_pr_body(None)
+        result = _extract_linked_issues_from_pr_body(None)
         assert result == []
 
     def test_extract_no_keywords(self):
         """Test extraction with no keywords."""
         pr_body = "This is a regular PR description without any issue links"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == []
 
     def test_extract_preserves_order(self):
         """Test that issue order is preserved."""
         pr_body = "Closes #789, fixes #123, resolves #456"
-        result = extract_linked_issues_from_pr_body(pr_body)
+        result = _extract_linked_issues_from_pr_body(pr_body)
         assert result == [789, 123, 456]
 
 

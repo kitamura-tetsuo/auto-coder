@@ -350,9 +350,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
         check=False,
         input=None,
         env=None,
-        stdout=None,
-        stderr=None,
-        **kwargs,
     ):
         try:
             program = None
@@ -441,7 +438,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 return result
 
             # Stubbed commands
-            if program not in ("git", "gh", "gemini", "codex", "uv", "node", "uname"):
+            if program not in ("git", "gh", "gemini", "codex", "uv", "node"):
                 return orig_run(
                     cmd,
                     capture_output=capture_output,
@@ -451,9 +448,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     check=check,
                     input=input,
                     env=env,
-                    stdout=stdout,
-                    stderr=stderr,
-                    **kwargs,
                 )
 
             # Default success response
@@ -519,8 +513,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 else:
                     stdout, stderr = _as_text_or_bytes(out_text, False)
                 return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
-            elif program == "uname":
-                out_text = "x86_64\n"
             else:  # gemini/codex/uv
                 # Dummy success for --version check and exec
                 out_text = ""
@@ -549,9 +541,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 check=check,
                 input=input,
                 env=env,
-                stdout=stdout,
-                stderr=stderr,
-                **kwargs,
             )
 
     def fake_popen(
@@ -564,7 +553,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
         universal_newlines=None,
         cwd=None,
         env=None,
-        **kwargs,
     ):
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
@@ -585,7 +573,13 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     def readline(self, *args, **kwargs):
                         if self._closed:
                             return b"" if self._is_bytes else ""
-                        return self._stream.readline(*args, **kwargs)
+                        result = self._stream.readline(*args, **kwargs)
+                        # If we got an empty result and there was content, we might be at EOF
+                        # Reset the stream to allow re-reading
+                        if not result and self._stream.tell() > 0:
+                            self._stream.seek(0)
+                            result = self._stream.readline(*args, **kwargs)
+                        return result
 
                     def __iter__(self):
                         return self
@@ -601,7 +595,12 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     def read(self, *args):
                         if self._closed:
                             return b"" if self._is_bytes else ""
-                        return self._stream.read(*args)
+                        result = self._stream.read(*args)
+                        # Reset after reading to allow re-reading
+                        if not result and self._stream.tell() > 0:
+                            self._stream.seek(0)
+                            result = self._stream.read(*args)
+                        return result
 
                     def close(self):
                         self._closed = True
@@ -652,7 +651,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 bufsize=bufsize,
                 cwd=cwd,
                 env=env,
-                **kwargs,
             )
         except Exception:
             return orig_popen(
@@ -664,7 +662,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 bufsize=bufsize,
                 cwd=cwd,
                 env=env,
-                **kwargs,
             )
 
     if not skip_stub:

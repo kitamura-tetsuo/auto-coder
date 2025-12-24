@@ -16,7 +16,6 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_client import GitHubClient
-from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_engine import check_and_resume_or_archive_sessions
 from .label_manager import LabelManager
@@ -146,8 +145,7 @@ class AutomationEngine:
         - Priority descending (7 -> 0)
         - Creation time ascending (oldest first)
         """
-        from .issue_context import extract_linked_issues_from_pr_body
-        from .pr_processor import _is_dependabot_pr, _is_jules_pr
+        from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr, _is_jules_pr
         from .util.dependabot_timestamp import should_process_dependabot_pr
         from .util.github_action import (
             _check_github_actions_status,
@@ -369,7 +367,7 @@ class AutomationEngine:
                         data=pr_data,
                         priority=pr_priority,
                         branch_name=pr_data.get("head", {}).get("ref"),
-                        related_issues=extract_linked_issues_from_pr_body(pr_data.get("body", "")),
+                        related_issues=_extract_linked_issues_from_pr_body(pr_data.get("body", "")),
                     )
                 )
 
@@ -1325,11 +1323,8 @@ class AutomationEngine:
                 github_logs = error_summary
 
             # Prepare enhanced prompt with structured context
-            linked_issues_context = get_linked_issues_context(self.github, repo_name, pr_data.get("body", ""))
-
             prompt = render_prompt(
                 "pr.github_actions_fix_direct",
-                linked_issues_context=linked_issues_context,
                 data={
                     "repo_name": repo_name,
                     "pr_title": pr_data.get("title", "N/A"),
@@ -1506,7 +1501,7 @@ class AutomationEngine:
         Returns:
             Candidate or None if failed
         """
-        from .issue_context import extract_linked_issues_from_pr_body
+        from .pr_processor import _extract_linked_issues_from_pr_body
 
         try:
             # Handle 'auto' type
@@ -1529,7 +1524,7 @@ class AutomationEngine:
                 pr_body = pr_data.get("body", "")
                 related_issues = []
                 if pr_body:
-                    related_issues = extract_linked_issues_from_pr_body(pr_body)
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
 
                 return Candidate(
                     type="pr",

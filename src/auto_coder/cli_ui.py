@@ -71,7 +71,8 @@ def sleep_with_countdown(seconds: int, message: str) -> None:
         message: Message to display in the footer.
     """
     import time
-    from .progress_footer import clear_progress, set_progress_item, get_progress_footer
+
+    from .progress_footer import clear_progress, get_progress_footer, set_progress_item
 
     footer = get_progress_footer()
 

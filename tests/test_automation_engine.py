@@ -1229,7 +1229,7 @@ class TestGetCandidates:
     """Test cases for _get_candidates method with priority-based selection."""
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_urgent_issue_highest_priority(
         self,
         mock_extract_issues,
@@ -1302,7 +1302,7 @@ class TestGetCandidates:
         mock_extract_issues.assert_not_called()  # No PRs
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_priority_order_prs_and_issues(
         self,
         mock_extract_issues,
@@ -1421,7 +1421,7 @@ class TestGetCandidates:
         assert candidates[4].data["number"] == 10  # Regular issue
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_unmergeable_prs_higher_priority_than_failing_mergeable_prs(
         self,
         mock_extract_issues,
@@ -1513,7 +1513,7 @@ class TestGetCandidates:
         assert candidates[2].data["number"] == 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_urgent_unmergeable_prs_highest_priority(
         self,
         mock_extract_issues,
@@ -1619,7 +1619,7 @@ class TestGetCandidates:
         assert candidates[3].data["number"] == 4  # Regular mergeable PR with passing checks
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_includes_green_dependency_bot_pr_when_ignored(
         self,
         mock_extract_issues,
@@ -1698,7 +1698,7 @@ class TestGetCandidates:
 
     @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_treats_dependency_bot_prs_like_normal_when_ignore_disabled(
         self,
         mock_extract_issues,
@@ -1784,7 +1784,7 @@ class TestGetCandidates:
 
     @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_prs_only_green(
         self,
         mock_extract_issues,
@@ -1866,7 +1866,7 @@ class TestGetCandidates:
 
     @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_true_includes_passing(
         self,
         mock_extract_issues,
@@ -1931,7 +1931,7 @@ class TestGetCandidates:
         assert candidates[0].priority == 2  # Mergeable with successful checks
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_true_excludes_failing(
         self,
         mock_extract_issues,
@@ -1994,7 +1994,7 @@ class TestGetCandidates:
 
     @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_false_includes_failing(
         self,
         mock_extract_issues,
@@ -2058,7 +2058,7 @@ class TestGetCandidates:
         assert candidates[0].priority == 2  # Unmergeable PR gets priority 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_ignore_dependabot_prs_skips_all(
         self,
         mock_extract_issues,
@@ -2144,7 +2144,7 @@ class TestGetCandidates:
         assert [c.data["number"] for c in candidates] == []
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_items_with_auto_coder_label(
         self,
         mock_extract_issues,
@@ -2213,7 +2213,7 @@ class TestGetCandidates:
         assert 11 not in candidate_numbers  # Issue with @auto-coder label
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_issues_with_sub_issues_or_linked_prs(
         self,
         mock_extract_issues,
@@ -2256,7 +2256,7 @@ class TestGetCandidates:
         assert candidates[0].type == "issue"
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_extracts_related_issues_from_pr_body(
         self,
         mock_extract_issues,
@@ -2306,7 +2306,7 @@ class TestGetCandidates:
         mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_issues_with_elder_sibling_dependencies(
         self,
         mock_extract_issues,
@@ -2372,7 +2372,7 @@ class TestGetCandidates:
         assert 12 not in candidate_numbers  # Has elder siblings #10, #11 - should be skipped
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_includes_issues_when_elder_siblings_are_closed(
         self,
         mock_extract_issues,
@@ -2427,7 +2427,7 @@ class TestElderSiblingDependencyLogic:
     """Test cases for elder sibling dependency logic in _get_candidates."""
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_no_parent_issue_processed_normally(
         self,
         mock_extract_issues,
@@ -2468,7 +2468,7 @@ class TestElderSiblingDependencyLogic:
         mock_github_client.get_parent_issue.assert_called_once_with(test_repo_name, 10)
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_parent_with_single_child_processed(
         self,
         mock_extract_issues,
@@ -2519,7 +2519,7 @@ class TestElderSiblingDependencyLogic:
         mock_github_client.get_parent_issue.assert_called_once_with(test_repo_name, 20)
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_multiple_children_all_closed_except_current_processed(
         self,
         mock_extract_issues,
@@ -2568,7 +2568,7 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].data["number"] == 30
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_multiple_children_elder_sibling_open_skipped(
         self,
         mock_extract_issues,
@@ -2625,7 +2625,7 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].issue_number == 10
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_complex_parent_child_hierarchy(
         self,
         mock_extract_issues,
@@ -2707,7 +2707,7 @@ class TestElderSiblingDependencyLogic:
         assert len(candidates) == 3
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_elder_siblings_mixed_with_closed(
         self,
         mock_extract_issues,
@@ -2773,7 +2773,7 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].data["number"] == 10
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_error_in_parent_check_continues(
         self,
         mock_extract_issues,
@@ -2813,7 +2813,7 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].data["number"] == 40
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_multiple_issues_with_and_without_parents(
         self,
         mock_extract_issues,
@@ -3098,7 +3098,7 @@ class TestCheckAndHandleClosedBranch:
             result = engine._check_and_handle_closed_branch("test/repo")
 
             # Assert
-            assert result is False
+            assert result is True
             mock_get_current_branch.assert_called_once()
             mock_extract_number.assert_called_once_with("issue-123")
             mock_github_client.get_repository.assert_called_once_with("test/repo")
@@ -3144,7 +3144,7 @@ class TestCheckAndHandleClosedBranch:
             result = engine._check_and_handle_closed_branch("test/repo")
 
             # Assert
-            assert result is False
+            assert result is True
             mock_get_current_branch.assert_called_once()
             mock_extract_number.assert_called_once_with("pr-456")
             mock_github_client.get_repository.assert_called_once_with("test/repo")
@@ -3464,7 +3464,7 @@ class TestCheckAndHandleClosedBranch:
         assert "issues_processed" in result
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_dependabot_pr_if_processed_recently(
         self,
         mock_extract_issues,
