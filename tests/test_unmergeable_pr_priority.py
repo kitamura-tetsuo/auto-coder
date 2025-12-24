@@ -206,10 +206,32 @@ class TestUnmergeablePRPriority:
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Regular unmergeable
         ]
 
-        mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-07T00:00:00Z"),  # Regular issue
-            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue
+        # Mock issue data in the format expected by get_open_issues_json
+        issue_data = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-07T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "has_linked_prs": False,
+            },  # Regular issue
+            {
+                "number": 11,
+                "title": "Issue 11",
+                "body": "",
+                "labels": ["urgent"],
+                "state": "open",
+                "created_at": "2024-01-06T00:00:00Z",
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "has_linked_prs": False,
+            },  # Urgent issue
         ]
+        mock_github_client.get_open_issues_json.return_value = issue_data
 
         # Mock PR details
         pr_data = {
@@ -251,18 +273,6 @@ class TestUnmergeablePRPriority:
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
-
-        def get_issue_details_side_effect(issue):
-            return {
-                "number": issue.number,
-                "title": f"Issue {issue.number}",
-                "body": "",
-                "labels": ["urgent"] if issue.number == 11 else [],
-                "state": "open",
-                "created_at": issue.created_at,
-            }
-
-        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
 
         # Mock GitHub Actions checks
         def check_actions_side_effect(repo_name, pr_data, config):

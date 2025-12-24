@@ -86,8 +86,15 @@ class TestAutomationEngine:
             mock_get_manager.return_value = mock_backend_manager
 
             # Setup - Create one issue candidate so processing path is exercised
+            # Use the format expected by get_open_issues_json (pre-formatted dict data)
+            issue_data_for_json = {
+                **sample_issue_data,
+                "has_open_sub_issues": False,
+                "parent_issue_number": None,
+                "has_linked_prs": False,
+            }
             mock_github_client.get_open_pull_requests.return_value = []
-            mock_github_client.get_open_issues.return_value = ["dummy"]
+            mock_github_client.get_open_issues_json.return_value = [issue_data_for_json]
             mock_github_client.get_issue_details.return_value = sample_issue_data
             mock_github_client.get_open_sub_issues.return_value = []
             mock_github_client.has_linked_pr.return_value = False
