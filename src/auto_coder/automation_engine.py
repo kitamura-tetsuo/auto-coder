@@ -381,9 +381,13 @@ class AutomationEngine:
 
             if should_collect_issues:
                 # Collect issue candidates
-                issues = self.github.get_open_issues(repo_name)
-                for issue in issues:
-                    issue_data = self.github.get_issue_details(issue)
+                # Use optimized GraphQL query to fetch all issue details in one go, avoiding N+1 API calls
+                all_issues = self.github.get_open_issues_json(repo_name)
+
+                # Build map for fast lookup of open issues
+                issue_map = {i["number"]: i for i in all_issues}
+
+                for issue_data in all_issues:
                     labels = issue_data.get("labels", []) or []
 
                     # Filter out issues created within the last 10 minutes
@@ -425,21 +429,37 @@ class AutomationEngine:
                             continue
 
                     # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
-                    if self.github.get_open_sub_issues(repo_name, number):
+                    # Use pre-fetched data
+                    if issue_data.get("has_open_sub_issues"):
                         continue
 
                     # Check for elder sibling dependency: if this issue is a sub-issue,
                     # ensure no elder sibling (sub-issue with lower number) is still open
-                    parent_issue = self.github.get_parent_issue(repo_name, number)
-                    if parent_issue is not None:
-                        open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue)
+                    # Use pre-fetched data
+                    parent_issue_number = issue_data.get("parent_issue_number")
+                    if parent_issue_number is not None:
+                        # Try to find parent in pre-fetched map
+                        parent_issue_data = issue_map.get(parent_issue_number)
+
+                        open_sub_issues: List[int] = []
+                        if parent_issue_data:
+                            open_sub_issues = parent_issue_data.get("open_sub_issue_numbers", [])
+                        else:
+                            # Parent not in map (e.g. closed), fallback to API call if strictly needed
+                            try:
+                                open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
+                            except Exception as e:
+                                logger.warning(f"Failed to check parent sub-issues for #{number}: {e}")
+                                open_sub_issues = []
+
                         # Filter to only sibling sub-issues (exclude current issue)
                         elder_siblings = [s for s in open_sub_issues if s < number]
                         if elder_siblings:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    if self.github.has_linked_pr(repo_name, number):
+                    # Use pre-fetched data
+                    if issue_data.get("has_linked_prs"):
                         continue
 
                     # Calculate priority

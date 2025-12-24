@@ -146,6 +146,9 @@ def mock_github_client(mock_github_token):
     client.get_open_prs_json.return_value = []
     # Set get_open_issues to return an empty list by default to prevent iteration errors
     client.get_open_issues.return_value = []
+    # Set get_open_issues_json to return an empty list by default to prevent iteration errors
+    # This method was added to batch fetch issue details via GraphQL
+    client.get_open_issues_json.return_value = []
     return client
 
 
