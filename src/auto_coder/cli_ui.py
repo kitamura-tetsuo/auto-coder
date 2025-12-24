@@ -3,7 +3,9 @@ UI helper functions for the CLI.
 """
 
 import os
-from typing import Any, Dict
+import sys
+import time
+from typing import Any, Dict, Optional, TextIO
 
 import click
 
@@ -60,3 +62,58 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
         click.echo(f"{key_display} : {val_display}")
 
     click.echo("")  # Add spacing after summary
+
+
+def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
+    """
+    Sleep for a specified number of seconds, displaying a countdown.
+
+    Args:
+        seconds: Number of seconds to sleep.
+        stream: Output stream to write to (defaults to sys.stdout).
+    """
+    if stream is None:
+        stream = sys.stdout
+
+    if seconds <= 0:
+        return
+
+    # Check if we are in a non-interactive environment
+    if not stream.isatty():
+        time.sleep(seconds)
+        return
+
+    no_color = "NO_COLOR" in os.environ
+
+    try:
+        for remaining in range(seconds, 0, -1):
+            # Format time nicely
+            hours, remainder = divmod(remaining, 3600)
+            minutes, secs = divmod(remainder, 60)
+
+            if hours > 0:
+                time_str = f"{hours}h {minutes:02d}m {secs:02d}s"
+            elif minutes > 0:
+                time_str = f"{minutes}m {secs:02d}s"
+            else:
+                time_str = f"{secs}s"
+
+            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+
+            if not no_color:
+                # Dim the text (bright_black is usually dark gray)
+                message = click.style(message, fg="bright_black")
+
+            stream.write(f"\r{message}")
+            stream.flush()
+            time.sleep(1)
+
+        # Clear the line after done
+        # We need to clear enough space for the longest message
+        stream.write("\r" + " " * 80 + "\r")
+        stream.flush()
+    except KeyboardInterrupt:
+        # Clear the line and re-raise
+        stream.write("\r" + " " * 80 + "\r")
+        stream.flush()
+        raise
