@@ -1,8 +1,11 @@
 import os
+
 import pytest
+
 from src.auto_coder.backend_session_manager import BackendSessionManager, BackendSessionState
 
-@pytest.mark.skipif(os.name == 'nt', reason="Permissions check is different on Windows")
+
+@pytest.mark.skipif(os.name == "nt", reason="Permissions check is different on Windows")
 def test_backend_session_manager_permissions(tmp_path):
     """Test that the session state file is created with secure permissions (0600)."""
     state_path = tmp_path / "backend_session_state.json"

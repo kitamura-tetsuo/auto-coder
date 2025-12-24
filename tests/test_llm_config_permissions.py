@@ -1,9 +1,12 @@
 import os
 import stat
+
 import pytest
+
 from src.auto_coder.llm_backend_config import LLMBackendConfiguration
 
-@pytest.mark.skipif(os.name == 'nt', reason="Permissions check is different on Windows")
+
+@pytest.mark.skipif(os.name == "nt", reason="Permissions check is different on Windows")
 def test_llm_config_permissions(tmp_path):
     """Test that the llm_config.toml file is created with secure permissions (0600)."""
     config_path = tmp_path / "llm_config.toml"
