@@ -1,16 +1,20 @@
-""" 
+"""
 Comprehensive unit tests for GitHub Actions log search functionality.
 This module tests the historical log search feature added in issue #42, including the _search_github_actions_logs_from_history and enhanced _get_github_actions_logs functions.
 """
+
 import json
 from unittest.mock import MagicMock, Mock, patch
+
 import pytest
+
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.util.github_action import (
     _get_github_actions_logs,
     _get_jobs_for_run_filtered_by_pr_number,
     _search_github_actions_logs_from_history,
 )
+
 
 class TestSearchGitHubActionsLogsFromHistory:
     """Test cases for _search_github_actions_logs_from_history function."""
@@ -601,10 +605,7 @@ class TestGetGitHubActionsLogs:
         }
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
-            mock_get_logs.return_value = (
-                "[From run 1001 on feature-branch at 2024-01-15T10:30:00Z (commit abc123def)]\n"
-                "=== Job test-job (5001) ===\nTest failed"
-            )
+            mock_get_logs.return_value = "[From run 1001 on feature-branch at 2024-01-15T10:30:00Z (commit abc123def)]\n" "=== Job test-job (5001) ===\nTest failed"
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
             # Should preserve metadata
             assert result is not None
@@ -657,7 +658,7 @@ class TestIntegrationGitHubActionsLogSearch:
 
         # Jobs for run
         mock_api.actions.list_jobs_for_workflow_run.return_value = {"jobs": [{"id": 200, "name": "CI Tests", "conclusion": "failure", "pull_requests": [{"number": 123}]}]}
-        
+
         # Add PR info here if needed or separate call
         # Mock run details for PR filtering logic
         mock_api.actions.get_workflow_run.return_value = {"id": 100, "pull_requests": [{"number": 123}, {"number": 456}]}
@@ -817,6 +818,7 @@ class TestIntegrationGitHubActionsLogSearch:
     def test_concurrent_access_safety(self, mock_get_ghapi_client, mock_github_client):
         """Test that function is safe for concurrent access."""
         import threading
+
         # Removed import time as it was unused in original code snippet viewed, assuming not needed
 
         config = AutomationConfig()
@@ -1189,4 +1191,4 @@ class TestGitHubActionsLogSearchEdgeCases:
             mock_get_logs.return_value = "Logs with null values handled"
             result = _search_github_actions_logs_from_history("test/repo", config, [], max_runs=10)
             # Should handle null values gracefully (return None as name cannot match)
-            assert result is not None
+            assert result is None

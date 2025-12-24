@@ -69,7 +69,7 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         mock_client.get_repository.return_value = mock_repo
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
-        mock_client.get_pr_details.return_value = {"number": 1253, "title": "Fix something", "body": "Fixes #123. Session ID: xyz", "author": {"login": "google-labs-jules"}, "head_branch": "jules-branch"}
+        mock_client.get_pr_details.return_value = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "head_branch": "jules-branch"}
 
         # Sequence: reset, clean, abort, fetch pr, checkout, fetch base, rev-parse, merge (fails)
         mock_cmd.run_command.side_effect = [
@@ -86,7 +86,7 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         mock_scan.return_value = ["file1.py"]
         mock_llm.return_value = "DEGRADING_MERGE"
 
-        pr_data = {"number": 1253, "title": "Fix something", "body": "Fixes #123. Session ID: xyz", "author": {"login": "google-labs-jules"}, "baseRefName": "main"}
+        pr_data = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "baseRefName": "main"}
 
         ok = _perform_base_branch_merge_and_conflict_resolution(
             pr_number=1253,

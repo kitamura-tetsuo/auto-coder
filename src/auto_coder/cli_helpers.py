@@ -658,7 +658,7 @@ def build_backend_manager_from_config(
         for backend in cli_backends:
             if backend in all_configured_backends or config.get_backend_config(backend):
                 selected_backends.append(backend)
-        
+
         # Primary backend should be the first CLI-specified valid backend
         primary_backend = next((b for b in selected_backends), config.default_backend)
     else:

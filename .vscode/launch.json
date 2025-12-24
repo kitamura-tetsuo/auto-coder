@@ -14,9 +14,9 @@
             "args": [
                 "generate-gold",
                 "--log-file",
-                "${workspaceFolder}/utils/log_summarizer/logs/kitamura-tetsuo/auto-coder/test_log",
+                "/home/node/.auto-coder/log_test",
                 "--output",
-                "${workspaceFolder}/utils/log_summarizer/logs/gold_summary.json",
+                "/home/node/.auto-coder/gold_summary.json",
                 "--backend",
                 "qwen-openrouter"
             ],
