@@ -20,7 +20,7 @@ class TestSleepWithCountdown(unittest.TestCase):
         self.assertTrue(mock_stdout.write.called)
 
         # Verify sleep called
-        self.assertEqual(mock_sleep.call_count, 2) # One for each second
+        self.assertEqual(mock_sleep.call_count, 2)  # One for each second
 
     @patch("time.sleep")
     @patch("sys.stdout")
