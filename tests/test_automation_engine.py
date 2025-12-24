@@ -2694,7 +2694,7 @@ class TestElderSiblingDependencyLogic:
                 "parent_issue_number": 5,
                 "has_linked_prs": False,
                 "linked_pr_numbers": [],
-            }
+            },
         ]
 
         # Note: Since parent issue 5 is NOT in the list, we would fallback to API.
@@ -2803,7 +2803,7 @@ class TestElderSiblingDependencyLogic:
                 "parent_issue_number": 200,
                 "has_linked_prs": False,
                 "linked_pr_numbers": [],
-            }
+            },
         ]
 
         # Open sub-issues for each parent (fallback mock)
@@ -2878,7 +2878,7 @@ class TestElderSiblingDependencyLogic:
                 "parent_issue_number": 300,
                 "has_linked_prs": False,
                 "linked_pr_numbers": [],
-            }
+            },
         ]
 
         # Only open sub-issues returned (closed #5 not included)
@@ -2921,7 +2921,7 @@ class TestElderSiblingDependencyLogic:
                 "created_at": "2024-01-01T00:00:00Z",
                 "has_open_sub_issues": False,
                 "open_sub_issue_numbers": [],
-                "parent_issue_number": 999, # Points to non-existent parent
+                "parent_issue_number": 999,  # Points to non-existent parent
                 "has_linked_prs": False,
                 "linked_pr_numbers": [],
             }
@@ -3004,7 +3004,7 @@ class TestElderSiblingDependencyLogic:
                 "parent_issue_number": None,
                 "has_linked_prs": False,
                 "linked_pr_numbers": [],
-            }
+            },
         ]
 
         # Open sub-issues for parent (fallback)

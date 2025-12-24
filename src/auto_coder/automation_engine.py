@@ -444,7 +444,11 @@ class AutomationEngine:
                             open_sub_issues = parent_issue_data.get("open_sub_issue_numbers", [])
                         else:
                             # Parent not in map (e.g. closed), fallback to API call if strictly needed
-                            open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
+                            try:
+                                open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
+                            except Exception as e:
+                                logger.warning(f"Failed to check parent sub-issues for #{number}: {e}")
+                                open_sub_issues = []
 
                         # Filter to only sibling sub-issues (exclude current issue)
                         elder_siblings = [s for s in open_sub_issues if s < number]
