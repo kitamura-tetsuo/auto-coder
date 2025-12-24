@@ -141,7 +141,7 @@ class AiderClient(LLMClientBase):
             # Explicitly pass model if configured and not the internal default
             if self.model_name and self.model_name != "aider":
                 cmd.extend(["--model", self.model_name])
-            
+
             # Always run in non-interactive mode
             cmd.append("--yes")
 
