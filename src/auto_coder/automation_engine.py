@@ -4,6 +4,7 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -33,6 +34,19 @@ from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
+
+# Pre-compiled regex patterns for fallback error extraction
+FALLBACK_ERROR_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"ERROR:.*",
+        r"FAILED:.*",
+        r"Failures?:.*",
+        r"Error.*",
+        r"Exception.*",
+        r"Traceback.*",
+    ]
+]
 
 
 class AutomationEngine:
@@ -1302,17 +1316,10 @@ class AutomationEngine:
                 pass
 
             if output:
-                error_patterns = [
-                    r"ERROR:.*",
-                    r"FAILED:.*",
-                    r"Failures?:.*",
-                    r"Error.*",
-                    r"Exception.*",
-                    r"Traceback.*",
-                ]
+                # Use pre-compiled regex patterns
                 for line in output.split("\n"):
                     line = line.strip()
-                    if any(re.search(pattern, line, re.IGNORECASE) for pattern in error_patterns):
+                    if any(pattern.search(line) for pattern in FALLBACK_ERROR_PATTERNS):
                         if line and line not in important_lines:
                             important_lines.append(line)
 
