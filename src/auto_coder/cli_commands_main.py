@@ -21,7 +21,7 @@ from .utils import VERBOSE_ENV_FLAG
 logger = get_logger(__name__)
 
 
-@click.command()
+@click.command(short_help="Process GitHub issues and PRs using AI CLI.")
 @click.option(
     "--repo",
     help="GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.",
@@ -374,7 +374,7 @@ def process_issues(
         pass
 
 
-@click.command()
+@click.command(short_help="Analyze repository and create feature issues.")
 @click.option(
     "--repo",
     help="GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.",
@@ -514,7 +514,7 @@ def create_feature_issues(
         pass
 
 
-@click.command(name="fix-to-pass-tests")
+@click.command(name="fix-to-pass-tests", short_help="Run local tests and repeatedly request LLM fixes.")
 @click.option(
     "--disable-labels/--no-disable-labels",
     default=False,

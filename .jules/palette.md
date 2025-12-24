@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2024-12-24 - Click Help Text Truncation
+**Learning:** `click` automatically truncates the short help text (displayed in the main command list) to the first line or sentence of the docstring. If the first line is too long, it gets cut off with "...", which looks unpolished and can hide important information.
+**Action:** When using `click` commands with long docstrings, always use the `short_help` parameter in the `@click.command()` decorator to provide a concise, non-truncated summary for the main help listing.
