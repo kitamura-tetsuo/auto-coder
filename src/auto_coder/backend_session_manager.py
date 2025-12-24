@@ -68,32 +68,12 @@ class BackendSessionManager:
                 payload = asdict(state)
                 temp_file_path = state_file_path.with_suffix(".tmp")
 
-                # Use os.open to ensure file is created with 600 permissions
-                try:
-                    fd = os.open(str(temp_file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                except OSError:
-                    # Fallback to standard open if os.open fails
-                    with open(temp_file_path, "w", encoding="utf-8") as f:
-                        try:
-                            os.chmod(temp_file_path, 0o600)
-                        except OSError:
-                            pass  # Ignore permission errors on systems that don't support it
-                        json.dump(payload, f, indent=2)
-                else:
-                    # File opened successfully with os.open
+                with open(temp_file_path, "w", encoding="utf-8") as f:
                     try:
-                        f = os.fdopen(fd, "w", encoding="utf-8")
-                    except Exception:
-                        os.close(fd)
-                        raise
-
-                    with f:
-                        # Ensure permissions are correct even if file already existed
-                        try:
-                            os.chmod(temp_file_path, 0o600)
-                        except OSError:
-                            pass  # Ignore permission errors on systems that don't support it
-                        json.dump(payload, f, indent=2)
+                        os.chmod(temp_file_path, 0o600)
+                    except OSError:
+                        pass  # Ignore permission errors on systems that don't support it
+                    json.dump(payload, f, indent=2)
 
                 temp_file_path.replace(state_file_path)
                 logger.debug(

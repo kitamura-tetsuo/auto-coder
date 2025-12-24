@@ -506,32 +506,7 @@ class LLMBackendConfiguration:
             data["backend_with_high_score"] = backend_with_high_score_data
 
         # Write TOML file
-        # Use os.open to ensure file is created with 600 permissions
-        try:
-            fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        except OSError:
-            # Fallback to standard open if os.open fails (e.g. some file systems)
-            with open(config_path, "wb") as f:
-                try:
-                    os.chmod(config_path, 0o600)
-                except OSError:
-                    pass  # Ignore permission errors on systems that don't support it
-                tomli_w.dump(data, f)
-            return
-
-        # File opened successfully with os.open
-        try:
-            f = os.fdopen(fd, "wb")
-        except Exception:
-            os.close(fd)
-            raise
-
-        with f:
-            # Ensure permissions are correct even if file already existed
-            try:
-                os.chmod(config_path, 0o600)
-            except OSError:
-                pass  # Ignore permission errors on systems that don't support it
+        with open(config_path, "wb") as f:
             tomli_w.dump(data, f)
 
     def get_backend_config(self, backend_name: str) -> Optional[BackendConfig]:
