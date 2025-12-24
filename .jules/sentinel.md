@@ -22,3 +22,8 @@
 **Vulnerability:** `CommandExecutor` logged all executed commands and their output for debugging purposes, but lacked the redaction logic present in `GHCommandLogger`. This could expose secrets (like API keys or tokens) passed as command arguments or returned in stdout/stderr.
 **Learning:** Centralized logging utilities must consistently apply security sanitization. Using different logging paths for different command types (e.g., specific `gh` logger vs generic executor) can lead to inconsistent security coverage.
 **Prevention:** Centralize redaction logic in a shared utility and apply it to all command execution logging points, regardless of the command type.
+
+## 2026-01-20 - Insecure File Permissions for Config Files
+**Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
+**Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
+**Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.

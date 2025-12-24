@@ -11,7 +11,7 @@ class TestUnmergeablePRPriority:
     """Test cases for enhanced priority logic handling unmergeable PRs."""
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_unmergeable_pr_priority_elevation(
         self,
         mock_extract_issues,
@@ -94,7 +94,7 @@ class TestUnmergeablePRPriority:
         assert candidates[1].priority == 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_urgent_unmergeable_pr_highest_priority(
         self,
         mock_extract_issues,
@@ -186,7 +186,7 @@ class TestUnmergeablePRPriority:
         assert candidates[2].priority == 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_priority_hierarchy_ordering(
         self,
         mock_extract_issues,
@@ -314,7 +314,7 @@ class TestPriorityBackwardCompatibility:
     """Test cases ensuring backward compatibility for existing priorities."""
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_urgent_label_maintains_highest_precedence(
         self,
         mock_extract_issues,
@@ -391,7 +391,7 @@ class TestPriorityBackwardCompatibility:
         assert candidates[1].priority == 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_breaking_change_label_highest_priority(
         self,
         mock_extract_issues,
@@ -472,7 +472,7 @@ class TestPriorityEdgeCases:
     """Test cases for edge cases in priority calculation."""
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_unmergeable_pr_with_passing_checks(
         self,
         mock_extract_issues,
@@ -523,7 +523,7 @@ class TestPriorityEdgeCases:
         assert candidates[0].priority == 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_unmergeable_pr_with_failing_checks(
         self,
         mock_extract_issues,
@@ -574,7 +574,7 @@ class TestPriorityEdgeCases:
         assert candidates[0].priority == 2
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_mergeable_pr_with_failing_checks(
         self,
         mock_extract_issues,
@@ -625,7 +625,7 @@ class TestPriorityEdgeCases:
         assert candidates[0].priority == 1
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_mergeable_pr_with_passing_checks(
         self,
         mock_extract_issues,
@@ -681,7 +681,7 @@ class TestPriorityIntegration:
 
     @patch("auto_coder.automation_engine.AutomationEngine._process_single_candidate_unified")
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_unmergeable_pr_processed_before_regular_fixes(
         self,
         mock_extract_issues,
@@ -773,7 +773,7 @@ class TestPriorityIntegration:
 
     @patch("auto_coder.automation_engine.AutomationEngine._process_single_candidate_unified")
     @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_performance_impact_minimal(
         self,
         mock_extract_issues,

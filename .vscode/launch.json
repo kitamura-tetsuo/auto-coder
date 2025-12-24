@@ -5,6 +5,27 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Generate Gold (Qwen)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/utils/log_summarizer/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "generate-gold",
+                "--log-file",
+                "/home/node/.auto-coder/log_test",
+                "--output",
+                "/home/node/.auto-coder/gold_summary.json",
+                "--backend",
+                "qwen-openrouter"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
             "name": "Create Feature Issues",
             "type": "debugpy",
             "request": "launch",
