@@ -3097,14 +3097,14 @@ class TestCheckAndHandleClosedBranch:
             # Execute - should return True (indicating should exit)
             result = engine._check_and_handle_closed_branch("test/repo")
 
-            # Assert
-            assert result is True
-            mock_get_current_branch.assert_called_once()
-            mock_extract_number.assert_called_once_with("issue-123")
-            mock_github_client.get_repository.assert_called_once_with("test/repo")
-            mock_repo.get_issue.assert_called_once_with(123)
-            mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
-            mock_check_closed.assert_called_once()
+        # Assert - handled=True means we should stop processing, so returns False
+        assert result is False
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("issue-123")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_issue.assert_called_once_with(123)
+        mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
+        mock_check_closed.assert_called_once()
 
     @patch("auto_coder.automation_engine.get_current_branch")
     @patch("auto_coder.automation_engine.extract_number_from_branch")
@@ -3143,14 +3143,14 @@ class TestCheckAndHandleClosedBranch:
             # Execute - should return True (indicating should exit)
             result = engine._check_and_handle_closed_branch("test/repo")
 
-            # Assert
-            assert result is True
-            mock_get_current_branch.assert_called_once()
-            mock_extract_number.assert_called_once_with("pr-456")
-            mock_github_client.get_repository.assert_called_once_with("test/repo")
-            mock_repo.get_pull.assert_called_once_with(456)
-            mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
-            mock_check_closed.assert_called_once()
+        # Assert - handled=True means we should stop processing, so returns False
+        assert result is False
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("pr-456")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_pull.assert_called_once_with(456)
+        mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
+        mock_check_closed.assert_called_once()
 
     @patch("auto_coder.automation_engine.get_current_branch")
     @patch("auto_coder.automation_engine.extract_number_from_branch")

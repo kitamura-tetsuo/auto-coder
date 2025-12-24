@@ -572,9 +572,9 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
                 # Check for linked issues (logging only, not used for decision anymore)
                 pr_body = pr_data.get("body", "")
-                linked_issues = _extract_linked_issues(pr_body)
+                # linked_issues = _extract_linked_issues(pr_body)
 
-                if is_jules_pr and not linked_issues:
+                if is_jules_pr:
                     logger.info(f"PR #{pr_number} is a Jules PR with degrade risk. Closing PR and archiving session.")
                     if repo_name:
                         _close_pr(repo_name, pr_number)
