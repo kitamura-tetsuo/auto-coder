@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.12.21.12+g8fcc9a79"
+version = "2025.12.24.6+gb0f323b8"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -43,6 +43,7 @@ dependencies = [
     "httpx>=0.27.0",
     "hishel[sqlite]>=1.0.0",
     "ghapi>=1.0.0",
+    "aider-chat>=0.1.0",
 ]
 
 [project.optional-dependencies]

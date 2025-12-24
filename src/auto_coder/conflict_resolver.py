@@ -14,6 +14,7 @@ from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
 from .github_client import GitHubClient
+from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
@@ -107,24 +108,7 @@ def _trigger_fallback_for_conflict_failure(
             return
 
         # Extract linked issues from PR body
-        # Need to import the extraction function from pr_processor
-        # Let's inline it here for independence
-        related_issues = []
-        if pr_body:
-            # GitHub's supported keywords for linking issues
-            keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-            # Pattern to match: keyword #123 or keyword owner/repo#123
-            pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
-            import re
-
-            matches = re.finditer(pattern, pr_body, re.IGNORECASE)
-            issue_numbers = [int(m.group(1)) for m in matches]
-            # Remove duplicates while preserving order
-            seen = set()
-            for num in issue_numbers:
-                if num not in seen:
-                    seen.add(num)
-                    related_issues.append(num)
+        related_issues = extract_linked_issues_from_pr_body(pr_body)
 
         if not related_issues:
             logger.debug(f"No linked issues found in PR #{pr_number} body")
@@ -219,6 +203,19 @@ def check_mergeability_with_llm(
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
         commit_log = get_commit_log(base_branch=base_branch)
 
+        # Get linked issues context
+        linked_issues_context = ""
+        try:
+            client = GitHubClient.get_instance()
+            linked_issues_context = get_linked_issues_context(client, str(pr_data.get("base", {}).get("repo", {}).get("full_name") or ""), pr_data.get("body", ""))
+            # Wait, repo_name is better passed directly if available?
+            # check_mergeability_with_llm doesn't have repo_name arg.
+            # but pr_data usually has it in "base.repo.full_name" or we can guess.
+            # Actually, AutomationConfig doesn't have repo_name.
+            # Let's try to get it from pr_data["base"]["repo"]["full_name"] which standard GitHub API returns.
+        except Exception:
+            pass
+
         # Create a prompt for LLM to check mergeability
         prompt = render_prompt(
             "pr.mergeability_check",
@@ -228,6 +225,7 @@ def check_mergeability_with_llm(
             pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
             commit_log=commit_log or "(No commit history)",
+            linked_issues_context=linked_issues_context,
         )
         logger.debug(
             "Generated mergeability check prompt for PR #%s (preview: %s)",
@@ -283,6 +281,15 @@ def resolve_merge_conflicts_with_llm(
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
         commit_log = get_commit_log(base_branch=base_branch)
 
+        # Get linked issues context
+        linked_issues_context = ""
+        try:
+            client = GitHubClient.get_instance()
+            repo_to_use = repo_name or pr_data.get("base", {}).get("repo", {}).get("full_name") or ""
+            linked_issues_context = get_linked_issues_context(client, repo_to_use, pr_data.get("body", ""))
+        except Exception:
+            pass
+
         # Create a prompt for LLM to resolve conflicts
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
@@ -292,6 +299,7 @@ def resolve_merge_conflicts_with_llm(
             pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
             commit_log=commit_log or "(No commit history)",
+            linked_issues_context=linked_issues_context,
         )
         logger.debug(
             "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",
@@ -359,19 +367,7 @@ def resolve_merge_conflicts_with_llm(
     return actions
 
 
-def _extract_linked_issues(pr_body: str) -> List[int]:
-    """Extract linked issue numbers from PR body."""
-    if not pr_body:
-        return []
-
-    # GitHub's supported keywords for linking issues
-    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
-    # Pattern to match: keyword #123 or keyword owner/repo#123
-    pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
-
-    matches = re.finditer(pattern, pr_body, re.IGNORECASE)
-    issue_numbers = [int(m.group(1)) for m in matches]
-    return list(set(issue_numbers))
+# _extract_linked_issues removed in favor of issue_context.extract_linked_issues_from_pr_body
 
 
 def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
@@ -572,9 +568,9 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
                 # Check for linked issues (logging only, not used for decision anymore)
                 pr_body = pr_data.get("body", "")
-                linked_issues = _extract_linked_issues(pr_body)
+                linked_issues = extract_linked_issues_from_pr_body(pr_body)
 
-                if is_jules_pr and not linked_issues:
+                if is_jules_pr:
                     logger.info(f"PR #{pr_number} is a Jules PR with degrade risk. Closing PR and archiving session.")
                     if repo_name:
                         _close_pr(repo_name, pr_number)

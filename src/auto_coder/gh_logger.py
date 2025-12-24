@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Protocol, Union, cast
 
+from .security_utils import redact_string
+
 # Environment variable to disable logging
 GH_LOGGING_DISABLED = os.environ.get("GH_LOGGING_DISABLED", "").lower() in (
     "1",
@@ -37,13 +39,6 @@ CSV_FIELDS = [
     "args",
     "repo",
     "hostname",
-]
-
-# Patterns for sensitive data redaction
-REDACTION_PATTERNS = [
-    r"gh[pousr]_[a-zA-Z0-9]+",  # GitHub tokens
-    r"github_pat_[a-zA-Z0-9_]+",  # GitHub PATs
-    r"AIza[0-9A-Za-z-_]{35}",  # Google API keys
 ]
 
 
@@ -142,10 +137,7 @@ class GHCommandLogger:
         Returns:
             Redacted string
         """
-        redacted = text
-        for pattern in REDACTION_PATTERNS:
-            redacted = re.sub(pattern, "[REDACTED]", redacted)
-        return redacted
+        return redact_string(text)
 
     def _format_csv_row(
         self,
