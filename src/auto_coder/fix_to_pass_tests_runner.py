@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
 from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
+from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
@@ -293,8 +294,9 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
         logger.info(f"Finished local tests. {'Passed' if result.success else 'Failed'}")
 
-        # If the test run failed, try to extract the first failed test file and run it via the script
-        if not result.success:
+        # If the test run failed and isolate_single_test_on_failure is enabled in config.toml,
+        # try to extract the first failed test file and run it via the script
+        if not result.success and get_isolate_single_test_on_failure_from_config():
             # Extract the first failed test file from the output
             first_failed_test = extract_first_failed_test(result.stdout, result.stderr)
             if first_failed_test:

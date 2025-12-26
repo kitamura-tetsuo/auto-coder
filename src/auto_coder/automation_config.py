@@ -154,6 +154,7 @@ class AutomationConfig:
         object.__setattr__(self, "CHECK_DEPENDENCIES", True)
         object.__setattr__(self, "SEARCH_GITHUB_ACTIONS_HISTORY", True)
         object.__setattr__(self, "ENABLE_ACTIONS_HISTORY_FALLBACK", True)
+        object.__setattr__(self, "ISOLATE_SINGLE_TEST_ON_FAILURE", False)
         object.__setattr__(self, "MERGE_METHOD", "--squash")
         object.__setattr__(self, "MERGE_AUTO", True)
         object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
@@ -489,6 +490,11 @@ class AutomationConfig:
     # When current PR checks fail or are not available, search through recent runs to determine status
     # Default: True (fallback enabled)
     ENABLE_ACTIONS_HISTORY_FALLBACK: bool = True
+
+    # Isolate single test on failure
+    # When multiple tests fail, extract and re-run only the first failed test in isolation
+    # Default: False (run full test suite without isolation)
+    ISOLATE_SINGLE_TEST_ON_FAILURE: bool = False
 
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
