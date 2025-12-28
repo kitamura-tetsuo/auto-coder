@@ -6,6 +6,9 @@
         },
         {
             "path": "/home/node/.auto-coder"
+        },
+        {
+            "path": "../../../../../workspace"
         }
     ],
     "settings": {

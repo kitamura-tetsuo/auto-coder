@@ -137,6 +137,7 @@
             "cwd": "/workspace",
             "args": [
                 "fix-to-pass-tests",
+                "--disable-graphrag",
                 "--max-attempts",
                 "100000"
             ],

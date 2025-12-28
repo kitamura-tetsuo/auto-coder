@@ -1,6 +1,7 @@
 """Test execution functionality for Auto-Coder automation engine."""
 
 import csv
+import json
 import math
 import os
 import re
@@ -11,7 +12,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import (
+    extract_number_from_branch,
+    get_commit_log,
+    get_current_branch,
+    get_current_repo_name,
+    git_commit_with_retry,
+    git_push,
+    save_commit_failure_history,
+)
+from .github_client import GitHubClient
 from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
@@ -145,6 +155,60 @@ def _write_llm_output_log(
     content = raw_output if raw_output is not None else "LLM produced no response"
     with log_path.open("w", encoding="utf-8") as handle:
         handle.write(content)
+    return log_path
+
+
+def _write_test_log_json(
+    *,
+    repo_name: str,
+    test_file: Optional[str],
+    attempt: int,
+    test_result: Dict[str, Any],
+    fix_result: WorkspaceFixResult,
+    post_test_result: Optional[Dict[str, Any]],
+    timestamp: datetime,
+) -> Path:
+    """Save test execution details to a JSON log file.
+    
+    Path format: ~/.auto-coder/{repo_name}/test_log/{timestamp}_{test_file}_attempt_{attempt}.json
+    """
+    home_dir = Path.home()
+    # Handle repo_name being a path or owner/repo string - sanitize just in case
+    # If repo_name contains slashes, we might want to respect that hierarchy or just use the last part.
+    # The requirement says: /home/node/.auto-coder/kitamura-tetsuo/outliner/test_log
+    # So we should use repo_name as is but rely on it not starting with / to avoid absolute path issues?
+    # Usually repo_name is "owner/repo".
+    
+    log_dir = home_dir / ".auto-coder" / repo_name / "test_log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = "{time}_{test}_attempt_{attempt}.json".format(
+        time=timestamp.strftime("%Y%m%d_%H%M%S"),
+        test=_sanitize_for_filename(_normalize_test_file(test_file), default="tests"),
+        attempt=attempt,
+    )
+    log_path = log_dir / filename
+
+    data = {
+        "timestamp": timestamp.isoformat(),
+        "repo": repo_name,
+        "test_file": _normalize_test_file(test_file),
+        "attempt": attempt,
+        "backend": fix_result.backend,
+        "provider": fix_result.provider,
+        "model": fix_result.model,
+        "pre_fix_test_result": test_result,
+        "llm_fix_summary": fix_result.summary,
+        "llm_raw_response": fix_result.raw_response,
+        "post_fix_test_result": post_test_result,
+    }
+
+    try:
+        with log_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Failed to write JSON test log to {log_path}: {e}")
+
     return log_path
 
 
@@ -419,6 +483,83 @@ def apply_test_stability_fix(
         )
 
 
+@log_calls
+def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClient) -> Optional[str]:
+    """
+    Resolve the relevant issue or PR body for a given branch.
+    
+    Logic:
+    1. Extract number from branch.
+    2. If number found:
+       - Check if it's a PR.
+       - If PR: check for linked/closing issues.
+         - If linked issue found: return linked issue body (highest priority context).
+         - Else: return PR body.
+       - If not PR (or is just Issue): return Issue body.
+    3. If no number found in branch (or extraction failed):
+       - Search for open PR where head branch matches `branch_name`.
+       - If matching PR found, recurse logic as if it was a PR number.
+       
+    Returns:
+        The body text of the most relevant Issue or PR, or None if not found.
+    """
+    try:
+        # 1. Try to extract number from branch
+        item_number = extract_number_from_branch(branch_name)
+        
+        if item_number:
+            repo = gh_client.get_repository(repo_name)
+            
+            # Check if it is a PR
+            try:
+                # Note: PyGithub get_pull raises UnknownObjectException if number is not a PR (even if it's an Issue)
+                # But get_issue works for both (mostly).
+                # We want to treat it as PR if possible to check for linked issues.
+                pr = repo.get_pull(item_number)
+                
+                # It is a PR
+                logger.info(f"Branch '{branch_name}' corresponds to PR #{item_number}")
+                
+                # Check for closing issues
+                closing_issue_ids = gh_client.get_pr_closing_issues(repo_name, item_number)
+                if closing_issue_ids:
+                    # Fetch the first closing issue
+                    closing_issue_id = closing_issue_ids[0]
+                    logger.info(f"PR #{item_number} closes issue #{closing_issue_id}. Using issue body.")
+                    issue = repo.get_issue(closing_issue_id)
+                    return issue.body
+                else:
+                    logger.info(f"PR #{item_number} has no linked closing issues. Using PR body.")
+                    return pr.body
+                    
+            except Exception:
+                # Not a PR, or get_pull failed. Treat as Issue.
+                logger.info(f"Branch '{branch_name}' number #{item_number} treated as Issue")
+                issue = repo.get_issue(item_number)
+                return issue.body
+                
+        else:
+            # 2. No number in branch name (e.g. feature-branch)
+            # Find PR by branch name
+            logger.info(f"No number in branch '{branch_name}'. Searching for PRs with this head branch.")
+            pr_data = gh_client.find_pr_by_head_branch(repo_name, branch_name)
+            
+            if pr_data:
+                pr_number = pr_data.get("number")
+                if pr_number:
+                    logger.info(f"Found PR #{pr_number} for branch '{branch_name}'. processing as PR.")
+                    # Recurse or duplicate logic? Duplicate slightly to avoid infinite recursion risk if simple
+                    # Reuse the same logic by calling with mocked branch name or just jumping to PR logic
+                    return _resolve_issue_body(repo_name, f"pr-{pr_number}", gh_client)
+            
+            logger.info(f"No context found for branch '{branch_name}'")
+            return None
+            
+    except Exception as e:
+        logger.warning(f"Error resolving issue body for branch '{branch_name}': {e}")
+        return None
+
+
 @log_calls  # type: ignore[misc]
 def apply_workspace_test_fix(
     config: AutomationConfig,
@@ -471,11 +612,24 @@ def apply_workspace_test_fix(
                 history_parts.append(f"Attempt {attempt_num}:\n" f"  LLM Output: {llm_output_truncated}\n" f"  Test Result: {test_errors_truncated}")
             history_text = "\n\n".join(history_parts)
 
+        # Try to resolve issue/PR body
+        issue_body = None
+        try:
+            current_branch = get_current_branch()
+            repo_name = get_current_repo_name()
+            if current_branch and repo_name:
+                logger.info(f"Resolving issue/PR context for branch '{current_branch}'")
+                gh_client = GitHubClient.get_instance()
+                issue_body = _resolve_issue_body(repo_name, current_branch, gh_client)
+        except Exception as e:
+            logger.warning(f"Failed to fetch issue context for test fix: {e}")
+
         fix_prompt = render_prompt(
             "tests.workspace_fix",
             error_summary=error_summary[: config.MAX_PROMPT_SIZE],
             test_command=test_result.get("command", "pytest -q --maxfail=1"),
             attempt_history=history_text,
+            issue_body=issue_body,
         )
 
         # Use the LLM backend manager to run the prompt
@@ -643,6 +797,20 @@ def fix_to_pass_tests(
             )
         except Exception:
             logger.warning("Failed to write LLM output log for fix-to-pass-tests", exc_info=True)
+
+        try:
+            repo_name_for_log = get_current_repo_name() or "unknown_repo"
+            _write_test_log_json(
+                repo_name=repo_name_for_log,
+                test_file=current_test_file,
+                attempt=attempt,
+                test_result=test_result,
+                fix_result=fix_response,
+                post_test_result=post_result,
+                timestamp=log_timestamp,
+            )
+        except Exception:
+            logger.warning("Failed to write JSON test log", exc_info=True)
 
         post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
         post_error_summary = extract_important_errors(_to_test_result(post_result))
