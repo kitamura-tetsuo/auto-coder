@@ -272,6 +272,39 @@ def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
         logger.warning(f"Failed to remove {path}: {exc}")
 
 
+def _process_cmd_result(result: Any, command: str, test_file: Optional[str] = None) -> Dict[str, Any]:
+    """Process command result and try to extract structured logs from JSON if available."""
+    # Default use captured stdout/stderr
+    stdout = result.stdout
+    stderr = result.stderr
+    
+    # Try to find JSON log path
+    # Pattern matching "Test log saved to: /path/to/log.json"
+    match = re.search(r"Test log saved to:\s+(.+)$", stdout, re.MULTILINE)
+    if match:
+        log_path_str = match.group(1).strip()
+        log_path = Path(log_path_str)
+        if log_path.exists():
+            try:
+                data = json.loads(log_path.read_text(encoding="utf-8"))
+                # Use clean stdout/stderr from JSON
+                stdout = data.get("stdout", "")
+                stderr = data.get("stderr", "")
+                logger.debug(f"Loaded structured test logs from {log_path}")
+            except Exception as e:
+                logger.warning(f"Failed to read/parse test log JSON from {log_path}: {e}")
+    
+    return {
+        "success": result.success,
+        "output": stdout,
+        "errors": stderr,
+        "return_code": result.returncode,
+        "command": command,
+        "test_file": test_file,
+        "stability_issue": False,
+    }
+
+
 def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -> Dict[str, Any]:
     """Run local tests using configured script or pytest fallback.
 
@@ -342,76 +375,39 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 logger.info(f"Running only the specified test file via script: {test_file}")
                 cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
-                return {
-                    "success": result.success,
-                    "output": result.stdout,
-                    "errors": result.stderr,
-                    "return_code": result.returncode,
-                    "command": " ".join(cmd_list),
-                    "test_file": test_file,
-                    "stability_issue": False,
-                }
+                return _process_cmd_result(result, " ".join(cmd_list), test_file)
 
         # Always run via test script
         cmd_list = ["bash", config.TEST_SCRIPT_PATH]
         logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
-        logger.info(f"Finished local tests. {'Passed' if result.success else 'Failed'}")
+        
+        processed_result = _process_cmd_result(result, " ".join(cmd_list), None)
+        logger.info(f"Finished local tests. {'Passed' if processed_result['success'] else 'Failed'}")
 
         # If the test run failed and isolate_single_test_on_failure is enabled in config.toml,
         # try to extract the first failed test file and run it via the script
-        if not result.success and get_isolate_single_test_on_failure_from_config():
+        if not processed_result['success'] and get_isolate_single_test_on_failure_from_config():
             # Extract the first failed test file from the output
-            first_failed_test = extract_first_failed_test(result.stdout, result.stderr)
+            first_failed_test = extract_first_failed_test(processed_result['output'], processed_result['errors'])
             if first_failed_test:
                 logger.info(f"Detected failing test file {first_failed_test}; rerunning targeted script")
-                # Store the full suite result for comparison
-                full_suite_result = {
-                    "success": result.success,
-                    "output": result.stdout,
-                    "errors": result.stderr,
-                    "return_code": result.returncode,
-                    "command": " ".join(cmd_list),
-                }
-
+                
                 # Run the isolated test
                 isolated_cmd_list = ["bash", config.TEST_SCRIPT_PATH, first_failed_test]
-                isolated_result = cmd.run_command(isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
+                isolated_result_raw = cmd.run_command(isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
+                isolated_result = _process_cmd_result(isolated_result_raw, " ".join(isolated_cmd_list), first_failed_test)
 
                 # Check for stability issue: failed in full suite but passed in isolation
-                if isolated_result.success:
+                if isolated_result['success']:
                     logger.warning(f"Test stability issue detected: {first_failed_test} failed in full suite but passed in isolation")
-                    return {
-                        "success": False,
-                        "output": isolated_result.stdout,
-                        "errors": isolated_result.stderr,
-                        "return_code": isolated_result.returncode,
-                        "command": " ".join(isolated_cmd_list),
-                        "test_file": first_failed_test,
-                        "stability_issue": True,
-                        "full_suite_result": full_suite_result,
-                    }
+                    isolated_result['stability_issue'] = True
+                    isolated_result['full_suite_result'] = processed_result
+                    return isolated_result
                 else:
-                    # Test still fails in isolation, return the isolated result
-                    return {
-                        "success": isolated_result.success,
-                        "output": isolated_result.stdout,
-                        "errors": isolated_result.stderr,
-                        "return_code": isolated_result.returncode,
-                        "command": " ".join(isolated_cmd_list),
-                        "test_file": first_failed_test,
-                        "stability_issue": False,
-                    }
+                    return isolated_result
 
-        return {
-            "success": result.success,
-            "output": result.stdout,
-            "errors": result.stderr,
-            "return_code": result.returncode,
-            "command": " ".join(cmd_list),
-            "test_file": None,
-            "stability_issue": False,
-        }
+        return processed_result
     except Exception as e:
         logger.error(f"Local test execution failed: {e}")
         return {
