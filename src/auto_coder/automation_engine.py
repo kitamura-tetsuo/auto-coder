@@ -395,7 +395,8 @@ class AutomationEngine:
                     if created_at_str:
                         # Parse the timestamp string
                         # Example: "2024-07-15T12:34:56Z"
-                        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                        # Python 3.11+ supports 'Z' in fromisoformat
+                        created_at = datetime.fromisoformat(created_at_str)
 
                         # Ensure it's timezone-aware (UTC)
                         if created_at.tzinfo is None:

@@ -529,14 +529,15 @@ class GitHubClient:
 
                 for node in nodes:
                     # Extract linked PRs (open only)
-                    linked_prs = []
                     timeline_items = node.get("timelineItems", {}).get("nodes", [])
-                    for item in timeline_items:
-                        if not item:
-                            continue
-                        source = item.get("source", {})
-                        if source and source.get("state") == "OPEN" and "number" in source:
-                            linked_prs.append(source["number"])
+                    linked_prs = [
+                        item["source"]["number"]
+                        for item in timeline_items
+                        if item
+                        and (source := item.get("source"))
+                        and source.get("state") == "OPEN"
+                        and "number" in source
+                    ]
 
                     # Extract open sub-issues
                     sub_issues_nodes = node.get("subIssues", {}).get("nodes", [])
