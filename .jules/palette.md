@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2025-12-30 - Visual Progress for Wait Times
+**Learning:** When the CLI enters a sleep or cooldown state, a simple text countdown often feels unresponsive. Adding a visual progress bar (even for time-based waits) provides a clear visual cue of "work remaining" and makes the wait feel shorter and more deterministic.
+**Action:** Use a visual progress bar (with `NO_COLOR` ASCII fallback) for all sleep/cooldown phases > 3 seconds.

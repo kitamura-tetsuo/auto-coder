@@ -66,7 +66,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with progress bar.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -84,9 +84,22 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    bar_width = 20
 
     try:
         for remaining in range(seconds, 0, -1):
+            # Calculate progress (how much time has passed)
+            # elapsed starts at 0 and goes up to seconds-1
+            elapsed = seconds - remaining
+            progress = elapsed / seconds
+            filled = int(bar_width * progress)
+
+            # Format progress bar
+            if no_color:
+                bar = "[" + "=" * filled + "." * (bar_width - filled) + "]"
+            else:
+                bar = "[" + "█" * filled + "░" * (bar_width - filled) + "]"
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,10 +111,12 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            message = f"Sleeping... {bar} {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
+                # We style the whole message for consistency, but maybe keep bar colored?
+                # Let's keep it simple and dim everything as it's a "background" wait task
                 message = click.style(message, fg="bright_black")
 
             stream.write(f"\r{message}")
