@@ -26,7 +26,12 @@ from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test
+from .test_log_utils import (
+    _collect_playwright_candidates,
+    _detect_failed_test_library,
+    extract_first_failed_test,
+    extract_playwright_passed_count,
+)
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, log_action
@@ -626,7 +631,7 @@ def apply_workspace_test_fix(
 
         fix_prompt = render_prompt(
             "tests.workspace_fix",
-            error_summary=error_summary[: config.MAX_PROMPT_SIZE],
+            error_summary=error_summary,
             test_command=test_result.get("command", "pytest -q --maxfail=1"),
             attempt_history=history_text,
             issue_body=issue_body,
@@ -1031,6 +1036,22 @@ def extract_important_errors(test_result: TestResult) -> str:
     prefix = ""
     if test_result.stability_issue:
         prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+
+    # Detect Playwright and prepend summary
+    if _detect_failed_test_library(full_output) == "playwright":
+        passed_count = extract_playwright_passed_count(full_output)
+        failed_tests = _collect_playwright_candidates(full_output)
+
+        summary_lines = ["Playwright Test Summary:"]
+        summary_lines.append(f"Passed: {passed_count}")
+        summary_lines.append(f"Failed: {len(failed_tests)}")
+        if failed_tests:
+            summary_lines.append("Failed Tests:")
+            for t in failed_tests:
+                summary_lines.append(f"- {t}")
+        summary_lines.append("\n")
+
+        prefix += "\n".join(summary_lines)
 
     if not full_output:
         return prefix + "Tests failed but no error output available"

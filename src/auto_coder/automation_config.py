@@ -139,7 +139,7 @@ class AutomationConfig:
         object.__setattr__(self, "REPORTS_DIR", "reports")
         object.__setattr__(self, "TEST_SCRIPT_PATH", "scripts/test.sh")
         object.__setattr__(self, "MAX_PR_DIFF_SIZE", 2000)
-        object.__setattr__(self, "MAX_PROMPT_SIZE", 1000)
+        object.__setattr__(self, "MAX_PROMPT_SIZE", 2000)
         object.__setattr__(self, "MAX_RESPONSE_SIZE", 200)
         object.__setattr__(self, "max_issues_per_run", -1)
         object.__setattr__(self, "max_prs_per_run", -1)
@@ -439,7 +439,7 @@ class AutomationConfig:
 
     # Limits
     MAX_PR_DIFF_SIZE: int = 2000
-    MAX_PROMPT_SIZE: int = 1000
+    MAX_PROMPT_SIZE: int = 2000
     MAX_RESPONSE_SIZE: int = 200
     max_issues_per_run: int = -1
     max_prs_per_run: int = -1

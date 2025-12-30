@@ -269,3 +269,27 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         return candidates[0]
 
     return None
+
+
+def extract_playwright_passed_count(text: str) -> int:
+    """Extract the number of passed tests from Playwright output.
+
+    Args:
+        text: The test output text to analyze
+
+    Returns:
+        Number of passed tests (0 if none found)
+    """
+    text = _strip_ansi(text)
+    if not text:
+        return 0
+
+    # Match patterns like "  5 passed" or "  5 passed (5s)"
+    matches = re.findall(r"^\s*(\d+)\s+passed", text, re.MULTILINE)
+    if matches:
+        try:
+            return int(matches[-1])
+        except ValueError:
+            pass
+            
+    return 0
