@@ -2207,7 +2207,8 @@ def _apply_github_actions_fix(
 
     try:
         # Get commit log since branch creation
-        commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+        branch_name = pr_data.get("head", {}).get("ref")
+        commit_log = get_commit_log(base_branch=config.MAIN_BRANCH, current_branch=branch_name)
 
         # Extract important error information from GitHub Actions logs using extract_important_errors
         github_test_result = TestResult(
@@ -2319,7 +2320,8 @@ def _apply_local_test_fix(
                 return actions, llm_response
 
             # Get commit log since branch creation
-            commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+            branch_name = pr_data.get("head", {}).get("ref")
+            commit_log = get_commit_log(base_branch=config.MAIN_BRANCH, current_branch=branch_name)
 
             # Format attempt history for inclusion in prompt
             history_text = ""
