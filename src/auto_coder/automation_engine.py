@@ -916,6 +916,7 @@ class AutomationEngine:
         llm_backend_manager: Any,
         max_attempts: Optional[int] = None,
         message_backend_manager: Optional[Any] = None,
+        enable_github_action: bool = False,
     ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
@@ -934,6 +935,7 @@ class AutomationEngine:
                     llm_backend_manager,
                     max_attempts,
                     message_backend_manager,
+                    enable_github_action=enable_github_action,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
@@ -944,6 +946,7 @@ class AutomationEngine:
             llm_backend_manager,
             max_attempts,
             message_backend_manager,
+            enable_github_action=enable_github_action,
         )
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:

@@ -20,7 +20,10 @@ from .git_utils import (
     git_commit_with_retry,
     git_push,
     save_commit_failure_history,
+    get_current_commit_sha,
+    check_unpushed_commits,
 )
+import time
 from .github_client import GitHubClient
 from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
@@ -35,6 +38,7 @@ from .test_log_utils import (
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, log_action
+from .util.github_action import _get_github_actions_logs
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -430,6 +434,166 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
+
+@log_calls
+def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str, Any]:
+    """Run tests via GitHub Action by committing and pushing.
+
+    1. Commit current changes (if any).
+    2. Push to current branch.
+    3. Wait for GitHub Action checks to complete.
+    4. Compile results.
+    """
+    logger.info("Preparing to run tests via GitHub Action...")
+
+    # 1. Commit changes
+    committed = False
+    status_result = cmd.run_command(["git", "status", "--porcelain"])
+    
+    if status_result.success and status_result.stdout.strip():
+        try:
+            commit_msg = f"Auto-fix: attempting to pass tests (attempt {attempt})"
+            result = git_commit_with_retry(commit_msg)
+            committed = result.success
+        except Exception as e:
+            logger.warning(f"Commit failed: {e}")
+    else:
+        logger.info("No changes to commit (clean workspace)")
+
+    # 2. Push changes
+    # Only push if we committed something OR if there are unpushed commits
+    should_push = committed or check_unpushed_commits()
+    
+    if should_push:
+        try:
+            git_push(force=False) # Should we force? safer not to, assuming we are on a synced branch
+        except Exception as e:
+            logger.error(f"Failed to push changes: {e}")
+            return {
+                "success": False,
+                "output": "",
+                "errors": f"Failed to push changes to GitHub: {e}",
+                "return_code": -1,
+                "command": "git push",
+                "test_file": None,
+                "stability_issue": False,
+            }
+    else:
+        logger.info("No new commits and no unpushed changes. Using existing GitHub Action results.")
+
+    # 3. Get current SHA
+    sha = get_current_commit_sha()
+    logger.info(f"Target commit {sha}. Waiting for checks...")
+
+    # 4. Wait for checks
+    # We poll get_check_runs every N seconds
+    gh_client = GitHubClient.get_instance()
+    repo_name = get_current_repo_name()
+    if not repo_name:
+         return {
+            "success": False,
+            "output": "",
+            "errors": "Could not determine repository name",
+            "return_code": -1,
+            "command": "git push",
+            "test_file": None,
+            "stability_issue": False,
+        }
+
+    start_time = time.time()
+    # If we didn't push, we expect results immediately. Don't wait too long if they don't exist.
+    timeout = 60 * 30  # 30 minutes timeout
+    
+    # If we didn't push, allow a quick check for existing results without waiting loop if possible
+    # But sticking to the loop is safer, just maybe fail fast if empty?
+    
+    while True:
+        if time.time() - start_time > timeout:
+            return {
+                "success": False,
+                "output": "",
+                "errors": "Timed out waiting for GitHub Action checks",
+                "return_code": -1,
+                "command": "wait_for_checks",
+                "test_file": None,
+                "stability_issue": False,
+            }
+
+        check_runs = gh_client.get_check_runs(repo_name, sha)
+        
+        # Filter for relevant checks? For now convert all to a result.
+        # If no checks found yet, wait.
+        if not check_runs:
+             if not should_push:
+                 # If we didn't push, and there are no checks, maybe we shouldn't wait forever?
+                 # But maybe checks are lagging?
+                 # Let's wait a bit shorter time? Or just warn?
+                 # User said "adopt the result ... that has already been executed". 
+                 # If none executed, that's a problem. 
+                 # Let's retry a few times then fail?
+                 if time.time() - start_time > 30: # Wait at most 30 seconds for existing checks
+                      return {
+                        "success": False,
+                        "output": "",
+                        "errors": "No GitHub Action checks found for the current commit.",
+                        "return_code": -1,
+                        "command": "github_action_checks",
+                        "test_file": None,
+                        "stability_issue": False,
+                    }
+
+             logger.info("No check runs found yet. Waiting...")
+             time.sleep(10)
+             continue
+
+        # Check statuses
+        # We look for "completed" status.
+        all_completed = all(run["status"] == "completed" for run in check_runs)
+        
+        if all_completed:
+            # Analyze results
+            failed_runs = [run for run in check_runs if run["conclusion"] != "success"]
+            success = len(failed_runs) == 0
+            
+            output_lines = []
+            error_lines = []
+            
+            if not success:
+               # Use shared routine to get logs
+               # failed_runs struct matches expectation (has details_url)
+               try:
+                   logs = _get_github_actions_logs(repo_name, config, failed_runs)
+                   output_lines.append(logs)
+               except Exception as e:
+                   logger.error(f"Failed to get GitHub Action logs: {e}")
+                   output_lines.append(f"Failed to retrieve detailed logs: {e}")
+
+            for run in check_runs:
+                # Brief summary for each run
+                status_str = f"Check: {run['name']} - {run['conclusion']}"
+                if run['conclusion'] != "success":
+                   error_lines.append(status_str)
+                   if run.get('output') and run['output'].get('title'):
+                        error_lines.append(f"  Title: {run['output']['title']}")
+                else:
+                   output_lines.append(status_str)
+            
+            return {
+                "success": success,
+                "output": "\n".join(output_lines),
+                "errors": "\n".join(error_lines),
+                "return_code": 0 if success else 1,
+                "command": "github_action_checks",
+                "test_file": None,
+                "stability_issue": False,
+            }
+
+        # If not all completed
+        completed_count = sum(1 for run in check_runs if run["status"] == "completed")
+        logger.info(f"Waiting for checks: {completed_count}/{len(check_runs)} completed")
+        time.sleep(15)
+
+
 @log_calls  # type: ignore[misc]
 def apply_test_stability_fix(
     config: AutomationConfig,
@@ -673,6 +837,7 @@ def fix_to_pass_tests(
     llm_backend_manager: "BackendManager",
     max_attempts: Optional[int] = None,
     message_backend_manager: Optional["BackendManager"] = None,
+    enable_github_action: bool = False,
 ) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
 
@@ -720,7 +885,10 @@ def fix_to_pass_tests(
             attempt += 1
             summary["attempts"] = attempt
             logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
-            test_result = run_local_tests(config, test_file=current_test_file)
+            if enable_github_action:
+                test_result = run_github_action_tests(config, attempt)
+            else:
+                test_result = run_local_tests(config, test_file=current_test_file)
             # Update the current test file being fixed
             current_test_file = test_result.get("test_file")
         if test_result["success"]:
@@ -780,8 +948,14 @@ def fix_to_pass_tests(
         # Re-run tests AFTER LLM edits to measure change and decide commit
         attempt += 1
         summary["attempts"] = attempt
-        logger.info(f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})")
-        post_result = run_local_tests(config, test_file=current_test_file)
+        # Re-run tests AFTER LLM edits to measure change and decide commit
+        attempt += 1
+        summary["attempts"] = attempt
+        logger.info(f"Re-running tests after LLM fix (attempt {attempt}/{attempts_limit})")
+        if enable_github_action:
+            post_result = run_github_action_tests(config, attempt)
+        else:
+            post_result = run_local_tests(config, test_file=current_test_file)
 
         log_timestamp = datetime.now()
         backend_for_log = fix_response.backend

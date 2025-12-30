@@ -45,6 +45,7 @@ from .git_info import (
     get_current_repo_name,
     is_git_repository,
     parse_github_repo_from_url,
+    get_current_commit_sha,
 )
 
 # Import CommandExecutor and CommandResult for test compatibility
@@ -61,6 +62,7 @@ __all__ = [
     "get_current_repo_name",
     "is_git_repository",
     "parse_github_repo_from_url",
+    "get_current_commit_sha",
     # From git_branch.py
     "branch_context",
     "branch_exists",
