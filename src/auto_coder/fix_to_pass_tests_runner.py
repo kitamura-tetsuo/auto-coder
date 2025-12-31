@@ -793,10 +793,14 @@ def apply_workspace_test_fix(
         except Exception as e:
             logger.warning(f"Failed to fetch issue context for test fix: {e}")
 
+        test_command = test_result.get("command", "pytest -q --maxfail=1")
+        if test_command == "github_action_checks":
+            test_command = "scripts/test.sh"
+
         fix_prompt = render_prompt(
             "tests.workspace_fix",
             error_summary=error_summary,
-            test_command=test_result.get("command", "pytest -q --maxfail=1"),
+            test_command=test_command,
             attempt_history=history_text,
             issue_body=issue_body,
         )
