@@ -121,6 +121,16 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
         # Combine stdout and stderr for error detection
         error_output = f"{result.stdout}\n{result.stderr}"
 
+        # Check if the failure is simply because there is nothing to commit
+        if "nothing to commit" in error_output.lower() or "no changes added to commit" in error_output.lower():
+            logger.info("Nothing to commit, treating as success")
+            return CommandResult(
+                success=True,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                returncode=0,
+            )
+
         # Check for formatter-specific errors
         is_dprint_error = "dprint fmt" in error_output or "Formatting issues detected" in error_output
         is_black_error = _is_black_error(error_output)
