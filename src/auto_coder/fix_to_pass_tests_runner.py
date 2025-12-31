@@ -1041,9 +1041,20 @@ def fix_to_pass_tests(
             cleanup_llm_task_file()
 
         # Stage and commit; detect 'no changes' as an immediate error per requirement
-        add_res = cmd.run_command(["git", "add", "."])
+        # Stage and commit; detect 'no changes' as an immediate error per requirement
+        # Use -A to ensure all changes (including deletions) are staged
+        add_res = cmd.run_command(["git", "add", "-A"])
         if not add_res.success:
             errmsg = f"Failed to stage changes: {add_res.stderr}"
+            logger.error(errmsg)
+            summary["messages"].append(errmsg)
+            break
+
+        # Verify that changes were actually staged
+        # git diff --cached --quiet returns 0 if NO changes are staged, 1 if changes EXIST
+        diff_res = cmd.run_command(["git", "diff", "--cached", "--quiet"])
+        if diff_res.returncode == 0:
+            errmsg = "No changes staged for commit despite significant test output change being detected."
             logger.error(errmsg)
             summary["messages"].append(errmsg)
             break
