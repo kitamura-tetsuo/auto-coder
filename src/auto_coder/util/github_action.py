@@ -1364,7 +1364,7 @@ def _search_github_actions_logs_from_history(
     config: AutomationConfig,
     failed_checks: List[Dict[str, Any]],
     pr_data: Optional[Dict[str, Any]] = None,
-    max_runs: int = 10,
+    max_runs: int = 1,
 ) -> Optional[str]:
     """Search for GitHub Actions logs from recent runs.
 
@@ -1377,7 +1377,7 @@ def _search_github_actions_logs_from_history(
         config: AutomationConfig instance
         failed_checks: List of failed check dictionaries with details_url
         pr_data: Optional PR data dictionary for commit-specific filtering
-        max_runs: Maximum number of recent runs to search (default: 10)
+        max_runs: Maximum number of recent runs to search (default: 1)
 
     Returns:
         String containing the first successful logs found from historical runs,
@@ -1754,7 +1754,7 @@ def _get_github_actions_logs(
             return "No detailed logs available"
 
         # Try historical search first
-        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=10)
+        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=1)
 
         if historical_logs:
             logger.info("Historical search succeeded: Found logs from commit history")
