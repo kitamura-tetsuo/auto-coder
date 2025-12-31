@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.progress_decorators import progress_stage
 
@@ -1512,7 +1512,7 @@ def _search_github_actions_logs_from_history(
     return None
 
 
-def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
+def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
     """Download and parse Playwright JSON logs from GitHub Artifacts using direct API calls.
 
     Args:
@@ -1520,7 +1520,9 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
         run_id: GitHub Action run ID
 
     Returns:
-        Formatted log string if successful, None otherwise.
+        Tuple containing:
+        - Formatted log string if successful, None otherwise.
+        - List of raw JSON artifact contents (dicts) if successful, None otherwise.
         Raises specific exceptions if download fails which should stop the process.
     """
     logger.info(f"Attempting to download Playwright artifacts for run {run_id}")
@@ -1549,15 +1551,15 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
                 response = h_client.get(list_url, headers=headers, timeout=30)
                 if response.status_code != 200:
                     logger.warning(f"Failed to list artifacts: {response.status_code} {response.text}")
-                    return None
+                    return None, None
                 data = response.json()
         except ImportError:
             # Fallback if httpx not available (though it is used in GitHubClient)
              logger.error("httpx module required but not found (unexpected).")
-             return None
+             return None, None
         except Exception as e:
              logger.warning(f"Exception listing artifacts: {e}")
-             return None
+             return None, None
 
         artifacts = data.get("artifacts", [])
         
@@ -1571,7 +1573,7 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
         
         if not target_artifact:
             logger.info("No active e2e-artifacts-* found for this run.")
-            return None
+            return None, None
 
         artifact_id = target_artifact.get("id")
         artifact_name = target_artifact.get("name")
@@ -1630,16 +1632,21 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
             
             if not json_files:
                 logger.info("No JSON logs found in artifact.")
-                return None
+                return None, None
+            
+            # Sort files to ensure deterministic order (workflow order)
+            json_files.sort()
             
             log_output = []
+            raw_artifacts = []
             for jf in json_files:
                 try:
                     with open(jf, "r", encoding="utf-8") as f:
                         content = json.load(f)
                     
                     if "suites" in content and "errors" in content:
-                        parsed_text = _parse_playwright_json_content(content)
+                        raw_artifacts.append(content)
+                        parsed_text = parse_playwright_json_report(content)
                         if parsed_text:
                             # Extract useful title for the block
                             # Maybe "New Test" vs "Core Test" based on file name or content?
@@ -1647,19 +1654,19 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
                 except Exception as e:
                     logger.warning(f"Failed to parse JSON log {jf}: {e}")
             
-            if log_output:
-                return "\n\n".join(log_output)
+            if log_output or raw_artifacts:
+                return ("\n\n".join(log_output) if log_output else ""), raw_artifacts
             
-            return None
+            return None, None
 
     except Exception as e:
         if "USER_STOP_REQUEST" in str(e):
              raise e
         logger.warning(f"Error handling Playwright artifacts: {e}")
-        return None
+        return None, None
 
 
-def _parse_playwright_json_content(report: Dict[str, Any]) -> str:
+def parse_playwright_json_report(report: Dict[str, Any]) -> str:
     """Parse Playwright JSON report to extract failures."""
     output = []
     
@@ -1713,7 +1720,7 @@ def _get_github_actions_logs(
     *args: Any,
     search_history: Optional[bool] = None,
     **kwargs: Any,
-) -> str:
+) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
     """Get GitHub Actions failed job logs via gh api and return extracted error locations.
 
     Args:
@@ -1727,7 +1734,9 @@ def _get_github_actions_logs(
         **kwargs: Additional keyword arguments (for future use)
 
     Returns:
-        String containing GitHub Actions logs
+        Tuple containing:
+        - String containing GitHub Actions logs
+        - Optional list of raw JSON artifacts
 
     Call compatibility:
     - _get_github_actions_logs(repo, config, failed_checks)
@@ -1751,14 +1760,14 @@ def _get_github_actions_logs(
 
         if not failed_checks:
             # No failed_checks provided
-            return "No detailed logs available"
+            return "No detailed logs available", None
 
         # Try historical search first
         historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=1)
 
         if historical_logs:
             logger.info("Historical search succeeded: Found logs from commit history")
-            return historical_logs
+            return historical_logs, None
 
         logger.info("Historical search failed or found no logs, falling back to current behavior")
 
@@ -1775,9 +1784,10 @@ def _get_github_actions_logs(
         pr_data = args[1]
     if not failed_checks:
         # Unknown call
-        return "No detailed logs available"
+        return "No detailed logs available", None
 
     logs: List[str] = []
+    artifacts_list: List[Dict[str, Any]] = []
 
     try:
         # 1) Try to get Playwright artifact logs first if we can identify a run ID
@@ -1793,13 +1803,15 @@ def _get_github_actions_logs(
         # If we found run IDs, try artifacts
         for run_id in run_ids:
             try:
-                artifact_logs = _get_playwright_artifact_logs(repo_name, int(run_id))
+                artifact_logs, raw_artifacts_data = _get_playwright_artifact_logs(repo_name, int(run_id))
                 if artifact_logs:
                      logs.append(artifact_logs)
+                if raw_artifacts_data:
+                     artifacts_list.extend(raw_artifacts_data)
             except Exception as e:
                 if "USER_STOP_REQUEST" in str(e):
                     # Propagate this specific error up
-                    return f"STOP: {str(e)}"
+                    return f"STOP: {str(e)}", None
                 # Otherwise, continue to other methods
                 logger.warning(f"Could not get artifact logs: {e}")
 
@@ -1901,7 +1913,7 @@ def _get_github_actions_logs(
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
 
-    return "\n\n".join(logs) if logs else "No detailed logs available"
+    return "\n\n".join(logs) if logs else "No detailed logs available", artifacts_list if artifacts_list else None
 
 
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:

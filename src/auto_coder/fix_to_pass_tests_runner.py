@@ -38,7 +38,7 @@ from .test_log_utils import (
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, log_action
-from .util.github_action import _get_github_actions_logs
+from .util.github_action import _get_github_actions_logs, parse_playwright_json_report
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -93,6 +93,7 @@ def _to_test_result(data: Any) -> TestResult:
         stability_issue=bool(data.get("stability_issue", False)),
         extraction_context=extraction_ctx,
         framework_type=data.get("framework_type"),
+        json_artifact=data.get("json_artifact"),
     )
 
 
@@ -558,11 +559,12 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
             output_lines = []
             error_lines = []
             
+            json_artifacts = None
             if not success:
                # Use shared routine to get logs
                # failed_runs struct matches expectation (has details_url)
                try:
-                   logs = _get_github_actions_logs(repo_name, config, failed_runs)
+                   logs, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
                    output_lines.append(logs)
                except Exception as e:
                    logger.error(f"Failed to get GitHub Action logs: {e}")
@@ -586,6 +588,7 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
                 "command": "github_action_checks",
                 "test_file": None,
                 "stability_issue": False,
+                "json_artifact": json_artifacts,
             }
 
         # If not all completed
@@ -1213,6 +1216,19 @@ def extract_important_errors(test_result: TestResult) -> str:
     """
     if test_result.success:
         return ""
+
+    # Prioritize JSON artifact if available (e.g. from GitHub Actions Playwright run)
+    if test_result.json_artifact and isinstance(test_result.json_artifact, list):
+        summaries = []
+        for artifact in test_result.json_artifact:
+            if isinstance(artifact, dict):
+                # We reuse the parsing logic that handles Playwright JSON reports
+                parsed = parse_playwright_json_report(artifact)
+                if parsed:
+                    summaries.append(parsed)
+        
+        if summaries:
+            return "\n\n".join(summaries)
 
     errors = test_result.errors or ""
     output = test_result.output or ""
