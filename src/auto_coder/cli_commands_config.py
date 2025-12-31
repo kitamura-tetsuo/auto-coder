@@ -541,9 +541,32 @@ def export(config_file: Optional[str], output: Optional[str]) -> None:
 
     if output:
         try:
-            with open(output, "w") as f:
-                json.dump(config_dict, f, indent=2)
-            click.echo(f"✅ Configuration exported to: {output}")
+            # Use os.open to ensure secure permissions (0o600)
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                # Ensure permissions are correct even if file already existed
+                os.chmod(output, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(config_dict, f, indent=2)
+                click.echo(f"✅ Configuration exported to: {output}")
+            except Exception:
+                # If os.fdopen was created successfully, it will close the fd in its __exit__.
+                # But if os.fdopen itself failed, or if an error occurred before it,
+                # we need to make sure we don't leak the fd.
+                # Since we are not catching specific exceptions from os.fdopen here,
+                # we rely on the fact that Python's GC will eventually close it,
+                # or we could complicate the logic.
+                # However, for this simple CLI command, letting the exception bubble up
+                # and relying on OS cleanup on exit (if crash) or GC is acceptable,
+                # but let's try to be cleaner by catching the specific case where
+                # we opened the fd but failed to turn it into a file object.
+                # Actually, simply re-raising is the right thing to do here.
+                # The primary goal is 0o600 permissions.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass  # Already closed or invalid
+                raise
         except Exception as e:
             click.echo(f"❌ Error exporting configuration: {e}")
     else:
