@@ -736,6 +736,7 @@ def apply_workspace_test_fix(
     llm_backend_manager: "BackendManager",
     current_test_file: Optional[str] = None,
     attempt_history: Optional[list[Dict[str, Any]]] = None,
+    enable_github_action: bool = False,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures.
 
@@ -797,12 +798,15 @@ def apply_workspace_test_fix(
         if test_command == "github_action_checks":
             test_command = "scripts/test.sh"
 
+        failure_header = "GitHub Action Check Failure Summary" if enable_github_action else "Local Test Failure Summary"
+
         fix_prompt = render_prompt(
             "tests.workspace_fix",
             error_summary=error_summary,
             test_command=test_command,
             attempt_history=history_text,
             issue_body=issue_body,
+            failure_header=failure_header,
         )
 
         # Use the LLM backend manager to run the prompt
@@ -931,6 +935,7 @@ def fix_to_pass_tests(
                 llm_backend_manager,
                 current_test_file=current_test_file,
                 attempt_history=attempt_history,
+                enable_github_action=enable_github_action,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)

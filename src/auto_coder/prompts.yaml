@@ -904,7 +904,7 @@ tests:
     - You can edit any file in the repository.
     - Apply the fix and re-run only the failed test until you are sure the fix has resolved the problem.
 
-    Local Test Failure Summary (truncated):
+    $failure_header (truncated):
     $error_summary
 
     Local test command used:
