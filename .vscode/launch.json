@@ -137,7 +137,7 @@
             "cwd": "/workspace",
             "args": [
                 "fix-to-pass-tests",
-                // "--enable-github-action",
+                "--enable-github-action",
                 "--disable-graphrag",
                 "--max-attempts",
                 "100000"

@@ -466,7 +466,7 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
     
     if should_push:
         try:
-            git_push(force=False) # Should we force? safer not to, assuming we are on a synced branch
+            git_push() # Should we force? safer not to, assuming we are on a synced branch
         except Exception as e:
             logger.error(f"Failed to push changes: {e}")
             return {

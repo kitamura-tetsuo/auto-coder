@@ -888,15 +888,60 @@ def get_github_actions_logs_from_url(url: str) -> str:
     https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
     """
     try:
+        # 1) Try to match Job URL first (specific job)
         m = re.match(
             r"https://github\.com/([^/]+)/([^/]+)/actions/runs/([0-9]+)/job/([0-9]+)",
             url,
         )
-        if not m:
-            return "Invalid GitHub Actions job URL"
+        if m:
+            owner, repo, run_id, job_id = m.groups()
+            owner_repo = f"{owner}/{repo}"
+        else:
+            # 2) Try to match Run URL (entire run) -> find failed jobs and recurse
+            m_run = re.match(
+                r"https://github\.com/([^/]+)/([^/]+)/actions/runs/([0-9]+)",
+                url,
+            )
+            if m_run:
+                owner, repo, run_id = m_run.groups()
+                owner_repo = f"{owner}/{repo}"
+                
+                # Fetch jobs to find failed ones
+                try:
+                    gh_logger = get_gh_logger()
+                    jobs_res = gh_logger.execute_with_logging(
+                        ["gh", "run", "view", run_id, "-R", owner_repo, "--json", "jobs"],
+                        repo=owner_repo,
+                        timeout=60,
+                        capture_output=True,
+                    )
+                    if jobs_res.returncode == 0 and jobs_res.stdout.strip():
+                        jobs_json = json.loads(jobs_res.stdout)
+                        failed_jobs = [j for j in jobs_json.get("jobs", []) if j.get("conclusion") == "failure"]
+                        
+                        if failed_jobs:
+                            logs_list = []
+                            for job in failed_jobs:
+                                # extracting job_id
+                                # Note: 'databaseId' is consistent with how we use it later, but 'id' might be used loosely
+                                j_id = job.get("databaseId") or job.get("id")
+                                if j_id:
+                                    # specific job url
+                                    j_url = f"https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{j_id}"
+                                    logs_list.append(get_github_actions_logs_from_url(j_url))
+                            
+                            if logs_list:
+                                return "\n\n".join(logs_list)
+                            
+                        # If no failed jobs found or no logs
+                        return f"No failed jobs found in run {run_id}"
+                except Exception as e:
+                    logger.warning(f"Error expanding run URL {url}: {e}")
+                    pass
+                
+                return "Invalid GitHub Actions job URL (Run expansion failed)"
 
-        owner, repo, run_id, job_id = m.groups()
-        owner_repo = f"{owner}/{repo}"
+            return "Invalid GitHub Actions job URL"
 
         # 1) Get job name if possible
         job_name = f"job-{job_id}"
@@ -1446,9 +1491,9 @@ def _search_github_actions_logs_from_history(
                         run_url = run.get("url")
 
                     if run_url:
-                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
+                        logs = get_github_actions_logs_from_url(run_url)
 
-                        if logs and "No detailed logs available" not in logs:
+                        if logs and "No detailed logs available" not in logs and "Invalid GitHub Actions job URL" not in logs:
                             # Prepend some metadata about where these logs came from
                             run_date = run.get("created_at", "unknown date")
                             run_branch = run.get("head_branch", "unknown branch")
@@ -1465,6 +1510,201 @@ def _search_github_actions_logs_from_history(
         return None
 
     return None
+
+
+def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Optional[str]:
+    """Download and parse Playwright JSON logs from GitHub Artifacts using direct API calls.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        run_id: GitHub Action run ID
+
+    Returns:
+        Formatted log string if successful, None otherwise.
+        Raises specific exceptions if download fails which should stop the process.
+    """
+    logger.info(f"Attempting to download Playwright artifacts for run {run_id}")
+
+    try:
+        # Use GitHubClient to get token and headers
+        client = GitHubClient.get_instance()
+        token = client.token
+        
+        # Use httpx for direct API calls (similar to client._caching_requester but we need raw access)
+        # We can use a fresh client or try to reuse one if exposed, but a fresh one for this op is safe.
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        
+        api_base = "https://api.github.com"
+        
+        # 1. List artifacts
+        list_url = f"{api_base}/repos/{repo_name}/actions/runs/{run_id}/artifacts"
+        
+        try:
+             import httpx
+             with httpx.Client() as h_client:
+                response = h_client.get(list_url, headers=headers, timeout=30)
+                if response.status_code != 200:
+                    logger.warning(f"Failed to list artifacts: {response.status_code} {response.text}")
+                    return None
+                data = response.json()
+        except ImportError:
+            # Fallback if httpx not available (though it is used in GitHubClient)
+             logger.error("httpx module required but not found (unexpected).")
+             return None
+        except Exception as e:
+             logger.warning(f"Exception listing artifacts: {e}")
+             return None
+
+        artifacts = data.get("artifacts", [])
+        
+        # Filter for e2e-artifacts-*
+        target_artifact = None
+        for artifact in artifacts:
+            name = artifact.get("name", "")
+            if name.startswith("e2e-artifacts-") and not artifact.get("expired", False):
+                target_artifact = artifact
+                break
+        
+        if not target_artifact:
+            logger.info("No active e2e-artifacts-* found for this run.")
+            return None
+
+        artifact_id = target_artifact.get("id")
+        artifact_name = target_artifact.get("name")
+        logger.info(f"Found artifact: {artifact_name} (ID: {artifact_id})")
+
+        # 2. Download the artifact (zip)
+        download_url = f"{api_base}/repos/{repo_name}/actions/artifacts/{artifact_id}/zip"
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            zip_path = os.path.join(tmp_dir, "logs.zip")
+            
+            try:
+                with httpx.Client(follow_redirects=True) as h_client:
+                    # Note: GitHub API redirects to blob storage for download
+                    dl_response = h_client.get(download_url, headers=headers, timeout=300)
+                    
+                    if dl_response.status_code != 200:
+                         logger.error(f"Failed to download artifact: {dl_response.status_code} {dl_response.text}")
+                         raise RuntimeError(f"USER_STOP_REQUEST: Failed to download artifact {artifact_name}. Status: {dl_response.status_code}")
+                    
+                    with open(zip_path, "wb") as f:
+                        for chunk in dl_response.iter_bytes():
+                            f.write(chunk)
+                            
+            except Exception as e:
+                 if "USER_STOP_REQUEST" in str(e):
+                      raise e
+                 logger.error(f"Exception downloading artifact: {e}")
+                 raise RuntimeError(f"USER_STOP_REQUEST: Failed to download artifact {artifact_name}. Error: {e}")
+
+            # 3. Extract and Parse
+            extracted_dir = os.path.join(tmp_dir, "extracted")
+            os.makedirs(extracted_dir, exist_ok=True)
+            
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extracted_dir)
+            except zipfile.BadZipFile:
+                 raise RuntimeError(f"USER_STOP_REQUEST: Downloaded artifact {artifact_name} is not a valid zip file.")
+
+            # Search for JSON logs in job_logs folder
+            job_logs_dir = os.path.join(extracted_dir, "job_logs")
+            json_files = []
+            
+            if os.path.exists(job_logs_dir):
+                for root, _, files in os.walk(job_logs_dir):
+                    for file in files:
+                        if file.endswith(".json"):
+                            json_files.append(os.path.join(root, file))
+            else:
+                # Fallback: search anywhere
+                 for root, _, files in os.walk(extracted_dir):
+                    for file in files:
+                        if file.endswith(".json"):
+                            json_files.append(os.path.join(root, file))
+            
+            if not json_files:
+                logger.info("No JSON logs found in artifact.")
+                return None
+            
+            log_output = []
+            for jf in json_files:
+                try:
+                    with open(jf, "r", encoding="utf-8") as f:
+                        content = json.load(f)
+                    
+                    if "suites" in content and "errors" in content:
+                        parsed_text = _parse_playwright_json_content(content)
+                        if parsed_text:
+                            # Extract useful title for the block
+                            # Maybe "New Test" vs "Core Test" based on file name or content?
+                            log_output.append(f"--- Artifact Log: {os.path.basename(jf)} ---\n{parsed_text}")
+                except Exception as e:
+                    logger.warning(f"Failed to parse JSON log {jf}: {e}")
+            
+            if log_output:
+                return "\n\n".join(log_output)
+            
+            return None
+
+    except Exception as e:
+        if "USER_STOP_REQUEST" in str(e):
+             raise e
+        logger.warning(f"Error handling Playwright artifacts: {e}")
+        return None
+
+
+def _parse_playwright_json_content(report: Dict[str, Any]) -> str:
+    """Parse Playwright JSON report to extract failures."""
+    output = []
+    
+    def _recurse_suites(suites: List[Dict[str, Any]]):
+        for suite in suites:
+            # Suite might have sub-suites
+            if "suites" in suite:
+                _recurse_suites(suite["suites"])
+            
+            # Suite might have specs
+            for spec in suite.get("specs", []):
+                title = spec.get("title", "Unknown Test")
+                file_path = spec.get("file", "Unknown File")
+                
+                for test in spec.get("tests", []):
+                    # Check results
+                    for result in test.get("results", []):
+                         # Status can be 'failed', 'timedOut', 'interrupted' etc.
+                         # We want failed ones. 'passed' is obviously skipped.
+                        if result.get("status") in ["failed", "timedOut", "interrupted"]:
+                             # Extract errors
+                             errors = result.get("errors", [])
+                             # Sometimes errors list is empty but status is failed (e.g. timeout without specific error obj?)
+                             if not errors and result.get("status") == "timedOut":
+                                 errors = [{"message": f"Test timed out ({result.get('duration', '?')}ms)"}]
+                                 
+                             for error in errors:
+                                 msg = error.get("message", "")
+                                 stack = error.get("stack", "")
+                                 location = error.get("location", {})
+                                 loc_str = f"{file_path}:{location.get('line', '?')}:{location.get('column', '?')}"
+                                 
+                                 clean_msg = _clean_log_line(msg)
+                                 
+                                 output.append(f"FAILED: {title}")
+                                 output.append(f"File: {loc_str}")
+                                 output.append(f"Error: {clean_msg}")
+                                 if stack:
+                                      clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                      output.append(f"Stack:\n{clean_stack}")
+                                 output.append("-" * 40)
+    
+    _recurse_suites(report.get("suites", []))
+    
+    return "\n".join(output)
 
 
 def _get_github_actions_logs(
@@ -1540,8 +1780,37 @@ def _get_github_actions_logs(
     logs: List[str] = []
 
     try:
-        # 1) First extract run_id and job_id directly from failed_checks details_url
-        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        # 1) Try to get Playwright artifact logs first if we can identify a run ID
+        # We need a run ID. failed_checks items usually have 'details_url' which contains run_id.
+        # details_url structure: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        run_ids = set()
+        for check in failed_checks:
+            details_url = check.get("details_url", "")
+            match = re.search(r"/actions/runs/(\d+)", details_url)
+            if match:
+                run_ids.add(match.group(1))
+        
+        # If we found run IDs, try artifacts
+        for run_id in run_ids:
+            try:
+                artifact_logs = _get_playwright_artifact_logs(repo_name, int(run_id))
+                if artifact_logs:
+                     logs.append(artifact_logs)
+            except Exception as e:
+                if "USER_STOP_REQUEST" in str(e):
+                    # Propagate this specific error up
+                    return f"STOP: {str(e)}"
+                # Otherwise, continue to other methods
+                logger.warning(f"Could not get artifact logs: {e}")
+
+        # If we successfully got artifact logs, we might rely entirely on them for Playwright tests?
+        # But we might have other failures too. So let's APPEND existing log methods if we didn't fill everything?
+        # Or maybe priority?
+        # If we got clean artifact logs, they are usually much better.
+        
+        # NOTE: If we found enough info, maybe return? But safer to combine with textual logs just in case.
+        
+        # 2) First extract run_id and job_id directly from failed_checks details_url (Existing method)        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
         # or https://github.com/<owner>/<repo>/runs/<job_id>
         url_to_fetch: List[str] = []
         for check in failed_checks:

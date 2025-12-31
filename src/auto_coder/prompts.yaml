@@ -912,7 +912,7 @@ tests:
      $test_command
 
     Now apply the fix directly in the repository.
-    Apply the fix and re-run the test until you are sure the fix has resolved the problem.
+    Apply the fix and re-run only the failed test until you are sure the fix has resolved the problem.
 
   test_stability_fix: |-
     You are operating directly in this repository workspace with write access.
