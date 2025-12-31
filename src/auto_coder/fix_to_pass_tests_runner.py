@@ -31,6 +31,8 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_log_utils import (
     _collect_playwright_candidates,
+    _collect_pytest_candidates,
+    _collect_vitest_candidates,
     _detect_failed_test_library,
     extract_first_failed_test,
     extract_playwright_passed_count,
@@ -350,7 +352,8 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         if test_file:
             with ProgressStage(f"Running only the specified test file via script: {test_file}"):
                 logger.info(f"Running only the specified test file via script: {test_file}")
-                cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
+                test_files = test_file.split()
+                cmd_list = ["bash", config.TEST_SCRIPT_PATH] + test_files
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 return {
                     "success": result.success,
@@ -740,6 +743,7 @@ def apply_workspace_test_fix(
     current_test_file: Optional[str] = None,
     attempt_history: Optional[list[Dict[str, Any]]] = None,
     enable_github_action: bool = False,
+    exclude_playwright: bool = False,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures.
 
@@ -759,7 +763,7 @@ def apply_workspace_test_fix(
     try:
         # Convert legacy dict payloads to TestResult for structured extraction
         tr = _to_test_result(test_result)
-        error_summary = extract_important_errors(tr)
+        error_summary = extract_important_errors(tr, exclude_playwright=exclude_playwright)
         if not error_summary:
             logger.info("Skipping LLM workspace fix because no actionable errors were extracted")
             return WorkspaceFixResult(
@@ -873,6 +877,9 @@ def fix_to_pass_tests(
 
     # Track history of previous attempts for context
     attempt_history: list[Dict[str, Any]] = []
+    
+    # State to force local execution (e.g. for small number of e2e failures)
+    force_local_run = False
 
     # Support infinite attempts (math.inf) by using a while loop
     attempt = 0  # counts actual test executions
@@ -895,16 +902,27 @@ def fix_to_pass_tests(
         else:
             attempt += 1
             summary["attempts"] = attempt
-            logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
-            if enable_github_action:
+            
+            run_via_ga = enable_github_action and not force_local_run
+            mode_str = "GitHub Action" if run_via_ga else "Local"
+            logger.info(f"Running tests (attempt {attempt}/{attempts_limit}) via {mode_str}")
+            
+            if run_via_ga:
                 test_result = run_github_action_tests(config, attempt)
             else:
                 test_result = run_local_tests(config, test_file=current_test_file)
+            
+            # Reset force_local_run after execution, re-evaluated later
+            # (Though if we failed, we might set it again)
+            force_local_run = False            
+
             # Update the current test file being fixed
+            # Note: If we ran specific files, this will be set to those files.
+            # If we ran all, it will be None.
             current_test_file = test_result.get("test_file")
         if test_result["success"]:
             if current_test_file is not None:
-                logger.info(f"Targeted test {current_test_file} passed; clearing focus before rerunning full suite")
+                logger.info(f"Targeted test passed; clearing focus before rerunning full suite")
                 current_test_file = None
                 continue
             msg = f"Local tests passed on attempt {attempt}"
@@ -913,6 +931,53 @@ def fix_to_pass_tests(
             summary["success"] = True
             cleanup_llm_task_file()
             return summary
+
+        # Analyze failures to determine priority and execution strategy
+        tr = _to_test_result(test_result)
+        # Get full error summary (including e2e) to analyze failure types
+        full_error_summary = extract_important_errors(tr, exclude_playwright=False)
+        
+        pytest_candidates = _collect_pytest_candidates(full_error_summary)
+        vitest_candidates = _collect_vitest_candidates(full_error_summary)
+        # Use simple detection for Playwright summary header to avoid double counting if regex behaves differently on summary
+        # But _collect_playwright_candidates should work on the summary text too if it contains file paths and "failed" markers
+        playwright_candidates = _collect_playwright_candidates(full_error_summary)
+
+        is_lint_or_unit = bool(pytest_candidates or vitest_candidates)
+        # If no explicit test candidates but failed, assume lint/setup error (unless it's purely playwright)
+        if not is_lint_or_unit and not playwright_candidates and test_result.get("return_code") != 0:
+             is_lint_or_unit = True
+
+        exclude_playwright = False
+        force_local_run = False
+        
+        if is_lint_or_unit:
+            logger.info("Detected Lint/Unit/Integration failures. Prioritizing these over E2E.")
+            exclude_playwright = True
+            # Build string for simple check
+            is_mixed = bool(playwright_candidates)
+            if is_mixed:
+                 logger.info("Mixed failure types detected. E2E errors will be excluded from LLM context.")
+            # Clear focus to ensure we fix the root cause (assuming lint affects all)
+            # But if we were focusing on a file and it had lint errors, maybe keep focus?
+            # For safety, let's reset only if we were focusing on E2E files specifically.
+            # If current_test_file was set manually, we might want to keep it?
+            # User requirement implies "fix these first".
+            # Cleanest approach: Reset focus to run full suite's lint/unit next time
+            current_test_file = None
+            
+        elif playwright_candidates:
+            # Only E2E failures found
+            count = len(playwright_candidates)
+            logger.info(f"Detected {count} E2E failures.")
+            if count <= 10:
+                logger.info("E2E failure count <= 10. Forcing local execution for these files.")
+                current_test_file = " ".join(playwright_candidates)
+                force_local_run = True
+            else:
+                logger.info("E2E failure count > 10. Using standard execution mode (GA if enabled).")
+                current_test_file = None
+                force_local_run = False
 
         # Check for test stability issue (failed in full suite but passed in isolation)
         if test_result.get("stability_issue", False):
@@ -939,6 +1004,7 @@ def fix_to_pass_tests(
                 current_test_file=current_test_file,
                 attempt_history=attempt_history,
                 enable_github_action=enable_github_action,
+                exclude_playwright=exclude_playwright,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
@@ -964,7 +1030,7 @@ def fix_to_pass_tests(
         attempt += 1
         summary["attempts"] = attempt
         logger.info(f"Re-running tests after LLM fix (attempt {attempt}/{attempts_limit})")
-        if enable_github_action:
+        if enable_github_action and not force_local_run:
             post_result = run_github_action_tests(config, attempt)
         else:
             post_result = run_local_tests(config, test_file=current_test_file)
@@ -1208,7 +1274,7 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
 
 
 @log_calls  # type: ignore[misc]
-def extract_important_errors(test_result: TestResult) -> str:
+def extract_important_errors(test_result: TestResult, exclude_playwright: bool = False) -> str:
     """Extract important error information from test output.
 
     Preserves multi-framework detection (pytest, Playwright, Vitest),
@@ -1248,7 +1314,7 @@ def extract_important_errors(test_result: TestResult) -> str:
         prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
 
     # Detect Playwright and prepend summary
-    if _detect_failed_test_library(full_output) == "playwright":
+    if not exclude_playwright and _detect_failed_test_library(full_output) == "playwright":
         passed_count = extract_playwright_passed_count(full_output)
         failed_tests = _collect_playwright_candidates(full_output)
 
@@ -1306,7 +1372,7 @@ def extract_important_errors(test_result: TestResult) -> str:
             re.UNICODE,
         )
         for idx, ln in enumerate(lines):
-            if header_regex.search(ln):
+            if not exclude_playwright and header_regex.search(ln):
                 header_indices.append(idx)
         # Typical expected/received patterns
         expect_regex = re.compile(r"expect\(received\).*|Expected substring:|Received string:")
@@ -1383,6 +1449,10 @@ def extract_important_errors(test_result: TestResult) -> str:
         ".spec.ts",
         "playwright",
     ]
+
+    # Filter out keywords if exclude_playwright is True
+    if exclude_playwright:
+        error_keywords = [k for k in error_keywords if k not in ["e2e/", ".spec.ts", "playwright"]]
 
     for i, line in enumerate(lines):
         line_lower = line.lower()
