@@ -358,11 +358,36 @@ class GitHubClient:
                         name
                       }
                     }
-                    comments {
+                    comments(last: 10) {
                       totalCount
+                      nodes {
+                        author {
+                          login
+                        }
+                        createdAt
+                      }
                     }
-                    commits {
+                    commits(last: 10) {
                       totalCount
+                      nodes {
+                        commit {
+                          author {
+                            user {
+                              login
+                            }
+                            date
+                          }
+                        }
+                      }
+                    }
+                    reviews(last: 10) {
+                      nodes {
+                        author {
+                          login
+                        }
+                        submittedAt
+                        state
+                      }
                     }
                     additions
                     deletions
@@ -417,6 +442,9 @@ class GitHubClient:
                         "additions": pr_node.get("additions"),
                         "deletions": pr_node.get("deletions"),
                         "changed_files": pr_node.get("changedFiles"),
+                        "reviews": pr_node.get("reviews", {}).get("nodes", []),
+                        "comments": pr_node.get("comments", {}).get("nodes", []),
+                        "commits": pr_node.get("commits", {}).get("nodes", []),
                     }
                     all_prs.append(pr_data)
 

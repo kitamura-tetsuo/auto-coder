@@ -279,43 +279,73 @@ class AutomationEngine:
                 # Check if PR is created by Jules and waiting for Jules update
                 if pr_data.get("author") == "jules":
                     try:
-                        # Lazy fetch the PR object only when needed
-                        if repo is None:
-                            repo = self.github.get_repository(repo_name)
-
-                        pr = repo.get_pull(pr_number)
-
                         last_interaction_time = None
                         last_interaction_type = None
 
-                        # Check reviews
-                        for review in pr.get_reviews():
-                            if review.user and review.user.login != "jules":
-                                if last_interaction_time is None or review.submitted_at > last_interaction_time:
-                                    last_interaction_time = review.submitted_at
-                                    last_interaction_type = review.state
+                        # Check reviews (using pre-fetched data if available)
+                        reviews_data = pr_data.get("reviews", [])
+                        # Parse review data from GraphQL structure
+                        for review in reviews_data:
+                            author = review.get("author", {})
+                            login = author.get("login") if author else None
+                            submitted_at_str = review.get("submittedAt")
+                            state = review.get("state")
 
-                        # Check comments
-                        for comment in pr.get_issue_comments():
-                            if comment.user and comment.user.login != "jules":
-                                if last_interaction_time is None or comment.created_at > last_interaction_time:
-                                    last_interaction_time = comment.created_at
+                            if login and login != "jules" and submitted_at_str:
+                                submitted_at = datetime.fromisoformat(submitted_at_str.replace("Z", "+00:00"))
+                                if last_interaction_time is None or submitted_at > last_interaction_time:
+                                    last_interaction_time = submitted_at
+                                    last_interaction_type = state
+
+                        # Check comments (using pre-fetched data if available)
+                        comments_data = pr_data.get("comments", [])
+                        for comment in comments_data:
+                            author = comment.get("author", {})
+                            login = author.get("login") if author else None
+                            created_at_str = comment.get("createdAt")
+
+                            if login and login != "jules" and created_at_str:
+                                created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                                if last_interaction_time is None or created_at > last_interaction_time:
+                                    last_interaction_time = created_at
                                     last_interaction_type = "COMMENT"
 
+                        # If we found an interaction and it's not an approval, check if Jules has responded
                         if last_interaction_time and last_interaction_type != "APPROVED":
-                            # Check for Jules commits after interaction
-                            commits = list(pr.get_commits())
                             jules_responded = False
-                            if commits:
-                                for commit in reversed(commits):
-                                    # Check commit date
-                                    commit_date = commit.commit.author.date
-                                    if commit_date > last_interaction_time:
-                                        if commit.author and commit.author.login == "jules":
-                                            jules_responded = True
-                                            break
-                                    else:
+
+                            # Check for Jules commits after interaction (using pre-fetched data)
+                            commits_data = pr_data.get("commits", [])
+
+                            # Commits from GraphQL are usually chronological, but let's sort to be safe
+                            # Or assume they are chronological and iterate reverse
+                            # The query sorts by CREATED_AT ASC for PRs, but commits list order inside node depends on API.
+                            # GraphQL `commits` connection is usually chronological.
+                            # We requested `last: 10`, so we have the latest commits.
+
+                            # Sort commits by date just in case, descending
+                            def get_commit_date(c):
+                                date_str = c.get("commit", {}).get("author", {}).get("date")
+                                if date_str:
+                                    return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                                return datetime.min.replace(tzinfo=timezone.utc)
+
+                            sorted_commits = sorted(commits_data, key=get_commit_date, reverse=True)
+
+                            for commit in sorted_commits:
+                                commit_date = get_commit_date(commit)
+
+                                # Check commit date
+                                if commit_date > last_interaction_time:
+                                    author_user = commit.get("commit", {}).get("author", {}).get("user")
+                                    # Handle case where user is None (unlinked commit author)
+                                    author_login = author_user.get("login") if author_user else None
+                                    if author_login == "jules":
+                                        jules_responded = True
                                         break
+                                else:
+                                    # Since we iterate newest first, if we hit a commit older than interaction, stop
+                                    break
 
                             if not jules_responded:
                                 logger.info(f"Skipping PR #{pr_number} - Waiting for Jules to update (requested at {last_interaction_time})")
