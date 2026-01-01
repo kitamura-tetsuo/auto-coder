@@ -189,7 +189,33 @@ def _collect_playwright_candidates(text: str) -> List[str]:
             if norm not in all_candidates:
                 all_candidates.append(norm)
 
-    return all_candidates
+    # Filter out path suffixes if a longer version exists
+    # e.g. "utils/foo.spec.ts" should be removed if "e2e/utils/foo.spec.ts" exists
+    final_candidates = []
+    # Process longer paths first to identify parents
+    unique_candidates = []
+    seen = set()
+    for c in all_candidates:
+        if c not in seen:
+            seen.add(c)
+            unique_candidates.append(c)
+            
+    sorted_candidates = sorted(unique_candidates, key=len, reverse=True)
+    
+    for cand in sorted_candidates:
+        is_suffix = False
+        for kept in final_candidates:
+            # Check if cand is a suffix of kept (e.g. "utils/foo.ts" in "e2e/utils/foo.ts")
+            # We enforce a path separator boundary to avoid matching "foo.ts" against "bar_foo.ts"
+            if kept.endswith(cand) and kept != cand:
+                if kept.endswith("/" + cand):
+                    is_suffix = True
+                    break
+        
+        if not is_suffix:
+            final_candidates.append(cand)
+    
+    return final_candidates
 
 
 def _collect_vitest_candidates(text: str) -> List[str]:
