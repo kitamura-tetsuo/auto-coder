@@ -64,13 +64,14 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
     click.echo("")  # Add spacing after summary
 
 
-def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
+def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None, label: str = "Sleeping") -> None:
     """
     Sleep for a specified number of seconds, displaying a countdown.
 
     Args:
         seconds: Number of seconds to sleep.
         stream: Output stream to write to (defaults to sys.stdout).
+        label: Label to display before the countdown (default: "Sleeping").
     """
     if stream is None:
         stream = sys.stdout
@@ -98,7 +99,7 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            message = f"{label}... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)

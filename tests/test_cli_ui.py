@@ -27,6 +27,20 @@ def test_sleep_with_countdown_execution(mock_sleep):
 
 
 @patch("time.sleep")
+def test_sleep_with_countdown_custom_label(mock_sleep):
+    """Test that sleep_with_countdown uses a custom label."""
+    # Create a mock stream
+    mock_stream = MagicMock()
+    mock_stream.isatty.return_value = True
+
+    cli_ui.sleep_with_countdown(2, stream=mock_stream, label="Waiting")
+
+    # Check output format contains custom label
+    writes = [args[0] for args, _ in mock_stream.write.call_args_list]
+    assert any("Waiting..." in w for w in writes)
+
+
+@patch("time.sleep")
 def test_sleep_with_countdown_non_interactive(mock_sleep):
     """Test that sleep_with_countdown falls back to regular sleep in non-interactive mode."""
     # Create a mock stream that returns False for isatty
