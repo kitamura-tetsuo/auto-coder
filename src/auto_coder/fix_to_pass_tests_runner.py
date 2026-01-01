@@ -1128,10 +1128,10 @@ def fix_to_pass_tests(
         # git diff --cached --quiet returns 0 if NO changes are staged, 1 if changes EXIST
         diff_res = cmd.run_command(["git", "diff", "--cached", "--quiet"])
         if diff_res.returncode == 0:
-            errmsg = "No changes staged for commit despite significant test output change being detected."
-            logger.error(errmsg)
-            summary["messages"].append(errmsg)
-            break
+            warnmsg = "No changes staged for commit despite significant test output change being detected."
+            logger.warning(warnmsg)
+            summary["messages"].append(warnmsg)
+            continue
 
         llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
