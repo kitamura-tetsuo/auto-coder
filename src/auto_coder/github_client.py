@@ -358,11 +358,36 @@ class GitHubClient:
                         name
                       }
                     }
-                    comments {
+                    comments(last: 10) {
                       totalCount
+                      nodes {
+                        author {
+                          login
+                        }
+                        createdAt
+                      }
                     }
-                    commits {
+                    reviews(last: 10) {
+                      nodes {
+                        author {
+                          login
+                        }
+                        submittedAt
+                        state
+                      }
+                    }
+                    commits(last: 10) {
                       totalCount
+                      nodes {
+                        commit {
+                          author {
+                            date
+                            user {
+                              login
+                            }
+                          }
+                        }
+                      }
                     }
                     additions
                     deletions
@@ -414,6 +439,36 @@ class GitHubClient:
                         "labels": [lbl.get("name") for lbl in pr_node.get("labels", {}).get("nodes", []) if lbl],
                         "comments_count": pr_node.get("comments", {}).get("totalCount", 0),
                         "commits_count": pr_node.get("commits", {}).get("totalCount", 0),
+                        "latest_comments": [
+                            {
+                                "author": c.get("author", {}).get("login") if c.get("author") else None,
+                                "created_at": c.get("createdAt"),
+                            }
+                            for c in pr_node.get("comments", {}).get("nodes", [])
+                            if c
+                        ],
+                        "latest_reviews": [
+                            {
+                                "author": r.get("author", {}).get("login") if r.get("author") else None,
+                                "submitted_at": r.get("submittedAt"),
+                                "state": r.get("state"),
+                            }
+                            for r in pr_node.get("reviews", {}).get("nodes", [])
+                            if r
+                        ],
+                        "latest_commits": [
+                            {
+                                "author_login": c.get("commit", {})
+                                .get("author", {})
+                                .get("user", {})
+                                .get("login")
+                                if c.get("commit", {}).get("author", {}).get("user")
+                                else None,
+                                "committed_date": c.get("commit", {}).get("author", {}).get("date"),
+                            }
+                            for c in pr_node.get("commits", {}).get("nodes", [])
+                            if c
+                        ],
                         "additions": pr_node.get("additions"),
                         "deletions": pr_node.get("deletions"),
                         "changed_files": pr_node.get("changedFiles"),
