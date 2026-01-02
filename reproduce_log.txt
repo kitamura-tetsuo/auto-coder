@@ -1,0 +1,2 @@
+2026-01-02 11:38:46.429 | DEBUG    | reproduce_log_leak.py:22 in reproduction - CALL __main__.sensitive_function(api_key='[REDACTED]')
+2026-01-02 11:38:46.431 | DEBUG    | reproduce_log_leak.py:22 in reproduction - RET  __main__.sensitive_function -> 'Processed [REDACTED]'
