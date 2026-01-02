@@ -361,11 +361,13 @@ def process_issues(
         if not open_issues_exist and not open_prs_exist:
             sleep_time = get_process_issues_empty_sleep_time_from_config()
             logger.info(f"No open issues or PRs found. Sleeping for extended time: {sleep_time} seconds...")
+            sleep_msg = "No open items, checking again in..."
         else:
             sleep_time = get_process_issues_sleep_time_from_config()
             logger.info(f"Processed {processed_issues} issues and {processed_prs} PRs (Open items detected). Sleeping for {sleep_time} seconds...")
+            sleep_msg = "Processing cooldown, next check in..."
 
-        sleep_with_countdown(sleep_time)
+        sleep_with_countdown(sleep_time, message=sleep_msg)
 
     # Close MCP session if present
     try:

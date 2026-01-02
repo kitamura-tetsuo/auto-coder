@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2025-02-18 - Contextual Waiting
+**Learning:** Generic "Sleeping..." messages leave users guessing if the tool is idle, stuck, or waiting for a specific resource (e.g., rate limit).
+**Action:** Always explain *why* the CLI is waiting (e.g., "Cooldown," "Waiting for CI") to build trust and reduce user anxiety.

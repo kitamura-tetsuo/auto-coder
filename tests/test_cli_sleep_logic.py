@@ -98,6 +98,6 @@ def test_process_issues_sleep_logic(
 
     # Check correct sleep time was used
     if expected_sleep_type == "short":
-        mock_sleep_countdown.assert_called_with(SHORT_SLEEP)
+        mock_sleep_countdown.assert_called_with(SHORT_SLEEP, message="Processing cooldown, next check in...")
     else:
-        mock_sleep_countdown.assert_called_with(EMPTY_SLEEP)
+        mock_sleep_countdown.assert_called_with(EMPTY_SLEEP, message="No open items, checking again in...")

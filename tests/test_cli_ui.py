@@ -27,6 +27,18 @@ def test_sleep_with_countdown_execution(mock_sleep):
 
 
 @patch("time.sleep")
+def test_sleep_with_countdown_custom_message(mock_sleep):
+    """Test that sleep_with_countdown uses custom message."""
+    mock_stream = MagicMock()
+    mock_stream.isatty.return_value = True
+
+    cli_ui.sleep_with_countdown(2, stream=mock_stream, message="Cooldown...")
+
+    writes = [args[0] for args, _ in mock_stream.write.call_args_list]
+    assert any("Cooldown..." in w for w in writes)
+
+
+@patch("time.sleep")
 def test_sleep_with_countdown_non_interactive(mock_sleep):
     """Test that sleep_with_countdown falls back to regular sleep in non-interactive mode."""
     # Create a mock stream that returns False for isatty
