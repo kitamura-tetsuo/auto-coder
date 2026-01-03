@@ -311,7 +311,7 @@ class GitHubClient:
             logger.error(f"Failed to get pull requests from {repo_name}: {e}")
             raise
 
-    def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_open_prs_json(self, repo_name: str, limit: int = 100, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get open pull requests from repository using GraphQL API.
 
         This method uses the GraphQL API to efficiently fetch all PR details in a single
@@ -320,6 +320,7 @@ class GitHubClient:
         Args:
             repo_name: Repository name in format 'owner/repo'
             limit: Maximum number of PRs to fetch per page (default: 100)
+            max_items: Maximum total number of PRs to fetch (default: None, fetch all)
 
         Returns:
             List of PR data dictionaries with fields matching get_pr_details output format,
@@ -381,7 +382,16 @@ class GitHubClient:
             cursor: Optional[str] = None
 
             while True:
-                variables = {"owner": owner, "repo": repo, "limit": limit, "cursor": cursor}
+                # Adjust page size if max_items is set and small
+                page_size = limit
+                if max_items is not None:
+                    remaining = max_items - len(all_prs)
+                    if remaining <= 0:
+                        break
+                    if remaining < page_size:
+                        page_size = remaining
+
+                variables = {"owner": owner, "repo": repo, "limit": page_size, "cursor": cursor}
                 data = self.graphql_query(query, variables)
 
                 pull_requests = data.get("data", {}).get("repository", {}).get("pullRequests", {})
@@ -420,6 +430,12 @@ class GitHubClient:
                     }
                     all_prs.append(pr_data)
 
+                    if max_items is not None and len(all_prs) >= max_items:
+                        break
+
+                if max_items is not None and len(all_prs) >= max_items:
+                    break
+
                 if not page_info.get("hasNextPage"):
                     break
 
@@ -432,7 +448,7 @@ class GitHubClient:
             logger.error(f"Failed to get open PRs via GraphQL from {repo_name}: {e}")
             raise
 
-    def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_open_issues_json(self, repo_name: str, limit: int = 100, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get open issues from repository using GraphQL API.
 
         This method uses the GraphQL API to efficiently fetch all issue details in a single
@@ -441,6 +457,7 @@ class GitHubClient:
         Args:
             repo_name: Repository name in format 'owner/repo'
             limit: Maximum number of issues to fetch per page (default: 100)
+            max_items: Maximum total number of issues to fetch (default: None, fetch all)
 
         Returns:
             List of issue data dictionaries with fields matching get_issue_details output format,
@@ -520,7 +537,16 @@ class GitHubClient:
             extra_headers = {"GraphQL-Features": "sub_issues"}
 
             while True:
-                variables = {"owner": owner, "repo": repo, "limit": limit, "cursor": cursor}
+                # Adjust page size if max_items is set and small
+                page_size = limit
+                if max_items is not None:
+                    remaining = max_items - len(all_issues)
+                    if remaining <= 0:
+                        break
+                    if remaining < page_size:
+                        page_size = remaining
+
+                variables = {"owner": owner, "repo": repo, "limit": page_size, "cursor": cursor}
                 data = self.graphql_query(query, variables, extra_headers=extra_headers)
 
                 issues_data = data.get("data", {}).get("repository", {}).get("issues", {})
@@ -565,6 +591,12 @@ class GitHubClient:
                         "linked_pr_numbers": linked_prs,
                     }
                     all_issues.append(issue_data)
+
+                    if max_items is not None and len(all_issues) >= max_items:
+                        break
+
+                if max_items is not None and len(all_issues) >= max_items:
+                    break
 
                 if not page_info.get("hasNextPage"):
                     break
