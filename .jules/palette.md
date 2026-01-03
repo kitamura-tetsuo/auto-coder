@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2025-01-22 - Visual Scanning in Configuration Logs
+**Learning:** Boolean and state values in configuration logs can be hard to differentiate when scanning quickly. Adding distinct icons (`✅`, `❌`, `⏭️`) for states significantly reduces cognitive load and improves scanability compared to text color alone.
+**Action:** Use distinct icons alongside status text in configuration summaries, ensuring `NO_COLOR` fallback is preserved.

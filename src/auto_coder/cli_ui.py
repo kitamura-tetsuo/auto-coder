@@ -50,10 +50,11 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
         val_str = str(value)
         if not no_color:
             if value is True or (isinstance(value, str) and value.lower().startswith("enabled")):
-                val_display = click.style(val_str, fg="green")
-            elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower())):
-                # "SKIP (default)" or "Disabled" -> yellow
-                val_display = click.style(val_str, fg="yellow")
+                val_display = click.style(f"✅ {val_str}", fg="green")
+            elif isinstance(value, str) and "skip" in value.lower():
+                val_display = click.style(f"⏭️  {val_str}", fg="yellow")
+            elif value is False or (isinstance(value, str) and value.lower().startswith("disabled")):
+                val_display = click.style(f"❌ {val_str}", fg="yellow")
             else:
                 val_display = val_str
         else:
