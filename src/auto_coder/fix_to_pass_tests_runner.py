@@ -40,7 +40,7 @@ from .test_log_utils import (
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, log_action
-from .util.github_action import _get_github_actions_logs, parse_playwright_json_report
+from .util.github_action import _get_github_actions_logs, parse_playwright_json_report, generate_merged_playwright_report
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -1285,16 +1285,9 @@ def extract_important_errors(test_result: TestResult, exclude_playwright: bool =
 
     # Prioritize JSON artifact if available (e.g. from GitHub Actions Playwright run)
     if test_result.json_artifact and isinstance(test_result.json_artifact, list):
-        summaries = []
-        for artifact in test_result.json_artifact:
-            if isinstance(artifact, dict):
-                # We reuse the parsing logic that handles Playwright JSON reports
-                parsed = parse_playwright_json_report(artifact)
-                if parsed:
-                    summaries.append(parsed)
-        
-        if summaries:
-            return "\n\n".join(summaries)
+        artifacts = [a for a in test_result.json_artifact if isinstance(a, dict)]
+        if artifacts:
+            return generate_merged_playwright_report(artifacts)
 
     errors = test_result.errors or ""
     output = test_result.output or ""

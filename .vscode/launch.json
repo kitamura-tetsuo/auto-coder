@@ -188,6 +188,23 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
-        }
+        },
+        {
+            "name": "Debug GitHub Action Log Summary",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/workspace",
+            "args": [
+                "debug",
+                "--github-action-log-summary",
+                "https://github.com/kitamura-tetsuo/outliner/actions/runs/20675593785",
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
     ]
 }
