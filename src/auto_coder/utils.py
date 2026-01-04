@@ -590,9 +590,27 @@ def change_fraction(old: str, new: str) -> float:
         def tail_window(s: str) -> str:
             if not s:
                 return ""
-            # Trailing 20 lines
-            lines = s.splitlines()
-            tail_by_lines = "\n".join(lines[-20:])
+
+            # Optimization: avoid splitlines() on huge strings (e.g. 10MB logs).
+            # We prefer tail_by_lines only if it is shorter than tail_by_chars.
+            # tail_by_chars is max 1000 chars.
+            # So if the last 20 lines > 2000 chars, we will definitely choose tail_by_chars.
+            limit = 2000
+            if len(s) <= limit:
+                lines = s.splitlines()
+                tail_by_lines = "\n".join(lines[-20:])
+            else:
+                # Take a suffix window large enough to cover the "20 lines < 1000 chars" case
+                suffix = s[-limit:]
+                lines = suffix.splitlines()
+                if len(lines) >= 21:
+                    # We have at least 21 lines in the window, so the last 20 are fully contained
+                    tail_by_lines = "\n".join(lines[-20:])
+                else:
+                    # Fewer lines in the window means the real last 20 lines are huge (> limit)
+                    # Use the suffix (len=limit) as a proxy; it will lose the comparison vs 1000 chars
+                    tail_by_lines = suffix
+
             # Trailing 1000 characters
             tail_by_chars = s[-1000:]
             # Use the shorter one
