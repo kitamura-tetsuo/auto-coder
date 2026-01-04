@@ -66,7 +66,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with a spinner.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -85,8 +85,27 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
     no_color = "NO_COLOR" in os.environ
 
+    # Spinner configuration
+    if no_color:
+        spinner_frames = ["|", "/", "-", "\\"]
+    else:
+        # Use unicode dots if color/rich output is expected (approximate heuristic)
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    spinner_idx = 0
+    spinner_interval = 0.1  # Update spinner every 0.1s
+
     try:
-        for remaining in range(seconds, 0, -1):
+        start_time = time.time()
+        end_time = start_time + seconds
+
+        while True:
+            current_time = time.time()
+            if current_time >= end_time:
+                break
+
+            remaining = int(end_time - current_time) + 1
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,15 +117,32 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            # Get spinner frame
+            spinner_char = spinner_frames[spinner_idx % len(spinner_frames)]
+            spinner_idx += 1
+
+            message = f"{spinner_char} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
-                message = click.style(message, fg="bright_black")
+                # We color the spinner separately to make it pop if desired, or keep it uniform.
+                # Let's keep the spinner uniform with the text for now, but maybe brighter?
+                # Actually, let's keep it simple: whole line dimmed except maybe spinner?
+                # The original code dimmed everything. Let's stick to that for consistency but maybe make spinner cyan?
+                # "Sleeping..." dimmed.
+
+                # Split styling
+                spinner_styled = click.style(spinner_char, fg="cyan")
+                text_styled = click.style(f" Sleeping... {time_str} remaining (Ctrl+C to interrupt)", fg="bright_black")
+                message = f"{spinner_styled}{text_styled}"
 
             stream.write(f"\r{message}")
             stream.flush()
-            time.sleep(1)
+
+            # Sleep for a short interval to animate
+            # Adjust sleep to hit the next 0.1s mark to be smoother?
+            # simple sleep is fine for CLI.
+            time.sleep(spinner_interval)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
