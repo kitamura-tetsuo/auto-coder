@@ -40,7 +40,7 @@ from .test_log_utils import (
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, log_action
-from .util.github_action import _get_github_actions_logs, parse_playwright_json_report, generate_merged_playwright_report
+from .util.github_action import _get_github_actions_logs, _create_github_action_log_summary, parse_playwright_json_report, generate_merged_playwright_report
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -567,7 +567,8 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
                # Use shared routine to get logs
                # failed_runs struct matches expectation (has details_url)
                try:
-                   logs, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
+                   logs_list, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
+                   logs, _ = _create_github_action_log_summary(repo_name, config, failed_runs)
                    output_lines.append(logs)
                except Exception as e:
                    logger.error(f"Failed to get GitHub Action logs: {e}")
@@ -580,8 +581,6 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
                    error_lines.append(status_str)
                    if run.get('output') and run['output'].get('title'):
                         error_lines.append(f"  Title: {run['output']['title']}")
-                else:
-                   output_lines.append(status_str)
             
             return {
                 "success": success,
@@ -763,7 +762,13 @@ def apply_workspace_test_fix(
     try:
         # Convert legacy dict payloads to TestResult for structured extraction
         tr = _to_test_result(test_result)
-        error_summary = extract_important_errors(tr, exclude_playwright=exclude_playwright)
+        if tr.command == "github_action_checks":
+            error_summary = tr.output or ""
+            if tr.stability_issue:
+                 prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                 error_summary = prefix + error_summary
+        else:
+            error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=exclude_playwright)
         if not error_summary:
             logger.info("Skipping LLM workspace fix because no actionable errors were extracted")
             return WorkspaceFixResult(
@@ -935,7 +940,13 @@ def fix_to_pass_tests(
         # Analyze failures to determine priority and execution strategy
         tr = _to_test_result(test_result)
         # Get full error summary (including e2e) to analyze failure types
-        full_error_summary = extract_important_errors(tr, exclude_playwright=False)
+        if tr.command == "github_action_checks":
+            full_error_summary = tr.output or ""
+            if tr.stability_issue:
+                 prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                 full_error_summary = prefix + full_error_summary
+        else:
+            full_error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=False)
         
         pytest_candidates = _collect_pytest_candidates(full_error_summary)
         vitest_candidates = _collect_vitest_candidates(full_error_summary)
@@ -1021,7 +1032,11 @@ def fix_to_pass_tests(
 
         # Baseline (pre-fix) outputs for comparison
         baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
-        baseline_error_summary = extract_important_errors(_to_test_result(test_result))
+        tr_base = _to_test_result(test_result)
+        if tr_base.command == "github_action_checks":
+            baseline_error_summary = tr_base.output or ""
+        else:
+            baseline_error_summary = extract_important_errors_from_local_tests(tr_base)
 
         # Re-run tests AFTER LLM edits to measure change and decide commit
         attempt += 1
@@ -1070,7 +1085,11 @@ def fix_to_pass_tests(
             logger.warning("Failed to write JSON test log", exc_info=True)
 
         post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
-        post_error_summary = extract_important_errors(_to_test_result(post_result))
+        tr_post = _to_test_result(post_result)
+        if tr_post.command == "github_action_checks":
+            post_error_summary = tr_post.output or ""
+        else:
+            post_error_summary = extract_important_errors_from_local_tests(tr_post)
 
         # Update previous context for next loop start
         cleanup_pending = False
@@ -1274,8 +1293,8 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
 
 
 @log_calls  # type: ignore[misc]
-def extract_important_errors(test_result: TestResult, exclude_playwright: bool = False) -> str:
-    """Extract important error information from test output.
+def extract_important_errors_from_local_tests(test_result: TestResult, exclude_playwright: bool = False) -> str:
+    """Extract important error information from test output (primarily for local tests).
 
     Preserves multi-framework detection (pytest, Playwright, Vitest),
     Unicode markers (×, ›), and ANSI-friendly parsing.
@@ -1291,7 +1310,9 @@ def extract_important_errors(test_result: TestResult, exclude_playwright: bool =
     # The comprehensive logs include job headers like "=== job-name / step-name ==="
     # and contain all failure types (unit tests, lint, E2E).
     # If so, use the complete output instead of just the Playwright report.
-    has_comprehensive_logs = output and ("=== " in output or "--- Playwright Test Summary ---" in output)
+    # Also check if the command indicates a GitHub Action run, which provides curated summaries.
+    is_github_action = (test_result.command == "github_action_checks")
+    has_comprehensive_logs = is_github_action or (output and ("=== " in output or "--- Playwright Test Summary ---" in output))
     
     # Only return early with Playwright-only report if we don't have comprehensive logs
     if test_result.json_artifact and isinstance(test_result.json_artifact, list) and not has_comprehensive_logs:
@@ -1312,6 +1333,13 @@ def extract_important_errors(test_result: TestResult, exclude_playwright: bool =
     prefix = ""
     if test_result.stability_issue:
         prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+
+    # If we have comprehensive logs (GitHub Actions summary), return it as is.
+    # The summary is already curated by _get_github_actions_logs and contains all relevant info.
+    # Further processing by extract_important_errors often truncates useful parts (e.g. unit/lint errors)
+    # when it aggressively matches "Expected substring" blocks.
+    if has_comprehensive_logs:
+        return prefix + full_output
 
     # Detect Playwright and prepend summary
     if not exclude_playwright and _detect_failed_test_library(full_output) == "playwright":

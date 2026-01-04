@@ -1984,38 +1984,14 @@ def parse_playwright_json_report(report: Dict[str, Any]) -> str:
     return generate_merged_playwright_report([report])
 
 
-def _get_github_actions_logs(
+def _create_github_action_log_summary(
     repo_name: str,
     config: AutomationConfig,
     *args: Any,
     search_history: Optional[bool] = None,
     **kwargs: Any,
-) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
-    """Get GitHub Actions failed job logs via gh api and return extracted error locations.
-
-    Args:
-        repo_name: Repository name in format 'owner/repo'
-        config: AutomationConfig instance
-        *args: Arguments (failed_checks list)
-        search_history: Optional parameter to enable historical search.
-                       If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
-                       If True, searches through commit history for logs.
-                       If False, uses current state only.
-        **kwargs: Additional keyword arguments (for future use)
-
-    Returns:
-        Tuple containing:
-        - String containing GitHub Actions logs
-        - Optional list of raw JSON artifacts
-
-    Call compatibility:
-    - _get_github_actions_logs(repo, config, failed_checks)
-    - _get_github_actions_logs(repo, config, failed_checks, pr_data)
-    """
-    # Determine search_history value
-    if search_history is None:
-        search_history = config.SEARCH_GITHUB_ACTIONS_HISTORY
-
+) -> str:
+    """Create a formatted summary string from a list of log chunks."""
     # Extract failed_checks and optional pr_data from args
     failed_checks: List[Dict[str, Any]] = []
     pr_data: Optional[Dict[str, Any]] = None
@@ -2023,38 +1999,6 @@ def _get_github_actions_logs(
         failed_checks = args[0]
     if len(args) >= 2 and isinstance(args[1], dict):
         pr_data = args[1]
-
-    # Handle the case where historical search is explicitly enabled
-    if search_history:
-        logger.info("Historical search enabled: Searching through commit history for GitHub Actions logs")
-
-        if not failed_checks:
-            # No failed_checks provided
-            return "No detailed logs available", None
-
-        # Try historical search first
-        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=1)
-
-        if historical_logs:
-            logger.info("Historical search succeeded: Found logs from commit history")
-            return historical_logs, None
-
-        logger.info("Historical search failed or found no logs, falling back to current behavior")
-
-    # Default behavior (or fallback from historical search)
-    # Resolve argument patterns
-    # (failed_checks and pr_data may have been set in the historical search block above)
-    if not failed_checks:
-        failed_checks = []
-    if not pr_data:
-        pr_data = None
-    if len(args) >= 1 and isinstance(args[0], list):
-        failed_checks = args[0]
-    if len(args) >= 2 and isinstance(args[1], dict):
-        pr_data = args[1]
-    if not failed_checks:
-        # Unknown call
-        return "No detailed logs available", None
 
     logs: List[str] = []
     artifacts_list: List[Dict[str, Any]] = []
@@ -2182,6 +2126,211 @@ def _get_github_actions_logs(
         logs.append(f"Error getting logs: {e}")
 
     return "\n\n".join(logs) if logs else "No detailed logs available", artifacts_list if artifacts_list else None
+
+
+
+def _get_github_actions_logs(
+    repo_name: str,
+    config: AutomationConfig,
+    *args: Any,
+    search_history: Optional[bool] = None,
+    **kwargs: Any,
+) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+    """Get GitHub Actions failed job logs via gh api and return extracted error locations.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        config: AutomationConfig instance
+        *args: Arguments (failed_checks list)
+        search_history: Optional parameter to enable historical search.
+                       If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                       If True, searches through commit history for logs.
+                       If False, uses current state only.
+        **kwargs: Additional keyword arguments (for future use)
+
+    Returns:
+        Tuple containing:
+        - String containing GitHub Actions logs
+        - Optional list of raw JSON artifacts
+
+    Call compatibility:
+    - _get_github_actions_logs(repo, config, failed_checks)
+    - _get_github_actions_logs(repo, config, failed_checks, pr_data)
+    """
+    # Determine search_history value
+    if search_history is None:
+        search_history = config.SEARCH_GITHUB_ACTIONS_HISTORY
+
+    # Extract failed_checks and optional pr_data from args
+    failed_checks: List[Dict[str, Any]] = []
+    pr_data: Optional[Dict[str, Any]] = None
+    if len(args) >= 1 and isinstance(args[0], list):
+        failed_checks = args[0]
+    if len(args) >= 2 and isinstance(args[1], dict):
+        pr_data = args[1]
+
+    # Handle the case where historical search is explicitly enabled
+    if search_history:
+        logger.info("Historical search enabled: Searching through commit history for GitHub Actions logs")
+
+        if not failed_checks:
+            # No failed_checks provided
+            return "No detailed logs available", None
+
+        # Try historical search first
+        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=1)
+
+        if historical_logs:
+            logger.info("Historical search succeeded: Found logs from commit history")
+            return historical_logs, None
+
+        logger.info("Historical search failed or found no logs, falling back to current behavior")
+
+    # Default behavior (or fallback from historical search)
+    # Resolve argument patterns
+    # (failed_checks and pr_data may have been set in the historical search block above)
+    if not failed_checks:
+        failed_checks = []
+    if not pr_data:
+        pr_data = None
+    if len(args) >= 1 and isinstance(args[0], list):
+        failed_checks = args[0]
+    if len(args) >= 2 and isinstance(args[1], dict):
+        pr_data = args[1]
+    if not failed_checks:
+        # Unknown call
+        return "No detailed logs available", None
+
+    logs: List[str] = []
+    artifacts_list: List[Dict[str, Any]] = []
+
+    try:
+        # 1) Try to get Playwright artifact logs first if we can identify a run ID
+        # We need a run ID. failed_checks items usually have 'details_url' which contains run_id.
+        # details_url structure: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        run_ids = set()
+        for check in failed_checks:
+            details_url = check.get("details_url", "")
+            match = re.search(r"/actions/runs/(\d+)", details_url)
+            if match:
+                run_ids.add(match.group(1))
+        
+        # If we found run IDs, try artifacts
+        for run_id in run_ids:
+            try:
+                artifact_logs, raw_artifacts_data = _get_playwright_artifact_logs(repo_name, int(run_id))
+                if artifact_logs:
+                     logs.append(artifact_logs)
+                if raw_artifacts_data:
+                     artifacts_list.extend(raw_artifacts_data)
+            except Exception as e:
+                if "USER_STOP_REQUEST" in str(e):
+                    # Propagate this specific error up
+                    return f"STOP: {str(e)}", None
+                # Otherwise, continue to other methods
+                logger.warning(f"Could not get artifact logs: {e}")
+
+        # If we successfully got artifact logs, we might rely entirely on them for Playwright tests?
+        # But we might have other failures too. So let's APPEND existing log methods if we didn't fill everything?
+        # Or maybe priority?
+        # If we got clean artifact logs, they are usually much better.
+        
+        # NOTE: If we found enough info, maybe return? But safer to combine with textual logs just in case.
+        
+        # 2) First extract run_id and job_id directly from failed_checks details_url (Existing method)        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        # or https://github.com/<owner>/<repo>/runs/<job_id>
+        url_to_fetch: List[str] = []
+        for check in failed_checks:
+            details_url = check.get("details_url", "")
+            if details_url and "github.com" in details_url and "/actions/runs/" in details_url:
+                # Use directly if correct format URL is included
+                url_to_fetch.append(details_url)
+                logger.debug(f"Using details_url from failed_checks: {details_url}")
+
+        # 2) If can get from details_url, use it to get logs
+        if url_to_fetch:
+            for url in url_to_fetch:
+                unified = get_github_actions_logs_from_url(url)
+                logs.append(unified)
+        else:
+            # 3) If details_url not usable, use conventional method (get failed run from PR branch)
+            logger.debug("No valid details_url found in failed_checks, falling back to GhApi run list")
+            # Get PR branch and get only runs from that branch (search commit history)
+            branch_name = None
+            if pr_data:
+                head = pr_data.get("head", {})
+                branch_name = head.get("ref")
+                if branch_name:
+                    logger.debug(f"Using PR branch: {branch_name}")
+
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+
+            try:
+                # API: list_workflow_runs_for_repo(owner, repo, branch=..., per_page=...)
+                kwargs = {"owner": owner, "repo": repo, "per_page": 50}
+                if branch_name:
+                    kwargs["branch"] = branch_name
+
+                run_list = api.actions.list_workflow_runs_for_repo(**kwargs)
+                runs = run_list.get("workflow_runs", [])
+            except Exception as e:
+                logger.warning(f"Failed to fetch runs via GhApi: {e}")
+                runs = []
+
+            run_id = None
+            if runs:
+                # Find first failed run?
+                # The original code logic iterates. Let's replicate original logic which used json.loads
+                # Original logic:
+                # runs = json.loads(...)
+                # for run in runs:
+                #    if run.get("conclusion") == "failure": ...
+
+                for run in runs:
+                    if run.get("conclusion") == "failure":
+                        run_id = run.get("id")
+                        # Also get title/url for logging or usage?
+                        # The original code didn't use them except to find ID.
+                        if run_id:
+                            logger.info(f"Found recent failed run {run_id} ({run.get('display_title')})")
+                            break
+            else:
+                logger.info("No runs found via GhApi")
+
+            if run_id:
+                try:
+                    jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_data.get("number") if pr_data else None, repo_name)
+
+                    for job in jobs:
+                        conclusion = job.get("conclusion", "")
+                        if conclusion and conclusion.lower() in ["failure", "failed", "error"]:
+                            job_id = job.get("id")
+                            if job_id:
+                                url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
+                                asyncio_mode = config.SEARCH_GITHUB_ACTIONS_HISTORY  # Dummy use of config if needed or log
+                                unified = get_github_actions_logs_from_url(url)
+                                logs.append(unified)
+                except Exception as e:
+                    logger.warning(f"Error getting jobs/logs for run {run_id}: {e}")
+
+        # 6) Fallback: if run/job cannot be retrieved, format failed_checks as is
+        if not logs:
+            for check in failed_checks:
+                check_name = check.get("name", "Unknown")
+                conclusion = check.get("conclusion", "unknown")
+                details_url = check.get("details_url", "")
+                url_str = f"\n\n{details_url}" if details_url else ""
+                logs.append(f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available{url_str}")
+
+    except Exception as e:
+        logger.error(f"Error getting GitHub Actions logs: {e}")
+        logs.append(f"Error getting logs: {e}")
+
+    return "\n\n".join(logs) if logs else "No detailed logs available", artifacts_list if artifacts_list else None
+
+
 
 
 def _filter_eslint_log(content: str) -> str:

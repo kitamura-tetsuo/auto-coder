@@ -21,12 +21,12 @@ from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
-from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, _create_github_action_log_summary, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
-from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
+from .fix_to_pass_tests_runner import extract_important_errors_from_local_tests, run_local_tests
 from .gh_logger import get_gh_logger
 from .git_branch import branch_context, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
@@ -1005,7 +1005,8 @@ def _handle_pr_merge(
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                github_logs, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                logs_list, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                github_logs = _create_github_action_log_summary(logs_list)
                 fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
                 actions.extend(fix_actions)
             else:
@@ -1059,7 +1060,8 @@ def _handle_pr_merge(
                 # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                    github_logs, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                    logs_list, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                    github_logs = _create_github_action_log_summary(logs_list)
                     fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
                     actions.extend(fix_actions)
                 else:
@@ -1694,7 +1696,8 @@ def _send_jules_error_feedback(
             return actions
 
         # Get GitHub Actions error logs
-        github_logs, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+        logs_list, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+        github_logs = _create_github_action_log_summary(logs_list)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
@@ -2222,11 +2225,13 @@ def _apply_github_actions_fix(
             framework_type="github_actions",
         )
 
-        # Use extract_important_errors to extract failed log file names and error details
-        extracted_errors = extract_important_errors(github_test_result)
+        # For GitHub Actions, we trust the github_logs summary and do not run further extraction.
+        # This prevents accidental truncation of the curated summary.
+        extracted_errors = github_logs
 
+        # Legacy fallback if logs are empty (though github_logs is usually passed in)
         if not extracted_errors:
-            extracted_errors = github_logs[:500] if github_logs else "No error information available"
+            extracted_errors = "No error information available"
 
         logger.info(f"Extracted important errors from GitHub Actions logs for PR #{pr_number}")
 
@@ -2311,7 +2316,7 @@ def _apply_local_test_fix(
                 extraction_context=(test_result.get("extraction_context", {}) if isinstance(test_result.get("extraction_context", {}), dict) else {}),
                 framework_type=test_result.get("framework_type"),
             )
-            error_summary = extract_important_errors(tr)
+            error_summary = extract_important_errors_from_local_tests(tr)
 
             if not error_summary:
                 actions.append(f"No actionable errors found in local test output for PR #{pr_number}")

@@ -38,14 +38,15 @@ def debug(github_action_log_summary: str) -> None:
         click.echo(f"Fetching logs for Run ID: {run_id} in {repo_name}...", err=True)
         
         try:
-            from .util.github_action import _get_github_actions_logs
+            from .util.github_action import _get_github_actions_logs, _create_github_action_log_summary
             from .automation_config import AutomationConfig
             
             # Create a dummy config and failed_checks to pass to _get_github_actions_logs
             config = AutomationConfig() # Default config
             failed_checks = [{"details_url": url}]
             
-            logs, artifacts = _get_github_actions_logs(repo_name, config, failed_checks)
+            logs_list, artifacts = _get_github_actions_logs(repo_name, config, failed_checks)
+            logs = _create_github_action_log_summary(logs_list)
             
             if logs and logs != "No detailed logs available":
                 click.echo("--- LLM Summary Start ---")

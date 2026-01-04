@@ -1285,11 +1285,11 @@ class AutomationEngine:
             if isinstance(test_result, TestResult):
                 return cast(
                     str,
-                    fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                    fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(test_result),
                 )
             # Convert legacy dict payloads to TestResult for better extraction
             tr = fix_to_pass_tests_runner_module._to_test_result(test_result)
-            return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(tr))
+            return cast(str, fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(tr))
         except Exception:
             # Legacy fallback: minimal regex-based extraction from dict payloads
             import re
