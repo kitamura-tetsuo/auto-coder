@@ -1283,14 +1283,21 @@ def extract_important_errors(test_result: TestResult, exclude_playwright: bool =
     if test_result.success:
         return ""
 
-    # Prioritize JSON artifact if available (e.g. from GitHub Actions Playwright run)
-    if test_result.json_artifact and isinstance(test_result.json_artifact, list):
+    errors = test_result.errors or ""
+    output = test_result.output or ""
+    
+    # When we have json_artifact (Playwright results from GitHub Actions),
+    # check if output also contains comprehensive logs from _get_github_actions_logs.
+    # The comprehensive logs include job headers like "=== job-name / step-name ==="
+    # and contain all failure types (unit tests, lint, E2E).
+    # If so, use the complete output instead of just the Playwright report.
+    has_comprehensive_logs = output and ("=== " in output or "--- Playwright Test Summary ---" in output)
+    
+    # Only return early with Playwright-only report if we don't have comprehensive logs
+    if test_result.json_artifact and isinstance(test_result.json_artifact, list) and not has_comprehensive_logs:
         artifacts = [a for a in test_result.json_artifact if isinstance(a, dict)]
         if artifacts:
             return generate_merged_playwright_report(artifacts)
-
-    errors = test_result.errors or ""
-    output = test_result.output or ""
 
     # Combine stderr and stdout
     full_output = f"{errors}\n{output}".strip()

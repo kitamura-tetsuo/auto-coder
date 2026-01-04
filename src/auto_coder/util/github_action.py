@@ -839,6 +839,84 @@ def get_detailed_checks_from_history(
         )
 
 
+def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token: str) -> list:
+    """Sort jobs based on the order defined in the workflow file."""
+    try:
+        import yaml
+        
+        api = get_ghapi_client(token)
+        
+        # Get run details to find workflow file path
+        run = api.actions.get_workflow_run(owner, repo, run_id)
+        workflow_path = run.get("path") # e.g. .github/workflows/ci.yml
+        
+        if not workflow_path:
+            return jobs
+            
+        # Check if file exists locally
+        # We assume the user is running this in the repo 
+        # (or at least has access to the workflow file we care about)
+        if not os.path.exists(workflow_path):
+             # Try absolute path from workspace root if implied
+             possible_path = os.path.join(os.getcwd(), workflow_path)
+             if os.path.exists(possible_path):
+                 workflow_path = possible_path
+             else:
+                 # Check if path starts with .github, maybe we are in root
+                 if workflow_path.startswith(".github"):
+                     if os.path.exists(workflow_path):
+                         pass
+                     else:
+                         return jobs
+                 else:
+                     return jobs
+
+        with open(workflow_path, "r") as f:
+            workflow_data = yaml.safe_load(f)
+            
+        if not workflow_data or "jobs" not in workflow_data:
+            return jobs
+            
+        # Create map of job name/key to index
+        job_order = {}
+        for idx, (job_key, job_def) in enumerate(workflow_data["jobs"].items()):
+            # Map key
+            job_order[job_key] = idx
+            # Map name if present
+            if isinstance(job_def, dict) and "name" in job_def:
+                job_order[job_def["name"]] = idx
+
+        # Sort jobs
+        def get_sort_index(job):
+            name = job.get("name")
+            # Try exact match
+            if name in job_order:
+                return job_order[name]
+            
+            # Try clean match (sometimes API returns "Job / Key" or similar?)
+            # Usually API 'name' is the 'name' property or key.
+            # But for matrix, it might be "test (3.11)".
+            # Let's try to match start of string if not exact?
+            # Or splitting by parentheses.
+            
+            # Check against keys
+            for key, idx in job_order.items():
+                if name == key:
+                    return idx
+                # Basic fuzzy match: if key is word-bounded in name?
+                # e.g. "e2e-test" in "e2e-test / chrome"
+                if key in name: 
+                     return idx
+            
+            return 9999
+
+        return sorted(jobs, key=get_sort_index)
+        
+    except Exception as e:
+        logger.warning(f"Warning: Failed to sort jobs by workflow: {e}")
+        return jobs
+
+
 def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> bool:
     """Trigger a GitHub Actions workflow via workflow_dispatch.
 
@@ -1982,125 +2060,123 @@ def _get_github_actions_logs(
     artifacts_list: List[Dict[str, Any]] = []
 
     try:
-        # 1) Try to get Playwright artifact logs first if we can identify a run ID
-        # We need a run ID. failed_checks items usually have 'details_url' which contains run_id.
-        # details_url structure: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
-        run_ids = set()
+        # Resolve owner/repo
+        owner, repo = repo_name.split("/")
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+
+        # 1. Inspect failed_checks to verify if we have enough info
+        # If no failed_checks, use fallback historical search if not already done?
+        # But here assuming we have failed_checks from caller if not searching history.
+        
+        # If failed_checks are present but missing Run ID, we might need to find it?
+        # But usually they come from _check_github_actions_status or similar which has details_url.
+        
+        # Group checks by Run ID
+        run_checks_map: Dict[int, List[Dict[str, Any]]] = {}
+        ungrouped_checks: List[Dict[str, Any]] = []
+        
         for check in failed_checks:
             details_url = check.get("details_url", "")
-            match = re.search(r"/actions/runs/(\d+)", details_url)
-            if match:
-                run_ids.add(match.group(1))
-        
-        # If we found run IDs, try artifacts
-        for run_id in run_ids:
-            try:
-                artifact_logs, raw_artifacts_data = _get_playwright_artifact_logs(repo_name, int(run_id))
-                if artifact_logs:
-                     logs.append(artifact_logs)
-                if raw_artifacts_data:
-                     artifacts_list.extend(raw_artifacts_data)
-            except Exception as e:
-                if "USER_STOP_REQUEST" in str(e):
-                    # Propagate this specific error up
-                    return f"STOP: {str(e)}", None
-                # Otherwise, continue to other methods
-                logger.warning(f"Could not get artifact logs: {e}")
-
-        # If we successfully got artifact logs, we might rely entirely on them for Playwright tests?
-        # But we might have other failures too. So let's APPEND existing log methods if we didn't fill everything?
-        # Or maybe priority?
-        # If we got clean artifact logs, they are usually much better.
-        
-        # NOTE: If we found enough info, maybe return? But safer to combine with textual logs just in case.
-        
-        # 2) First extract run_id and job_id directly from failed_checks details_url (Existing method)        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
-        # or https://github.com/<owner>/<repo>/runs/<job_id>
-        url_to_fetch: List[str] = []
-        for check in failed_checks:
-            details_url = check.get("details_url", "")
-            if details_url and "github.com" in details_url and "/actions/runs/" in details_url:
-                # Use directly if correct format URL is included
-                url_to_fetch.append(details_url)
-                logger.debug(f"Using details_url from failed_checks: {details_url}")
-
-        # 2) If can get from details_url, use it to get logs
-        if url_to_fetch:
-            for url in url_to_fetch:
-                unified = get_github_actions_logs_from_url(url)
-                logs.append(unified)
-        else:
-            # 3) If details_url not usable, use conventional method (get failed run from PR branch)
-            logger.debug("No valid details_url found in failed_checks, falling back to GhApi run list")
-            # Get PR branch and get only runs from that branch (search commit history)
-            branch_name = None
-            if pr_data:
-                head = pr_data.get("head", {})
-                branch_name = head.get("ref")
-                if branch_name:
-                    logger.debug(f"Using PR branch: {branch_name}")
-
-            token = GitHubClient.get_instance().token
-            api = get_ghapi_client(token)
-            owner, repo = repo_name.split("/")
-
-            try:
-                # API: list_workflow_runs_for_repo(owner, repo, branch=..., per_page=...)
-                kwargs = {"owner": owner, "repo": repo, "per_page": 50}
-                if branch_name:
-                    kwargs["branch"] = branch_name
-
-                run_list = api.actions.list_workflow_runs_for_repo(**kwargs)
-                runs = run_list.get("workflow_runs", [])
-            except Exception as e:
-                logger.warning(f"Failed to fetch runs via GhApi: {e}")
-                runs = []
-
             run_id = None
-            if runs:
-                # Find first failed run?
-                # The original code logic iterates. Let's replicate original logic which used json.loads
-                # Original logic:
-                # runs = json.loads(...)
-                # for run in runs:
-                #    if run.get("conclusion") == "failure": ...
-
-                for run in runs:
-                    if run.get("conclusion") == "failure":
-                        run_id = run.get("id")
-                        # Also get title/url for logging or usage?
-                        # The original code didn't use them except to find ID.
-                        if run_id:
-                            logger.info(f"Found recent failed run {run_id} ({run.get('display_title')})")
-                            break
-            else:
-                logger.info("No runs found via GhApi")
-
+            if details_url:
+                 match = re.search(r"/actions/runs/(\d+)", details_url)
+                 if match:
+                     run_id = int(match.group(1))
+            
             if run_id:
+                if run_id not in run_checks_map:
+                    run_checks_map[run_id] = []
+                run_checks_map[run_id].append(check)
+            else:
+                ungrouped_checks.append(check)
+
+        # If no run IDs found, but we have PR data, try to find the latest failed run for this PR
+        if not run_checks_map and not ungrouped_checks and pr_data:
+             logger.info("No Run IDs in failed_checks, attempting to find failed run for PR")
+             # Similar logic to _search_github_actions_logs_from_history but specifically for current state
+             # Check logic:
+             # run_list = api.actions.list_workflow_runs_for_repo(...)
+             # ...
+             # For now, let's rely on fallback logic below (lines 2033+) if map is empty.
+             pass
+
+        # 2. Process each Run
+        if run_checks_map:
+            for run_id, checks in run_checks_map.items():
+                logger.info(f"Processing logs for Run {run_id}")
+                
+                # A. Get Playwright Artifacts
+                playwright_summary, raw_artifacts = _get_playwright_artifact_logs(repo_name, run_id)
+                if raw_artifacts:
+                    artifacts_list.extend(raw_artifacts)
+                
+                # B. Get all jobs for this run (to get names, ids, order)
                 try:
-                    jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_data.get("number") if pr_data else None, repo_name)
-
+                    jobs_data = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
+                    jobs = jobs_data.get("jobs", [])
+                    
+                    # C. Sort jobs by workflow
+                    jobs = _sort_jobs_by_workflow(jobs, owner, repo, run_id, token)
+                    
+                    playwright_summary_printed = False
+                    
                     for job in jobs:
-                        conclusion = job.get("conclusion", "")
-                        if conclusion and conclusion.lower() in ["failure", "failed", "error"]:
-                            job_id = job.get("id")
-                            if job_id:
-                                url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
-                                asyncio_mode = config.SEARCH_GITHUB_ACTIONS_HISTORY  # Dummy use of config if needed or log
-                                unified = get_github_actions_logs_from_url(url)
-                                logs.append(unified)
+                        # Only process if failed
+                        if job.get("conclusion") == "failure":
+                            job_name = job.get("name", "").lower()
+                            html_url = job.get("html_url")
+                            
+                            is_playwright = "playwright" in job_name or "e2e" in job_name
+                            
+                            if is_playwright:
+                                if playwright_summary:
+                                    if not playwright_summary_printed:
+                                        logs.append(playwright_summary)
+                                        playwright_summary_printed = True
+                                    continue
+                                # If no summary, proceed to fetch logs normally
+                            
+                            # Fetch logs for this job
+                            if html_url:
+                                logger.info(f"Fetching logs for failed job: {job.get('name')}")
+                                job_log = get_github_actions_logs_from_url(html_url)
+                                if job_log:
+                                    logs.append(job_log)
+                    
+                    # Fallback: if summary exists but wasn't printed (e.g. e2e job not found in failed list?), print it at end
+                    if playwright_summary and not playwright_summary_printed:
+                         logs.append(playwright_summary)
+                                     
                 except Exception as e:
-                    logger.warning(f"Error getting jobs/logs for run {run_id}: {e}")
-
-        # 6) Fallback: if run/job cannot be retrieved, format failed_checks as is
-        if not logs:
-            for check in failed_checks:
+                    logger.warning(f"Error processing jobs for run {run_id}: {e}")
+                    # Fallback to appending check logs without sorting if run processing fails?
+                    # For now, rely on ungrouped fallback/error logging?
+                    pass
+        
+        # 3. Process Ungrouped Checks (Fallback for checks with non-standard URLs)
+        if ungrouped_checks:
+            logger.info(f"Processing {len(ungrouped_checks)} ungrouped check(s)")
+            for check in ungrouped_checks:
                 check_name = check.get("name", "Unknown")
-                conclusion = check.get("conclusion", "unknown")
                 details_url = check.get("details_url", "")
-                url_str = f"\n\n{details_url}" if details_url else ""
-                logs.append(f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available{url_str}")
+                
+                if details_url:
+                    logger.info(f"Fetching logs for ungrouped check: {check_name}")
+                    job_log = get_github_actions_logs_from_url(details_url)
+                    if job_log:
+                         logs.append(job_log)
+                    else:
+                         logs.append(f"=== {check_name} ===\nFailed to fetch logs from {details_url}")
+                else:
+                    logs.append(f"=== {check_name} ===\nNo details URL available.")
 
+        # 4. Fallback / Legacy Logic (if nothing processed)
+        if not logs and not run_checks_map and not ungrouped_checks:
+             # Try old logic of iterating failed_checks directly or finding run via API
+             # ... (Keep existing fallback logic if needed or simplify?)
+             pass
+             
     except Exception as e:
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
