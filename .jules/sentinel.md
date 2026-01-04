@@ -27,3 +27,8 @@
 **Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
 **Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
 **Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.
+
+## 2026-01-25 - Insecure File Permissions in Third-Party Config Management
+**Vulnerability:** `CodexClient` was modifying `~/.codex/config.json` (an external tool's config) using `open()`, resetting permissions to insecure defaults even if the user had secured them.
+**Learning:** When tools modify configuration files of *other* tools (like Codex CLI), they must respect or enforce secure permissions, as those files often contain API keys.
+**Prevention:** Use the secure `os.open` pattern with `0o600` for *all* configuration file writes, internal or external.
