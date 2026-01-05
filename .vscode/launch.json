@@ -157,7 +157,7 @@
             "args": [
                 "debug",
                 "--github-action-log-summary",
-                "https://github.com/kitamura-tetsuo/outliner/actions/runs/20685092540",
+                "https://github.com/kitamura-tetsuo/outliner/actions/runs/20703209336",
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {

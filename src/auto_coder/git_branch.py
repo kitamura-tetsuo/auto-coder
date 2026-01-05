@@ -110,6 +110,11 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
     """
     cmd = CommandExecutor()
 
+    # Stage all changes before trying to commit
+    # This ensures that even if the caller didn't explicitly add files, we try to commit everything
+    # (consistent with auto-coder's general behavior of managing the workspace)
+    cmd.run_command(["git", "add", "-A"], cwd=cwd)
+
     for attempt in range(max_retries + 1):
         result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
 

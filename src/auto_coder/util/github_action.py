@@ -2361,17 +2361,27 @@ def _filter_eslint_log(content: str) -> str:
             filtered_lines.append(line)
             continue
         
-        # Detect file paths: lines starting with / and not starting with common prefixes
+        # Detect file paths: 
+        # 1. Lines starting with "/" (absolute paths)
+        # 2. OR lines that look like relative paths (valid extension, no invalid prefixes)
         # Only keep if followed by error lines
-        if (line_strip.startswith("/") and 
-            not line_strip.startswith(("> ", "Compiling", "[command]", "##"))):
+        is_path = False
+        if line_strip.startswith("/"):
+             is_path = True
+        elif any(line_strip.endswith(ext) for ext in [".ts", ".js", ".tsx", ".jsx", ".vue", ".svelte", ".py", ".html", ".css", ".json", ".md"]):
+             # Check for invalid prefixes for relative paths too
+             if not line_strip.startswith(("> ", "Compiling", "[command]", "##")) and " " not in line_strip:
+                  is_path = True
+        
+        if is_path and not line_strip.startswith(("> ", "Compiling", "[command]", "##")):
             # Store as pending - only add if we see an error next
+            # If we already had a pending one, we overwrite it (assuming previous one had no errors)
             pending_file_path = line
             continue
         
-        # Reset pending file path if we encounter irrelevant content
-        if pending_file_path is not None and line_strip and "##[error]" not in line_strip:
-            pending_file_path = None
+        # We DO NOT reset pending_file_path aggressively anymore.
+        # We assume that noise lines might appear between file path and error.
+        # We only overwrite pending_file_path when we see a new file path (above).
     
     if filtered_lines:
         return "\n".join([_clean_log_line(line) for line in filtered_lines])
