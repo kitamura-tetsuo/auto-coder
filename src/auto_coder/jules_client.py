@@ -14,6 +14,7 @@ import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
+from .git_info import get_current_branch, get_current_repo_name
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
@@ -42,6 +43,10 @@ class JulesClient(LLMClientBase):
         self.options = (config_backend and config_backend.options) or []
         self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
         self.api_key = (config_backend and config_backend.api_key) or None
+
+        # Allow base_url override from configuration
+        if config_backend and config_backend.base_url:
+            self.base_url = config_backend.base_url
 
         # Check API connectivity
         if not self.api_key:
@@ -367,33 +372,253 @@ class JulesClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run Jules HTTP API with the given prompt and return response.
-
-        This method is kept for compatibility with LLMClientBase interface,
-        but Jules uses sessions rather than single-run commands.
-
+        
+        Orchestrates the entire session lifecycle:
+        1. Starts a session
+        2. Sends the initial prompt
+        3. Polls the session status until completion or PR creation
+        4. Handles automated interactions (resume, approve plan, etc.)
+        
         Args:
             prompt: The prompt to send
             is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
 
         Returns:
-            Response from Jules
+            Final response or status message from Jules
         """
         # Start a new session for this prompt
-        # Note: This fallback method doesn't have access to repo context, so it might fail
-        # if the API strictly requires it. We'll use placeholders or try without it.
-        # For now, we'll try to extract repo info from prompt or use defaults if possible,
-        # but since this is a fallback, we might need to update the interface or accept failure.
-        # Ideally, _run_llm_cli shouldn't be used for Jules in this context.
-        logger.warning("_run_llm_cli called for JulesClient. This may fail due to missing repo context.")
-        session_id = self.start_session(prompt, "unknown/repo", "main", is_noedit)
+        # Try to detect repo context from current environment
+        repo_name = get_current_repo_name() or "unknown/repo"
+        base_branch = get_current_branch() or "main"
+
+        logger.info(f"_run_llm_cli called for JulesClient. Using inferred context: repo={repo_name}, branch={base_branch}")
+        session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
+        
+        # Initialize GitHub client for PR checks
+        from .github_client import GitHubClient
+        try:
+            github_client = GitHubClient.get_instance()
+        except ValueError:
+            logger.warning("GitHubClient not initialized, PR status checks may be limited")
+            github_client = None
 
         try:
-            # Send the prompt and get response
-            response = self.send_message(session_id, prompt)
-            return response
+            # Polling loop
+            retry_state: Dict[str, int] = {}
+            last_status = ""
+            
+            # Determine if we should auto-merge PRs
+            # Auto-merge if we are NOT on main branch
+            merge_pr = base_branch != "main"
+            if merge_pr:
+                logger.info(f"Auto-merge enabled for this session (base branch '{base_branch}' != 'main')")
+            
+            while True:
+                time.sleep(60)  # Poll every minute as requested
+                
+                try:
+                    session = self.get_session(session_id)
+                    if not session:
+                        logger.warning(f"Session {session_id} not found during polling")
+                        break
+                        
+                    state = session.get("state")
+                    if state != last_status:
+                        logger.info(f"Session {session_id} status: {state}")
+                        last_status = state or ""
+                    
+                    # Process session status (resume, approve, check PRs)
+                    self.process_session_status(session, retry_state, github_client, merge_pr=merge_pr)
+                    
+                    # Check terminal conditions
+                    if state == "ARCHIVED":
+                        logger.info(f"Session {session_id} is archived. Work completed.")
+                        return f"Session {session_id} completed and archived."
+                    
+                except Exception as e:
+                    logger.error(f"Error during polling session {session_id}: {e}")
+                    
         finally:
-            # End the session
-            self.end_session(session_id)
+            # We don't simple-end the session here because it might be long-running/async 
+            # and handled by the polling loop/process_session_status.
+            pass
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single Jules session by ID.
+
+        Args:
+            session_id: The session ID to retrieve
+
+        Returns:
+            Session dictionary if found, None otherwise
+        """
+        try:
+            url = f"{self.base_url}/sessions/{session_id}"
+            logger.debug(f"Getting session details: {session_id}")
+            
+            response = self.session.get(url, timeout=self.timeout)
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                logger.warning(f"Session {session_id} not found")
+                return None
+            else:
+                logger.error(f"Failed to get session {session_id}: HTTP {response.status_code} {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to get session {session_id}: {e}")
+            return None
+
+    def process_session_status(self, session: Dict[str, Any], retry_state: Dict[str, int], github_client: Optional[Any] = None, merge_pr: bool = False) -> bool:
+        """Process session status and take appropriate actions (resume, approve, archive).
+
+        Args:
+            session: The session dictionary
+            retry_state: Dictionary tracking retry counts for sessions
+            github_client: Optional GitHubClient instance for checking PR status
+            merge_pr: Whether to automatically merge the PR if created (default: False)
+
+        Returns:
+            True if any action was taken (state changed), False otherwise
+        """
+        session_id = session.get("name", "").split("/")[-1]
+        if not session_id:
+            session_id = session.get("id") or ""
+        
+        if not session_id:
+            return False
+
+        state = session.get("state")
+        outputs = session.get("outputs", {})
+        
+        # Normalize outputs if list
+        if isinstance(outputs, list):
+            try:
+                new_outputs = {}
+                for item in outputs:
+                    if isinstance(item, dict):
+                        new_outputs.update(item)
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
+                        new_outputs[item[0]] = item[1]
+                outputs = new_outputs
+            except Exception as e:
+                logger.warning(f"Failed to convert list outputs to dict: {outputs} - {e}")
+                outputs = {}
+
+        pull_request = outputs.get("pullRequest")
+        state_changed = False
+
+        # Case 1: Failed session -> Resume
+        if state == "FAILED":
+            logger.info(f"Resuming failed Jules session: {session_id}")
+            try:
+                self.send_message(session_id, "ok")
+                logger.info(f"Successfully sent resume message to session {session_id}")
+                if session_id in retry_state:
+                    del retry_state[session_id]
+                state_changed = True
+            except Exception as e:
+                logger.error(f"Failed to resume session {session_id}: {e}")
+
+        # Case 2: Awaiting Plan Approval -> Approve Plan
+        elif state == "AWAITING_PLAN_APPROVAL":
+            logger.info(f"Approving plan for Jules session: {session_id}")
+            try:
+                if self.approve_plan(session_id):
+                    logger.info(f"Successfully approved plan for session {session_id}")
+                    state_changed = True
+                else:
+                    logger.error(f"Failed to approve plan for session {session_id}")
+            except Exception as e:
+                logger.error(f"Failed to approve plan for session {session_id}: {e}")
+
+        # Case 3: Completed session without PR -> Resume with retry logic
+        elif state == "COMPLETED" and not pull_request:
+            retry_count = retry_state.get(session_id, 0)
+            
+            if retry_count < 2:
+                logger.info(f"Resuming completed Jules session (no PR) [Attempt {retry_count + 1}]: {session_id}")
+                try:
+                    self.send_message(session_id, "ok")
+                    logger.info(f"Successfully sent resume message to session {session_id}")
+                    retry_state[session_id] = retry_count + 1
+                    state_changed = True
+                except Exception as e:
+                    logger.error(f"Failed to resume session {session_id}: {e}")
+            else:
+                logger.info(f"Resuming completed Jules session (no PR) [Force PR]: {session_id}")
+                try:
+                    self.send_message(session_id, "Please create a PR with the current code")
+                    logger.info(f"Successfully sent force PR message to session {session_id}")
+                    retry_state[session_id] = 0
+                    state_changed = True
+                except Exception as e:
+                    logger.error(f"Failed to send force PR message to session {session_id}: {e}")
+
+        # Case 4: Completed session with PR -> Check PR status and Archive if closed/merged (or auto-merge)
+        elif state == "COMPLETED" and pull_request and github_client:
+            if session_id in retry_state:
+                del retry_state[session_id]
+                state_changed = True
+
+            try:
+                # Extract PR info
+                repo_name = None
+                pr_number = None
+
+                if isinstance(pull_request, dict):
+                    pr_number = pull_request.get("number")
+                    if "repository" in pull_request:
+                        repo_name = pull_request["repository"].get("name")
+                        if not repo_name and "full_name" in pull_request["repository"]:
+                            repo_name = pull_request["repository"]["full_name"]
+
+                elif isinstance(pull_request, str) and "github.com" in pull_request:
+                    parts = pull_request.split("/")
+                    if "pull" in parts:
+                        pull_idx = parts.index("pull")
+                        if pull_idx > 2 and pull_idx + 1 < len(parts):
+                            repo_name = f"{parts[pull_idx-2]}/{parts[pull_idx-1]}"
+                            try:
+                                pr_number = int(parts[pull_idx + 1])
+                            except ValueError:
+                                pass
+
+                if repo_name and pr_number:
+                    # Check PR status
+                    repo = github_client.get_repository(repo_name)
+                    pr = repo.get_pull(pr_number)
+
+                    # Auto-merge logic
+                    if merge_pr and pr.state == "open" and not pr.merged:
+                        logger.info(f"Auto-merging PR #{pr_number} for session {session_id}")
+                        try:
+                            # Attempt to merge
+                            merge_status = pr.merge()
+                            if merge_status.merged:
+                                logger.info(f"Successfully merged PR #{pr_number}")
+                                # Reload PR to get updated state
+                                pr = repo.get_pull(pr_number)
+                                state_changed = True
+                            else:
+                                logger.warning(f"Failed to merge PR #{pr_number}: {merge_status.message}")
+                        except Exception as e:
+                            logger.error(f"Exception during auto-merge of PR #{pr_number}: {e}")
+
+                    if pr.state == "closed":
+                        action = "merged" if pr.merged else "closed"
+                        logger.info(f"PR #{pr_number} is {action}. Archiving Jules session: {session_id}")
+                        if self.archive_session(session_id):
+                            logger.info(f"Successfully archived session {session_id}")
+                            state_changed = True
+                        else:
+                            logger.error(f"Failed to archive session {session_id}")
+            except Exception as e:
+                logger.warning(f"Failed to check PR status or archive session {session_id}: {e}")
+
+        return state_changed
 
     def close(self) -> None:
         """Close the HTTP session and clean up resources."""
