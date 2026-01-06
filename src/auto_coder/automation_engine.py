@@ -155,6 +155,16 @@ class AutomationEngine:
             preload_github_actions_status,
         )
 
+        # Breaking-change related labels (highest priority)
+        # OPTIMIZATION: Use a set for O(1) lookup and define outside the loop to avoid reconstruction
+        breaking_change_labels = {
+            "breaking-change",
+            "breaking",
+            "api-change",
+            "deprecation",
+            "version-major",
+        }
+
         candidates: List[Candidate] = []
         candidates_count = 0
 
@@ -329,16 +339,7 @@ class AutomationEngine:
 
                 # Calculate priority
                 # Enhanced priority logic to distinguish unmergeable PRs
-                if any(
-                    label in labels
-                    for label in [
-                        "breaking-change",
-                        "breaking",
-                        "api-change",
-                        "deprecation",
-                        "version-major",
-                    ]
-                ):
+                if any(label in breaking_change_labels for label in labels):
                     # Breaking-change PRs get highest priority (7)
                     pr_priority = 7
                 elif "urgent" in labels:
@@ -469,14 +470,7 @@ class AutomationEngine:
                     # - 0: Regular issues
                     issue_priority = 0
                     # Check for breaking-change related labels (highest priority)
-                    breaking_change_labels = [
-                        "breaking-change",
-                        "breaking",
-                        "api-change",
-                        "deprecation",
-                        "version-major",
-                    ]
-                    if any(label in labels for label in breaking_change_labels):
+                    if any(label in breaking_change_labels for label in labels):
                         issue_priority = 7
                     elif "urgent" in labels:
                         issue_priority = 3
@@ -491,13 +485,10 @@ class AutomationEngine:
                     )
 
             # Sort by priority descending, type (issue first), creation time ascending
-            def _type_order(t: str) -> int:
-                return 0 if t == "issue" else 1
-
             candidates.sort(
                 key=lambda x: (
                     -x.priority,
-                    _type_order(x.type),
+                    0 if x.type == "issue" else 1,
                     x.data.get("created_at", ""),
                 )
             )
