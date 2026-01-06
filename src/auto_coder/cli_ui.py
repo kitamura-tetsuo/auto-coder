@@ -66,7 +66,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with spinner.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -84,11 +84,23 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    if not no_color:
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    else:
+        spinner_frames = ["|", "/", "-", "\\"]
+
+    end_time = time.time() + seconds
+    spinner_idx = 0
 
     try:
-        for remaining in range(seconds, 0, -1):
+        while True:
+            remaining = end_time - time.time()
+            if remaining <= 0:
+                break
+
             # Format time nicely
-            hours, remainder = divmod(remaining, 3600)
+            remaining_int = int(remaining + 0.9)  # Ceiling integer for display
+            hours, remainder = divmod(remaining_int, 3600)
             minutes, secs = divmod(remainder, 60)
 
             if hours > 0:
@@ -98,15 +110,28 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            spinner = spinner_frames[spinner_idx % len(spinner_frames)]
+            spinner_idx += 1
+
+            message = f"{spinner} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+
+            # Pad the message to ensure we overwrite previous longer messages
+            # Use a safe length, e.g. 80 chars
+            padding = " " * max(0, 80 - len(message))
+            padded_message = message + padding
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
-                message = click.style(message, fg="bright_black")
+                # Spinner can have a different color (cyan) if desired, but let's keep it consistent
+                padded_message = click.style(padded_message, fg="bright_black")
 
-            stream.write(f"\r{message}")
+            stream.write(f"\r{padded_message}")
             stream.flush()
-            time.sleep(1)
+
+            # Sleep for a short interval for smoother animation
+            # But don't sleep past the end time
+            sleep_time = min(0.1, remaining)
+            time.sleep(sleep_time)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
