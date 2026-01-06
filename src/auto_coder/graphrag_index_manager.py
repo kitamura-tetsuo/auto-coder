@@ -17,6 +17,7 @@ from typing import Any, Optional, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from .logger_config import get_logger
+from .security_utils import redact_string
 from .utils import is_running_in_container
 
 logger = get_logger(__name__)
@@ -620,9 +621,9 @@ class GraphRAGIndexManager:
 
                 if result.returncode != 0:
                     logger.warning(f"graph-builder failed with return code {result.returncode}")
-                    logger.warning(f"stderr: {result.stderr}")
+                    logger.warning(f"stderr: {redact_string(result.stderr)}")
                     if result.stdout:
-                        logger.warning(f"stdout: {result.stdout}")
+                        logger.warning(f"stdout: {redact_string(result.stdout)}")
                     return self._fallback_python_indexing()
 
                 # Read output
