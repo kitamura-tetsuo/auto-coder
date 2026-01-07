@@ -201,7 +201,9 @@ def check_mergeability_with_llm(
     try:
         # Get commit log since branch creation
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
-        commit_log = get_commit_log(base_branch=base_branch)
+        commit_log = get_commit_log(
+            base_branch=base_branch, current_branch=pr_data.get("head", {}).get("ref") or pr_data.get("headRefName")
+        )
 
         # Get linked issues context
         linked_issues_context = ""
@@ -279,7 +281,9 @@ def resolve_merge_conflicts_with_llm(
     try:
         # Get commit log since branch creation
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
-        commit_log = get_commit_log(base_branch=base_branch)
+        commit_log = get_commit_log(
+            base_branch=base_branch, current_branch=pr_data.get("head", {}).get("ref") or pr_data.get("headRefName")
+        )
 
         # Get linked issues context
         linked_issues_context = ""
