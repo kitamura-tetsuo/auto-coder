@@ -1945,7 +1945,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
         _recurse_suites(report.get("suites", []))
 
     if total_failures == 0 and total_flaky == 0 and total_interrupted == 0 and total_passed > 0 and total_skipped == 0:
-        return "All Playwright tests passed."
+        return f"All {total_passed} Playwright tests passed."
 
     # Build Summary
     summary_lines = []

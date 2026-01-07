@@ -208,14 +208,9 @@ class TestJulesClient:
 
         assert changed is True
         mock_pr.merge.assert_called_once()
-        # Should proceed to archive since it's now merged (in our mocked world, we simulate post-merge state)
-        # However, the logic re-fetches the PR. So we need to ensure the second fetch returns merged=True
-        # but mock_repo.get_pull returns the same mock object, so we just need to ensure the mock object
-        # has state="closed" or merged=True for the archive check.
-        # But wait, the code calls pr.merge(), then if success, sets state_changed=True.
-        # Then it continues to check if pr.state == "closed".
-        # If the mock pr.state is still "open", it won't archive yet (until next poll).
-        # Let's verify merge was called.
+        # In continuous mode (merge_pr=True), we do NOT archive the session automatically
+        client.archive_session.assert_not_called()
+
         
     @patch("src.auto_coder.jules_client.get_llm_config")
     def test_process_session_status_no_auto_merge(self, mock_get_config):
@@ -276,5 +271,106 @@ class TestJulesClient:
         with patch("src.auto_coder.github_client.GitHubClient") as mock_gh_cls:
              response = client._run_llm_cli("prompt")
 
+
         assert response == "Session session1 completed and archived."
         assert client.get_session.call_count == 3
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("src.auto_coder.jules_client.time.sleep")
+    def test_run_llm_cli_session_reuse(self, mock_sleep, mock_get_config):
+        """Test _run_llm_cli reuses existing session."""
+        mock_config = Mock()
+        mock_config.get_backend_config.return_value = Mock(options=[], options_for_noedit=[], api_key=None, base_url=None)
+        mock_get_config.return_value = mock_config
+
+        client = JulesClient()
+        client.start_session = Mock(return_value="new_session")
+        client.send_message = Mock()
+        client.get_session = Mock(return_value={"state": "ARCHIVED"}) # Immediate exit for loop
+        
+        # First call: starts new session
+        client._run_llm_cli("prompt1")
+        assert client.current_session_id == "new_session"
+        client.start_session.assert_called_once()
+        client.send_message.assert_not_called()
+        
+        # Second call: reuses session
+        # Mock get_session to return ARCHIVED immediately to exit loop
+        client.get_session.return_value = {"state": "ARCHIVED"}
+        
+        client._run_llm_cli("prompt2")
+        assert client.current_session_id == "new_session"
+        client.send_message.assert_called_with("new_session", "prompt2")
+        # start_session should still have only been called once
+        client.start_session.assert_called_once()
+
+    def test_get_pr_details_helper(self):
+        """Test _get_pr_details helper with various formats."""
+        client = JulesClient()
+        
+        # Case 1: Dict format
+        session1 = {"outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}}
+        repo, number = client._get_pr_details(session1)
+        assert repo == "owner/repo"
+        assert number == 123
+        
+        # Case 2: URL string format
+        session2 = {"outputs": {"pullRequest": "https://github.com/owner/repo/pull/456"}}
+        repo, number = client._get_pr_details(session2)
+        assert repo == "owner/repo"
+        assert number == 456
+        
+        # Case 3: List outputs (legacy)
+        session3 = {"outputs": [{"pullRequest": {"number": 789, "repository": {"full_name": "owner/repo"}}}]}
+        repo, number = client._get_pr_details(session3)
+        assert repo == "owner/repo"
+        assert number == 789
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("src.auto_coder.jules_client.time.sleep")
+    def test_run_llm_cli_continuous_exit(self, mock_sleep, mock_get_config):
+        """Test _run_llm_cli exits when PR is merged in continuous mode."""
+        mock_config = Mock()
+        mock_config.get_backend_config.return_value = Mock(options=[], options_for_noedit=[], api_key=None, base_url=None)
+        mock_get_config.return_value = mock_config
+
+        client = JulesClient()
+        client.start_session = Mock(return_value="session1")
+        # Ensure we are not on main branch to trigger merge_pr=True
+        with patch("src.auto_coder.jules_client.get_current_branch", return_value="feature-branch"):
+             with patch("src.auto_coder.github_client.GitHubClient") as mock_gh_cls:
+                mock_gh = Mock()
+                mock_gh_cls.get_instance.return_value = mock_gh
+                
+                mock_repo = Mock()
+                mock_pr = Mock()
+                mock_pr.state = "closed"
+                mock_pr.merged = True
+                mock_repo.get_pull.return_value = mock_pr
+                mock_gh.get_repository.return_value = mock_repo
+                
+                # Mock session states:
+                # 1. RUNNING
+                # 2. COMPLETED with PR (triggers check and exit)
+                # 3. ARCHIVED (Safety fallback to break loop if exit condition not met)
+                client.get_session = Mock(side_effect=[
+                    {"name": "session1", "state": "RUNNING"},
+                    {
+                        "name": "session1", 
+                        "state": "COMPLETED", 
+                        "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}
+                    },
+                    {"name": "session1", "state": "ARCHIVED"},
+                    {"name": "session1", "state": "ARCHIVED"},
+                ])
+                
+                # Mock process_session_status to do nothing (or verify we don't need it to do much)
+                client.process_session_status = Mock(return_value=False)
+                
+                result = client._run_llm_cli("prompt")
+                
+                assert "PR #123 merged" in result
+                assert "Session kept open" in result
+                # Verify we checked the PR
+                mock_repo.get_pull.assert_called_with(123)
+
