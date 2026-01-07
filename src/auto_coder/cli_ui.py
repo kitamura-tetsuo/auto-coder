@@ -85,8 +85,18 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
     no_color = "NO_COLOR" in os.environ
 
+    # Spinner frames
+    if no_color:
+        spinner_frames = ["|", "/", "-", "\\"]
+    else:
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    total_steps = seconds * 10
+
     try:
-        for remaining in range(seconds, 0, -1):
+        for step in range(total_steps):
+            remaining = (total_steps - step + 9) // 10
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,15 +108,17 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            spinner_char = spinner_frames[step % len(spinner_frames)]
+            message = f"{spinner_char} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
+                # We color the whole message including spinner to keep it uniform
                 message = click.style(message, fg="bright_black")
 
             stream.write(f"\r{message}")
             stream.flush()
-            time.sleep(1)
+            time.sleep(0.1)
 
         # Clear the line after done
         # We need to clear enough space for the longest message

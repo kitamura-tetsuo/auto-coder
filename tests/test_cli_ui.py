@@ -15,8 +15,8 @@ def test_sleep_with_countdown_execution(mock_sleep):
 
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 
-    # Check that time.sleep was called 2 times
-    assert mock_sleep.call_count == 2
+    # Check that time.sleep was called 20 times (2 seconds * 10 steps)
+    assert mock_sleep.call_count == 20
 
     # Check that stream.write was called
     assert mock_stream.write.called
