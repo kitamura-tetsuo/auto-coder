@@ -1,22 +1,35 @@
 """Tests for CLI UI helpers."""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 from src.auto_coder import cli_ui
 
 
+@patch("time.time")
 @patch("time.sleep")
-def test_sleep_with_countdown_execution(mock_sleep):
+def test_sleep_with_countdown_execution(mock_sleep, mock_time):
     """Test that sleep_with_countdown executes correctly."""
     # Create a mock stream
     mock_stream = MagicMock()
     mock_stream.isatty.return_value = True
 
+    # Setup time.time to simulate passage of time
+    # Start at 0, then increment by 0.1 for a few steps, then jump to end
+    start_time = 1000.0
+    mock_time.side_effect = [
+        start_time,          # init start_time
+        start_time + 0.0,    # first loop check
+        start_time + 0.1,    # second loop check
+        start_time + 2.1     # end loop check (past 2 seconds)
+    ]
+
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 
-    # Check that time.sleep was called 2 times
-    assert mock_sleep.call_count == 2
+    # Check that time.sleep was called
+    assert mock_sleep.called
+    # It calls sleep(0.1) inside the loop
+    mock_sleep.assert_has_calls([call(0.1)])
 
     # Check that stream.write was called
     assert mock_stream.write.called

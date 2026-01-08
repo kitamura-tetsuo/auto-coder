@@ -2,6 +2,7 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
@@ -66,7 +67,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with spinner.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -84,9 +85,19 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spinner_idx = 0
+    start_time = time.time()
+    end_time = start_time + seconds
 
     try:
-        for remaining in range(seconds, 0, -1):
+        while True:
+            current_time = time.time()
+            if current_time >= end_time:
+                break
+
+            remaining = math.ceil(end_time - current_time)
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,15 +109,25 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            spinner = spinner_frames[spinner_idx]
+            spinner_idx = (spinner_idx + 1) % len(spinner_frames)
+
+            # ⏳ (hourglass) is also a good option, but let's stick to simple text for now
+            # if we wanted to be fancy: ⏳
 
             if not no_color:
-                # Dim the text (bright_black is usually dark gray)
-                message = click.style(message, fg="bright_black")
+                # Cyan spinner, dim text
+                spinner_colored = click.style(spinner, fg="cyan")
+                time_colored = click.style(f"[{time_str}]", fg="green")
+                message = f"{spinner_colored} Sleeping... {time_colored} (Ctrl+C to interrupt)"
+            else:
+                message = f"{spinner} Sleeping... [{time_str}] (Ctrl+C to interrupt)"
 
             stream.write(f"\r{message}")
             stream.flush()
-            time.sleep(1)
+
+            # Update every 0.1 seconds for smooth animation
+            time.sleep(0.1)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
