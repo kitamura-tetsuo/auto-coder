@@ -155,7 +155,7 @@ def is_git_repository(path: Optional[str] = None) -> bool:
         return False
 
 
-def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50) -> str:
+def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50, current_branch: Optional[str] = None) -> str:
     """
     Get commit messages since the current branch diverged from the base branch.
 
@@ -163,6 +163,7 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
         cwd: Optional working directory for git command
         base_branch: The base branch to compare against (default: 'main')
         max_commits: Maximum number of commits to retrieve (default: 50)
+        current_branch: Optional current branch name. If provided, skips calling get_current_branch.
 
     Returns:
         String containing commit log messages, one per line, or empty string if no commits
@@ -170,8 +171,10 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
     cmd = CommandExecutor()
 
     try:
-        # Get current branch
-        current_branch = get_current_branch(cwd=cwd)
+        # Get current branch if not provided
+        if not current_branch:
+            current_branch = get_current_branch(cwd=cwd)
+
         if not current_branch:
             logger.warning("Failed to get current branch")
             return ""

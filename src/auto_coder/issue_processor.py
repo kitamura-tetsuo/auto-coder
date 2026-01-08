@@ -865,7 +865,7 @@ def _apply_issue_actions_directly(
             ):
                 # Get commit log since branch creation
                 with ProgressStage("Getting commit log"):
-                    commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+                    commit_log = get_commit_log(base_branch=config.MAIN_BRANCH, current_branch=target_branch)
 
                 # Create a comprehensive prompt for LLM CLI
                 # Extract issue labels for label-based prompt selection
