@@ -7,18 +7,24 @@ from hishel.httpx import SyncCacheClient
 
 _storage_instance = None
 _storage_lock = threading.Lock()
+_client_instance = None
+_client_lock = threading.Lock()
 
 
 def get_caching_client() -> httpx.Client:
     """
     Returns a singleton instance of a caching httpx client using hishel.
     """
-    global _storage_instance
-    if _storage_instance is None:
-        with _storage_lock:
-            if _storage_instance is None:
-                _storage_instance = SyncSqliteStorage(database_path=".cache/gh_cache.db")
-    return SyncCacheClient(storage=_storage_instance)
+    global _storage_instance, _client_instance
+    if _client_instance is None:
+        with _client_lock:
+            if _client_instance is None:
+                if _storage_instance is None:
+                    with _storage_lock:
+                        if _storage_instance is None:
+                            _storage_instance = SyncSqliteStorage(database_path=".cache/gh_cache.db")
+                _client_instance = SyncCacheClient(storage=_storage_instance)
+    return _client_instance
 
 
 def get_ghapi_client(token: str) -> GhApi:
