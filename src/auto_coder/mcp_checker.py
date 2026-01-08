@@ -5,6 +5,7 @@ for different LLM backends (gemini, qwen, auggie, codex, claude).
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -465,7 +466,7 @@ def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> boo
             install_dir=None,  # Use default ~/graphrag_mcp
             neo4j_uri="bolt://localhost:7687",
             neo4j_user="neo4j",
-            neo4j_password="password",
+            neo4j_password=os.environ.get("NEO4J_PASSWORD", "password"),
             qdrant_url="http://localhost:6333",
             skip_clone=False,
             silent=True,  # Suppress verbose output
