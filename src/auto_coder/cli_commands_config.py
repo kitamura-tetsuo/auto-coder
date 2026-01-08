@@ -541,7 +541,17 @@ def export(config_file: Optional[str], output: Optional[str]) -> None:
 
     if output:
         try:
-            with open(output, "w") as f:
+            # Use os.open to ensure file is created with 600 permissions
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                # Also chmod in case the file already existed with different permissions
+                os.fchmod(fd, 0o600)
+            except AttributeError:
+                # os.fchmod is not available on all platforms (e.g. Windows)
+                # Fallback to os.chmod if needed, though less race-condition safe
+                pass
+
+            with os.fdopen(fd, "w") as f:
                 json.dump(config_dict, f, indent=2)
             click.echo(f"✅ Configuration exported to: {output}")
         except Exception as e:

@@ -27,3 +27,8 @@
 **Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
 **Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
 **Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.
+
+## 2026-01-21 - Insecure File Permissions for Config Export
+**Vulnerability:** The `auto-coder config export` command wrote sensitive configuration data (including API keys) to a user-specified file using standard `open()`. This created files with default permissions (often world-readable), potentially leaking secrets.
+**Learning:** Even explicit user export actions must default to secure permissions when handling sensitive data. Users might not be aware that their shell's umask allows others to read the file they just exported.
+**Prevention:** Use `os.open` with `os.O_CREAT | os.O_WRONLY | os.O_TRUNC` and `mode=0o600` for all file writes involving sensitive configuration data, even for explicit export commands.
