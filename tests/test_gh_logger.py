@@ -66,7 +66,7 @@ class TestGHCommandLogger:
                 caller_file="/test/file.py",
                 caller_line=42,
                 command="gh",
-                args=["api", "graphql"],
+                args=["api", "graphql", "-f", 'query={"user": "test"}'],
                 repo="owner/repo",
             )
 
@@ -74,7 +74,8 @@ class TestGHCommandLogger:
             assert row["caller_file"] == "/test/file.py"
             assert row["caller_line"] == "42"
             assert row["command"] == "gh"
-            assert row["args"] == "api graphql"
+            # format_csv_row compresses JSON in args
+            assert 'api graphql -f query={"user":"test"}' in row["args"]
             assert row["repo"] == "owner/repo"
             assert row["hostname"] == socket.gethostname()
 
@@ -108,6 +109,32 @@ class TestGHCommandLogger:
                 assert rows[0]["repo"] == "owner/repo"
                 assert rows[0]["caller_file"] == "/test/auth_utils.py"
                 assert rows[0]["caller_line"] == "36"
+
+    def test_log_command_creates_secure_file(self):
+        """Test that the log file is created with secure permissions (600)."""
+        if os.name == "nt":
+            pytest.skip("Skipping permission test on Windows")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = Path(tmpdir)
+            logger = GHCommandLogger(log_dir=test_dir)
+
+            # Log a command
+            logger.log_command(
+                command_list=["gh", "auth", "status"],
+                caller_file="/test/auth_utils.py",
+                caller_line=36,
+                repo="owner/repo",
+            )
+
+            # Check file was created
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            # Check permissions
+            stat = os.stat(log_file)
+            permissions = stat.st_mode & 0o777
+            assert permissions == 0o600
 
     def test_log_command_multiple_commands(self):
         """Test logging multiple commands creates multiple rows."""

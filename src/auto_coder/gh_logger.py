@@ -215,7 +215,17 @@ class GHCommandLogger:
         # Write to CSV file
         log_file = self._get_log_file_path()
         try:
-            with open(log_file, "a", newline="", encoding="utf-8") as f:
+            # Use os.open to ensure file is created with 600 permissions
+            fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+
+            # Ensure permissions are correct even if file already existed
+            try:
+                os.chmod(log_file, 0o600)
+            except Exception:
+                # Ignore chmod errors (e.g. on Windows or if not owner)
+                pass
+
+            with os.fdopen(fd, "a", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
                 # Write header if file is empty
                 if f.tell() == 0:
