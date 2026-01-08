@@ -268,21 +268,25 @@ class TestPRMessageGeneration:
         json_response = '{"title": "Fix bug", "body": "This fixes the bug"}'
 
         # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/456")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Mock gh pr create
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": 456,
+                "html_url": f"https://github.com/{repo_name}/pull/456"
+            }
 
             result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, json_response, github_client, config)
 
             # Verify the PR was created
             assert "Successfully created PR" in result
-            # Verify the JSON was parsed correctly
-            mock_gh_logger_instance.execute_with_logging.assert_called_once()
-            call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
-            assert "--title" in call_args
-            title_index = call_args.index("--title") + 1
-            assert call_args[title_index] == "Fix bug"
+            # Verify the GhApi was used correctly
+            mock_api.pulls.create.assert_called_once()
+            call_kwargs = mock_api.pulls.create.call_args[1]
+            assert call_kwargs["title"] == "Fix bug"
 
     def test_create_pr_with_conversation_history(self):
         """Test PR creation with conversation history (list of messages)."""
@@ -313,21 +317,24 @@ class TestPRMessageGeneration:
         conversation_response = json.dumps(conversation_list)
 
         # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/456")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": 456,
+                "html_url": f"https://github.com/{repo_name}/pull/456"
+            }
 
             result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, conversation_response, github_client, config)
 
             # Verify the PR was created
             assert "Successfully created PR" in result
             # Verify the JSON from the last message was parsed correctly
-            mock_gh_logger_instance.execute_with_logging.assert_called_once()
-            call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
-            assert "--title" in call_args
-            title_index = call_args.index("--title") + 1
-            assert call_args[title_index] == "Fix authentication bug"
+            mock_api.pulls.create.assert_called_once()
+            call_kwargs = mock_api.pulls.create.call_args[1]
+            assert call_kwargs["title"] == "Fix authentication bug"
 
     def test_create_pr_with_text_before_json(self):
         """Test PR creation with text before JSON response."""
@@ -352,21 +359,24 @@ class TestPRMessageGeneration:
         response_with_text = 'Here is the PR message:\n{"title": "Update docs", "body": "Updated documentation"}'
 
         # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/456")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": 456,
+                "html_url": f"https://github.com/{repo_name}/pull/456"
+            }
 
             result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, response_with_text, github_client, config)
 
             # Verify the PR was created
             assert "Successfully created PR" in result
             # Verify the JSON was extracted and parsed correctly
-            mock_gh_logger_instance.execute_with_logging.assert_called_once()
-            call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
-            assert "--title" in call_args
-            title_index = call_args.index("--title") + 1
-            assert call_args[title_index] == "Update docs"
+            mock_api.pulls.create.assert_called_once()
+            call_kwargs = mock_api.pulls.create.call_args[1]
+            assert call_kwargs["title"] == "Update docs"
 
 
 class TestPRLabelCopying:
@@ -414,10 +424,15 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
+            }
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -468,10 +483,15 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
+            }
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -522,10 +542,15 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
+            }
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -575,10 +600,15 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
+            }
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -625,10 +655,15 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
+            }
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -676,10 +711,15 @@ class TestPRLabelCopying:
         github_client.add_labels.side_effect = Exception("GitHub API error")
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_get_ghapi_client.return_value = mock_api
+            
+            # Mock pulls.create response
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
+            }
 
             # Call _create_pr_for_issue - should not raise despite label error
             result = self._create_pr_with_json_message(

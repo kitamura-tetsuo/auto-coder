@@ -5,6 +5,7 @@ GitHub API client for Auto-Coder.
 import json
 import subprocess
 import threading
+import time
 import types
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -106,7 +107,18 @@ class GitHubClient:
             if headers:
                 final_headers.update(headers)
 
-            response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
+            # Retry logic for RemoteProtocolError
+            max_retries = 3
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
+                    break
+                except httpx.RemoteProtocolError:
+                    if attempt == max_retries - 1:
+                        raise
+                    logger.warning(f"RemoteProtocolError encountered. Retrying {attempt + 1}/{max_retries}...")
+                    time.sleep(1 * (attempt + 1))
             try:
                 # We cannot use `response.raise_for_status()` for two reasons:
                 # 1. It raises an error on 304 Not Modified, which is a success condition for caching.

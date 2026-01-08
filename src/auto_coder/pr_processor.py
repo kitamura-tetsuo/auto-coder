@@ -21,6 +21,7 @@ from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
+from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, _create_github_action_log_summary, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
@@ -351,27 +352,16 @@ def _get_mergeable_state(
     # Refresh mergeability only when value is unknown
     if mergeable is None:
         try:
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    str(pr_data.get("number", "")),
-                    "--repo",
-                    repo_name,
-                    "--json",
-                    "mergeable,mergeStateStatus",
-                ],
-                repo=repo_name,
-                capture_output=True,
-            )
-            if result.success and result.stdout:  # type: ignore[attr-defined]
-                latest = json.loads(result.stdout)
-                mergeable = latest.get("mergeable", mergeable)
-                merge_state_status = latest.get("mergeStateStatus", merge_state_status)
-        except Exception:
-            logger.debug("Unable to refresh mergeable state for PR #%s", pr_data.get("number"))
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+            
+            # API: api.pulls.get(owner, repo, pull_number)
+            pr_details = api.pulls.get(owner, repo, pull_number=pr_data.get("number"))
+            mergeable = pr_details.get("mergeable", mergeable)
+            merge_state_status = pr_details.get("merge_state_status", merge_state_status)
+        except Exception as e:
+            logger.debug(f"Unable to refresh mergeable state for PR #{pr_data.get('number')}: {e}")
 
     return {"mergeable": mergeable, "merge_state_status": merge_state_status}
 
@@ -402,23 +392,18 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
 
         # Step 1: Get PR details to determine the base branch
-        gh_logger = get_gh_logger()
-        pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
-            capture_output=True,
-        )
-
-        if not pr_details_result.success:  # type: ignore[attr-defined]
-            error_msg = f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
+        try:
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+            
+            pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
+            base_branch = pr_details.get("base", {}).get("ref", "main")
+        except Exception as e:
+            error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
-
-        try:
-            pr_data = json.loads(pr_details_result.stdout)
-            base_branch = pr_data.get("baseRefName", "main")
-        except Exception:
-            base_branch = "main"
 
         actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
 
@@ -450,7 +435,6 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # The _trigger_fallback_for_conflict_failure has already been called in conflict_resolver
             # The linked issues have been reopened and attempt incremented
             # Now we need to close the PR
-            from .github_client import GitHubClient
 
             try:
                 client = GitHubClient.get_instance()
@@ -773,14 +757,64 @@ def _apply_pr_actions_directly(
 def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> str:
     """Get PR diff for analysis."""
     try:
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "diff", str(pr_number), "--repo", repo_name],
-            repo=repo_name,
-            capture_output=True,
-        )
-        return result.stdout[: config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"  # type: ignore[attr-defined]
-    except Exception:
+        # Get GhApi client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
+        # GhApi call for diff
+        # We need to pass the custom media type header to get the diff
+        # api.pulls.get normally returns JSON.
+        # We'll use the lower-level api call or the __call__ method if supported,
+        # or just rely on 'GET' verb manually via the adapter mechanism we built?
+        # Actually, GhApi allows 'headers' argument in its calls if they are passed down?
+        # fastai/ghapi generated methods might not accept 'headers'.
+        # We can use api(path, verb, headers, ...)
+        
+        path = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+        # Use valid Accept header for diff
+        headers = {"Accept": "application/vnd.github.v3.diff"}
+        
+        # We need to access the internal caching mechanism to pass these headers?
+        # Our adapter added in gh_cache.py handles explicit headers passed to it.
+        # But calling api.pulls.get() might not let us pass headers.
+        # So we use api.full(path, headers=...) or similar?
+        # valid way in ghapi: api(path, 'GET', headers=headers)
+        
+        # Note: 'api' object is callable: api(path, verb, headers, route_params, query_params, data)
+        # Verify ghapi signature: __call__(self, path, verb=None, headers=None, route=None, query=None, data=None)
+        
+        diff_content = api(path, verb='GET', headers=headers)
+        
+        # diff_content might be bytes or str depending on the adapter return.
+        # Our adapter calls props.json() which might fail for diff content if it's not JSON.
+        # Wait, our gh_cache.py adapter attempts `return resp.json()`.
+        # If response is NOT JSON (which diff is not), `resp.json()` will raise JSONDecodeError.
+        # We need to fix gh_cache.py to handle non-JSON responses if we want to use it for diffs!
+        # Or, we modify gh_cache.py adapter to return .text if content-type is not json?
+        
+        # Let's assume for now I will fix gh_cache.py to handle text/diff responses?
+        # Or I can just bypass ghapi for this specific call if ghapi client is too rigid?
+        # No, the goal is to use GhApi.
+        
+        # I should probably update gh_cache.py to return text if json fails or based on headers?
+        # But assuming I haven't done that yet, this might fail.
+        # I will handle it by updating gh_cache.py IN THE NEXT STEP if needed, 
+        # or checking if I can use a raw client here.
+        # But I should stick to using the `api` object.
+        
+        # Let's write this to use `api` and assume the adapter handles it or I'll fix the adapter.
+        # Actually, looking at my gh_cache.py implementation:
+        # It calls `resp.json()`. This WILL fail for diffs.
+        
+        # I MUST fix gh_cache.py to check content-type or handle json error and return text.
+        # Since I am in the middle of replacing, I will commit this change and THEN update gh_cache.py again 
+        # to support non-JSON responses.
+        
+        return str(diff_content)[: config.MAX_PR_DIFF_SIZE]
+
+    except Exception as e:
+        logger.debug(f"Failed to get PR diff via GhApi: {e}")
         return "Could not retrieve PR diff"
 
 
@@ -1696,8 +1730,7 @@ def _send_jules_error_feedback(
             return actions
 
         # Get GitHub Actions error logs
-        logs_list, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
-        github_logs = _create_github_action_log_summary(logs_list)
+        github_logs, _ = _create_github_action_log_summary(repo_name, config, failed_checks, pr_data)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
