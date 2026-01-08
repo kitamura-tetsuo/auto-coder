@@ -1909,16 +1909,27 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                      visited_locations.add(loc_str)
                                  
                                  # Update failed_specs for summary (always count for stats)
-                                 if loc_file not in failed_specs:
-                                     failed_specs[loc_file] = []
-                                 failed_specs[loc_file].append(title)
+                                 # We use spec_file (the test file) rather than loc_file (where error happened)
+                                 # because we want to know which TEST file failed.
+                                 clean_spec_file = _normalize_gh_path(spec_file)
+                                 if clean_spec_file not in failed_specs:
+                                     failed_specs[clean_spec_file] = []
+                                 failed_specs[clean_spec_file].append(title)
                                  
                                  # Only add details if not duplicate
                                  if not is_duplicate:
                                      clean_msg = _clean_log_line(msg)
                                      
+                                     # Use spec location for the File: field as requested
+                                     spec_line = spec.get("line", "")
+                                     spec_col = spec.get("column", "")
+                                     if spec_line and spec_col:
+                                         display_loc = f"{_normalize_gh_path(spec_file)}:{spec_line}:{spec_col}"
+                                     else:
+                                         display_loc = _normalize_gh_path(spec_file)
+
                                      current_failure_block.append(f"FAILED: {title}")
-                                     current_failure_block.append(f"File: {loc_str}")
+                                     current_failure_block.append(f"File: {display_loc}")
                                      current_failure_block.append(f"Error: {clean_msg}")
                                      
                                      if stack:
