@@ -592,10 +592,11 @@ def test_progress_footer_elapsed_time():
         formatted = footer._format_footer("PR", 123)
 
         # Should contain formatted time
-        assert "[1m 05s]" in formatted
+        assert "01m 05s" in formatted
         # Should contain dark gray color code if not no_color
         if not footer._no_color:
             assert "\033[90m" in formatted
+            assert "⏱" in formatted
 
 
 def test_progress_footer_elapsed_time_short():
@@ -617,7 +618,7 @@ def test_progress_footer_elapsed_time_short():
         formatted = footer._format_footer("PR", 123)
 
         # Should contain formatted time
-        assert "[5s]" in formatted
+        assert "5s" in formatted
 
 
 def test_progress_footer_elapsed_time_hours():
@@ -639,7 +640,7 @@ def test_progress_footer_elapsed_time_hours():
         formatted = footer._format_footer("PR", 123)
 
         # Should contain formatted time with hours
-        assert "[1h 01m 05s]" in formatted
+        assert "1h 01m 05s" in formatted
 
 
 if __name__ == "__main__":

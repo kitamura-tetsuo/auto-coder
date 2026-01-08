@@ -129,17 +129,17 @@ class ProgressFooter:
             minutes, seconds = divmod(remainder, 60)
 
             if hours > 0:
-                time_str = f"[{hours}h {minutes:02d}m {seconds:02d}s]"
+                time_str = f"{hours}h {minutes:02d}m {seconds:02d}s"
             elif minutes > 0:
-                time_str = f"[{minutes}m {seconds:02d}s]"
+                time_str = f"{minutes:02d}m {seconds:02d}s"
             else:
-                time_str = f"[{seconds}s]"
+                time_str = f"{seconds}s"
 
             if self._no_color:
-                formatted += f" {time_str}"
+                formatted += f" [{time_str}]"
             else:
-                # Dark gray (90m) for timer
-                formatted += f" \033[90m{time_str}{c_reset}"
+                # Dark gray (90m) for timer with clock icon
+                formatted += f" \033[90m⏱ {time_str}{c_reset}"
 
         return formatted
 
