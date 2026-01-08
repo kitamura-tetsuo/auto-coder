@@ -139,7 +139,7 @@ class ProgressFooter:
                 formatted += f" {time_str}"
             else:
                 # Dark gray (90m) for timer
-                formatted += f" \033[90m{time_str}{c_reset}"
+                formatted += f" \033[90m⏱ {time_str}{c_reset}"
 
         return formatted
 

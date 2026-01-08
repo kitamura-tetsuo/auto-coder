@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2025-12-24 - Visual Anchors for Metadata
+**Learning:** Pure text timers (e.g., `[1h 23m]`) blend into other bracketed metadata in the logs. Adding a semantic icon (⏱) creates an instant visual anchor, allowing users to scan for "how long has this been running?" without reading the text.
+**Action:** Use distinct icons for different types of bracketed metadata (status vs. time vs. ID) to improve scanability.
