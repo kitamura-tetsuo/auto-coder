@@ -17,7 +17,6 @@ from .claude_client import ClaudeClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
 from .gemini_client import GeminiClient
-from .jules_client import JulesClient
 from .llm_backend_config import BackendConfig, LLMBackendConfiguration, get_llm_config
 from .qwen_client import QwenClient
 
@@ -263,13 +262,6 @@ def check_aider_cli_or_fail() -> None:
     check_cli_tool(tool_name="aider", install_url="pip install aider-chat", version_flag="--version")
 
 
-def check_jules_cli_or_fail() -> None:
-    """Check if jules backend is configured correctly (HTTP API)."""
-    # Jules uses HTTP API, so no CLI tool check is needed.
-    # We could check for API keys here, but that's handled in the client.
-    pass
-
-
 def check_cli_tool(
     tool_name: str,
     install_url: str,
@@ -351,8 +343,6 @@ def build_models_map() -> Dict[str, str]:
     models["auggie"] = config.get_model_for_backend("auggie") or "GPT-5"
     # claude
     models["claude"] = config.get_model_for_backend("claude") or "sonnet"
-    # jules
-    models["jules"] = config.get_model_for_backend("jules") or "jules-v1"
     # aider
     models["aider"] = config.get_model_for_backend("aider") or "aider"
     return models
@@ -399,8 +389,6 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_auggie_cli_or_fail()
         elif backend_name == "claude":
             check_claude_cli_or_fail()
-        elif backend_name == "jules":
-            check_jules_cli_or_fail()
         elif backend_name == "aider":
             check_aider_cli_or_fail()
         else:
@@ -410,7 +398,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
                 # Recursively check the backend_type
                 check_backend_prerequisites([backend_config.backend_type])
             else:
-                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, gemini, qwen, auggie, claude, jules) " f"or configure backend_type in llm_config.toml")
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, gemini, qwen, auggie, claude) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
@@ -499,10 +487,6 @@ def build_backend_manager(
             use_noedit_options=use_noedit_options,
         )
 
-    def _create_jules_client(backend_name: str):
-        """Create a JulesClient."""
-        return JulesClient(backend_name=backend_name)
-
     # Mapping of backend types to factory functions
     backend_type_factories = {
         "qwen": _create_qwen_client,
@@ -511,7 +495,6 @@ def build_backend_manager(
         "auggie": _create_auggie_client,
         "codex": _create_codex_client,
         "codex-mcp": _create_codex_mcp_client,
-        "jules": _create_jules_client,
         "aider": _create_aider_client,
     }
 
@@ -519,14 +502,12 @@ def build_backend_manager(
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude", "jules", "aider"]:
+        if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude", "aider"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
             elif backend_name == "codex-mcp":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_mcp_client, backend_name))
-            elif backend_name == "jules":
-                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_jules_client, backend_name))
             elif backend_name == "gemini":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_gemini_client, backend_name))
             elif backend_name == "qwen":

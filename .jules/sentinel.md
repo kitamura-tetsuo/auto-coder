@@ -27,8 +27,3 @@
 **Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
 **Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
 **Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.
-
-## 2026-02-12 - Sensitive Arguments in Internal Function Logging
-**Vulnerability:** The `@log_calls` decorator in `logger_config.py` logged function arguments (via `_format_args`) in plain text without redaction. This exposed sensitive data (like tokens) passed to decorated internal functions.
-**Learning:** Even internal logging of function calls needs security sanitization if those functions might handle sensitive data. Developers might add `@log_calls` for debugging without realizing it bypasses other security layers.
-**Prevention:** Apply centralized redaction logic (like `redact_string` from `security_utils`) to all argument formatting in logging decorators and helpers.
