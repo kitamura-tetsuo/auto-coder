@@ -156,6 +156,7 @@ auto-coder fix-to-pass-tests [OPTIONS]
 - `--force-reindex`: Force GraphRAG reindexing.
 - `--log-level`: Set logging level.
 - `--verbose`: Enable verbose logging.
+- `--enable-github-action`: Run tests via GitHub Action instead of locally (commits and pushes changes).
 
 #### Dependabot PR Handling
 
@@ -284,6 +285,11 @@ Behavior Specification:
     - Runs code style checks in check-only mode when running in CI environments
 - For each failure, extracts important parts from error output and asks LLM for minimal fixes.
 - After fixes, stages and commits. Stops with error if there are no changes at all (`nothing to commit`).
+- `--enable-github-action`: Run tests via GitHub Actions.
+  - Commits changes to the current branch.
+  - Pushes to GitHub.
+  - Waits for GitHub Actions checks to pass.
+  - Uses check failures as feedback for the LLM.
 
 #### Lock Management Commands
 

@@ -249,7 +249,7 @@ class CommandExecutor:
     DEFAULT_TIMEOUTS = {
         "git": 120,
         "gh": 60,
-        "test": 3600,
+        "test": 14400,
         "auggie": 7200,
         "claude": 7200,
         "codex": 7200,
