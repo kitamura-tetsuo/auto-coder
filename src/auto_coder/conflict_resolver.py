@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
+from auto_coder.exceptions import AutoCoderUsageLimitError
 
 from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
@@ -187,7 +188,7 @@ def check_mergeability_with_llm(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
-) -> bool:
+) -> Optional[bool]:
     """Check if merge can be performed without degrading code quality.
 
     Args:
@@ -196,7 +197,7 @@ def check_mergeability_with_llm(
         config: AutomationConfig instance
 
     Returns:
-        True if safe to merge, False if merge would degrade code quality
+        True if safe to merge, False if merge would degrade code quality, None if indeterminate.
     """
     try:
         # Get commit log since branch creation
@@ -261,6 +262,10 @@ def check_mergeability_with_llm(
             logger.warning(f"LLM did not provide a clear response for mergeability check PR #{pr_data.get('number')}")
             return False
 
+    except AutoCoderUsageLimitError as e:
+        logger.warning(f"LLM quota exceeded while checking mergeability: {e}")
+        # Return None to indicate we couldn't determine mergeability
+        return None
     except Exception as e:
         logger.error(f"Error checking mergeability with LLM: {e}")
         # Default to not safe (pessimistic) on exception
@@ -559,7 +564,11 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Check if merge would degrade code quality before attempting resolution
             safe_to_merge = check_mergeability_with_llm(pr_data, conflict_info, config)
 
-            if not safe_to_merge:
+            if safe_to_merge is None:
+                logger.warning(f"Unable to check mergeability for PR #{pr_number} due to LLM error (e.g. quota). Skipping merge attempt.")
+                return False
+
+            if safe_to_merge is False:
                 logger.info(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
 
                 # Check if PR is from Jules
