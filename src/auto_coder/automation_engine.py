@@ -4,6 +4,7 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -23,7 +24,7 @@ from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
+from .pr_processor import _is_dependabot_pr, _is_jules_pr, _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
@@ -33,6 +34,19 @@ from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
+
+# Pre-compiled regex patterns for fallback error extraction
+FALLBACK_ERROR_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"ERROR:.*",
+        r"FAILED:.*",
+        r"Failures?:.*",
+        r"Error.*",
+        r"Exception.*",
+        r"Traceback.*",
+    ]
+]
 
 
 class AutomationEngine:
@@ -147,7 +161,6 @@ class AutomationEngine:
         - Creation time ascending (oldest first)
         """
         from .issue_context import extract_linked_issues_from_pr_body
-        from .pr_processor import _is_dependabot_pr, _is_jules_pr
         from .util.dependabot_timestamp import should_process_dependabot_pr
         from .util.github_action import (
             _check_github_actions_status,
@@ -415,6 +428,22 @@ class AutomationEngine:
                 # Build map for fast lookup of open issues
                 issue_map = {i["number"]: i for i in all_issues}
 
+                # Build map of issues linked by open PRs via text reference (body/title)
+                # This covers cases where the GitHub API doesn't report a ConnectedEvent
+                # (e.g. cross-references or recent links)
+                linked_issues_from_prs = set()
+                for pr_data in pr_data_list:
+                    # Extract from body
+                    body = pr_data.get("body", "")
+                    # Reuse extract_linked_issues_from_pr_body to find "fixes #123" patterns
+                    linked = extract_linked_issues_from_pr_body(body)
+                    linked_issues_from_prs.update(linked)
+
+                    # Extract from title
+                    title = pr_data.get("title", "")
+                    linked_title = extract_linked_issues_from_pr_body(title)
+                    linked_issues_from_prs.update(linked_title)
+
                 for issue_data in all_issues:
                     labels = issue_data.get("labels", []) or []
 
@@ -486,8 +515,9 @@ class AutomationEngine:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    # Use pre-fetched data
-                    if issue_data.get("has_linked_prs"):
+                    # Use pre-fetched data and manual text scan
+                    if issue_data.get("has_linked_prs") or number in linked_issues_from_prs:
+                        logger.info(f"Skipping issue #{number} - has linked PRs (API: {issue_data.get('has_linked_prs')}, Text Scan: {number in linked_issues_from_prs})")
                         continue
 
                     # Calculate priority
@@ -763,7 +793,8 @@ class AutomationEngine:
                         total_processed += 1
 
                         logger.info(f"Successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
-                        break
+                        if not _is_jules_pr(candidate.data):
+                            break
 
                     except Exception as e:
                         error_msg = f"Failed to process candidate: {e}"
@@ -944,6 +975,7 @@ class AutomationEngine:
         llm_backend_manager: Any,
         max_attempts: Optional[int] = None,
         message_backend_manager: Optional[Any] = None,
+        enable_github_action: bool = False,
     ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
@@ -962,6 +994,7 @@ class AutomationEngine:
                     llm_backend_manager,
                     max_attempts,
                     message_backend_manager,
+                    enable_github_action=enable_github_action,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
@@ -972,6 +1005,7 @@ class AutomationEngine:
             llm_backend_manager,
             max_attempts,
             message_backend_manager,
+            enable_github_action=enable_github_action,
         )
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
@@ -1310,11 +1344,11 @@ class AutomationEngine:
             if isinstance(test_result, TestResult):
                 return cast(
                     str,
-                    fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                    fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(test_result),
                 )
             # Convert legacy dict payloads to TestResult for better extraction
             tr = fix_to_pass_tests_runner_module._to_test_result(test_result)
-            return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(tr))
+            return cast(str, fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(tr))
         except Exception:
             # Legacy fallback: minimal regex-based extraction from dict payloads
             import re
@@ -1330,17 +1364,10 @@ class AutomationEngine:
                 pass
 
             if output:
-                error_patterns = [
-                    r"ERROR:.*",
-                    r"FAILED:.*",
-                    r"Failures?:.*",
-                    r"Error.*",
-                    r"Exception.*",
-                    r"Traceback.*",
-                ]
+                # Use pre-compiled regex patterns
                 for line in output.split("\n"):
                     line = line.strip()
-                    if any(re.search(pattern, line, re.IGNORECASE) for pattern in error_patterns):
+                    if any(pattern.search(line) for pattern in FALLBACK_ERROR_PATTERNS):
                         if line and line not in important_lines:
                             important_lines.append(line)
 
@@ -1367,7 +1394,7 @@ class AutomationEngine:
             # Derive a concise error summary using the structured extractor
             error_summary = cast(
                 str,
-                fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(test_result),
             )
             if not github_logs:
                 github_logs = error_summary
