@@ -546,6 +546,12 @@ def create_feature_issues(
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option(
+    "--enable-github-action",
+    is_flag=True,
+    default=False,
+    help="Run tests via GitHub Action instead of locally (commits and pushes changes)",
+)
 def fix_to_pass_tests_command(
     github_token: Optional[str],
     disable_labels: Optional[bool],
@@ -555,6 +561,7 @@ def fix_to_pass_tests_command(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
+    enable_github_action: bool,
 ) -> None:
     """Run local tests and repeatedly request LLM fixes until tests pass.
 
@@ -646,6 +653,7 @@ def fix_to_pass_tests_command(
             llm_backend_manager=manager,
             max_attempts=max_attempts,
             message_backend_manager=message_manager,
+            enable_github_action=enable_github_action,
         )
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
