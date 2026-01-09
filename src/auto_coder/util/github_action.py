@@ -1173,7 +1173,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                                 exp_lines.append(ln)
                                         if exp_lines:
                                             # Also add normalized lines with backslash escapes removed
-                                            norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
+                                            norm_lines = [line.replace('\\"', '"') for line in exp_lines]
                                             if "--- Expectation Details ---" not in snippet:
                                                 snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                             else:
@@ -1259,7 +1259,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
                                         body = slice_relevant_error_window(body)
                                     body = slice_relevant_error_window(body)
-                                    return f"=== Job: {job_name} ===\n" + body
+                                    return f"=== Job: {job_name} ({job_id}) ===\n" + body
                         except zipfile.BadZipFile:
                             # Not a zip file, it might be raw text log
                             try:
@@ -1317,7 +1317,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 # ESLint logs are already carefully filtered and this would undo that work
                 if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
                     important = slice_relevant_error_window(important)
-                return f"=== Job: {job_name} ===\n{important}"
+                return f"=== Job: {job_name} ({job_id}) ===\n{important}"
         except Exception as e:
             logger.warning(f"Error processing job zip for {job_id}: {e}")
         except Exception:
@@ -1967,7 +1967,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:

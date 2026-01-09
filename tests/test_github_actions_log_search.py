@@ -448,7 +448,7 @@ class TestGetGitHubActionsLogs:
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         # Call with explicit False (should disable historical search)
-        result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=False)
+        result, _ = _get_github_actions_logs("test/repo", config, failed_checks, search_history=False)
         # Should use current behavior, not search history
         assert "No detailed logs available" in result
 
@@ -487,7 +487,7 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.side_effect = ["Logs from job 200", "Logs from job 300"]
-            result = _get_github_actions_logs("test/repo", config, failed_checks)
+            result, _ = _get_github_actions_logs("test/repo", config, failed_checks)
             assert "Logs from job 200" in result
             assert "Logs from job 300" in result
             assert mock_get_logs.call_count == 2
@@ -512,7 +512,7 @@ class TestGetGitHubActionsLogs:
         mock_get_ghapi_client.return_value = mock_api
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("Simulated error")
 
-        result = _get_github_actions_logs("test/repo", config, failed_checks)
+        result, _ = _get_github_actions_logs("test/repo", config, failed_checks)
         # Should handle exception gracefully and return fallback
         assert "No detailed logs available" in result
 
@@ -565,7 +565,7 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Failed test logs"
-            result = _get_github_actions_logs("test/repo", config, failed_checks)
+            result, _ = _get_github_actions_logs("test/repo", config, failed_checks)
             # Should only get logs from failed jobs
             assert "Failed test logs" in result
 
