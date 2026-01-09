@@ -991,10 +991,10 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
                                     # Collect job-wide summary candidates (maintain order)
-                                    for log_line in content.split("\n"):
-                                        ll = log_line.lower()
-                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in log_line):
-                                            job_summary_lines.append(log_line)
+                                    for ln in content.split("\n"):
+                                        ll = ln.lower()
+                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
+                                            job_summary_lines.append(ln)
                                     step_name = step_file_label
                                     # Extract important error-related information
                                     snippet = _extract_error_context(content)
@@ -1060,12 +1060,12 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         )
                                         if job_txt2.returncode == 0 and job_txt2.stdout.strip():
                                             # Extract summary only from lines filtered by failing step name
-                                            for ln in job_txt2.stdout.split("\n"):
-                                                parts = ln.split("\t", 2)
+                                            for log_line in job_txt2.stdout.split("\n"):
+                                                parts = log_line.split("\t", 2)
                                                 if len(parts) >= 3:
                                                     step_field = parts[1].strip().lower()
                                                     if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                                        ll = ln.lower()
+                                                        ll = log_line.lower()
                                                         if (
                                                             (" failed" in ll)
                                                             or (" passed" in ll)
