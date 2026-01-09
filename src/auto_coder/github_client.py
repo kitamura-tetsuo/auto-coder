@@ -1730,26 +1730,32 @@ class GitHubClient:
             # But ref might be a branch name. get_commit works with branch names too.
             commit = repo.get_commit(ref)
             check_runs = commit.get_check_runs()
-            
+
             results = []
             for run in check_runs:
-                results.append({
-                    "id": run.id,
-                    "name": run.name,
-                    "head_sha": run.head_sha,
-                    "status": run.status,
-                    "conclusion": run.conclusion,
-                    "started_at": run.started_at.isoformat() if run.started_at else None,
-                    "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                    "output": {
-                        "title": run.output.title,
-                        "summary": run.output.summary,
-                        "text": run.output.text,
-                    } if run.output else None,
-                    "html_url": run.html_url,
-                    "details_url": run.details_url,
-                })
-            
+                results.append(
+                    {
+                        "id": run.id,
+                        "name": run.name,
+                        "head_sha": run.head_sha,
+                        "status": run.status,
+                        "conclusion": run.conclusion,
+                        "started_at": run.started_at.isoformat() if run.started_at else None,
+                        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                        "output": (
+                            {
+                                "title": run.output.title,
+                                "summary": run.output.summary,
+                                "text": run.output.text,
+                            }
+                            if run.output
+                            else None
+                        ),
+                        "html_url": run.html_url,
+                        "details_url": run.details_url,
+                    }
+                )
+
             logger.info(f"Retrieved {len(results)} check runs for {ref}")
             return results
         except GithubException as e:

@@ -6,6 +6,7 @@ import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,17 +14,16 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
 from .git_utils import (
+    check_unpushed_commits,
     extract_number_from_branch,
     get_commit_log,
     get_current_branch,
+    get_current_commit_sha,
     get_current_repo_name,
     git_commit_with_retry,
     git_push,
     save_commit_failure_history,
-    get_current_commit_sha,
-    check_unpushed_commits,
 )
-import time
 from .github_client import GitHubClient
 from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
@@ -39,8 +39,8 @@ from .test_log_utils import (
 )
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
+from .util.github_action import _create_github_action_log_summary, _get_github_actions_logs, generate_merged_playwright_report, parse_playwright_json_report
 from .utils import CommandExecutor, change_fraction, log_action
-from .util.github_action import _get_github_actions_logs, _create_github_action_log_summary, parse_playwright_json_report, generate_merged_playwright_report
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -206,7 +206,7 @@ def _write_test_log_json(
     timestamp: datetime,
 ) -> Path:
     """Save test execution details to a JSON log file.
-    
+
     Path format: ~/.auto-coder/{repo_name}/test_log/{timestamp}_{test_file}_attempt_{attempt}.json
     """
     home_dir = Path.home()
@@ -215,7 +215,7 @@ def _write_test_log_json(
     # The requirement says: /home/node/.auto-coder/kitamura-tetsuo/outliner/test_log
     # So we should use repo_name as is but rely on it not starting with / to avoid absolute path issues?
     # Usually repo_name is "owner/repo".
-    
+
     log_dir = home_dir / ".auto-coder" / repo_name / "test_log"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -463,7 +463,6 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
-
 @log_calls
 def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str, Any]:
     """Run tests via GitHub Action by committing and pushing.
@@ -478,7 +477,7 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
     # 1. Commit changes
     committed = False
     status_result = cmd.run_command(["git", "status", "--porcelain"])
-    
+
     if status_result.success and status_result.stdout.strip():
         try:
             commit_msg = f"Auto-fix: attempting to pass tests (attempt {attempt})"
@@ -492,10 +491,10 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
     # 2. Push changes
     # Only push if we committed something OR if there are unpushed commits
     should_push = committed or check_unpushed_commits()
-    
+
     if should_push:
         try:
-            git_push() # Should we force? safer not to, assuming we are on a synced branch
+            git_push()  # Should we force? safer not to, assuming we are on a synced branch
         except Exception as e:
             logger.error(f"Failed to push changes: {e}")
             return {
@@ -512,6 +511,16 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
 
     # 3. Get current SHA
     sha = get_current_commit_sha()
+    if not sha:
+        return {
+            "success": False,
+            "output": "",
+            "errors": "Could not determine current commit SHA",
+            "return_code": -1,
+            "command": "git push",
+            "test_file": None,
+            "stability_issue": False,
+        }
     logger.info(f"Target commit {sha}. Waiting for checks...")
 
     # 4. Wait for checks
@@ -519,7 +528,7 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
     gh_client = GitHubClient.get_instance()
     repo_name = get_current_repo_name()
     if not repo_name:
-         return {
+        return {
             "success": False,
             "output": "",
             "errors": "Could not determine repository name",
@@ -532,10 +541,10 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
     start_time = time.time()
     # If we didn't push, we expect results immediately. Don't wait too long if they don't exist.
     timeout = 60 * 30  # 30 minutes timeout
-    
+
     # If we didn't push, allow a quick check for existing results without waiting loop if possible
     # But sticking to the loop is safer, just maybe fail fast if empty?
-    
+
     while True:
         if time.time() - start_time > timeout:
             return {
@@ -549,19 +558,19 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
             }
 
         check_runs = gh_client.get_check_runs(repo_name, sha)
-        
+
         # Filter for relevant checks? For now convert all to a result.
         # If no checks found yet, wait.
         if not check_runs:
-             if not should_push:
-                 # If we didn't push, and there are no checks, maybe we shouldn't wait forever?
-                 # But maybe checks are lagging?
-                 # Let's wait a bit shorter time? Or just warn?
-                 # User said "adopt the result ... that has already been executed". 
-                 # If none executed, that's a problem. 
-                 # Let's retry a few times then fail?
-                 if time.time() - start_time > 30: # Wait at most 30 seconds for existing checks
-                      return {
+            if not should_push:
+                # If we didn't push, and there are no checks, maybe we shouldn't wait forever?
+                # But maybe checks are lagging?
+                # Let's wait a bit shorter time? Or just warn?
+                # User said "adopt the result ... that has already been executed".
+                # If none executed, that's a problem.
+                # Let's retry a few times then fail?
+                if time.time() - start_time > 30:  # Wait at most 30 seconds for existing checks
+                    return {
                         "success": False,
                         "output": "",
                         "errors": "No GitHub Action checks found for the current commit.",
@@ -571,42 +580,42 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
                         "stability_issue": False,
                     }
 
-             logger.info("No check runs found yet. Waiting...")
-             time.sleep(10)
-             continue
+            logger.info("No check runs found yet. Waiting...")
+            time.sleep(10)
+            continue
 
         # Check statuses
         # We look for "completed" status.
         all_completed = all(run["status"] == "completed" for run in check_runs)
-        
+
         if all_completed:
             # Analyze results
             failed_runs = [run for run in check_runs if run["conclusion"] != "success"]
             success = len(failed_runs) == 0
-            
+
             output_lines = []
             error_lines = []
-            
+
             json_artifacts = None
             if not success:
-               # Use shared routine to get logs
-               # failed_runs struct matches expectation (has details_url)
-               try:
-                   logs_list, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
-                   logs, _ = _create_github_action_log_summary(repo_name, config, failed_runs)
-                   output_lines.append(logs)
-               except Exception as e:
-                   logger.error(f"Failed to get GitHub Action logs: {e}")
-                   output_lines.append(f"Failed to retrieve detailed logs: {e}")
+                # Use shared routine to get logs
+                # failed_runs struct matches expectation (has details_url)
+                try:
+                    logs_list, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
+                    logs, _ = _create_github_action_log_summary(repo_name, config, failed_runs)
+                    output_lines.append(logs)
+                except Exception as e:
+                    logger.error(f"Failed to get GitHub Action logs: {e}")
+                    output_lines.append(f"Failed to retrieve detailed logs: {e}")
 
             for run in check_runs:
                 # Brief summary for each run
                 status_str = f"Check: {run['name']} - {run['conclusion']}"
-                if run['conclusion'] != "success":
-                   error_lines.append(status_str)
-                   if run.get('output') and run['output'].get('title'):
+                if run["conclusion"] != "success":
+                    error_lines.append(status_str)
+                    if run.get("output") and run["output"].get("title"):
                         error_lines.append(f"  Title: {run['output']['title']}")
-            
+
             return {
                 "success": success,
                 "output": "\n".join(output_lines),
@@ -686,7 +695,7 @@ def apply_test_stability_fix(
 def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClient) -> Optional[str]:
     """
     Resolve the relevant issue or PR body for a given branch.
-    
+
     Logic:
     1. Extract number from branch.
     2. If number found:
@@ -698,27 +707,27 @@ def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClien
     3. If no number found in branch (or extraction failed):
        - Search for open PR where head branch matches `branch_name`.
        - If matching PR found, recurse logic as if it was a PR number.
-       
+
     Returns:
         The body text of the most relevant Issue or PR, or None if not found.
     """
     try:
         # 1. Try to extract number from branch
         item_number = extract_number_from_branch(branch_name)
-        
+
         if item_number:
             repo = gh_client.get_repository(repo_name)
-            
+
             # Check if it is a PR
             try:
                 # Note: PyGithub get_pull raises UnknownObjectException if number is not a PR (even if it's an Issue)
                 # But get_issue works for both (mostly).
                 # We want to treat it as PR if possible to check for linked issues.
                 pr = repo.get_pull(item_number)
-                
+
                 # It is a PR
                 logger.info(f"Branch '{branch_name}' corresponds to PR #{item_number}")
-                
+
                 # Check for closing issues
                 closing_issue_ids = gh_client.get_pr_closing_issues(repo_name, item_number)
                 if closing_issue_ids:
@@ -730,19 +739,19 @@ def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClien
                 else:
                     logger.info(f"PR #{item_number} has no linked closing issues. Using PR body.")
                     return pr.body
-                    
+
             except Exception:
                 # Not a PR, or get_pull failed. Treat as Issue.
                 logger.info(f"Branch '{branch_name}' number #{item_number} treated as Issue")
                 issue = repo.get_issue(item_number)
                 return issue.body
-                
+
         else:
             # 2. No number in branch name (e.g. feature-branch)
             # Find PR by branch name
             logger.info(f"No number in branch '{branch_name}'. Searching for PRs with this head branch.")
             pr_data = gh_client.find_pr_by_head_branch(repo_name, branch_name)
-            
+
             if pr_data:
                 pr_number = pr_data.get("number")
                 if pr_number:
@@ -750,10 +759,10 @@ def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClien
                     # Recurse or duplicate logic? Duplicate slightly to avoid infinite recursion risk if simple
                     # Reuse the same logic by calling with mocked branch name or just jumping to PR logic
                     return _resolve_issue_body(repo_name, f"pr-{pr_number}", gh_client)
-            
+
             logger.info(f"No context found for branch '{branch_name}'")
             return None
-            
+
     except Exception as e:
         logger.warning(f"Error resolving issue body for branch '{branch_name}': {e}")
         return None
@@ -790,8 +799,8 @@ def apply_workspace_test_fix(
         if tr.command == "github_action_checks":
             error_summary = tr.output or ""
             if tr.stability_issue:
-                 prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
-                 error_summary = prefix + error_summary
+                prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                error_summary = prefix + error_summary
         else:
             error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=exclude_playwright)
         if not error_summary:
@@ -907,7 +916,7 @@ def fix_to_pass_tests(
 
     # Track history of previous attempts for context
     attempt_history: list[Dict[str, Any]] = []
-    
+
     # State to force local execution (e.g. for small number of e2e failures)
     force_local_run = False
 
@@ -932,19 +941,19 @@ def fix_to_pass_tests(
         else:
             attempt += 1
             summary["attempts"] = attempt
-            
+
             run_via_ga = enable_github_action and not force_local_run
             mode_str = "GitHub Action" if run_via_ga else "Local"
             logger.info(f"Running tests (attempt {attempt}/{attempts_limit}) via {mode_str}")
-            
+
             if run_via_ga:
                 test_result = run_github_action_tests(config, attempt)
             else:
                 test_result = run_local_tests(config, test_file=current_test_file)
-            
+
             # Reset force_local_run after execution, re-evaluated later
             # (Though if we failed, we might set it again)
-            force_local_run = False            
+            force_local_run = False
 
             # Update the current test file being fixed
             # Note: If we ran specific files, this will be set to those files.
@@ -968,11 +977,11 @@ def fix_to_pass_tests(
         if tr.command == "github_action_checks":
             full_error_summary = tr.output or ""
             if tr.stability_issue:
-                 prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
-                 full_error_summary = prefix + full_error_summary
+                prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                full_error_summary = prefix + full_error_summary
         else:
             full_error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=False)
-        
+
         pytest_candidates = _collect_pytest_candidates(full_error_summary)
         vitest_candidates = _collect_vitest_candidates(full_error_summary)
         # Use simple detection for Playwright summary header to avoid double counting if regex behaves differently on summary
@@ -982,18 +991,18 @@ def fix_to_pass_tests(
         is_lint_or_unit = bool(pytest_candidates or vitest_candidates)
         # If no explicit test candidates but failed, assume lint/setup error (unless it's purely playwright)
         if not is_lint_or_unit and not playwright_candidates and test_result.get("return_code") != 0:
-             is_lint_or_unit = True
+            is_lint_or_unit = True
 
         exclude_playwright = False
         force_local_run = False
-        
+
         if is_lint_or_unit:
             logger.info("Detected Lint/Unit/Integration failures. Prioritizing these over E2E.")
             exclude_playwright = True
             # Build string for simple check
             is_mixed = bool(playwright_candidates)
             if is_mixed:
-                 logger.info("Mixed failure types detected. E2E errors will be excluded from LLM context.")
+                logger.info("Mixed failure types detected. E2E errors will be excluded from LLM context.")
             # Clear focus to ensure we fix the root cause (assuming lint affects all)
             # But if we were focusing on a file and it had lint errors, maybe keep focus?
             # For safety, let's reset only if we were focusing on E2E files specifically.
@@ -1001,7 +1010,7 @@ def fix_to_pass_tests(
             # User requirement implies "fix these first".
             # Cleanest approach: Reset focus to run full suite's lint/unit next time
             current_test_file = None
-            
+
         elif playwright_candidates:
             # Only E2E failures found
             count = len(playwright_candidates)
@@ -1329,16 +1338,16 @@ def extract_important_errors_from_local_tests(test_result: TestResult, exclude_p
 
     errors = test_result.errors or ""
     output = test_result.output or ""
-    
+
     # When we have json_artifact (Playwright results from GitHub Actions),
     # check if output also contains comprehensive logs from _get_github_actions_logs.
     # The comprehensive logs include job headers like "=== job-name / step-name ==="
     # and contain all failure types (unit tests, lint, E2E).
     # If so, use the complete output instead of just the Playwright report.
     # Also check if the command indicates a GitHub Action run, which provides curated summaries.
-    is_github_action = (test_result.command == "github_action_checks")
+    is_github_action = test_result.command == "github_action_checks"
     has_comprehensive_logs = is_github_action or (output and ("=== " in output or "--- Playwright Test Summary ---" in output))
-    
+
     # Only return early with Playwright-only report if we don't have comprehensive logs
     if test_result.json_artifact and isinstance(test_result.json_artifact, list) and not has_comprehensive_logs:
         artifacts = [a for a in test_result.json_artifact if isinstance(a, dict)]
@@ -1468,12 +1477,13 @@ def extract_important_errors_from_local_tests(test_result: TestResult, exclude_p
     # Keywords are pre-defined at module level as ERROR_KEYWORDS_LOWER
 
     # Filter out keywords if exclude_playwright is True
+    keywords_to_use = ERROR_KEYWORDS_LOWER
     if exclude_playwright:
-        error_keywords = [k for k in error_keywords if k not in ["e2e/", ".spec.ts", "playwright"]]
+        keywords_to_use = [k for k in ERROR_KEYWORDS_LOWER if k not in ["e2e/", ".spec.ts", "playwright"]]
 
     for i, line in enumerate(lines):
         line_lower = line.lower()
-        if any(keyword in line_lower for keyword in ERROR_KEYWORDS_LOWER):
+        if any(keyword in line_lower for keyword in keywords_to_use):
             # Extract a slightly broader context
             start = max(0, i - 5)
             end = min(len(lines), i + 8)

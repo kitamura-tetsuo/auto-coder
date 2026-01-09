@@ -24,8 +24,7 @@ from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
-from .pr_processor import _is_dependabot_pr, _is_jules_pr
+from .pr_processor import _is_dependabot_pr, _is_jules_pr, _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
@@ -1367,7 +1366,7 @@ class AutomationEngine:
             # Derive a concise error summary using the structured extractor
             error_summary = cast(
                 str,
-                fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(test_result),
             )
             if not github_logs:
                 github_logs = error_summary

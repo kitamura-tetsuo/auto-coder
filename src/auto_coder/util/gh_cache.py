@@ -30,7 +30,7 @@ def get_ghapi_client(token: str, **kwargs) -> GhApi:
     def httpx_adapter(self, path, verb, headers, route, query, data):
         client = get_caching_client()
         url = f"{self.endpoint}{path}"
-        
+
         # Ensure query is a dict
         params = query if query else {}
 
@@ -41,7 +41,7 @@ def get_ghapi_client(token: str, **kwargs) -> GhApi:
             content=data,
             params=params,
             # Force cache usage for GET requests
-            extensions={"force_cache": True} if verb.upper() == "GET" else {}
+            extensions={"force_cache": True} if verb.upper() == "GET" else {},
         )
 
         self.last_headers = dict(resp.headers)
@@ -58,4 +58,3 @@ def get_ghapi_client(token: str, **kwargs) -> GhApi:
     api = GhApi(token=token, **kwargs)
     api._call = httpx_adapter.__get__(api, GhApi)
     return api
-

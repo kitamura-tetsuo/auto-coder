@@ -231,6 +231,7 @@ def _format_args(func: Callable, args: tuple, kwargs: dict, max_len: int = 120) 
     bound = signature(func).bind_partial(*args, **kwargs)
     bound.apply_defaults()
     s = ", ".join(f"{k}={bound.arguments[k]!r}" for k in bound.arguments)
+    # Redact sensitive information
     s = redact_string(s)
     if len(s) > max_len:
         s = s[:max_len] + "…"

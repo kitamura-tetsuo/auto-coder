@@ -22,7 +22,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.util.gh_cache import get_ghapi_client
-from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, _create_github_action_log_summary, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _create_github_action_log_summary, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, get_pr_head_sha
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
@@ -355,7 +355,7 @@ def _get_mergeable_state(
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
             owner, repo = repo_name.split("/")
-            
+
             # API: api.pulls.get(owner, repo, pull_number)
             pr_details = api.pulls.get(owner, repo, pull_number=pr_data.get("number"))
             mergeable = pr_details.get("mergeable", mergeable)
@@ -396,7 +396,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
             owner, repo = repo_name.split("/")
-            
+
             pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
             base_branch = pr_details.get("base", {}).get("ref", "main")
         except Exception as e:
@@ -770,47 +770,47 @@ def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> st
         # Actually, GhApi allows 'headers' argument in its calls if they are passed down?
         # fastai/ghapi generated methods might not accept 'headers'.
         # We can use api(path, verb, headers, ...)
-        
+
         path = f"/repos/{owner}/{repo}/pulls/{pr_number}"
         # Use valid Accept header for diff
         headers = {"Accept": "application/vnd.github.v3.diff"}
-        
+
         # We need to access the internal caching mechanism to pass these headers?
         # Our adapter added in gh_cache.py handles explicit headers passed to it.
         # But calling api.pulls.get() might not let us pass headers.
         # So we use api.full(path, headers=...) or similar?
         # valid way in ghapi: api(path, 'GET', headers=headers)
-        
+
         # Note: 'api' object is callable: api(path, verb, headers, route_params, query_params, data)
         # Verify ghapi signature: __call__(self, path, verb=None, headers=None, route=None, query=None, data=None)
-        
-        diff_content = api(path, verb='GET', headers=headers)
-        
+
+        diff_content = api(path, verb="GET", headers=headers)
+
         # diff_content might be bytes or str depending on the adapter return.
         # Our adapter calls props.json() which might fail for diff content if it's not JSON.
         # Wait, our gh_cache.py adapter attempts `return resp.json()`.
         # If response is NOT JSON (which diff is not), `resp.json()` will raise JSONDecodeError.
         # We need to fix gh_cache.py to handle non-JSON responses if we want to use it for diffs!
         # Or, we modify gh_cache.py adapter to return .text if content-type is not json?
-        
+
         # Let's assume for now I will fix gh_cache.py to handle text/diff responses?
         # Or I can just bypass ghapi for this specific call if ghapi client is too rigid?
         # No, the goal is to use GhApi.
-        
+
         # I should probably update gh_cache.py to return text if json fails or based on headers?
         # But assuming I haven't done that yet, this might fail.
-        # I will handle it by updating gh_cache.py IN THE NEXT STEP if needed, 
+        # I will handle it by updating gh_cache.py IN THE NEXT STEP if needed,
         # or checking if I can use a raw client here.
         # But I should stick to using the `api` object.
-        
+
         # Let's write this to use `api` and assume the adapter handles it or I'll fix the adapter.
         # Actually, looking at my gh_cache.py implementation:
         # It calls `resp.json()`. This WILL fail for diffs.
-        
+
         # I MUST fix gh_cache.py to check content-type or handle json error and return text.
-        # Since I am in the middle of replacing, I will commit this change and THEN update gh_cache.py again 
+        # Since I am in the middle of replacing, I will commit this change and THEN update gh_cache.py again
         # to support non-JSON responses.
-        
+
         return str(diff_content)[: config.MAX_PR_DIFF_SIZE]
 
     except Exception as e:
@@ -2128,6 +2128,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
         logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
         return False
 
+
 def _fix_pr_issues_with_testing(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -2141,6 +2142,7 @@ def _fix_pr_issues_with_testing(
     else:
         return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
 
+
 def _fix_pr_issues_with_github_actions_testing(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -2149,7 +2151,7 @@ def _fix_pr_issues_with_github_actions_testing(
     failed_tests: Optional[List[str]] = None,
 ) -> List[str]:
     """Fix PR issues using GitHub Actions logs, with intelligent routing.
-    
+
     If 1-3 tests failed: Run local testing/fixing loop (targeted).
     If 4+ or 0 tests: Apply GHA log fix, commit, and push (trigger new run).
     """
@@ -2161,28 +2163,38 @@ def _fix_pr_issues_with_github_actions_testing(
         initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
         actions.extend(initial_fix_actions)
 
-        test_result = run_local_tests(config, test_file=failed_tests)
+        # Convert failed_tests list to a single test_file string
+        test_file_str = ",".join(failed_tests) if failed_tests else None
+        test_result = run_local_tests(config, test_file=test_file_str)
 
         # Check if we should use local fix strategy (1-3 failed tests)
-        while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3:
+        # Import backend_manager from module level or pass as parameters
+        from auto_coder.backend_manager import BackendManager
+        from auto_coder.cli_helpers import create_high_score_backend_manager
+
+        # attempt_history is not available in this context, use empty list
+        attempt_history: list[dict[str, Any]] = []
+        current_backend_manager: Optional[BackendManager] = create_high_score_backend_manager()
+
+        while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3:
             local_fix_actions, llm_response = _apply_local_test_fix(
-                                repo_name,
-                                pr_data,
-                                config,
-                            test_result,
-                            attempt_history,
-                            backend_manager=current_backend_manager,
-                        )
-            test_result = run_local_tests(config, test_file=failed_tests)
+                repo_name,
+                pr_data,
+                config,
+                test_result,
+                attempt_history,
+                backend_manager=current_backend_manager,
+            )
+            test_result = run_local_tests(config, test_file=test_file_str)
 
         # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
         count_msg = f"{len(failed_tests)} failed tests" if failed_tests is not None else "failed tests (unknown count)"
         actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs ({count_msg})")
-        
+
         # 1. Apply fix based on GHA logs
         initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
         actions.extend(initial_fix_actions)
-        
+
         # 2. Commit and Push
         # Check if any changes were made
         result = cmd.run_command(["git", "status", "--porcelain"])
@@ -2371,9 +2383,13 @@ def _apply_github_actions_fix(
             logger.info(f"Starting Jules session for GitHub Actions fix for PR #{pr_number}")
 
             # Import JulesClient here to avoid circular imports
+            from .issue_processor import _notify_jules_session_start
             from .jules_client import JulesClient
-            session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], f"Fix for PR #{pr_number} {pr_data['title']}")
-            _notify_jules_session_start(repo_name, pr_number, session_id, github_client, actions)
+
+            session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], is_noedit=False, title=f"Fix for PR #{pr_number} {pr_data['title']}")
+            # Get GitHubClient instance if not provided
+            gh_client = github_client if github_client else GitHubClient.get_instance()
+            _notify_jules_session_start(repo_name, pr_number, session_id, gh_client, actions)
         else:
             # Use LLM backend manager to run the prompt
             logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")

@@ -273,12 +273,9 @@ class TestPRMessageGeneration:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": 456,
-                "html_url": f"https://github.com/{repo_name}/pull/456"
-            }
+            mock_api.pulls.create.return_value = {"number": 456, "html_url": f"https://github.com/{repo_name}/pull/456"}
 
             result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, json_response, github_client, config)
 
@@ -322,12 +319,9 @@ class TestPRMessageGeneration:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": 456,
-                "html_url": f"https://github.com/{repo_name}/pull/456"
-            }
+            mock_api.pulls.create.return_value = {"number": 456, "html_url": f"https://github.com/{repo_name}/pull/456"}
 
             result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, conversation_response, github_client, config)
 
@@ -365,12 +359,9 @@ class TestPRMessageGeneration:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": 456,
-                "html_url": f"https://github.com/{repo_name}/pull/456"
-            }
+            mock_api.pulls.create.return_value = {"number": 456, "html_url": f"https://github.com/{repo_name}/pull/456"}
 
             result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, response_with_text, github_client, config)
 
@@ -431,12 +422,9 @@ class TestPRLabelCopying:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": pr_number,
-                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
-            }
+            mock_api.pulls.create.return_value = {"number": pr_number, "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"}
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -491,12 +479,9 @@ class TestPRLabelCopying:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": pr_number,
-                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
-            }
+            mock_api.pulls.create.return_value = {"number": pr_number, "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"}
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -551,12 +536,9 @@ class TestPRLabelCopying:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": pr_number,
-                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
-            }
+            mock_api.pulls.create.return_value = {"number": pr_number, "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"}
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -610,12 +592,9 @@ class TestPRLabelCopying:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": pr_number,
-                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
-            }
+            mock_api.pulls.create.return_value = {"number": pr_number, "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"}
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -666,12 +645,9 @@ class TestPRLabelCopying:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": pr_number,
-                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
-            }
+            mock_api.pulls.create.return_value = {"number": pr_number, "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"}
 
             # Call _create_pr_for_issue with JSON message
             result = self._create_pr_with_json_message(
@@ -723,12 +699,9 @@ class TestPRLabelCopying:
         with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
             mock_api = MagicMock()
             mock_get_ghapi_client.return_value = mock_api
-            
+
             # Mock pulls.create response
-            mock_api.pulls.create.return_value = {
-                "number": pr_number,
-                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"
-            }
+            mock_api.pulls.create.return_value = {"number": pr_number, "html_url": f"https://github.com/{repo_name}/pull/{pr_number}"}
 
             # Call _create_pr_for_issue - should not raise despite label error
             result = self._create_pr_with_json_message(
