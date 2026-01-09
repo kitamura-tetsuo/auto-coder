@@ -1000,12 +1000,12 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     snippet = _extract_error_context(content)
                                     # Enhance with expected/received original lines (for strict matching)
                                     exp_lines = []
-                                    for ln in content.split("\n"):
-                                        if ("Expected substring:" in ln) or ("Received string:" in ln):
-                                            exp_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        if ("Expected substring:" in line) or ("Received string:" in line):
+                                            exp_lines.append(line)
                                     if exp_lines:
                                         # Also add normalized lines with backslash escapes removed
-                                        norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
+                                        norm_lines = [line.replace('\\"', '"') for line in exp_lines]
                                         if "--- Expectation Details ---" not in snippet:
                                             snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
@@ -1446,7 +1446,7 @@ def _search_github_actions_logs_from_history(
                         run_url = run.get("url")
 
                     if run_url:
-                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
+                        logs = get_github_actions_logs_from_url(run_url)
 
                         if logs and "No detailed logs available" not in logs:
                             # Prepend some metadata about where these logs came from
@@ -1826,8 +1826,8 @@ def slice_relevant_error_window(text: str) -> str:
     start_idx = None
     # Search for the earliest priority trigger (from front)
     for group in priority_groups:
-        for i in range(len(lines)):
-            low = lines[i].lower()
+        for i, line in enumerate(lines):
+            low = line.lower()
             if any(g.lower() in low for g in group):
                 start_idx = max(0, i - 30)
                 break
@@ -1914,7 +1914,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
             return
 
         # Group runs by SHA
-        runs_by_sha = {}
+        runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
         for run in runs:
             head_sha = run.get("headSha")
             if head_sha in sha_to_pr:

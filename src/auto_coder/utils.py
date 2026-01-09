@@ -28,13 +28,14 @@ def get_pr_author_login(pr_obj: Any) -> Optional[str]:
     Supports both PyGithub PR objects (with .user.login) and dictionaries
     returned from GitHubClient (which may use 'author' or 'user').
     """
+    _mock_types: tuple = tuple()
     try:
         from unittest.mock import MagicMock as _MagicMock
         from unittest.mock import Mock as _Mock
 
         _mock_types = (_Mock, _MagicMock)
     except Exception:
-        _mock_types = tuple()
+        pass
 
     try:
         if isinstance(pr_obj, dict):
