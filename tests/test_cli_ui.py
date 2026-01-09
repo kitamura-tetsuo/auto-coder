@@ -6,42 +6,22 @@ from unittest.mock import MagicMock, patch
 from src.auto_coder import cli_ui
 
 
-@patch("time.time")
 @patch("time.sleep")
-def test_sleep_with_countdown_execution(mock_sleep, mock_time):
+def test_sleep_with_countdown_execution(mock_sleep):
     """Test that sleep_with_countdown executes correctly."""
     # Create a mock stream
     mock_stream = MagicMock()
     mock_stream.isatty.return_value = True
 
-    # Setup time sequence: start, then increments
-    start_time = 1000.0
-    # Simulate time passing in 0.1s increments for 2 seconds = 20 iterations
-    # But wait, logic is: remaining = end_time - time.time()
-    # end_time = 1000 + 2 = 1002
-    # loops:
-    # 1. time=1000.0 -> rem=2.0 -> sleep(0.1)
-    # 2. time=1000.1 -> rem=1.9 -> sleep(0.1)
-    # ...
-    # 21. time=1002.0 -> rem=0 -> break
-
-    # We need to provide side_effects for time.time()
-    # Initial call is end_time = time.time() + seconds
-    # Then inside loop: time.time()
-
-    # So: call 1 (start): 1000
-    # Loop 1: 1000 (remaining=2)
-    # Loop 2: 1000.1
-    # ...
-
-    ticks = [start_time + (i * 0.1) for i in range(30)]  # Provide enough ticks
-    mock_time.side_effect = ticks
-
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 
-    # Check that time.sleep was called approx 20 times (2s / 0.1s)
-    # Allow small margin of error due to loop logic
-    assert 18 <= mock_sleep.call_count <= 22
+    # Check that time.sleep was called 20 times (2s * 10 ticks)
+    assert mock_sleep.call_count == 20
+
+    # Check calls were approx 0.1
+    for call in mock_sleep.call_args_list:
+        args, _ = call
+        assert args[0] == 0.1
 
     # Check that stream.write was called
     assert mock_stream.write.called

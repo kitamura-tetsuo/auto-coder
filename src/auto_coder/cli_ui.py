@@ -2,6 +2,7 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
@@ -92,17 +93,16 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     spinner_idx = 0
-    end_time = time.time() + seconds
+    # Run at 10Hz (0.1s intervals)
+    total_ticks = int(seconds * 10)
 
     try:
-        while True:
-            remaining = end_time - time.time()
-            if remaining <= 0:
-                break
+        for tick in range(total_ticks, 0, -1):
+            # Calculate remaining seconds (ceil to show "5s" when 4.1s remains)
+            remaining_seconds = tick / 10.0
+            display_seconds = math.ceil(remaining_seconds)
 
-            # Format time nicely
-            remaining_int = int(remaining) + 1  # ceiling for display
-            hours, remainder = divmod(remaining_int, 3600)
+            hours, remainder = divmod(display_seconds, 3600)
             minutes, secs = divmod(remainder, 60)
 
             if hours > 0:
@@ -118,9 +118,7 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
             if not no_color:
                 spinner_display = click.style(spinner_char, fg="cyan")
-                message = f"{spinner_display} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
                 # Dim the text part (bright_black is usually dark gray)
-                # We construct the string manually to mix styles
                 text_part = click.style(f" Sleeping... {time_str} remaining (Ctrl+C to interrupt)", fg="bright_black")
                 message = f"{spinner_display}{text_part}"
             else:
@@ -129,16 +127,13 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             stream.write(f"\r{message}")
             stream.flush()
 
-            # Sleep a bit less than 0.1s to account for processing time, but cap at remaining
-            sleep_dur = min(0.1, remaining)
-            time.sleep(sleep_dur)
+            time.sleep(0.1)
 
         # Clear the line after done
-        # We need to clear enough space for the longest message
-        stream.write("\r" + " " * 100 + "\r")
+        stream.write("\r" + " " * 80 + "\r")
         stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        stream.write("\r" + " " * 100 + "\r")
+        stream.write("\r" + " " * 80 + "\r")
         stream.flush()
         raise
