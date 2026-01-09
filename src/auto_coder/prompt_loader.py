@@ -358,14 +358,14 @@ def render_prompt(
             val = kwargs[var_name]
         elif var_name == "parent_issue_body" and parent_issue_body:
             val = parent_issue_body
-            
+
         return content if val else ""
 
     # Support nested ifs? No, regex is simple. Nested ifs might fail with this simple regex.
     # But existing prompts don't seem to nest deeply.
     # regex matches minimal content (non-greedy) but including newlines
-    pattern = re.compile(r'\$if\(\s*(\w+)\s*\)(.*?)\$endif', re.DOTALL)
-    
+    pattern = re.compile(r"\$if\(\s*(\w+)\s*\)(.*?)\$endif", re.DOTALL)
+
     # Apply repeatedly to handle multiple blocks (nested ones might need loop, but let's stick to single level for now or loop until no change)
     processed_str = template_str
     while True:
@@ -373,7 +373,7 @@ def render_prompt(
         if new_str == processed_str:
             break
         processed_str = new_str
-        
+
     template = Template(processed_str)
 
     params: Dict[str, Any] = {}
