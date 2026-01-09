@@ -6,6 +6,12 @@
         },
         {
             "path": "/home/node/.auto-coder"
+        },
+        {
+            "path": "../../../../../workspace"
+        },
+        {
+            "path": "../../auto-coder-test"
         }
     ],
     "settings": {
