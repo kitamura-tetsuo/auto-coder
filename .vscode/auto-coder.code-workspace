@@ -9,6 +9,9 @@
         },
         {
             "path": "../../../../../workspace"
+        },
+        {
+            "path": "../../auto-coder-test"
         }
     ],
     "settings": {
