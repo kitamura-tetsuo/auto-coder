@@ -161,7 +161,7 @@ def test_default_config_values():
     assert config.REPORTS_DIR == "reports"
     assert config.TEST_SCRIPT_PATH == "scripts/test.sh"
     assert config.MAX_PR_DIFF_SIZE == 2000
-    assert config.MAX_PROMPT_SIZE == 1000
+    assert config.MAX_PROMPT_SIZE == 2000
     assert config.MAX_RESPONSE_SIZE == 200
     assert config.MAX_FIX_ATTEMPTS == 30
     assert config.MAIN_BRANCH == "main"
