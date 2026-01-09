@@ -166,3 +166,72 @@ def test_config_validate(tmp_path: Path):
     assert result.exit_code == 0
     assert "Configuration validation errors found" in result.output
     assert "gemini.model must be a string" in result.output
+
+
+def test_config_export_permissions(tmp_path: Path):
+    """Test the 'config export' command for secure file permissions."""
+    config_file = tmp_path / "llm_backend.toml"
+    output_file = tmp_path / "exported_config.json"
+    runner = CliRunner()
+
+    # Create a dummy config file
+    config = LLMBackendConfiguration()
+    config.save_to_file(config_file)
+
+    # Test export with secure permissions
+    result = runner.invoke(
+        main,
+        ["config", "export", "--file", str(config_file), "--output", str(output_file)],
+    )
+    assert result.exit_code == 0
+    assert f"Configuration exported to: {output_file}" in result.output
+
+    # Verify file exists
+    assert output_file.exists()
+
+    # Check file permissions (POSIX only)
+    if os.name == "posix":
+        import stat
+
+        st = os.stat(output_file)
+        permissions = stat.S_IMODE(st.st_mode)
+        # Should be readable/writable only by owner (0o600)
+        assert permissions & 0o077 == 0, f"File permissions {oct(permissions)} are insecure"
+        assert permissions & 0o600 == 0o600, "File should be readable/writable by owner"
+
+
+def test_config_export_overwrite_permissions(tmp_path: Path):
+    """Test that 'config export' fixes insecure permissions on overwrite."""
+    if os.name != "posix":
+        return
+
+    import stat
+
+    config_file = tmp_path / "llm_backend.toml"
+    output_file = tmp_path / "exported_config.json"
+    runner = CliRunner()
+
+    # Create a dummy config file
+    config = LLMBackendConfiguration()
+    config.save_to_file(config_file)
+
+    # Pre-create output file with insecure permissions (world readable)
+    output_file.touch()
+    os.chmod(output_file, 0o666)
+
+    # Verify it is insecure
+    st = os.stat(output_file)
+    assert stat.S_IMODE(st.st_mode) & 0o066 != 0
+
+    # Test export overwriting the file
+    result = runner.invoke(
+        main,
+        ["config", "export", "--file", str(config_file), "--output", str(output_file)],
+    )
+    assert result.exit_code == 0
+
+    # Check file permissions are fixed
+    st = os.stat(output_file)
+    permissions = stat.S_IMODE(st.st_mode)
+    assert permissions & 0o077 == 0, f"File permissions {oct(permissions)} are insecure after overwrite"
+    assert permissions & 0o600 == 0o600

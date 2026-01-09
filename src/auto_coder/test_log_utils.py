@@ -189,33 +189,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
             if norm not in all_candidates:
                 all_candidates.append(norm)
 
-    # Filter out path suffixes if a longer version exists
-    # e.g. "utils/foo.spec.ts" should be removed if "e2e/utils/foo.spec.ts" exists
-    final_candidates: list[str] = []
-    # Process longer paths first to identify parents
-    unique_candidates = []
-    seen = set()
-    for c in all_candidates:
-        if c not in seen:
-            seen.add(c)
-            unique_candidates.append(c)
-
-    sorted_candidates = sorted(unique_candidates, key=len, reverse=True)
-
-    for cand in sorted_candidates:
-        is_suffix = False
-        for kept in final_candidates:
-            # Check if cand is a suffix of kept (e.g. "utils/foo.ts" in "e2e/utils/foo.ts")
-            # We enforce a path separator boundary to avoid matching "foo.ts" against "bar_foo.ts"
-            if kept.endswith(cand) and kept != cand:
-                if kept.endswith("/" + cand):
-                    is_suffix = True
-                    break
-
-        if not is_suffix:
-            final_candidates.append(cand)
-
-    return final_candidates
+    return all_candidates
 
 
 def _collect_vitest_candidates(text: str) -> List[str]:
@@ -295,27 +269,3 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         return candidates[0]
 
     return None
-
-
-def extract_playwright_passed_count(text: str) -> int:
-    """Extract the number of passed tests from Playwright output.
-
-    Args:
-        text: The test output text to analyze
-
-    Returns:
-        Number of passed tests (0 if none found)
-    """
-    text = _strip_ansi(text)
-    if not text:
-        return 0
-
-    # Match patterns like "  5 passed" or "  5 passed (5s)"
-    matches = re.findall(r"^\s*(\d+)\s+passed", text, re.MULTILINE)
-    if matches:
-        try:
-            return int(matches[-1])
-        except ValueError:
-            pass
-
-    return 0
