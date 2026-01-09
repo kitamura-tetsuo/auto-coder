@@ -276,6 +276,41 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         return []
 
 
+def get_pr_head_sha(pr_data: Dict[str, Any], repo_name: str) -> Optional[str]:
+    """Get the current HEAD SHA of a PR, fetching from API if missing in local data.
+
+    Args:
+        pr_data: PR data dictionary
+        repo_name: Repository name (owner/repo)
+
+    Returns:
+        HEAD SHA string or None if not found
+    """
+    pr_number = pr_data.get("number")
+    current_head_sha = pr_data.get("head", {}).get("sha")
+
+    if current_head_sha:
+        return current_head_sha
+
+    # If SHA is missing, try to fetch it from API
+    logger.info(f"HEAD SHA missing in pr_data for PR #{pr_number}, fetching from API...")
+    try:
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+        # API: api.pulls.get(owner, repo, pull_number)
+        pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
+        if pr_details and pr_details.get("head", {}).get("sha"):
+            current_head_sha = pr_details.get("head", {}).get("sha")
+            # Update pr_data with fresh details to ensure subsequent calls have data
+            pr_data.update(pr_details)
+            logger.info(f"Refreshed HEAD SHA from API: {current_head_sha[:8]}")
+            return current_head_sha
+    except Exception as e:
+        logger.warning(f"Failed to fetch PR details for #{pr_number}: {e}")
+
+    raise Exception(f"Failed to fetch PR details for #{pr_number}")
+
 @progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
     """Check GitHub Actions status for a PR.
@@ -285,13 +320,10 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     """
     pr_number = pr_data["number"]
     # Get the current HEAD SHA of the PR
-    current_head_sha = pr_data.get("head", {}).get("sha")
+    current_head_sha = get_pr_head_sha(pr_data, repo_name)
 
     try:
         logger.debug(f"pr_data={pr_data}, head_sha={current_head_sha}")
-        if not current_head_sha:
-            logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
-            return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Check cache first
         cache = get_github_cache()
@@ -2790,7 +2822,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
     # Collect head SHAs to look for
     sha_to_pr = {}
     for pr in prs:
-        sha = pr.get("head", {}).get("sha")
+        sha = get_pr_head_sha(pr, repo_name)
         number = pr.get("number")
         if sha and number:
             sha_to_pr[sha] = number

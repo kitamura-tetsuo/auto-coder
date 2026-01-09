@@ -24,6 +24,7 @@ from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
+from .pr_processor import _is_dependabot_pr, _is_jules_pr
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
@@ -147,7 +148,6 @@ class AutomationEngine:
         - Creation time ascending (oldest first)
         """
         from .issue_context import extract_linked_issues_from_pr_body
-        from .pr_processor import _is_dependabot_pr, _is_jules_pr
         from .util.dependabot_timestamp import should_process_dependabot_pr
         from .util.github_action import (
             _check_github_actions_status,
@@ -735,7 +735,8 @@ class AutomationEngine:
                         total_processed += 1
 
                         logger.info(f"Successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
-                        break
+                        if not _is_jules_pr(candidate.data):
+                            break
 
                     except Exception as e:
                         error_msg = f"Failed to process candidate: {e}"

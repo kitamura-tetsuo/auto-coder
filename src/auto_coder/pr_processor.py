@@ -931,7 +931,7 @@ def _handle_pr_merge(
                     actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
 
                     # 3. Start async monitor
-                    head_sha = pr_data.get("head", {}).get("sha")
+                    head_sha = get_pr_head_sha(pr_data, repo_name)
                     monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
                     monitor_thread.start()
 

@@ -490,10 +490,11 @@ class GitHubClient:
                       totalCount
                     }
                     # Sub-issues (open only, as checking for open sub-issues)
-                    subIssues(first: 10, states: OPEN) {
+                    subIssues(first: 10) {
                       totalCount
                       nodes {
                         number
+                        state
                       }
                     }
                     # Parent issue
@@ -552,7 +553,7 @@ class GitHubClient:
 
                     # Extract open sub-issues
                     sub_issues_nodes = node.get("subIssues", {}).get("nodes", [])
-                    open_sub_issue_numbers = [n["number"] for n in sub_issues_nodes if n]
+                    open_sub_issue_numbers = [n["number"] for n in sub_issues_nodes if n and n.get("state") == "OPEN"]
 
                     parent_node = node.get("parent")
                     parent_number = parent_node.get("number") if parent_node else None
