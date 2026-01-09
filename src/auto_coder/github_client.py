@@ -6,6 +6,7 @@ import json
 import subprocess
 import threading
 import types
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -83,6 +84,12 @@ class GitHubClient:
         # calculated risk to gain significant performance benefits.
         self._original_requester = self.github._Github__requester.requestJsonAndCheck  # type: ignore
         self.github._Github__requester.requestJsonAndCheck = types.MethodType(lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx), self.github._Github__requester)  # type: ignore
+
+        # Memory cache for open issues to avoid re-fetching in loops
+        self._open_issues_cache: Optional[List[Dict[str, Any]]] = None
+        self._open_issues_cache_time: Optional[datetime] = None
+        self._open_issues_cache_repo: Optional[str] = None
+        self._open_issues_cache_lock = threading.Lock()
 
     def _caching_requester(self, requester, verb, url, parameters=None, headers=None, input=None, cnx=None):
         """
@@ -432,11 +439,37 @@ class GitHubClient:
             logger.error(f"Failed to get open PRs via GraphQL from {repo_name}: {e}")
             raise
 
+    def _update_cached_issue(self, repo_name: str, issue_number: int, **kwargs: Any) -> None:
+        """Update an issue in the memory cache.
+
+        Args:
+            repo_name: Repository name
+            issue_number: Issue number to update
+            **kwargs: Fields to update (if 'state' is 'closed', issue is removed)
+        """
+        with self._open_issues_cache_lock:
+            # Only update if cache is valid and for the same repo
+            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name:
+                # Find the issue
+                for i, issue in enumerate(self._open_issues_cache):
+                    if issue.get("number") == issue_number:
+                        # If state is becoming closed, remove it
+                        if kwargs.get("state") == "closed":
+                            self._open_issues_cache.pop(i)
+                            logger.debug(f"Removed closed issue #{issue_number} from cache")
+                        else:
+                            # Update fields
+                            issue.update(kwargs)
+                            logger.debug(f"Updated issue #{issue_number} in cache: {kwargs.keys()}")
+                        return
+
     def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open issues from repository using GraphQL API.
 
         This method uses the GraphQL API to efficiently fetch all issue details in a single
         request (per page), avoiding N+1 API calls for sub-issues, parent issues, and linked PRs.
+
+        Implements a 5-minute memory cache to prevent redundant fetches in processing loops.
 
         Args:
             repo_name: Repository name in format 'owner/repo'
@@ -446,6 +479,14 @@ class GitHubClient:
             List of issue data dictionaries with fields matching get_issue_details output format,
             plus additional fields needed by automation engine (sub_issues_count, parent_issue_number, linked_pr_numbers).
         """
+        # Check memory cache
+        with self._open_issues_cache_lock:
+            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
+                logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
+                # Return a deep copy? No, shallow copy of list is enough if we don't modify dicts outside
+                # But AutomationEngine treats them as read-only mostly.
+                return list(self._open_issues_cache)
+
         try:
             owner, repo = repo_name.split("/")
 
@@ -572,6 +613,13 @@ class GitHubClient:
                 cursor = page_info.get("endCursor")
 
             logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via GraphQL (oldest first)")
+
+            # Update cache
+            with self._open_issues_cache_lock:
+                self._open_issues_cache = all_issues
+                self._open_issues_cache_repo = repo_name
+                self._open_issues_cache_time = datetime.now()
+
             return all_issues
 
         except Exception as e:
@@ -1029,6 +1077,11 @@ class GitHubClient:
             repo = self.get_repository(repo_name)
             issue = repo.create_issue(title=title, body=body, labels=labels or [])
             logger.info(f"Created issue #{issue.number}: {title}")
+
+            # Invalidate cache as we can't easily append the full GraphQL structure
+            with self._open_issues_cache_lock:
+                self._open_issues_cache = None
+
             return issue
 
         except GithubException as e:
@@ -1059,6 +1112,9 @@ class GitHubClient:
             issue.edit(state="closed")
             logger.info(f"Closed issue #{issue_number}")
 
+            # Update cache
+            self._update_cached_issue(repo_name, issue_number, state="closed")
+
         except GithubException as e:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
             raise
@@ -1080,6 +1136,10 @@ class GitHubClient:
 
             issue.edit(state="open")
             logger.info(f"Reopened issue #{issue_number}")
+
+            # Invalidate cache as we don't have the full object to re-add
+            with self._open_issues_cache_lock:
+                self._open_issues_cache = None
 
         except GithubException as e:
             logger.error(f"Failed to reopen issue #{issue_number}: {e}")
@@ -1293,6 +1353,9 @@ class GitHubClient:
                 issue.edit(labels=all_labels)
                 logger.info(f"Added labels {labels} to issue #{issue_number}")
 
+                # Update cache
+                self._update_cached_issue(repo_name, issue_number, labels=all_labels)
+
         except GithubException as e:
             logger.error(f"Failed to add labels to {item_type} #{issue_number}: {e}")
             raise
@@ -1346,6 +1409,9 @@ class GitHubClient:
                 issue.edit(labels=all_labels)
                 logger.info(f"Added labels {labels} to issue #{issue_number}")
 
+                # Update cache
+                self._update_cached_issue(repo_name, issue_number, labels=all_labels)
+
             return True
 
         except GithubException as e:
@@ -1382,6 +1448,9 @@ class GitHubClient:
                 # Update issue with remaining labels
                 issue.edit(labels=remaining_labels)
                 logger.info(f"Removed labels {labels} from issue #{item_number}")
+
+                # Update cache
+                self._update_cached_issue(repo_name, item_number, labels=remaining_labels)
 
         except GithubException as e:
             logger.error(f"Failed to remove labels from {item_type} #{item_number}: {e}")
