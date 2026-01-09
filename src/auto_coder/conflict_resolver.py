@@ -12,7 +12,7 @@ from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
 from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
-from .git_utils import get_commit_log, git_commit_with_retry, git_push
+from .git_utils import get_commit_log, git_checkout_branch, git_commit_with_retry, git_push
 from .github_client import GitHubClient
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .logger_config import get_logger
@@ -491,7 +491,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
                     logger.error(f"Failed to fetch PR branch {head_branch}: {fetch_pr_result.stderr}")
                     return False
 
-                checkout_result = cmd.run_command(["git", "checkout", head_branch])
+                checkout_result = git_checkout_branch(head_branch)
                 if not checkout_result.success:
                     logger.error(f"Failed to checkout branch {head_branch}: {checkout_result.stderr}")
                     return False

@@ -13,6 +13,7 @@ def test_perform_base_merge_uses_fq_remote_ref():
         patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
         patch("src.auto_coder.conflict_resolver.GitHubClient") as mock_gh_client_class,
         patch("src.auto_coder.conflict_resolver.git_push") as mock_git_push,
+        patch("src.auto_coder.conflict_resolver.git_checkout_branch") as mock_checkout,
     ):
         # Setup mocks
         mock_client = MagicMock()
@@ -22,14 +23,16 @@ def test_perform_base_merge_uses_fq_remote_ref():
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
         mock_client.get_pr_details.return_value = {"number": 123, "head_branch": "pr-branch", "author": {"login": "someone"}}
+        
+        mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
-        # Sequence: reset, clean, abort, fetch pr (Step 1), checkout (Step 1), fetch origin base (Step 2), rev-parse (Step 3), merge (Step 3)
+        # Sequence: reset, clean, abort, fetch pr (Step 1), fetch origin base (Step 2), rev-parse (Step 3), merge (Step 3)
         mock_cmd.run_command.side_effect = [
             CommandResult(True, stdout="", stderr="", returncode=0),  # reset
             CommandResult(True, stdout="", stderr="", returncode=0),  # clean
             CommandResult(False, stdout="", stderr="", returncode=1),  # merge --abort
             CommandResult(True, stdout="", stderr="", returncode=0),  # fetch pr
-            CommandResult(True, stdout="", stderr="", returncode=0),  # checkout pr
+            # checkout mocked
             CommandResult(True, stdout="", stderr="", returncode=0),  # fetch origin main
             CommandResult(True, stdout="abc123\n", stderr="", returncode=0),  # rev-parse
             CommandResult(True, stdout="", stderr="", returncode=0),  # merge
@@ -60,6 +63,7 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         patch("src.auto_coder.conflict_resolver.run_llm_noedit_prompt") as mock_llm,
         patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager") as mock_create_backend,
         patch("src.auto_coder.conflict_resolver._archive_jules_session") as mock_archive,
+        patch("src.auto_coder.conflict_resolver.git_checkout_branch") as mock_checkout,
     ):
         # Setup mocks
         mock_create_backend.return_value = None
@@ -70,14 +74,16 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
         mock_client.get_pr_details.return_value = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "head_branch": "jules-branch"}
+        
+        mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
-        # Sequence: reset, clean, abort, fetch pr, checkout, fetch base, rev-parse, merge (fails)
+        # Sequence: reset, clean, abort, fetch pr, fetch base, rev-parse, merge (fails)
         mock_cmd.run_command.side_effect = [
             CommandResult(True, "", "", 0),  # reset
             CommandResult(True, "", "", 0),  # clean
             CommandResult(True, "", "", 0),  # merge --abort
             CommandResult(True, "", "", 0),  # fetch pr
-            CommandResult(True, "", "", 0),  # checkout pr
+            # checkout mocked
             CommandResult(True, "", "", 0),  # fetch origin main
             CommandResult(True, "abc123\n", "", 0),  # rev-parse
             CommandResult(False, "CONFLICT", "", 1),  # git merge fails
@@ -109,6 +115,7 @@ def test_perform_base_merge_enriches_pr_data_when_missing_fields():
         patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
         patch("src.auto_coder.conflict_resolver.GitHubClient") as mock_gh_client_class,
         patch("src.auto_coder.conflict_resolver.git_push") as mock_git_push,
+        patch("src.auto_coder.conflict_resolver.git_checkout_branch") as mock_checkout,
     ):
         # Setup mocks
         mock_client = MagicMock()
@@ -119,13 +126,15 @@ def test_perform_base_merge_enriches_pr_data_when_missing_fields():
         mock_repo.get_pull.return_value = mock_pr
 
         mock_client.get_pr_details.return_value = {"number": 1253, "author": {"login": "google-labs-jules"}, "body": "Fixes #123", "baseRefName": "main", "head_branch": "jules-fix"}
+        
+        mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
         mock_cmd.run_command.side_effect = [
             CommandResult(True, "", "", 0),  # reset
             CommandResult(True, "", "", 0),  # clean
             CommandResult(False, "", "", 1),  # merge --abort
             CommandResult(True, "", "", 0),  # fetch pr
-            CommandResult(True, "", "", 0),  # checkout pr
+            # checkout mocked
             CommandResult(True, "", "", 0),  # fetch base
             CommandResult(True, "abc123\n", "", 0),  # rev-parse
             CommandResult(True, "", "", 0),  # merge

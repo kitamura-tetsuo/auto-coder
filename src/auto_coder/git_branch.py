@@ -1159,10 +1159,10 @@ def migrate_pr_branches(
                 # Switch to a safe branch first
                 logger.info(f"Currently on {branch_name}, switching to main before migration")
                 if execute:
-                    switch_result = cmd.run_command(["git", "checkout", "main"], cwd=cwd)
+                    switch_result = git_checkout_branch("main", cwd=cwd)
                     if not switch_result.success:
                         # Try main as fallback
-                        switch_result = cmd.run_command(["git", "checkout", "refs/remotes/origin/main"], cwd=cwd)
+                        switch_result = git_checkout_branch("refs/remotes/origin/main", cwd=cwd)
                 else:
                     logger.info(f"[DRY-RUN] Would switch from {branch_name} to main")
 

@@ -29,7 +29,7 @@ from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors_from_local_tests, run_local_tests
 from .gh_logger import get_gh_logger
-from .git_branch import branch_context, git_commit_with_retry
+from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
@@ -444,7 +444,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
                 # Checkout main branch after closing PR
                 main_branch = AutomationConfig().MAIN_BRANCH
-                checkout_result = cmd.run_command(["git", "checkout", main_branch])
+                checkout_result = git_checkout_branch(main_branch)
                 if checkout_result.success:
                     actions.append(f"Checked out {main_branch} branch")
                 else:
@@ -1066,11 +1066,7 @@ def _handle_pr_merge(
 
                     # Checkout main branch after closing PR
                     main_branch = config.MAIN_BRANCH
-                    checkout_res = cmd.run_command(
-                        ["git", "checkout", main_branch],
-                        timeout=30,
-                        stream_output=False,
-                    )
+                    checkout_res = git_checkout_branch(main_branch)
                     if checkout_res.success:
                         actions.append(f"Checked out {main_branch} branch")
                     else:
@@ -1208,10 +1204,10 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
                 return False
 
         # Checkout the branch
-        checkout_result = cmd.run_command(["git", "checkout", branch_name])
+        checkout_result = git_checkout_branch(branch_name)
         if not checkout_result.success:
             # If branch doesn't exist locally, checkout from fetched ref
-            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
+            checkout_result = git_checkout_branch(branch_name, create_new=True, base_branch="FETCH_HEAD")
 
             if not checkout_result.success:
                 log_action(
