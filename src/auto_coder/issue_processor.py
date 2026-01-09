@@ -637,9 +637,9 @@ def _create_pr_for_issue(
             logger.info(f"Creating PR for issue #{issue_number} via GhApi: {pr_title}")
             pr_response = api.pulls.create(owner, repo, title=pr_title, body=pr_body, head=work_branch, base=base_branch)
 
-            # If successful, we get a response dict
-            pr_number = pr_response.get("number")
-            pr_url = pr_response.get("html_url")
+            # If successful, we get a response dict or Mock object
+            pr_number = pr_response["number"] if isinstance(pr_response, dict) else pr_response.number
+            pr_url = pr_response["html_url"] if isinstance(pr_response, dict) else pr_response.html_url
 
             logger.info(f"Successfully created PR for issue #{issue_number}: {pr_url}")
 
