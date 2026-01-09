@@ -1,8 +1,10 @@
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
-from src.auto_coder.pr_processor import _send_jules_error_feedback
+
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.pr_processor import _send_jules_error_feedback
+
 
 class TestSendJulesErrorFeedback:
     @patch("src.auto_coder.pr_processor.get_gh_logger")
@@ -11,12 +13,7 @@ class TestSendJulesErrorFeedback:
     def test_send_jules_error_feedback_success(self, mock_create_summary, mock_jules_client, mock_gh_logger):
         # Setup
         repo_name = "owner/repo"
-        pr_data = {
-            "number": 123,
-            "title": "Test PR",
-            "user": {"login": "test-user"},
-            "_jules_session_id": "session-123"
-        }
+        pr_data = {"number": 123, "title": "Test PR", "user": {"login": "test-user"}, "_jules_session_id": "session-123"}
         failed_checks = [{"name": "check1", "conclusion": "failure"}]
         config = AutomationConfig()
         github_client = MagicMock()
@@ -44,7 +41,7 @@ class TestSendJulesErrorFeedback:
         pr_data = {
             "number": 123,
             "title": "Test PR",
-            "user": {"login": "test-user"}
+            "user": {"login": "test-user"},
             # Missing session ID
         }
         failed_checks = []

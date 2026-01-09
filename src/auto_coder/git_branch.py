@@ -547,6 +547,7 @@ def detect_branch_name_conflict(branch_name: str, cwd: Optional[str] = None) -> 
 
 def git_checkout_branch(
     branch_name: str,
+    check_for_changes: bool = True,
     create_new: bool = False,
     base_branch: Optional[str] = None,
     cwd: Optional[str] = None,
@@ -585,25 +586,26 @@ def git_checkout_branch(
     """
     cmd = CommandExecutor()
 
-    # Check for uncommitted changes before checkout
-    status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
-    has_changes = status_result.success and status_result.stdout.strip()
+    if check_for_changes:
+        # Check for uncommitted changes before checkout
+        status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
+        has_changes = status_result.success and status_result.stdout.strip()
 
-    if has_changes:
-        logger.info("Detected uncommitted changes before checkout, committing them first")
-        # Add all changes
-        add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
-        if not add_result.success:
-            logger.warning(f"Failed to add changes: {add_result.stderr}")
+        if has_changes:
+            logger.info("Detected uncommitted changes before checkout, committing them first")
+            # Add all changes
+            add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+            if not add_result.success:
+                logger.warning(f"Failed to add changes: {add_result.stderr}")
 
-        # Commit changes
-        commit_result = git_commit_with_retry(
-            commit_message="WIP: Auto-commit before branch checkout",
-            cwd=cwd,
-            max_retries=1,
-        )
-        if not commit_result.success:
-            logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
+            # Commit changes
+            commit_result = git_commit_with_retry(
+                commit_message="WIP: Auto-commit before branch checkout",
+                cwd=cwd,
+                max_retries=1,
+            )
+            if not commit_result.success:
+                logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
 
     # Check if branch already exists locally (only when create_new is True)
     branch_exists_locally = False
