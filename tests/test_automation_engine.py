@@ -3654,11 +3654,12 @@ class TestCheckAndHandleClosedBranch:
                 "number": 1,
                 "title": "Dependabot PR",
                 "body": "",
-                "head": {"ref": "dependabot-pr-1"},
+                "head": {"ref": "dependabot-pr-1", "sha": "mock_sha_for_dependabot"},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
-                "author": "dependabot[bot]",
+                "author": {"login": "dependabot[bot]"},
+                "author_association": "NONE",
             }
             mock_github_client.get_pr_details.return_value = pr_details
             # Mock get_open_prs_json to return the list of PR data

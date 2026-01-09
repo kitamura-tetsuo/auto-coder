@@ -1259,7 +1259,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
                                         body = slice_relevant_error_window(body)
                                     body = slice_relevant_error_window(body)
-                                    return f"=== Job: {job_name} ===\n" + body
+                                    return f"=== Job: {job_name} ({job_id}) ===\n" + body
                         except zipfile.BadZipFile:
                             # Not a zip file, it might be raw text log
                             try:
@@ -1278,7 +1278,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     else:
                         important = _extract_error_context(fallback_content)
                     if important and important.strip():
-                        return f"=== Job: {job_name} ===\n{important}"
+                        return f"=== Job: {job_name} ({job_id}) ===\n{important}"
 
                 # If step_snippets is empty but we extracted something from fallback
 
@@ -1317,7 +1317,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 # ESLint logs are already carefully filtered and this would undo that work
                 if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
                     important = slice_relevant_error_window(important)
-                return f"=== Job: {job_name} ===\n{important}"
+                return f"=== Job: {job_name} ({job_id}) ===\n{important}"
         except Exception as e:
             logger.warning(f"Error processing job zip for {job_id}: {e}")
         except Exception:
@@ -1446,7 +1446,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             important = important + ("\n\n--- Summary ---\n" if "--- Summary ---" not in important else "\n") + "\n".join(filtered)
                 # Truncate prelude (final formatting)
                 important = slice_relevant_error_window(important)
-                return f"=== Job: {job_name} ===\n{important}"
+                return f"=== Job: {job_name} ({job_id}) ===\n{important}"
         except Exception:
             pass
 
@@ -1462,7 +1462,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
             if run_failed.returncode == 0 and run_failed.stdout.strip():
                 # important = _extract_important_errors({'success': False, 'output': run_failed.stdout, 'errors': ''})
                 important = run_failed.stdout[:1000]  # Simplified for now
-                return f"=== Job: {job_name} ===\n{important}"
+                return f"=== Job: {job_name} ({job_id}) ===\n{important}"
         except Exception:
             pass
 
@@ -1495,11 +1495,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         # imp = _extract_important_errors({'success': False, 'output': '\n'.join(texts), 'errors': ''})
                         imp = "\n".join(texts)[:1000]  # Simplified for now
                         imp = slice_relevant_error_window(imp)
-                        return f"=== Job: {job_name} ===\n{url}\n{imp}"
+                        return f"=== Job: {job_name} ({job_id}) ===\n{url}\n{imp}"
         except Exception:
             pass
 
-        return f"=== Job: {job_name} ===\n{url}\nNo detailed logs available"
+        return f"=== Job: {job_name} ({job_id}) ===\n{url}\nNo detailed logs available"
 
     except Exception as e:
         logger.error(f"Error fetching GitHub Actions logs from URL: {e}")
@@ -1967,7 +1967,9 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join(
+                                            [_clean_log_line(line) for line in stack.split("\n")][:10]
+                                        )
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:
