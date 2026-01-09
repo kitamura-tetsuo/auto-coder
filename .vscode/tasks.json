@@ -137,5 +137,22 @@
             },
             "problemMatcher": []
         },
+        {
+            "label": "Auto-Coder: Process Issues Dry Run (Outliner)",
+            "type": "shell",
+            "command": "auto-coder",
+            "args": ["process-issues", "--dry-run"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "/home/ubuntu/src/outliner"
+            },
+            "problemMatcher": []
+        }
     ]
 }

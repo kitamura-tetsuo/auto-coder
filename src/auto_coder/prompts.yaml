@@ -1,6 +1,3 @@
-header: |
-  Read AGENTS.md before proceeding if you haven't read it yet.
-
 pr:
   action: |-
     You are operating directly in the repository workspace with write access and the git and gh CLIs available.
@@ -8,15 +5,12 @@ pr:
     Task: For the following GitHub Pull Request, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
 
     STRICT DIRECTIVES (follow exactly):
-    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
     - Do NOT post any comments to the PR, reviews, or issues.
     - Do NOT write narrative explanations as output; take actions in the workspace instead.
     - Prefer targeted edits that make CI pass while preserving intent.
     - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
     - Do NOT run git commit/push; the system will handle committing.
     - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). Existing branches with 'pr-<number>' pattern can be checked out but new branches must use 'issue-<number>' naming.
 
     Return format:
     - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
@@ -37,10 +31,6 @@ pr:
     PR Changes (first $diff_limit chars):
     $pr_diff
 
-    Commit History Since Branch Creation:
-    $commit_log
-    $linked_issues_context
-
   merge_conflict_resolution: |-
     There are merge conflicts when trying to merge $base_branch branch into PR #$pr_number: $pr_title
 
@@ -50,15 +40,9 @@ pr:
     Merge Conflict Information:
     $conflict_info
 
-    Commit History Since Branch Creation:
-    $commit_log
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
-
     Please resolve these merge conflicts by:
     1. Examining the conflicted files
-    2. When conflicts occur, prefer the newer code (the changes from the PR branch) over the older code (from the base branch). Choose the resolution that maintains the most recent implementation.
+    2. Choosing the appropriate resolution for each conflict
     3. Editing files to fully remove all conflict markers
     4. Do NOT run git add/commit/push; the system will handle committing.
 
@@ -66,53 +50,17 @@ pr:
 
     Please proceed with resolving these merge conflicts now.
 
-  mergeability_check: |-
-    You are analyzing merge conflicts for PR #$pr_number: $pr_title
-
-    PR Description:
-    $pr_body...
-
-    Merge Conflict Information:
-    $conflict_info
-
-    Commit History Since Branch Creation:
-    $commit_log
-    $linked_issues_context
-
-    Your task is to determine if this merge can be performed WITHOUT DEGRADING CODE QUALITY.
-
-    IMPORTANT: Be slightly pessimistic - favor re-implementation (skip merge) if unsure.
-
-    Return ONLY one of these exact responses:
-    - "SAFE_TO_MERGE" - if you are confident the merge can be done without code quality degradation
-    - "DEGRADING_MERGE" - if the merge might degrade code quality or introduce bugs, or if you're uncertain
-
-    Consider:
-    1. Are the conflicts in critical code paths?
-    2. Do the conflicting changes seem to have architectural implications?
-    3. Is there significant risk of introducing bugs or breaking functionality?
-    4. Would re-implementing the PR changes be safer?
-
-    Please analyze and respond with either "SAFE_TO_MERGE" or "DEGRADING_MERGE".
-
   github_actions_fix: |-
     Fix the following GitHub Actions test failures for PR #$pr_number:
 
     Repository: $repo_name
     PR Title: $pr_title
 
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    Extracted Important Errors (failed test files and key error details):
-    $extracted_errors
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    GitHub Actions Error Logs (truncated):
+    $github_logs
 
     Your task:
-    1) Identify the root cause(s) of the failing checks based on the extracted errors.
+    1) Identify the root cause(s) of the failing checks based on the logs.
     2) Apply the necessary code changes directly in the repository to fix them.
     3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
     4) Do NOT run git commit/push; the system will handle committing and pushing.
@@ -121,343 +69,28 @@ pr:
     - First, provide a concise summary of what you changed and why.
     - Return only a short summary line; no commit/push output is needed.
 
-  github_actions_fix_direct: |-
-    Fix the GitHub Actions issues in this PR.
-
-    PR Details:
-    - Title: $pr_title
-    - Body: $pr_body
-    - Number: $pr_number
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
-
-    GitHub Actions Logs:
-    $github_logs
-
-    Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
-    DO NOT include git commit or push commands in your response.
-
   local_test_fix: |-
     Fix the following local test failures for PR #$pr_number:
 
     Repository: $repo_name
     PR Title: $pr_title
 
-    Commit History Since Branch Creation:
-    $commit_log
+    Test Output:
+    $test_output
 
-    $linked_issues_context
+    Test Errors:
+    $test_errors
 
     Key Errors:
-    $error_summary
+    Error summary would go here
 
-    Local test command used:
-    $test_command
-
-    $if(attempt_history)
-    Previous Fix Attempts (for context - avoid repeating the same mistakes):
-    $attempt_history
-
-    $endif
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+     Local test command used:
+     $test_command
 
     Please analyze the test failures and provide specific code fixes.
     Focus on making the tests pass while maintaining code quality.
-    All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
 
     After analyzing, apply the necessary fixes to the codebase.
-
-  breaking_change: |-
-    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
-
-    Task: For the following GitHub Pull Request with the 'breaking-change' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
-
-    STRICT DIRECTIVES (follow exactly):
-    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
-    - Do NOT post any comments to the PR, reviews, or issues.
-    - Do NOT write narrative explanations as output; take actions in the workspace instead.
-    - Prefer targeted edits that make CI pass while preserving intent.
-    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-    - Do NOT run git commit/push; the system will handle committing.
-    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-    BREAKING CHANGE REQUIREMENTS:
-    - This PR involves breaking changes that may break existing functionality
-    - Tests that fail due to breaking changes should be DELETED, not fixed
-    - Update version numbers according to semantic versioning (major version bump)
-    - Add migration guide for users to update their code
-    - Document all breaking changes clearly
-    - Consider backward compatibility impact
-
-    PR Context:
-    Repository: $repo_name
-    PR #$pr_number: $pr_title
-
-    PR Description:
-    $pr_body...
-
-    PR Changes:
-    $pr_diff
-
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
-
-    CRITICAL BREAKING CHANGE DIRECTIVES:
-    1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
-    2. VERSION BUMP: Update version numbers with major version increment (semantic versioning)
-    3. MIGRATION GUIDE: Create clear migration instructions for users
-    4. DEPRECATION NOTICE: Document deprecated features and replacement approaches
-    5. BACKWARD COMPATIBILITY: Assess and document compatibility impact
-
-    COMMITMENT TO QUALITY:
-    - Breaking changes must be intentional and well-documented
-    - Users must be able to migrate their code successfully
-    - Version numbers must accurately reflect breaking changes
-    - No existing functionality should work incorrectly without clear migration path
-
-    Return format:
-    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
-    - No greetings, no multi-paragraph analysis.
-
-    Please proceed with analyzing and implementing this breaking change now.
-
-  urgent: |-
-    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
-
-    Task: For the following GitHub Pull Request with the 'urgent' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
-
-    STRICT DIRECTIVES (follow exactly):
-    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
-    - Do NOT post any comments to the PR, reviews, or issues.
-    - Do NOT write narrative explanations as output; take actions in the workspace instead.
-    - Prefer targeted edits that make CI pass while preserving intent.
-    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-    - Do NOT run git commit/push; the system will handle committing.
-    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-    URGENT PR REQUIREMENTS:
-    - This PR requires immediate attention and fast resolution
-    - Prioritize quick, effective solutions over extensive refactoring
-    - Focus on resolving the critical problem first
-    - Document any temporary workarounds or technical debt created
-    - Consider immediate impact on users and production systems
-
-    PR Context:
-    Repository: $repo_name
-    PR #$pr_number: $pr_title
-
-    PR Description:
-    $pr_body...
-
-    PR Changes:
-    $pr_diff
-
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
-
-    URGENT PR DIRECTIVES:
-    1. IMMEDIATE ACTION: Analyze and implement a solution as quickly as possible
-    2. MINIMAL SCOPE: Keep changes focused on resolving the urgent problem
-    3. RISK MITIGATION: Avoid introducing new bugs or breaking changes
-    4. TESTING: Ensure critical paths are thoroughly tested
-    5. DOCUMENTATION: Document any temporary solutions or follow-up work needed
-
-    QUALITY COMMITMENTS:
-    - Urgent doesn't mean careless - maintain code quality
-    - Test all critical functionality affected by changes
-    - Document any technical debt or follow-up work needed
-    - Communicate clearly about the impact and resolution
-
-    Return format:
-    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
-    - No greetings, no multi-paragraph analysis.
-
-    Please proceed with analyzing and taking action on this urgent PR now.
-
-  bug: |-
-    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
-
-    Task: For the following GitHub Pull Request with the 'bug' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
-
-    STRICT DIRECTIVES (follow exactly):
-    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
-    - Do NOT post any comments to the PR, reviews, or issues.
-    - Do NOT write narrative explanations as output; take actions in the workspace instead.
-    - Prefer targeted edits that make CI pass while preserving intent.
-    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-    - Do NOT run git commit/push; the system will handle committing.
-    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-    BUG FIX PR REQUIREMENTS:
-    - This PR fixes a bug or defect in existing functionality
-    - Focus on identifying root cause and implementing proper fix
-    - Add or update tests to prevent regression
-    - Verify the fix resolves the reported issue
-    - Consider edge cases and related scenarios
-
-    PR Context:
-    Repository: $repo_name
-    PR #$pr_number: $pr_title
-
-    PR Description:
-    $pr_body...
-
-    PR Changes:
-    $pr_diff
-
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
-
-    BUG FIX PR DIRECTIVES:
-    1. ROOT CAUSE ANALYSIS: Identify the underlying cause of the bug
-    2. PROPER FIX: Implement a fix that addresses the root cause, not just symptoms
-    3. REGRESSION TESTS: Add tests that would have caught this bug
-    4. EDGE CASES: Consider and test related edge cases
-    5. VERIFICATION: Verify the fix resolves the reported issue completely
-
-    DEBUGGING APPROACH:
-    - Reproduce the bug to understand the failure mode
-    - Trace through the code to identify the root cause
-    - Consider why existing tests didn't catch this
-    - Implement fix with comprehensive test coverage
-    - Verify fix doesn't introduce new issues
-
-    Return format:
-    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
-    - No greetings, no multi-paragraph analysis.
-
-    Please proceed with analyzing and fixing this PR now.
-
-  enhancement: |-
-    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
-
-    Task: For the following GitHub Pull Request with the 'enhancement' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
-
-    STRICT DIRECTIVES (follow exactly):
-    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
-    - Do NOT post any comments to the PR, reviews, or issues.
-    - Do NOT write narrative explanations as output; take actions in the workspace instead.
-    - Prefer targeted edits that make CI pass while preserving intent.
-    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-    - Do NOT run git commit/push; the system will handle committing.
-    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-    ENHANCEMENT PR REQUIREMENTS:
-    - This PR implements a new feature or improvement to existing functionality
-    - Focus on implementing clean, maintainable, and well-tested code
-    - Consider architecture and design patterns
-    - Ensure backward compatibility unless explicitly stated otherwise
-    - Add comprehensive tests for new functionality
-
-    PR Context:
-    Repository: $repo_name
-    PR #$pr_number: $pr_title
-
-    PR Description:
-    $pr_body...
-
-    PR Changes:
-    $pr_diff
-
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
-
-    ENHANCEMENT PR DIRECTIVES:
-    1. DESIGN: Consider architecture and design patterns before implementing
-    2. MAINTAINABILITY: Write clean, readable, and maintainable code
-    3. TESTING: Add comprehensive tests for new functionality
-    4. DOCUMENTATION: Update documentation and comments as needed
-    5. COMPATIBILITY: Ensure backward compatibility unless breaking change is intended
-
-    DEVELOPMENT APPROACH:
-    - Understand the requested enhancement and its use cases
-    - Consider how it fits into existing architecture
-    - Design a clean and maintainable implementation
-    - Write comprehensive tests (unit, integration, e2e as appropriate)
-    - Document new functionality clearly
-    - Consider performance and scalability implications
-
-    Return format:
-    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
-    - No greetings, no multi-paragraph analysis.
-
-    Please proceed with analyzing and implementing this enhancement now.
-
-  documentation: |-
-    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
-
-    Task: For the following GitHub Pull Request with the 'documentation' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
-
-    STRICT DIRECTIVES (follow exactly):
-    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
-    - Do NOT post any comments to the PR, reviews, or issues.
-    - Do NOT write narrative explanations as output; take actions in the workspace instead.
-    - Prefer targeted edits that make CI pass while preserving intent.
-    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-    - Do NOT run git commit/push; the system will handle committing.
-    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-    DOCUMENTATION PR REQUIREMENTS:
-    - This PR improves or adds documentation
-    - Focus on clarity, accuracy, and completeness
-    - Ensure documentation matches current implementation
-    - Use clear language and helpful examples
-    - Consider different audiences (users vs developers)
-
-    PR Context:
-    Repository: $repo_name
-    PR #$pr_number: $pr_title
-
-    PR Description:
-    $pr_body...
-
-    PR Changes:
-    $pr_diff
-
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
-
-    DOCUMENTATION PR DIRECTIVES:
-    1. ACCURACY: Ensure documentation accurately reflects current implementation
-    2. CLARITY: Write clear, concise documentation that's easy to understand
-    3. COMPLETENESS: Cover all aspects of the feature or functionality
-    4. EXAMPLES: Include practical examples where helpful
-    5. AUDIENCE: Consider the target audience (end users, developers, contributors)
-
-    DOCUMENTATION APPROACH:
-    - Review existing documentation and identify gaps or inaccuracies
-    - Verify documentation against current code implementation
-    - Write clear, well-structured documentation
-    - Include examples, code snippets, or diagrams where helpful
-    - Use consistent terminology and formatting
-    - Consider SEO and discoverability
-
-    Return format:
-    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
-    - No greetings, no multi-paragraph analysis.
-
-    Please proceed with analyzing and addressing this documentation request now.
 
   pr_message: |-
     Generate a concise pull request message for the following issue:
@@ -469,19 +102,18 @@ pr:
     Changes Summary:
     $changes_summary
 
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
     Requirements:
     - Title: A clear, concise title (max 72 characters) that describes the changes
     - Body: A brief description of what was changed and why (2-3 sentences)
-    - Format: Return the response as a JSON object with "title" and "body" fields
+    - Format: Return ONLY the title on the first line, followed by a blank line, then the body
     - Do NOT include any markdown formatting, headers, or extra text
 
     Example format:
-    {"title": "Fix authentication bug in login flow", "body": "Updated the authentication logic to properly handle edge cases when users have special characters in their passwords. This resolves the login failures reported in the issue."}
+    Fix authentication bug in login flow
+
+    Updated the authentication logic to properly handle edge cases when users
+    have special characters in their passwords. This resolves the login failures
+    reported in the issue.
 
 issue:
   action: |-
@@ -493,45 +125,15 @@ issue:
     Issue Description:
     $issue_body...
 
-    $if(parent_issue_number)
-    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
-
-    Parent Issue Description:
-    $parent_issue_body...
-
-    IMPORTANT SCOPE LIMITATIONS:
-    - The parent issue content above is for CONTEXT ONLY
-    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
-    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
-    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-
-    $endif
     Issue Labels: $issue_labels
     Issue State: $issue_state
     Created by: $issue_author
 
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
-    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
-
     Please analyze this issue and determine the appropriate action:
 
-    1. If this needs clarification, add a comment requesting more information
-    2. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
-    3. If this is a valid issue but need to more than about 30 file changes, break this down into multiple smaller sub issues via gh-sub-issue.
-    4. If this is a valid bug report or feature request, provide analysis and implementation
-
-    For valid issue but need to more than about 30 file changes:
-    - Break down the issue into multiple smaller sub issues
-    - Create multiple smaller sub issues via gh.
-      example: github-sub-issue create --parent $issue_number --title $title --body $body
-    - Keep open the issue
+    1. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
+    2. If this is a valid bug report or feature request, provide analysis and implementation
+    3. If this needs clarification, add a comment requesting more information
 
     For valid issues that can be implemented:
     - Analyze the requirements
@@ -539,8 +141,6 @@ issue:
     - Create or modify files as needed
     - Ensure the implementation follows best practices
     - Prefer the smart, reasonable and logically beautiful change that resolves issues.
-    - Keep open the issue
-    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
 
     For duplicate/invalid issues:
     - Close the issue
@@ -550,371 +150,11 @@ issue:
 
     Please proceed with analyzing and taking action on this issue now.
 
-  breaking_change: |-
-    You are processing a GitHub issue with the 'breaking-change' label.
-
-    BREAKING CHANGE REQUIREMENTS:
-    - This issue involves breaking changes that may break existing functionality
-    - Tests that fail due to breaking changes should be DELETED, not fixed
-    - Update version numbers according to semantic versioning (major version bump)
-    - Add migration guide for users to update their code
-    - Document all breaking changes clearly
-    - Consider backward compatibility impact
-
-    Issue Context:
-    Repository: $repo_name
-    Issue #$issue_number: $issue_title
-    Labels: $issue_labels
-    Breaking Change Detected: YES
-
-    Issue Description:
-    $issue_body...
-
-    $if(parent_issue_number)
-    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
-
-    Parent Issue Description:
-    $parent_issue_body...
-
-    IMPORTANT SCOPE LIMITATIONS:
-    - The parent issue content above is for CONTEXT ONLY
-    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
-    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
-    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-
-    $endif
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
-    CRITICAL BREAKING CHANGE DIRECTIVES:
-    1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
-    2. VERSION BUMP: Update version numbers with major version increment (semantic versioning)
-    3. MIGRATION GUIDE: Create clear migration instructions for users
-    4. DEPRECATION NOTICE: Document deprecated features and replacement approaches
-    5. BACKWARD COMPATIBILITY: Assess and document compatibility impact
-
-    COMMITMENT TO QUALITY:
-    - Breaking changes must be intentional and well-documented
-    - Users must be able to migrate their code successfully
-    - Version numbers must accurately reflect breaking changes
-    - No existing functionality should work incorrectly without clear migration path
-
-    Please proceed with analyzing and implementing this breaking change now.
-
-  urgent: |-
-    You are processing a GitHub issue with the 'urgent' label.
-
-    URGENT ISSUE REQUIREMENTS:
-    - This issue requires immediate attention and fast resolution
-    - Prioritize quick, effective solutions over extensive refactoring
-    - Focus on resolving the critical problem first
-    - Document any temporary workarounds or technical debt created
-    - Consider immediate impact on users and production systems
-
-    Issue Context:
-    Repository: $repo_name
-    Issue #$issue_number: $issue_title
-    Labels: $issue_labels
-    Urgency Level: HIGH
-
-    Issue Description:
-    $issue_body...
-
-    $if(parent_issue_number)
-    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
-
-    Parent Issue Description:
-    $parent_issue_body...
-
-    IMPORTANT SCOPE LIMITATIONS:
-    - The parent issue content above is for CONTEXT ONLY
-    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
-    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
-    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-
-    $endif
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
-    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
-
-    URGENT ISSUE DIRECTIVES:
-    1. IMMEDIATE ACTION: Analyze and implement a solution as quickly as possible
-    2. MINIMAL SCOPE: Keep changes focused on resolving the urgent problem
-    3. RISK MITIGATION: Avoid introducing new bugs or breaking changes
-    4. TESTING: Ensure critical paths are thoroughly tested
-    5. DOCUMENTATION: Document any temporary solutions or follow-up work needed
-
-    QUALITY COMMITMENTS:
-    - Urgent doesn't mean careless - maintain code quality
-    - Test all critical functionality affected by changes
-    - Document any technical debt or follow-up work needed
-    - Communicate clearly about the impact and resolution
-
-    Please analyze this urgent issue and determine the appropriate action:
-
-    1. If this needs clarification, add a comment requesting more information
-    2. If this is a duplicate or invalid issue, close it with an appropriate comment
-    3. If this is a valid urgent issue, provide immediate analysis and implementation
-
-    For valid urgent issues:
-    - Analyze the requirements with focus on immediate impact
-    - Implement the necessary code changes quickly and safely
-    - Create or modify files as needed
-    - Ensure the implementation resolves the urgent problem
-    - Keep open the issue
-    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
-
-    After taking action, respond with a summary of what you did.
-
-    Please proceed with analyzing and taking action on this urgent issue now.
-
-  bug: |-
-    You are processing a GitHub issue with the 'bug' label.
-
-    BUG FIX REQUIREMENTS:
-    - This issue reports a bug or defect in existing functionality
-    - Focus on identifying root cause and implementing proper fix
-    - Add or update tests to prevent regression
-    - Verify the fix resolves the reported issue
-    - Consider edge cases and related scenarios
-
-    Issue Context:
-    Repository: $repo_name
-    Issue #$issue_number: $issue_title
-    Labels: $issue_labels
-    Issue Type: BUG FIX
-
-    Issue Description:
-    $issue_body...
-
-    $if(parent_issue_number)
-    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
-
-    Parent Issue Description:
-    $parent_issue_body...
-
-    IMPORTANT SCOPE LIMITATIONS:
-    - The parent issue content above is for CONTEXT ONLY
-    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
-    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
-    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-
-    $endif
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
-    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
-
-    BUG FIX DIRECTIVES:
-    1. ROOT CAUSE ANALYSIS: Identify the underlying cause of the bug
-    2. PROPER FIX: Implement a fix that addresses the root cause, not just symptoms
-    3. REGRESSION TESTS: Add tests that would have caught this bug
-    4. EDGE CASES: Consider and test related edge cases
-    5. VERIFICATION: Verify the fix resolves the reported issue completely
-
-    DEBUGGING APPROACH:
-    - Reproduce the bug to understand the failure mode
-    - Trace through the code to identify the root cause
-    - Consider why existing tests didn't catch this
-    - Implement fix with comprehensive test coverage
-    - Verify fix doesn't introduce new issues
-
-    Please analyze this bug report and determine the appropriate action:
-
-    1. If this needs clarification or reproduction steps, add a comment requesting more information
-    2. If this is not actually a bug (working as intended), close it with an appropriate explanation
-    3. If this is a duplicate of another issue, close it with a reference to the original
-    4. If this is a valid bug, provide analysis and implementation
-
-    For valid bugs:
-    - Analyze the bug report and reproduce the issue if possible
-    - Identify the root cause in the codebase
-    - Implement the necessary code changes to fix the bug
-    - Add or update tests to prevent regression
-    - Ensure the implementation follows best practices
-    - Keep open the issue
-    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
-
-    After taking action, respond with a summary of what you did.
-
-    Please proceed with analyzing and fixing this bug now.
-
-  enhancement: |-
-    You are processing a GitHub issue with the 'enhancement' label.
-
-    ENHANCEMENT REQUIREMENTS:
-    - This issue requests a new feature or improvement to existing functionality
-    - Focus on implementing clean, maintainable, and well-tested code
-    - Consider architecture and design patterns
-    - Ensure backward compatibility unless explicitly stated otherwise
-    - Add comprehensive tests for new functionality
-
-    Issue Context:
-    Repository: $repo_name
-    Issue #$issue_number: $issue_title
-    Labels: $issue_labels
-    Issue Type: ENHANCEMENT
-
-    Issue Description:
-    $issue_body...
-
-    $if(parent_issue_number)
-    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
-
-    Parent Issue Description:
-    $parent_issue_body...
-
-    IMPORTANT SCOPE LIMITATIONS:
-    - The parent issue content above is for CONTEXT ONLY
-    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
-    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
-    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-
-    $endif
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
-    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
-
-    ENHANCEMENT DIRECTIVES:
-    1. DESIGN: Consider architecture and design patterns before implementing
-    2. MAINTAINABILITY: Write clean, readable, and maintainable code
-    3. TESTING: Add comprehensive tests for new functionality
-    4. DOCUMENTATION: Update documentation and comments as needed
-    5. COMPATIBILITY: Ensure backward compatibility unless breaking change is intended
-
-    DEVELOPMENT APPROACH:
-    - Understand the requested enhancement and its use cases
-    - Consider how it fits into existing architecture
-    - Design a clean and maintainable implementation
-    - Write comprehensive tests (unit, integration, e2e as appropriate)
-    - Document new functionality clearly
-    - Consider performance and scalability implications
-
-    Please analyze this enhancement request and determine the appropriate action:
-
-    1. If this needs clarification or more details, add a comment requesting more information
-    2. If this is a duplicate or already exists, close it with an appropriate reference
-    3. If this is valid but needs more than about 30 file changes, break it down into multiple smaller sub issues via gh-sub-issue
-    4. If this is a valid enhancement that can be implemented, provide analysis and implementation
-
-    For valid enhancements:
-    - Analyze the requirements and design a solution
-    - Implement the necessary code changes following best practices
-    - Create or modify files as needed
-    - Add comprehensive tests for the new functionality
-    - Update documentation if needed
-    - Keep open the issue
-    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
-
-    After taking action, respond with a summary of what you did.
-
-    Please proceed with analyzing and implementing this enhancement now.
-
-  documentation: |-
-    You are processing a GitHub issue with the 'documentation' label.
-
-    DOCUMENTATION REQUIREMENTS:
-    - This issue requests improvements or additions to documentation
-    - Focus on clarity, accuracy, and completeness
-    - Ensure documentation matches current implementation
-    - Use clear language and helpful examples
-    - Consider different audiences (users vs developers)
-
-    Issue Context:
-    Repository: $repo_name
-    Issue #$issue_number: $issue_title
-    Labels: $issue_labels
-    Issue Type: DOCUMENTATION
-
-    Issue Description:
-    $issue_body...
-
-    $if(parent_issue_number)
-    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
-
-    Parent Issue Description:
-    $parent_issue_body...
-
-    IMPORTANT SCOPE LIMITATIONS:
-    - The parent issue content above is for CONTEXT ONLY
-    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
-    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
-    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-
-    $endif
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
-    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
-
-    DOCUMENTATION DIRECTIVES:
-    1. ACCURACY: Ensure documentation accurately reflects current implementation
-    2. CLARITY: Write clear, concise documentation that's easy to understand
-    3. COMPLETENESS: Cover all aspects of the feature or functionality
-    4. EXAMPLES: Include practical examples where helpful
-    5. AUDIENCE: Consider the target audience (end users, developers, contributors)
-
-    DOCUMENTATION APPROACH:
-    - Review existing documentation and identify gaps or inaccuracies
-    - Verify documentation against current code implementation
-    - Write clear, well-structured documentation
-    - Include examples, code snippets, or diagrams where helpful
-    - Use consistent terminology and formatting
-    - Consider SEO and discoverability
-
-    Please analyze this documentation request and determine the appropriate action:
-
-    1. If this needs clarification about what to document, add a comment requesting more information
-    2. If the requested documentation already exists, close it with a reference to the existing docs
-    3. If this is a valid documentation request, provide implementation
-
-    For valid documentation requests:
-    - Analyze what documentation is needed
-    - Review existing documentation and code implementation
-    - Create or update documentation files as needed
-    - Ensure documentation is accurate, clear, and complete
-    - Include examples and code snippets where helpful
-    - Keep open the issue
-    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
-
-    After taking action, respond with a summary of what you did.
-
-    Please proceed with analyzing and addressing this documentation request now.
-
 tests:
   workspace_fix: |-
     You are operating directly in this repository workspace with write access.
 
     Goal: Make local tests pass by applying safe edits.
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     Task Memory File: ./llm_task.md
     - If the file exists, review the "Logging Protocol" section before making changes.
@@ -948,8 +188,6 @@ tests:
     You are operating directly in this repository workspace with write access.
 
     Goal: Fix test stability and dependency issues.
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     PROBLEM DETECTED:
     A test file failed when run as part of the full test suite, but passed when run in isolation.
@@ -1001,11 +239,6 @@ tests:
     * `git diff` to inspect unstaged changes
     * `git diff --cached` to inspect staged changes
 
-    Commit History Since Branch Creation:
-    $commit_log
-
-    $linked_issues_context
-
     Then, analyze the diff and write a high-quality Git commit message following these rules:
 
     1. **Message Format**:
@@ -1034,101 +267,6 @@ tests:
       * Provide the final commit message **ready to use**, including summary, body, and footer if necessary.
       * Do **not** include explanations of your reasoning.
       * Wrap the entire commit message in triple backticks (```) before and after.
-
-  commit_and_push: |-
-    You are an expert Git operations assistant.
-
-    The automated commit/push operation has failed with the following error:
-    $error_message
-
-    Commit message that was attempted if exist:
-    $commit_message
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
-
-    **Your task is to:**
-    1. First, review the current state by running:
-       * `git status` to check the current state
-       * `git diff` to inspect unstaged changes
-       * `git diff --cached` to inspect staged changes
-
-    2. Analyze the error and determine the root cause:
-       * Is it a formatting issue (e.g., dprint, prettier)?
-       * Is it a merge conflict?
-       * Is it a pre-commit hook failure?
-       * Is it a network/authentication issue?
-
-    3. Take appropriate actions to resolve the issue:
-       * If it's a formatting issue, run the appropriate formatter (e.g., `npx dprint fmt`, `npm run format`)
-       * If it's a merge conflict, resolve the conflicts
-       * If it's a hook failure, fix the underlying issue that the hook detected
-       * Stage any additional changes with `git add`
-
-    4. After resolving the issue, commit and push the changes:
-       * Use `git commit -m "$commit_message"` with the original commit message if exist
-       * Use `git push` to push the changes
-
-    5. Verify the operation succeeded:
-       * Check `git status` to ensure there are no uncommitted changes
-       * Confirm the push was successful
-
-    **Important:**
-    * Do NOT modify the commit message if exist
-    * Create a new commit message if commit message does not exist
-    * Do NOT skip or bypass pre-commit hooks
-    * Do NOT force push unless explicitly required
-    * Ensure all changes are properly staged before committing
-    * If the issue cannot be resolved automatically, provide a clear error message
-
-    After completing the operation, output a single line starting with "COMMIT_PUSH_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
-
-  dprint_fallback: |-
-    You are an expert dprint formatter troubleshooting assistant.
-
-    The dprint formatter has failed with the following error:
-    $error_message
-
-    Commit message that was attempted if exist:
-    $commit_message
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
-
-    **Your task is to:**
-    1. First, review the current state by running:
-       * `git status` to check the current state
-       * `git diff` to inspect unstaged changes
-       * `git diff --cached` to inspect staged changes
-
-    2. Diagnose the dprint failure and take corrective actions:
-       * Check if dprint is properly installed (`npx dprint --version`)
-       * Check if dprint config file exists and is valid (`dprint.json`, `.dprintrc.json`, `dprint.toml`, or `.dprintrc.toml`)
-       * Check for permission issues with dprint executable
-       * Check for plugin loading errors or missing plugins
-       * Check for syntax errors in configured files that prevent formatting
-
-    3. Take appropriate actions to resolve the dprint issues:
-       * Install missing dependencies or plugins
-       * Fix configuration file syntax or settings
-       * Resolve file permission issues
-       * Manually format files if necessary
-       * Stage any changes with `git add`
-
-    4. After resolving the dprint issues, retry the formatting:
-       * Run `npx dprint fmt` to format files
-       * Stage the formatted changes
-
-    5. Verify the operation succeeded:
-       * Check `git status` to ensure formatted files are properly staged
-       * Confirm no formatting errors remain
-
-    **Important:**
-    * Do NOT skip or bypass the formatter entirely
-    * Do NOT modify the commit message
-    * Do NOT force commit unless absolutely necessary
-    * Ensure all formatting issues are properly resolved
-    * If the issue cannot be resolved automatically, provide a clear error message
-
-    After completing the operation, output a single line starting with "DPRINT_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
 
 
 gemini:

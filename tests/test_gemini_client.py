@@ -5,142 +5,57 @@ Tests for Gemini client functionality.
 import json
 from unittest.mock import Mock, patch
 
-import pytest
-
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.utils import CommandResult
 
 
 class TestGeminiClient:
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.logger")
     @patch("subprocess.run")
     @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_get_config, mock_gemini_api_key):
+    def test_llm_invocation_warn_log(
+        self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key
+    ):
         """Verify that LLM invocation emits a warning log before running CLI."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
-        _ = client._run_llm_cli("hello")
+        client = GeminiClient(mock_gemini_api_key)
+        _ = client._run_gemini_cli("hello")
         assert mock_logger.warning.called
         assert "LLM invocation" in str(mock_logger.warning.call_args[0][0])
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @patch("src.auto_coder.gemini_client.logger")
-    @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_extra_args_are_passed_to_cli(self, mock_run_command, mock_run, mock_logger, mock_get_config, mock_gemini_api_key):
-        """Resume or continuation flags should be forwarded to gemini CLI."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
-
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.model = "test-model"
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
-        client.set_extra_args(["--resume", "session42"])
-
-        _ = client._run_llm_cli("ping")
-
-        called_cmd = mock_run_command.call_args[0][0]
-        assert called_cmd[-1] == "ping"
-        assert called_cmd[-3:-1] == ["--resume", "session42"]
-
     """Test cases for GeminiClient class."""
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_init(self, mock_genai, mock_get_config, mock_gemini_api_key):
+    def test_init(self, mock_genai, mock_gemini_api_key):
         """Test GeminiClient initialization."""
         mock_model = Mock()
         mock_genai.GenerativeModel.return_value = mock_model
 
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.model = "test-model"
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key, "test-model")
 
         assert client.api_key == mock_gemini_api_key
         assert client.model == mock_model
         mock_genai.configure.assert_called_once_with(api_key=mock_gemini_api_key)
         mock_genai.GenerativeModel.assert_called_once_with("test-model")
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_analyze_issue_removed(self, mock_genai, mock_get_config, mock_gemini_api_key):
+    def test_analyze_issue_removed(self, mock_genai, mock_gemini_api_key):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "analyze_issue")
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_analyze_pull_request_removed(self, mock_genai, mock_get_config, mock_gemini_api_key, sample_pr_data):
+    def test_analyze_pull_request_removed(
+        self, mock_genai, mock_gemini_api_key, sample_pr_data
+    ):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "analyze_pull_request")
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_suggest_features_success(self, mock_genai, mock_get_config, mock_gemini_api_key):
+    def test_suggest_features_success(self, mock_genai, mock_gemini_api_key):
         """Test successful feature suggestions."""
         # Setup
         mock_model = Mock()
@@ -162,18 +77,7 @@ class TestGeminiClient:
         mock_model.generate_content.return_value = mock_response
         mock_genai.GenerativeModel.return_value = mock_model
 
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
         repo_context = {"name": "test-repo", "description": "Test repository"}
 
         # Execute
@@ -186,41 +90,17 @@ class TestGeminiClient:
         assert "security" in result[0]["labels"]
         mock_model.generate_content.assert_called_once()
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_generate_solution_removed(self, mock_genai, mock_get_config, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
+    def test_generate_solution_removed(
+        self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result
+    ):
         """Ensure generation helper is removed per LLM execution policy."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "generate_solution")
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_parse_analysis_response_valid_json(self, mock_get_config, mock_gemini_api_key):
+    def test_parse_analysis_response_valid_json(self, mock_gemini_api_key):
         """Test parsing valid JSON response."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
 
         response_text = """
         Here is the analysis:
@@ -238,22 +118,9 @@ class TestGeminiClient:
         assert result["priority"] == "high"
         assert result["summary"] == "Test summary"
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_parse_analysis_response_invalid_json(self, mock_get_config, mock_gemini_api_key):
+    def test_parse_analysis_response_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid JSON response."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
 
         response_text = "This is not JSON at all."
 
@@ -263,22 +130,9 @@ class TestGeminiClient:
         assert result["priority"] == "medium"
         assert "This is not JSON" in result["summary"]
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_parse_feature_suggestions_valid_json(self, mock_get_config, mock_gemini_api_key):
+    def test_parse_feature_suggestions_valid_json(self, mock_gemini_api_key):
         """Test parsing valid feature suggestions JSON."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
 
         response_text = """
         [
@@ -299,22 +153,9 @@ class TestGeminiClient:
         assert result[0]["title"] == "Feature 1"
         assert result[1]["title"] == "Feature 2"
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_parse_feature_suggestions_invalid_json(self, mock_get_config, mock_gemini_api_key):
+    def test_parse_feature_suggestions_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid feature suggestions JSON."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
 
         response_text = "Not a JSON array"
 
@@ -322,22 +163,9 @@ class TestGeminiClient:
 
         assert result == []
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_parse_solution_response_valid_json(self, mock_get_config, mock_gemini_api_key):
+    def test_parse_solution_response_valid_json(self, mock_gemini_api_key):
         """Test parsing valid solution response JSON."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
 
         response_text = """
         {
@@ -355,22 +183,9 @@ class TestGeminiClient:
         assert result["steps"] == []
         assert result["code_changes"] == []
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @pytest.mark.usefixtures("mock_gemini_api_key")
-    def test_parse_solution_response_invalid_json(self, mock_get_config, mock_gemini_api_key):
+    def test_parse_solution_response_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid solution response JSON."""
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.api_key = mock_gemini_api_key
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient(mock_gemini_api_key)
 
         response_text = "Invalid JSON response"
 
@@ -381,24 +196,13 @@ class TestGeminiClient:
         assert result["steps"] == []
         assert result["code_changes"] == []
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
-    def test_switch_to_conflict_model(self, mock_subprocess, mock_get_config):
+    def test_switch_to_conflict_model(self, mock_subprocess):
         """Test switching to conflict resolution model."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
 
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient("gemini-2.5-pro")
 
         # Initially should be using default model
         assert client.model_name == "gemini-2.5-pro"
@@ -413,24 +217,15 @@ class TestGeminiClient:
         client.switch_to_default_model()
         assert client.model_name == "gemini-2.5-pro"
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
-    def test_switch_to_conflict_model_no_change_if_already_conflict(self, mock_subprocess, mock_get_config):
+    def test_switch_to_conflict_model_no_change_if_already_conflict(
+        self, mock_subprocess
+    ):
         """Test that switching to conflict model when already using it doesn't change anything."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
 
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.model = "gemini-2.5-flash"
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
+        client = GeminiClient("gemini-2.5-flash")
 
         # Should already be using conflict model
         assert client.model_name == "gemini-2.5-flash"
@@ -439,21 +234,11 @@ class TestGeminiClient:
         client.switch_to_conflict_model()
         assert client.model_name == "gemini-2.5-flash"
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
-    def test_escape_prompt_basic(self, mock_subprocess, mock_get_config):
+    def test_escape_prompt_basic(self, mock_subprocess):
         """Test basic @ character escaping in prompts."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
-
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
 
         client = GeminiClient()
 
@@ -462,21 +247,11 @@ class TestGeminiClient:
         escaped = client._escape_prompt(prompt)
         assert escaped == "Please analyze \\@user's code"
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
-    def test_escape_prompt_multiple_at_symbols(self, mock_subprocess, mock_get_config):
+    def test_escape_prompt_multiple_at_symbols(self, mock_subprocess):
         """Test escaping multiple @ characters in prompts."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
-
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
 
         client = GeminiClient()
 
@@ -485,21 +260,11 @@ class TestGeminiClient:
         escaped = client._escape_prompt(prompt)
         assert escaped == "Check \\@user1 and \\@user2 mentions in \\@file"
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
-    def test_escape_prompt_no_at_symbols(self, mock_subprocess, mock_get_config):
+    def test_escape_prompt_no_at_symbols(self, mock_subprocess):
         """Test prompt without @ characters remains unchanged."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
-
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
 
         client = GeminiClient()
 
@@ -508,21 +273,11 @@ class TestGeminiClient:
         escaped = client._escape_prompt(prompt)
         assert escaped == prompt
 
-    @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
-    def test_escape_prompt_empty_string(self, mock_subprocess, mock_get_config):
+    def test_escape_prompt_empty_string(self, mock_subprocess):
         """Test escaping empty string."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
-
-        # Mock config
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
 
         client = GeminiClient()
 
@@ -530,137 +285,3 @@ class TestGeminiClient:
         prompt = ""
         escaped = client._escape_prompt(prompt)
         assert escaped == ""
-
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_options_loaded_from_config(self, mock_run_command, mock_run, mock_get_config):
-        """Test that options are loaded from configuration."""
-        # Mock subprocess for version check
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
-
-        # Mock config with options
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = ["--yolo", "--force-model"]
-        mock_backend_config.options_for_noedit = ["--yolo", "--force-model"]
-        mock_backend_config.api_key = "test-key"
-        mock_backend_config.validate_required_options.return_value = []
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
-
-        # Verify options are loaded
-        assert client.options == ["--yolo", "--force-model"]
-        assert client.options_for_noedit == ["--yolo", "--force-model"]
-
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_options_passed_to_cli(self, mock_run_command, mock_run, mock_get_config):
-        """Test that configured options are passed to the CLI."""
-        # Mock subprocess for version check
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
-
-        # Mock config with options including [model_name] placeholder
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = ["--yolo", "--model", "[model_name]"]
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.api_key = "test-key"
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.replace_placeholders.return_value = {"options": ["--yolo", "--model", "gemini-2.5-pro"], "options_for_noedit": [], "options_for_resume": []}
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
-
-        # Run CLI
-        _ = client._run_llm_cli("test prompt")
-
-        # Verify command includes configured options
-        called_cmd = mock_run_command.call_args[0][0]
-        assert "--yolo" in called_cmd
-        assert "--model" in called_cmd
-        assert "gemini-2.5-pro" in called_cmd
-        assert "gemini" in called_cmd
-        assert "--prompt" not in called_cmd
-
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_placeholder_replacement(self, mock_run_command, mock_run, mock_get_config):
-        """Test that [model_name] placeholder is replaced with actual model name."""
-        # Mock subprocess for version check
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
-
-        # Mock config with placeholder
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = ["--model", "[model_name]", "--output-format", "stream-json"]
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.api_key = "test-key"
-        mock_backend_config.validate_required_options.return_value = []
-        # Verify replace_placeholders is called with model_name
-        mock_backend_config.replace_placeholders.return_value = {"options": ["--model", "gemini-2.5-pro", "--output-format", "stream-json"], "options_for_noedit": [], "options_for_resume": []}
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
-
-        # Run CLI
-        _ = client._run_llm_cli("test prompt")
-
-        # Verify replace_placeholders was called with correct model_name
-        mock_backend_config.replace_placeholders.assert_called_once_with(model_name="gemini-2.5-pro")
-
-        # Verify command contains replaced placeholder
-        called_cmd = mock_run_command.call_args[0][0]
-        assert "--model" in called_cmd
-        assert "gemini-2.5-pro" in called_cmd
-        assert "--output-format" in called_cmd
-        assert "stream-json" in called_cmd
-        assert "--prompt" not in called_cmd
-
-    @patch("src.auto_coder.gemini_client.get_llm_config")
-    @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_empty_options_handled(self, mock_run_command, mock_run, mock_get_config):
-        """Test that empty options list is handled correctly."""
-        # Mock subprocess for version check
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
-
-        # Mock config without options
-        mock_config_instance = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = []
-        mock_backend_config.options_for_noedit = []
-        mock_backend_config.api_key = "test-key"
-        mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
-        mock_config_instance.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config_instance
-
-        client = GeminiClient()
-
-        # Verify empty options are loaded as empty list
-        assert client.options == []
-        assert client.options_for_noedit == []
-
-        # Run CLI
-        _ = client._run_llm_cli("test prompt")
-
-        # Verify command still works without options
-        called_cmd = mock_run_command.call_args[0][0]
-        assert called_cmd[0] == "gemini"
-        assert "--yolo" not in called_cmd
-        assert "--force-model" not in called_cmd

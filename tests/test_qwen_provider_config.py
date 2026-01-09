@@ -27,7 +27,9 @@ def test_load_qwen_provider_configs_defaults(tmp_path) -> None:
 
     assert [p.name for p in providers] == ["modelstudio", "openrouter"]
     modelstudio = providers[0]
-    assert modelstudio.base_url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    assert (
+        modelstudio.base_url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    )
     assert modelstudio.model == "qwen3-coder-plus"
 
     openrouter = providers[1]

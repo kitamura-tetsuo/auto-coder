@@ -18,7 +18,9 @@ class TestMCPPDBCLI:
 
     def test_mcp_pdb_print_config_windsurf(self):
         runner = CliRunner()
-        result = runner.invoke(main, ["mcp-pdb", "print-config", "--target", "windsurf"])
+        result = runner.invoke(
+            main, ["mcp-pdb", "print-config", "--target", "windsurf"]
+        )
         assert result.exit_code == 0
         # Expects a JSON snippet with keys
         assert '"mcpServers"' in result.output
@@ -30,7 +32,9 @@ class TestMCPPDBCLI:
         runner = CliRunner()
         result = runner.invoke(main, ["mcp-pdb", "print-config", "--target", "claude"])
         assert result.exit_code == 0
-        assert "claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb" in result.output
+        assert (
+            "claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb" in result.output
+        )
         assert "--python 3.13 --with mcp-pdb mcp-pdb" in result.output
 
     def test_mcp_pdb_status(self):

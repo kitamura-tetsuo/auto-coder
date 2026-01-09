@@ -11,11 +11,11 @@ def test_change_fraction_ignores_large_prefix_when_last_20_lines_identical():
     s_new = f"{prefix_new}\n{tail}"
 
     frac = change_fraction(s_old, s_new)
-    assert frac == 0.0  # tail-only comparison, so prefix differences are ignored
+    assert frac == 0.0  # tail-only比較なので先頭差分は無視される
 
 
 def test_change_fraction_ignores_large_prefix_when_last_1000_chars_identical():
-    # Long single-line string: prefix differs but last 1000 characters are identical
+    # 長い1行文字列: 先頭側は異なるが末尾1000文字は同一
     common_tail = "x" * 1000
     s_old = ("A" * 5000) + common_tail
     s_new = ("B" * 5000) + common_tail
@@ -25,10 +25,10 @@ def test_change_fraction_ignores_large_prefix_when_last_1000_chars_identical():
 
 
 def test_change_fraction_detects_tail_difference():
-    # Mostly identical + a few of last 20 lines differ
+    # 同一の大部分 + 末尾20行のうち数行が異なる
     shared_prefix = "\n".join([f"line-{i}" for i in range(200)])
     tail_old = "\n".join([f"end-{i}" for i in range(20)])
-    tail_new = "\n".join([f"end-{i if i < 15 else i+1}" for i in range(20)])  # Difference on tail side
+    tail_new = "\n".join([f"end-{i if i < 15 else i+1}" for i in range(20)])  # 末尾側に差分
 
     s_old = f"{shared_prefix}\n{tail_old}"
     s_new = f"{shared_prefix}\n{tail_new}"

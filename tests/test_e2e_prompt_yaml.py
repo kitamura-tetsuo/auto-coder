@@ -14,8 +14,6 @@ def sample_pr(sample_pr_data):
     data = dict(sample_pr_data)
     data["body"] = "Example body text for YAML prompt test."
     data["user"] = {"login": "octocat"}
-    # Remove labels to avoid label-based prompt selection in this test
-    data["labels"] = []
     return data
 
 

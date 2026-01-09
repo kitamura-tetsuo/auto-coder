@@ -1,5 +1,0 @@
-{
-  "source_file": "utils/log_summarizer/sample_logs/test_log.txt",
-  "method": "candidate_baseline",
-  "summary": "2023-10-27 10:00:05 ERROR ConnectionRefusedError: Unable to connect to database at 127.0.0.1:5432\n2023-10-27 10:00:05 ERROR Traceback (most recent call last):\n2023-10-27 10:00:05 ERROR   File \"app.py\", line 45, in connect_db\n2023-10-27 10:00:05 ERROR     raise ConnectionRefusedError(\"Unable to connect...\")\n2023-10-27 10:00:10 CRITICAL Fatal Exception: Database connection failed 5 times in a row."
-}

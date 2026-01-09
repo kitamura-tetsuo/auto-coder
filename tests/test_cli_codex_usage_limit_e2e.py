@@ -49,14 +49,14 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
         def main() -> int:
             client = CodexClient()
             try:
-                client._run_llm_cli("Detect usage limit condition")
-            except AutoCoderUsageLimitError as exc:
+                client._run_gemini_cli("Detect usage limit condition")
+            except AutoCoderUsageLimitError as exc:  # noqa: PERF203 - clarity first in e2e script
                 print(f"CAUGHT_USAGE_LIMIT: {exc}")
                 return 0
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover - defensive path for subprocess validation
                 print(f"UNEXPECTED_EXCEPTION: {exc}", file=os.sys.stderr)
                 return 2
-            else:
+            else:  # pragma: no cover - ensures failure if limit is not detected
                 print("NO_USAGE_LIMIT_DETECTED", file=os.sys.stderr)
                 return 1
 
@@ -68,22 +68,6 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{original_path}"
-    # Ensure PYTHONPATH includes both src directory and site-packages for dependencies
-    python_path = env.get("PYTHONPATH", "")
-    src_path = "/home/node/2/auto-coder/src"
-    site_packages = "/home/node/.local/lib/python3.11/site-packages"
-    paths = [src_path, site_packages]
-    if python_path:
-        paths.append(python_path)
-    env["PYTHONPATH"] = ":".join(paths)
-
-    # Ensure PYTHONPATH includes site-packages so subprocess can find installed modules
-    import site
-
-    user_site = site.getusersitepackages()
-    system_sites = site.getsitepackages()
-    python_path = os.pathsep.join([user_site] + system_sites)
-    env["PYTHONPATH"] = python_path
 
     result = subprocess.run(
         [sys.executable, "-c", python_code],

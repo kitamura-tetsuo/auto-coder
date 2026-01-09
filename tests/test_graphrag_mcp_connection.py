@@ -63,7 +63,12 @@ def check_graphrag_dependencies() -> bool:
     """
     # Check if uv is available
     try:
-        result = subprocess.run(["uv", "--version"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["uv", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
         if result.returncode != 0:
             logger.warning("uv is not available")
             return False
@@ -195,8 +200,11 @@ def test_graphrag_mcp_initialize(graphrag_server_process):
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "auto-coder-test", "version": "1.0.0"},
-        },
+            "clientInfo": {
+                "name": "auto-coder-test",
+                "version": "1.0.0"
+            }
+        }
     }
 
     response = send_jsonrpc_message(graphrag_server_process, init_request)
@@ -216,8 +224,11 @@ def test_graphrag_mcp_list_tools(graphrag_server_process):
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "auto-coder-test", "version": "1.0.0"},
-        },
+            "clientInfo": {
+                "name": "auto-coder-test",
+                "version": "1.0.0"
+            }
+        }
     }
     send_jsonrpc_message(graphrag_server_process, init_request)
 
@@ -226,7 +237,7 @@ def test_graphrag_mcp_list_tools(graphrag_server_process):
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/list",
-        "params": {},
+        "params": {}
     }
 
     response = send_jsonrpc_message(graphrag_server_process, list_tools_request)
@@ -285,8 +296,11 @@ def test_graphrag_mcp_connection_from_python():
             "params": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "auto-coder-test", "version": "1.0.0"},
-            },
+                "clientInfo": {
+                    "name": "auto-coder-test",
+                    "version": "1.0.0"
+                }
+            }
         }
 
         response = send_jsonrpc_message(process, init_request)

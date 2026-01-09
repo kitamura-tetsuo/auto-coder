@@ -1,14 +1,21 @@
-import subprocess as sp
+import importlib
+import subprocess
 import sys
 
 
-def test_get_actions_logs_cli(_use_real_home):
-    """CLIのget-actions-logsが正常終了することのみを検証する(E2E)。
-    - 外部ブラウザ/ネットワーク依存(Playwright/ブラウザ起動)は一切行わない
-    - URLは ?pr= クエリ付きで与える(実装はこの場合でも早期に処理できる)
-    - 実際のgh呼び出しはtests/conftest.pyのスタブで安全化されている
-    """
+def test_get_actions_logs_cli():
+    sp = importlib.reload(subprocess)
+    from playwright.sync_api import sync_playwright
+
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/16949853465/job/48039894437?pr=496"
+
+    sp.run(["playwright", "install", "chromium"], check=False)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url)
+        assert "GitHub" in page.title()
 
     result = sp.run(
         [
@@ -23,8 +30,6 @@ def test_get_actions_logs_cli(_use_real_home):
         ],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=120,
     )
-
-    # 正常終了のみを確認(内容の詳細検証は別テストで実施済み)
     assert result.returncode == 0

@@ -5,231 +5,20 @@ Utility classes for Auto-Coder automation engine.
 import os
 import queue
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .logger_config import get_logger
-from .progress_footer import get_progress_footer
-from .security_utils import redact_string
-from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
 
 
-def get_pr_author_login(pr_obj: Any) -> Optional[str]:
-    """Extract author login from a PR-like object or dict.
-
-    Supports both PyGithub PR objects (with .user.login) and dictionaries
-    returned from GitHubClient (which may use 'author' or 'user').
-    """
-    try:
-        from unittest.mock import MagicMock as _MagicMock
-        from unittest.mock import Mock as _Mock
-
-        _mock_types = (_Mock, _MagicMock)
-    except Exception:
-        _mock_types = tuple()
-
-    try:
-        if isinstance(pr_obj, dict):
-            # Try 'author' field first (some custom dicts or GraphQL results)
-            author = pr_obj.get("author")
-            if isinstance(author, dict):
-                return author.get("login")
-            if isinstance(author, str):
-                return author
-            # If not found, try 'user' -> 'login' (GitHub REST API format)
-            user = pr_obj.get("user")
-            if isinstance(user, dict):
-                return user.get("login")
-            return None
-        else:
-            # Handle PyGithub objects or Mocks
-            user = getattr(pr_obj, "user", None)
-            if user is None or isinstance(user, _mock_types):
-                # Fallback for some objects where user is not an attribute but author is
-                author = getattr(pr_obj, "author", None)
-                if isinstance(author, str):
-                    return author
-                if author is not None:
-                    return getattr(author, "login", None)
-            return getattr(user, "login", None) if user is not None else None
-    except Exception:
-        return None
-
-
 VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"
-
-
-class TemporaryEnvironment:
-    """
-    Context manager for temporarily setting environment variables.
-
-    This context manager allows you to set environment variables for the duration
-    of a block of code and automatically restore them to their previous state
-    (or remove them if they didn't exist before).
-
-    Example:
-        with TemporaryEnvironment({"MY_VAR": "value"}):
-            # MY_VAR is set in os.environ
-            subprocess.run(["my_command"])
-        # MY_VAR is restored or removed
-
-    Note: This modifies os.environ directly and ensures cleanup even on exceptions.
-    """
-
-    def __init__(self, env_vars: Optional[Dict[str, str]] = None):
-        """
-        Initialize the temporary environment context manager.
-
-        Args:
-            env_vars: Dictionary of environment variables to set temporarily.
-                      If None, no environment variables are modified.
-        """
-        self.env_vars = env_vars or {}
-        self._previous_values: Dict[str, Optional[str]] = {}
-
-    def __enter__(self) -> None:
-        """Set the temporary environment variables."""
-        # Save current values and set new ones
-        for key, value in self.env_vars.items():
-            self._previous_values[key] = os.environ.get(key)
-            os.environ[key] = value
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Restore the previous environment variable values."""
-        for key, previous_value in self._previous_values.items():
-            if previous_value is None:
-                # Variable didn't exist before, remove it
-                if key in os.environ:
-                    del os.environ[key]
-            else:
-                # Variable existed before, restore it
-                os.environ[key] = previous_value
-
-
-def is_running_in_container() -> bool:
-    """Robustly detect if running inside a container.
-
-    Uses multiple detection methods to determine if we're running in a container:
-    1. Check for /.dockerenv file (Docker)
-    2. Check for /run/.containerenv file (Podman)
-    3. Check for container environment variables
-    4. Check for container-specific cgroup entries
-    5. Check for container-specific parent process names
-
-    This method is environment-agnostic and works across:
-    - Docker containers
-    - Podman containers
-    - Kubernetes pods
-    - GitHub Actions (Linux runners in containers)
-    - Other container runtimes
-
-    Returns:
-        True if running in a container, False otherwise
-    """
-    # Method 1: Check for /.dockerenv (Docker)
-    try:
-        from pathlib import Path
-
-        if Path("/.dockerenv").exists():
-            logger.debug("Container detected: /.dockerenv exists")
-            return True
-    except Exception:
-        pass
-
-    # Method 2: Check for /run/.containerenv (Podman)
-    try:
-        from pathlib import Path
-
-        if Path("/run/.containerenv").exists():
-            logger.debug("Container detected: /run/.containerenv exists")
-            return True
-    except Exception:
-        pass
-
-    # Method 3: Check environment variables set by containers
-    container_env_vars = [
-        "container",  # Docker sets this to "docker" or "docker-runc"
-        "DOCKER_CONTAINER",  # Custom env var sometimes used
-        "KUBERNETES_SERVICE_HOST",  # Kubernetes
-        "KUBERNETES_NAMESPACE",  # Kubernetes
-    ]
-
-    for env_var in container_env_vars:
-        if os.environ.get(env_var):
-            logger.debug(f"Container detected: {env_var} environment variable is set")
-            return True
-
-    # Method 4: Check cgroup for container indicators
-    try:
-        with open("/proc/self/cgroup", "r") as f:
-            cgroup_content = f.read()
-            # Look for container-specific cgroup entries
-            if any(
-                marker in cgroup_content
-                for marker in [
-                    "/docker/",
-                    "/docker-",
-                    "/kubepods/",
-                    "/kubepods/burstable/",
-                    "/lxc/",
-                    "/containerd/",
-                ]
-            ):
-                logger.debug("Container detected: cgroup contains container markers")
-                return True
-    except Exception:
-        pass
-
-    # Method 5: Check for 1 as init process (typical in containers)
-    try:
-        with open("/proc/1/cmdline", "r") as f:
-            cmdline = f.read()
-            # In containers, PID 1 is often the container runtime or the main process
-            if cmdline and len(cmdline.split("\x00")) <= 2:
-                logger.debug("Container detected: PID 1 has limited command line")
-                return True
-    except Exception:
-        pass
-
-    # Method 6: Check parent process for container indicators
-    try:
-        with open("/proc/self/stat", "r") as f:
-            stat_content = f.read()
-            # Extract parent process ID (PPid)
-            parts = stat_content.split()
-            if len(parts) >= 4:
-                ppid = int(parts[3])
-                # Check parent's command line
-                try:
-                    with open(f"/proc/{ppid}/cmdline", "r") as parent_cmdline:
-                        parent_cmd = parent_cmdline.read()
-                        if any(
-                            marker in parent_cmd.lower()
-                            for marker in [
-                                "dockerd",
-                                "containerd",
-                                "runc",
-                                "podman",
-                                "docker-proxy",
-                            ]
-                        ):
-                            logger.debug("Container detected: parent process is container runtime")
-                            return True
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    logger.debug("Not running in a container")
-    return False
 
 
 @dataclass
@@ -250,12 +39,9 @@ class CommandExecutor:
         "git": 120,
         "gh": 60,
         "test": 3600,
-        "auggie": 7200,
-        "claude": 7200,
-        "codex": 7200,
-        "gemini": 7200,
-        "qwen": 7200,
-        "aider": 7200,
+        "codex": 3600,
+        "gemini": 3600,
+        "qwen": 3600,
         "default": 60,
     }
 
@@ -271,16 +57,18 @@ class CommandExecutor:
     STREAM_POLL_INTERVAL = 0.2
 
     @staticmethod
-    def is_running_in_debugger() -> bool:
-        """Detect if the process is running under a debugger.
+    def _should_stream_output(stream_output: Optional[bool]) -> bool:
+        """Determine whether to stream command output in real time."""
+        if stream_output is not None:
+            return stream_output
 
-        Returns:
-            True if running in debugger, False otherwise
-        """
+        # Allow forcing via env var for manual debugging sessions
+        if os.environ.get("AUTOCODER_STREAM_COMMANDS"):
+            return True
+
         # Detect common debugger environment markers (debugpy, VS Code, PyCharm)
         for marker in CommandExecutor.DEBUGGER_ENV_MARKERS:
-            value = os.environ.get(marker, "").strip().lower()
-            if value in {"1", "true", "yes"}:
+            if os.environ.get(marker):
                 return True
 
         # Heuristic: when a debugger is attached (sys.gettrace), favor streaming
@@ -290,21 +78,9 @@ class CommandExecutor:
             return False
 
     @staticmethod
-    def _should_stream_output(stream_output: Optional[bool]) -> bool:
-        """Determine whether to stream command output in real time."""
-        if stream_output is not None:
-            return stream_output
-
-        # Allow forcing via env var for manual debugging sessions
-        value = os.environ.get("AUTOCODER_STREAM_COMMANDS", "").strip().lower()
-        if value in {"1", "true", "yes"}:
-            return True
-
-        # Use the debugger detection helper
-        return CommandExecutor.is_running_in_debugger()
-
-    @staticmethod
-    def _spawn_reader(stream, stream_name: str, out_queue: "queue.Queue[Tuple[str, Optional[str]]]") -> threading.Thread:
+    def _spawn_reader(
+        stream, stream_name: str, out_queue: "queue.Queue[Tuple[str, Optional[str]]]"
+    ) -> threading.Thread:
         """Spawn a background reader thread for the given stream."""
 
         def _reader() -> None:
@@ -316,7 +92,9 @@ class CommandExecutor:
             finally:
                 out_queue.put((stream_name, None))
 
-        thread = threading.Thread(target=_reader, name=f"CommandStream-{stream_name}", daemon=True)
+        thread = threading.Thread(
+            target=_reader, name=f"CommandStream-{stream_name}", daemon=True
+        )
         thread.start()
         return thread
 
@@ -328,8 +106,6 @@ class CommandExecutor:
         cwd: Optional[str],
         env: Optional[Dict[str, str]],
         on_stream: Optional[Callable[[str, str], None]] = None,
-        dot_format: bool = False,
-        idle_timeout: Optional[int] = None,
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger.
 
@@ -361,84 +137,35 @@ class CommandExecutor:
             readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
 
         start = time.monotonic()
-        last_output_time = time.monotonic()
-        dots_printed = 0
 
         try:
             while True:
-                now = time.monotonic()
                 if timeout is not None:
-                    elapsed = now - start
+                    elapsed = time.monotonic() - start
                     remaining = timeout - elapsed
                     if remaining <= 0:
                         process.kill()
-                        raise subprocess.TimeoutExpired(cmd, timeout, "".join(stdout_lines), "".join(stderr_lines))
-                else:
-                    remaining = None
+                        raise subprocess.TimeoutExpired(
+                            cmd, timeout, "".join(stdout_lines), "".join(stderr_lines)
+                        )
 
-                # Check idle timeout
-                if idle_timeout is not None:
-                    idle_time = now - last_output_time
-                    if idle_time > idle_timeout:
-                        process.kill()
-                        raise subprocess.TimeoutExpired(cmd, idle_timeout, "".join(stdout_lines), "".join(stderr_lines))  # Using idle_timeout as timeout value for exception
-
-                poll_interval = cls.STREAM_POLL_INTERVAL
-                if remaining is not None:
-                    poll_interval = min(poll_interval, remaining)
-
-                # Tick the progress footer spinner
-                try:
-                    get_progress_footer().tick()
-                except Exception:
-                    # Don't let footer errors crash the command execution
-                    pass
+                poll_interval = (
+                    min(cls.STREAM_POLL_INTERVAL, remaining)
+                    if timeout is not None
+                    else cls.STREAM_POLL_INTERVAL
+                )
 
                 try:
                     stream_name, chunk = output_queue.get(timeout=poll_interval)
-                    last_output_time = time.monotonic()  # Reset idle timer on output
                     if chunk is None:
                         streams_active.discard(stream_name)
                     else:
                         if stream_name == "stdout":
                             stdout_lines.append(chunk)
+                            logger.info(chunk.rstrip("\n"))
                         else:
                             stderr_lines.append(chunk)
-
-                        # Skip empty lines and don't log them
-                        stripped_chunk = chunk.rstrip("\n")
-                        if stripped_chunk:
-                            verbose_requested = os.environ.get(VERBOSE_ENV_FLAG, "").strip().lower() in {
-                                "1",
-                                "true",
-                                "yes",
-                            }
-                            if dot_format and not verbose_requested:
-                                # Print dot one line above to avoid hiding ProgressStage footer
-                                if sys.stderr.isatty():
-                                    # Use ANSI escape sequences for TTY
-                                    cols = shutil.get_terminal_size().columns
-                                    # Calculate position (1-based)
-                                    position = (dots_printed % cols) + 1
-                                    # Calculate cycle (0 for ., 1 for *)
-                                    cycle = (dots_printed // cols) % 2
-                                    char = "." if cycle == 0 else "*"
-
-                                    sys.stderr.write("\033[s")  # Save cursor position
-                                    sys.stderr.write("\033[1A")  # Move cursor up one line
-                                    sys.stderr.write(f"\033[{position}G")  # Move to correct column
-                                    sys.stderr.write(char)  # Print char
-                                    sys.stderr.write("\033[u")  # Restore cursor position
-                                    dots_printed += 1
-                                else:
-                                    # Fallback for non-TTY environments
-                                    print(".", end="", file=sys.stderr)
-                                sys.stderr.flush()
-                            else:
-                                # Also output stderr at INFO level
-                                # depth=2 to show the caller of _run_with_streaming
-                                # Redact sensitive information from output logs
-                                logger.opt(depth=2).info(redact_string(stripped_chunk))
+                            logger.error(chunk.rstrip("\n"))
 
                         # Optional per-chunk callback for early aborts
                         if on_stream is not None:
@@ -453,7 +180,11 @@ class CommandExecutor:
                 except queue.Empty:
                     pass
 
-                if process.poll() is not None and not streams_active and output_queue.empty():
+                if (
+                    process.poll() is not None
+                    and not streams_active
+                    and output_queue.empty()
+                ):
                     break
 
             return_code = process.returncode
@@ -502,23 +233,20 @@ class CommandExecutor:
         cmd: List[str],
         timeout: Optional[int] = None,
         cwd: Optional[str] = None,
+        check_success: bool = True,
         stream_output: Optional[bool] = None,
         env: Optional[Dict[str, str]] = None,
-        env_overrides: Optional[Dict[str, str]] = None,
         on_stream: Optional[Callable[[str, str], None]] = None,
-        dot_format: bool = False,
-        idle_timeout: Optional[int] = None,
     ) -> CommandResult:
         """Run a command with consistent error handling."""
         if timeout is None:
             # Auto-detect timeout based on command type
             cmd_type = cmd[0] if cmd else "default"
-            timeout = cls.DEFAULT_TIMEOUTS.get(cmd_type, cls.DEFAULT_TIMEOUTS["default"])
+            timeout = cls.DEFAULT_TIMEOUTS.get(
+                cmd_type, cls.DEFAULT_TIMEOUTS["default"]
+            )
 
         command_display = shlex.join(cmd) if cmd else ""
-        # Redact potentially sensitive information from command display
-        command_display = redact_string(command_display)
-
         should_stream = cls._should_stream_output(stream_output)
         log_message = f"Executing command (timeout={timeout}s, stream={should_stream}): {command_display}"
 
@@ -533,16 +261,11 @@ class CommandExecutor:
         else:
             logger.debug(log_message)
 
-        # Merge override-only environments with provided env (or os.environ when absent).
-        effective_env = env
-        if env_overrides:
-            base_env = env.copy() if env is not None else os.environ.copy()
-            base_env.update(env_overrides)
-            effective_env = base_env
-
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream, dot_format, idle_timeout=idle_timeout)
+                return_code, stdout, stderr = cls._run_with_streaming(
+                    cmd, timeout, cwd, env, on_stream
+                )
             else:
                 result = subprocess.run(
                     cmd,
@@ -550,15 +273,17 @@ class CommandExecutor:
                     text=True,
                     timeout=timeout,
                     cwd=cwd,
-                    env=effective_env,
+                    env=env,
                 )
                 return_code = result.returncode
                 stdout = result.stdout
                 stderr = result.stderr
 
-            success = return_code == 0
+            success = return_code == 0 if check_success else True
 
-            return CommandResult(success=success, stdout=stdout, stderr=stderr, returncode=return_code)
+            return CommandResult(
+                success=success, stdout=stdout, stderr=stderr, returncode=return_code
+            )
 
         except subprocess.TimeoutExpired:
             logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
@@ -576,10 +301,9 @@ class CommandExecutor:
 def change_fraction(old: str, new: str) -> float:
     """Return fraction of change between two strings (0.0..1.0).
 
-    For performance optimization, the comparison targets the smaller of either
-    the trailing "20 lines" or "1000 characters".
-    Implementation: Extract a trailing window from each string, then calculate
-    the similarity using difflib.SequenceMatcher and return change = 1 - ratio.
+    性能最適化のため、比較対象は末尾の「20行」または「1000文字」のうち小さい方。
+    実装: 各文字列に対して末尾ウィンドウを抽出し、そのウィンドウ同士で
+    difflib.SequenceMatcher の類似度を計算して change = 1 - ratio を返す。
     """
     try:
         import difflib
@@ -590,13 +314,17 @@ def change_fraction(old: str, new: str) -> float:
         def tail_window(s: str) -> str:
             if not s:
                 return ""
-            # Trailing 20 lines
+            # 末尾20行
             lines = s.splitlines()
             tail_by_lines = "\n".join(lines[-20:])
-            # Trailing 1000 characters
+            # 末尾1000文字
             tail_by_chars = s[-1000:]
-            # Use the shorter one
-            return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
+            # より短い方を採用
+            return (
+                tail_by_lines
+                if len(tail_by_lines) <= len(tail_by_chars)
+                else tail_by_chars
+            )
 
         old_s = old or ""
         new_s = new or ""
@@ -613,6 +341,155 @@ def change_fraction(old: str, new: str) -> float:
         return 1.0
 
 
+def slice_relevant_error_window(text: str) -> str:
+    """エラー関連の必要部分のみを返す（プレリュード切捨て＋後半重視・短縮）。
+    方針:
+    - 末尾側から優先トリガを探索し、その少し前から末尾までを返す
+    - 見つからない場合は末尾の数百行に限定
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    # 優先度の高い順でグルーピング
+    priority_groups = [
+        ["Expected substring:", "Received string:", "expect(received)"],
+        ["Error:   ", ".spec.ts", "##[error]"],
+        ["Command failed with exit code", "Process completed with exit code"],
+        ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
+    ]
+    start_idx = None
+    # 末尾から優先トリガを探索
+    for group in priority_groups:
+        for i in range(len(lines) - 1, -1, -1):
+            low = lines[i].lower()
+            if any(g.lower() in low for g in group):
+                start_idx = max(0, i - 30)
+                break
+        if start_idx is not None:
+            break
+    if start_idx is None:
+        # トリガが無ければ、末尾のみ（最大300行）
+        return "\n".join(lines[-300:])
+    # 末尾はそのまま。さらに最大800行に制限
+    sliced = lines[start_idx:]
+    if len(sliced) > 800:
+        sliced = sliced[:800]
+    return "\n".join(sliced)
+
+
+def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
+    """テスト出力から「最初に失敗したテストファイルのパス」を抽出して返す。
+
+    対応フォーマット:
+    - pytest: 末尾サマリの "FAILED tests/test_x.py::test_y - ..." など
+    - pytest: トレースバック中の "tests/test_x.py:123: in test_y" など
+    - Playwright: 任意ログ中の "e2e/foo/bar.spec.ts:16:5" など
+
+    見つかったパスを返す。実在確認に失敗しても候補があれば返すことがある（呼び出し側で解釈するため）。
+    """
+    import re
+
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+
+    def _strip_ansi(text: str) -> str:
+        return ansi_escape.sub("", text or "")
+
+    def _collect_candidates(text: str) -> List[str]:
+        text = _strip_ansi(text)
+        if not text:
+            return []
+
+        found: List[str] = []
+
+        # 1) pytest の FAILED サマリ行から抽出
+        for pat in [
+            r"^FAILED\s+([^\s:]+\.py)::",
+            r"^FAILED\s+([^\s:]+\.py)\s*[-:]",
+            r"^FAILED\s+([^\s:]+\.py)\b",
+        ]:
+            m = re.search(pat, text, re.MULTILINE)
+            if m:
+                found.append(m.group(1))
+                break
+
+        # 2) pytest のトレースバック行から tests/ 配下の .py を抽出
+        m = re.search(
+            r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE
+        )
+        if m:
+            py_path = m.group(2)
+            if py_path not in found:
+                found.append(py_path)
+
+        # 3) Playwright の失敗行から .spec.ts を抽出
+        lines = text.split("\n")
+        fail_bullet_re = re.compile(
+            r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
+        )
+        fail_heading_re = re.compile(
+            r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
+        )
+
+        def _normalize_spec(path: str) -> str:
+            m_e2e = re.search(r"(?:^|/)(e2e/[A-Za-z0-9_./-]+\.spec\.ts)$", path)
+            return m_e2e.group(1) if m_e2e else path
+
+        for ln in lines:
+            m = fail_bullet_re.search(ln)
+            if m:
+                norm = _normalize_spec(m.group(1))
+                if norm not in found:
+                    found.append(norm)
+
+        for ln in lines:
+            m = fail_heading_re.search(ln)
+            if m:
+                norm = _normalize_spec(m.group(1))
+                if norm not in found:
+                    found.append(norm)
+
+        # 4) Vitest/Jest 形式の FAIL 行から .test.ts / .spec.ts を抽出
+        vitest_fail_re = re.compile(
+            r"^[^\S\r\n]*FAIL\s+(?:\|[^|]+\|\s+)?([^\s>]+\.(?:spec|test)\.ts)(?=\s|>|$)",
+        )
+        for ln in lines:
+            m = vitest_fail_re.search(ln)
+            if m:
+                path = m.group(1)
+                if path not in found:
+                    found.append(path)
+
+        if not found:
+            for spec_path in re.findall(r"([^\s:]+\.(?:spec|test)\.ts)", text):
+                norm = _normalize_spec(spec_path)
+                if norm not in found:
+                    found.append(norm)
+
+        return found
+
+    # stderr を最優先で解析し、次に stdout、それでも見つからなければ従来通り結合出力を解析
+    ordered_outputs = [stderr, stdout, f"{stdout}\n{stderr}"]
+    candidates: List[str] = []
+    seen: Set[str] = set()
+
+    for output in ordered_outputs:
+        for path in _collect_candidates(output):
+            if path not in seen:
+                candidates.append(path)
+                seen.add(path)
+        if candidates:
+            break
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    if candidates:
+        return candidates[0]
+
+    return None
+
+
 def log_action(action: str, success: bool = True, details: str = "") -> str:
     """Standardized action logging."""
     message = action
@@ -620,7 +497,7 @@ def log_action(action: str, success: bool = True, details: str = "") -> str:
         message += f": {details}"
 
     if success:
-        logger.opt(depth=1).info(message)
+        logger.info(message)
     else:
-        logger.opt(depth=1).error(message)
+        logger.error(message)
     return message

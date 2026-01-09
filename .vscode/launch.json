@@ -5,22 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Generate Gold (Qwen)",
+            "name": "Process Issues (Dry Run)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/utils/log_summarizer/main.py",
+            "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "/home/ubuntu/src2/outliner",
             "args": [
-                "generate-gold",
-                "--log-file",
-                "/home/node/.auto-coder/log_test",
-                "--output",
-                "/home/node/.auto-coder/gold_summary.json",
-                "--backend",
-                "qwen-openrouter"
+                "process-issues",
+                "--dry-run"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -35,7 +30,7 @@
             "args": [
                 "create-feature-issues"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -52,7 +47,7 @@
                 "--url",
                 "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -67,7 +62,7 @@
             "args": [
                 "auth-status"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -78,16 +73,11 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/workspaces/auto-coder",
+            "cwd": "${workspaceFolder}",
             "args": [
-                "process-issues",
-                "--no-check-labels",
-                // "--force-reindex",
-                "--disable-graphrag",
-                "--verbose",
-                // "--force"
+                "process-issues"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -101,29 +91,25 @@
             "cwd": "/workspace",
             "args": [
                 "process-issues",
-                "--disable-graphrag",
-                // "--only",
-                // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
-                // "--force-reindex",
+                "--ignore-dependabot-prs",
+                "--no-jules-mode",
+                "--force-reindex",
+                // "--backend",
+                // "qwen",
+                // "--backend",
+                // "gemini",
+                // "--backend",
+                // "codex-mcp",
+                // "--backend",
+                // "codex",
+                "--backend",
+                "auggie",
+                "--model-auggie",
+                "sonnet4.5",
+                "--message-backend",
+                "qwen"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            }
-        },
-        {
-            "name": "Fix to pass tests",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "auto_coder.cli",
-            "console": "integratedTerminal",
-            "args": [
-                "fix-to-pass-tests",
-                "--disable-graphrag",
-                "--max-attempts",
-                "100000"
-            ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -137,10 +123,21 @@
             "cwd": "/workspace",
             "args": [
                 "fix-to-pass-tests",
+                "--backend",
+                "qwen",
+                "--backend",
+                "gemini",
+                // // "--backend", "codex-mcp",
+                // "--backend",
+                // "codex",
+                "--backend",
+                "auggie",
+                "--model-auggie",
+                "sonnet4.5",
                 "--max-attempts",
                 "100000"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -152,7 +149,7 @@
             "program": "${workspaceFolder}/scripts/check_graphrag_services.py",
             "console": "integratedTerminal",
             "cwd": "/workspace",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -167,7 +164,7 @@
             "args": [
                 "--direct-only"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
@@ -182,7 +179,7 @@
             "args": [
                 "--mcp-only"
             ],
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }

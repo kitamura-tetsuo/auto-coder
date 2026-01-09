@@ -44,6 +44,7 @@ def test_auto_setup_when_mcp_dir_missing(temp_home, mock_setup_mcp):
         mock_setup_mcp.assert_called_once()
         call_args = mock_setup_mcp.call_args
         assert call_args.kwargs["install_dir"] is None  # Use default
+        assert call_args.kwargs["backends"] == ["codex"]
         assert call_args.kwargs["silent"] is True
 
 
@@ -114,6 +115,7 @@ def test_auto_setup_for_different_backends(temp_home, mock_setup_mcp):
             # Verify setup was called with correct backend
             mock_setup_mcp.assert_called_once()
             call_args = mock_setup_mcp.call_args
+            assert call_args.kwargs["backends"] == [backend]
 
 
 def test_auto_setup_failure_handling(temp_home, mock_setup_mcp):
@@ -141,7 +143,12 @@ def test_auto_setup_failure_handling(temp_home, mock_setup_mcp):
 
 def test_add_mcp_config_checks_directory_existence(temp_home):
     """Test that _add_*_mcp_config functions check for MCP directory existence."""
-    from src.auto_coder.mcp_checker import _add_auggie_mcp_config, _add_codex_mcp_config, _add_gemini_mcp_config, _add_qwen_mcp_config
+    from src.auto_coder.mcp_checker import (
+        _add_auggie_mcp_config,
+        _add_codex_mcp_config,
+        _add_gemini_mcp_config,
+        _add_qwen_mcp_config,
+    )
 
     # Ensure MCP directory doesn't exist
     mcp_dir = temp_home / "graphrag_mcp"

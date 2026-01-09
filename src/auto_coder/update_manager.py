@@ -14,7 +14,6 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 import click
 
-from .lock_manager import LockManager
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -80,7 +79,11 @@ def _get_interval_seconds() -> int:
 def _state_path() -> Path:
     """Compute the path that stores auto-update state information."""
     override_dir = os.environ.get("AUTO_CODER_UPDATE_STATE_DIR")
-    base_dir = Path(override_dir).expanduser() if override_dir else Path.home() / ".cache" / "auto-coder"
+    base_dir = (
+        Path(override_dir).expanduser()
+        if override_dir
+        else Path.home() / ".cache" / "auto-coder"
+    )
     return base_dir / _STATE_FILENAME
 
 
@@ -93,7 +96,9 @@ def _load_state(path: Path) -> Dict[str, Any]:
         if isinstance(data, dict):
             return data
     except json.JSONDecodeError:
-        logger.warning("Corrupted auto-update state file detected at %s; ignoring", path)
+        logger.warning(
+            "Corrupted auto-update state file detected at %s; ignoring", path
+        )
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("Failed to load auto-update state at %s: %s", path, exc)
     return {}
@@ -110,12 +115,19 @@ def _save_state(path: Path, state: Dict[str, Any]) -> None:
 
 def _notify_manual_update(reason: str) -> None:
     """Display a manual update instruction to the user."""
-    message = "Auto-Coder auto-update could not be completed (" f"{reason}" "). " "Please run 'pipx upgrade auto-coder' manually."
+    message = (
+        "Auto-Coder auto-update could not be completed ("
+        f"{reason}"
+        "). "
+        "Please run 'pipx upgrade auto-coder' manually."
+    )
     click.secho(message, fg="yellow", err=True)
     logger.warning("Auto-update unavailable: %s", reason)
 
 
-def record_startup_options(argv: Sequence[str], env: Optional[Mapping[str, str]] = None) -> None:
+def record_startup_options(
+    argv: Sequence[str], env: Optional[Mapping[str, str]] = None
+) -> None:
     """Persist the original CLI invocation so restarts can replay it."""
 
     global _STARTUP_ARGS, _STARTUP_ENV
@@ -133,7 +145,9 @@ def record_startup_options(argv: Sequence[str], env: Optional[Mapping[str, str]]
         try:
             _STARTUP_ENV = dict(env)
         except Exception:
-            logger.debug("Failed to capture startup environment snapshot", exc_info=True)
+            logger.debug(
+                "Failed to capture startup environment snapshot", exc_info=True
+            )
             _STARTUP_ENV = None
 
 
@@ -188,24 +202,18 @@ def restart_with_startup_options(
 
     command, restart_env = _resolve_startup_command(argv, env)
     if not command:
-        logger.warning("Auto-update requested restart but no startup command is recorded")
+        logger.warning(
+            "Auto-update requested restart but no startup command is recorded"
+        )
         return
 
-    if os.environ.get(_CAPTURE_RESTART_ENV):  # pragma: no cover - path exercised via SystemExit in tests
+    if os.environ.get(
+        _CAPTURE_RESTART_ENV
+    ):  # pragma: no cover - path exercised via SystemExit in tests
         _capture_restart_event(command, restart_env)
         return
 
     logger.info("Restarting process after auto-update: %s", " ".join(command))
-
-    # Release the lock before restarting
-    try:
-        lock_manager = LockManager()
-        if lock_manager.is_locked():
-            lock_manager.release_lock()
-            logger.info("Lock file released before restarting.")
-    except Exception as e:
-        logger.warning(f"Failed to release lock before restarting: {e}")
-
     os.execvpe(command[0], list(command), restart_env)
 
 
@@ -250,7 +258,9 @@ def maybe_run_auto_update() -> AutoUpdateResult:
     interval = _get_interval_seconds()
     now = time.time()
     if interval > 0 and (now - last_check) < interval:
-        logger.debug("Last auto-update check %.1f seconds ago; skipping", now - last_check)
+        logger.debug(
+            "Last auto-update check %.1f seconds ago; skipping", now - last_check
+        )
         return AutoUpdateResult(False, False, reason="interval")
 
     pipx_executable = shutil.which("pipx")

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
+
+try:  # Python 3.11+ ships with tomllib
+    import tomllib  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreters
+    import tomli as tomllib  # type: ignore[import]
 
 from .logger_config import get_logger
 
@@ -75,7 +79,9 @@ def _iter_provider_entries(
 
         api_key = entry.get("api_key")
         if not api_key:
-            logger.info("Skipping Qwen provider '%s' because no api_key was provided", name)
+            logger.info(
+                "Skipping Qwen provider '%s' because no api_key was provided", name
+            )
             continue
 
         defaults = _PROVIDER_DEFAULTS.get(name.lower(), {})

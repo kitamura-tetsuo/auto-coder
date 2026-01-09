@@ -1,4 +1,3 @@
-import os
 import sys
 from types import SimpleNamespace
 
@@ -50,13 +49,13 @@ def test_run_command_streams_output(monkeypatch):
     assert result.stderr == "STDERR\n"
 
 
-def test_should_stream_when_debugger_attached(monkeypatch, _use_real_streaming_logic):
+def test_should_stream_when_debugger_attached(monkeypatch):
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(sys, "gettrace", lambda: object())
     assert utils.CommandExecutor._should_stream_output(None) is True
 
 
-def test_should_stream_when_env_forced(monkeypatch, _use_real_streaming_logic):
+def test_should_stream_when_env_forced(monkeypatch):
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(sys, "gettrace", lambda: None)
     assert utils.CommandExecutor._should_stream_output(None) is False
@@ -66,7 +65,7 @@ def test_should_stream_when_env_forced(monkeypatch, _use_real_streaming_logic):
 
 
 @pytest.mark.parametrize("marker", utils.CommandExecutor.DEBUGGER_ENV_MARKERS)
-def test_should_stream_for_debugger_markers(monkeypatch, marker, _use_real_streaming_logic):
+def test_should_stream_for_debugger_markers(monkeypatch, marker):
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(sys, "gettrace", lambda: None)
     for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
@@ -74,48 +73,3 @@ def test_should_stream_for_debugger_markers(monkeypatch, marker, _use_real_strea
 
     monkeypatch.setenv(marker, "1")
     assert utils.CommandExecutor._should_stream_output(None) is True
-
-
-def test_is_running_in_debugger_false(monkeypatch):
-    """Test is_running_in_debugger returns False when no debugger is detected."""
-    monkeypatch.setattr(sys, "gettrace", lambda: None)
-    for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
-        monkeypatch.delenv(env_key, raising=False)
-
-    assert utils.CommandExecutor.is_running_in_debugger() is False
-
-
-def test_is_running_in_debugger_true_gettrace(monkeypatch):
-    """Test is_running_in_debugger returns True when sys.gettrace is set."""
-    monkeypatch.setattr(sys, "gettrace", lambda: object())
-    for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
-        monkeypatch.delenv(env_key, raising=False)
-
-    assert utils.CommandExecutor.is_running_in_debugger() is True
-
-
-@pytest.mark.parametrize("marker", utils.CommandExecutor.DEBUGGER_ENV_MARKERS)
-def test_is_running_in_debugger_true_env_markers(monkeypatch, marker):
-    """Test is_running_in_debugger returns True when debugger env markers are set."""
-    monkeypatch.setattr(sys, "gettrace", lambda: None)
-    for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
-        monkeypatch.delenv(env_key, raising=False)
-
-    monkeypatch.setenv(marker, "1")
-    assert utils.CommandExecutor.is_running_in_debugger() is True
-
-
-def test_run_command_env_overrides(monkeypatch):
-    """CommandExecutor should apply env overrides without mutating global os.environ."""
-    monkeypatch.delenv("FAKE_PROVIDER_TOKEN", raising=False)
-
-    script = [
-        sys.executable,
-        "-c",
-        "import os; print(os.getenv('FAKE_PROVIDER_TOKEN', 'missing'))",
-    ]
-
-    result = utils.CommandExecutor.run_command(script, stream_output=False, env_overrides={"FAKE_PROVIDER_TOKEN": "scoped"})
-
-    assert result.stdout.strip() == "scoped"
-    assert "FAKE_PROVIDER_TOKEN" not in os.environ

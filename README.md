@@ -1,64 +1,33 @@
 # Auto-Coder
 
-A Python application that automates application development using an AI CLI backend. It retrieves issues and error-related PRs from GitHub to build and fix the application, and automatically creates feature-addition issues when necessary.
+AI CLIバックエンド（デフォルト: codex。`--backend` を複数指定して gemini / qwen / auggie / codex-mcp とのフォールバック順を設定可能）を用いてアプリケーション開発を自動化するPythonアプリケーションです。GitHubからissueやエラーのPRを取得して構築・修正を行い、必要に応じて機能追加issueを自動作成します。
 
-## Features
+## 機能
 
-### 🔧 Core Features
-- **GitHub API Integration**: Automatic retrieval and management of issues and PRs
-- **AI Analysis (multiple backends configurable via configuration file)**: Automatic analysis of issue and PR content
-- **Automated Processing**: Automatic actions based on analysis results
-- **Feature Proposals**: Automatic proposal of new features from repository analysis
-- **Report Generation**: Detailed reports of processing results
-- **PR Mergeability Handling**: Automated detection and remediation of non-mergeable PRs through base branch updates and intelligent conflict resolution
+### 🔧 主要機能
+- **GitHub API統合**: issueとPRの自動取得・管理
+- **AI分析（codexデフォルト／`--backend` 複数指定でGemini・Qwen・Auggie・codex-mcpをフォールバック順に設定可）**: issueとPRの内容を自動分析
+- **自動化処理**: 分析結果に基づく自動アクション
+- **機能提案**: リポジトリ分析による新機能の自動提案
+- **レポート生成**: 処理結果の詳細レポート
 
-### 🚀 Automated Workflow
-1. **Issue Processing**: Retrieve open issues and analyze with Gemini AI
-2. **PR Processing**: Retrieve open PRs and evaluate risk levels
-3. **Feature Proposals**: Propose new features from repository context
-4. **Automatic Actions**: Add comments or auto-close based on analysis results
+### 🚀 自動化ワークフロー
+1. **Issue処理**: オープンなissueを取得し、Gemini AIで分析
+2. **PR処理**: オープンなPRを取得し、リスクレベルを評価
+3. **機能提案**: リポジトリコンテキストから新機能を提案
+4. **自動アクション**: 分析結果に基づくコメント追加や自動クローズ
 
-### 🔄 PR Mergeability Handling
+## インストール
 
-Auto-Coder includes intelligent handling for PRs that are not immediately mergeable. When a PR is detected as non-mergeable, the system can automatically:
+### 前提条件
+- Python 3.9以上
+- [gh CLI](https://cli.github.com/) で事前に認証済みであること（`gh auth login`）
+- [Codex CLI](https://github.com/openai/codex) がインストール済み（デフォルトのバックエンド）
+- [Gemini CLI](https://ai.google.dev/gemini-api/docs/cli?hl=ja) は Gemini バックエンドを使用する場合に必要（`gemini login`）
 
-1. **Detect and Analyze**: Checks PR mergeability status and merge state (CLEAN, DIRTY, UNKNOWN)
-2. **Checkout PR Branch**: Switches to the PR branch for local processing
-3. **Update from Base**: Fetches and merges the latest changes from the base branch
-4. **Resolve Conflicts**: Uses specialized handlers for different conflict types:
-   - **Package-lock conflicts**: Automatically deletes and regenerates lock files (package-lock.json, yarn.lock, pnpm-lock.yaml)
-   - **Package.json dependency conflicts**: Intelligently merges dependency sections, preferring newer versions
-   - **General conflicts**: Uses LLM to resolve remaining conflicts with context
-5. **Push Changes**: Commits and pushes the updated branch with automatic retry logic
-6. **Signal Completion**: Sets `ACTION_FLAG:SKIP_ANALYSIS` marker after successful remediation
+### セットアップ
 
-This feature is controlled by the `ENABLE_MERGEABILITY_REMEDIATION` configuration flag. When enabled, non-mergeable PRs are automatically remediated without manual intervention.
-
-**Related Configuration:**
-- `ENABLE_MERGEABILITY_REMEDIATION` (default: true) - Enables automatic remediation
-- `SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL` (default: true) - Controls base branch updates during fix flows
-
-See [docs/client-features.yaml](docs/client-features.yaml) for complete technical documentation.
-
-### 📊 Logging and Monitoring
-- **Structured JSON Logs**: All LLM interactions are logged in JSON Lines format at `~/.auto-coder/logs/llm_output.jsonl`
-- **User-Friendly Output**: Execution summaries are printed to console for immediate feedback
-- **Rich Metadata**: Each log entry includes timestamp, backend, model, prompt/response lengths, duration, and status
-- **Environment Control**: Toggle logging via `AUTO_CODER_LLM_OUTPUT_LOG_ENABLED` environment variable
-- **Error Tracking**: Detailed error information for failed requests
-- **Easy Analysis**: Machine-readable format for parsing with `jq` or custom scripts
-
-## Installation
-
-### Prerequisites
-- Python 3.9 or higher
-- [gh CLI](https://cli.github.com/) pre-authenticated (`gh auth login`)
-- [Codex CLI](https://github.com/openai/codex) installed (default backend)
-- [Gemini CLI](https://ai.google.dev/gemini-api/docs/cli?hl=en) required when using Gemini backend (`gemini login`)
-
-### Setup
-
-1. Clone the repository:
+1. リポジトリをクローン:
 ```bash
 git clone https://github.com/your-username/auto-coder.git
 cd auto-coder
@@ -67,1695 +36,434 @@ cd auto-coder
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 
-2. Install dependencies and make it executable from any directory:
+2. 依存関係をインストールして、任意のディレクトリから実行可能にします:
 ```bash
 source ./venv/bin/activate
 pip install -e .
-# Or install directly without cloning the repository
+# またはリポジトリをクローンせずに直接インストール
 pip install git+https://github.com/your-username/auto-coder.git
 ```
 
-> Note (PEP 668 avoidance/recommended): In environments where system Python is externally managed and `pip install` is blocked, we recommend installation via pipx.
+> 補足（PEP 668 回避/推奨）: システム Python が外部管理（externally-managed）で `pip install` がブロックされる環境では、pipx によるインストールを推奨します。
 >
-> Example for Debian/Ubuntu:
+> Debian/Ubuntu 系の例:
 >
 > ```bash
 > sudo apt update && sudo apt install -y pipx
-> pipx ensurepath   # Restart/re-login to shell if needed
+> pipx ensurepath   # 必要に応じてシェルを再起動/再ログイン
 > pipx install git+https://github.com/kitamura-tetsuo/auto-coder.git
 > auto-coder --help
 > ```
 
 
-3. Create configuration file if needed:
+3. 必要に応じて設定ファイルを作成:
 ```bash
 cp .env.example .env
-# Tokens can be left blank as gh and gemini authentication information is used automatically
+# トークンはgh・geminiの認証情報が自動的に使用されるため空欄でも動作します
 ```
 
-## Usage
+## 使用方法
 
-### CLI Commands
+### 認証
 
-#### `process-issues`
-
-Process GitHub issues and PRs using AI CLI.
-
-```bash
-auto-coder process-issues [OPTIONS]
-```
-
-**Options:**
-
-- `--repo TEXT`: GitHub repository (owner/repo). Auto-detected if not specified.
-- `--github-token TEXT`: GitHub API token.
-- `--jules-mode / --no-jules-mode`: Run in jules mode (default: on).
-- `--disable-labels / --no-disable-labels`: Disable GitHub label operations (default: false).
-- `--check-labels / --no-check-labels`: Enable checking for existing @auto-coder label (default: enabled).
-- `--skip-main-update / --no-skip-main-update`: Skip merging base branch into PR when checks fail (default: skip).
-- `--ignore-dependabot-prs / --no-ignore-dependabot-prs`: Skip all dependency-bot PRs (Dependabot/Renovate/[bot]), including ready ones (default: false).
-- `--auto-merge-dependabot-prs / --no-auto-merge-dependabot-prs`: When `--no-ignore-dependabot-prs` is set, only process dependency-bot PRs that have passing tests and are mergeable. If disabled, attempt to fix failing PRs (default: enabled).
-- `--force-clean-before-checkout / --no-force-clean-before-checkout`: Force clean workspace before checkout (default: false).
-- `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration (default: enabled).
-- `--only TEXT`: Process only a specific issue/PR by URL or number.
-- `--force-reindex`: Force GraphRAG code analysis reindexing.
-- `--log-level [DEBUG|INFO|WARNING|ERROR|CRITICAL]`: Set logging level (default: INFO).
-- `--log-file TEXT`: Log file path.
-- `--verbose`: Enable verbose logging.
-
-#### `create-feature-issues`
-
-Analyze repository and create feature enhancement issues.
-
-```bash
-auto-coder create-feature-issues [OPTIONS]
-```
-
-**Options:**
-
-- `--repo TEXT`: GitHub repository.
-- `--disable-labels / --no-disable-labels`: Disable GitHub label operations.
-- `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration.
-- `--force-reindex`: Force GraphRAG reindexing.
-- `--log-level`: Set logging level.
-- `--verbose`: Enable verbose logging.
-
-#### `fix-to-pass-tests`
-
-Run local tests and repeatedly request LLM fixes until tests pass.
-
-```bash
-auto-coder fix-to-pass-tests [OPTIONS]
-```
-
-**Options:**
-
-- `--disable-labels / --no-disable-labels`: Disable GitHub label operations.
-- `--max-attempts INTEGER`: Maximum fix attempts.
-- `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration.
-- `--force-reindex`: Force GraphRAG reindexing.
-- `--log-level`: Set logging level.
-- `--verbose`: Enable verbose logging.
-
-#### Dependabot PR Handling
-
-Auto-Coder handles dependency-bot PRs (Dependabot, Renovate, or any bot account ending with `[bot]`) based on the following configuration:
-
-| Configuration | Behavior |
-|--------------|----------|
-| `--ignore-dependabot-prs` | Skip **all** dependency-bot PRs (both ready and non-ready) |
-| `--no-ignore-dependabot-prs --auto-merge-dependabot-prs` (default) | Only process dependency-bot PRs with **passing tests** and **mergeable state**. These PRs will be auto-merged. Non-ready PRs are skipped. |
-| `--no-ignore-dependabot-prs --no-auto-merge-dependabot-prs` | Process **all** dependency-bot PRs, attempting to fix failing ones |
-
-**Default Behavior:**
-
-With default settings, Auto-Coder will:
-1. Detect dependency-bot PRs by author name
-2. Check if tests are passing and PR is mergeable
-3. If yes → automatically merge the PR
-4. If no → skip the PR (do nothing)
-
-This ensures dependency updates are merged quickly when safe, without manual intervention.
-
-### Authentication
-
-Basically, just run `gh auth login`. When using the Gemini backend, running `gemini login` allows you to use it without setting API keys in environment variables (the --model flag is ignored for the codex backend).
+基本的には `gh auth login` を実施してください。Gemini バックエンドを使用する場合は `gemini login` を行うことで、APIキーを環境変数に設定せずに利用できます（codex バックエンドでは --model は無視されます）。
 
 
-#### Regarding Qwen Usage (Authentication)
-- Qwen OAuth (recommended):
-  - Run `qwen` once, and after authenticating your qwen.ai account in the browser, it will be automatically available.
-  - Running the `/auth` command midway will switch to Qwen OAuth.
-  - Reference: Qwen Code official repository (Authorization section): https://github.com/QwenLM/qwen-code
-- Automatic fallback when limits are reached:
-  - Auto-Coder prioritizes configured OpenAI-compatible endpoints and only returns to Qwen OAuth when all API keys are exhausted.
-  - Configuration file location: `~/.auto-coder/qwen-providers.toml` (path can be overridden with `AUTO_CODER_QWEN_CONFIG`, directory can be specified with `AUTO_CODER_CONFIG_DIR`).
-  - TOML example:
+#### Qwen の利用について（認証）
+- Qwen OAuth（推奨）:
+  - `qwen` を一度実行し、ブラウザで qwen.ai アカウント認証すると自動で利用可能になります。
+  - 途中で `/auth` コマンドを実行すると Qwen OAuth に切替できます。
+  - 参考: Qwen Code 公式リポジトリ（Authorization セクション）: https://github.com/QwenLM/qwen-code
+- リミット到達時の自動フォールバック:
+  - Auto-Coder は設定済みの OpenAI 互換エンドポイントを優先的に使用し、すべての API キーが枯渇した場合にのみ Qwen OAuth に戻ります。
+  - 設定ファイルの場所: `~/.auto-coder/qwen-providers.toml`（`AUTO_CODER_QWEN_CONFIG` でパスを上書き可、`AUTO_CODER_CONFIG_DIR` でディレクトリ指定も可）。
+  - TOML 例:
 
     ```toml
     [[qwen.providers]]
     # Option 1: Alibaba Cloud ModelStudio
     name = "modelstudio"
-    api_key = "dashscope-..."  # Set the obtained API key
-    # base_url and model can be omitted to use defaults (dashscope-compatible / qwen3-coder-plus)
+    api_key = "dashscope-..."  # 取得した API キーを設定
+    # base_url と model は省略すると既定値（dashscope互換 / qwen3-coder-plus）
 
     [[qwen.providers]]
     # Option 2: OpenRouter Free Tier
     name = "openrouter"
     api_key = "openrouter-..."
-    model = "qwen/qwen3-coder:free"  # Uses default when omitted
+    model = "qwen/qwen3-coder:free"  # 省略時は既定値を使用
     ```
 
-  - Fallback occurs in the order written (API key → OAuth). If only API keys are filled in, default URL/model is applied, and `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` are automatically injected at runtime.
-- OpenAI-compatible mode:
-  - Available by setting the following environment variables.
-    - `OPENAI_API_KEY` (required)
-    - `OPENAI_BASE_URL` (specify according to provider)
-    - `OPENAI_MODEL` (example: `qwen3-coder-plus`)
-  - The Qwen backend of this tool uses non-interactive mode with `qwen -p/--prompt`, and the model follows the `--model/-m` flag or `OPENAI_MODEL` (--model takes precedence if both are specified).
+  - 記述順にフォールバックします（API キー → OAuth の順番）。API キーのみ記入すれば既定 URL/モデルが適用され、実行時に `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` が自動注入されます。
+- OpenAI 互換モード:
+  - 以下の環境変数を設定して利用できます。
+    - `OPENAI_API_KEY`（必須）
+    - `OPENAI_BASE_URL`（プロバイダに応じて指定）
+    - `OPENAI_MODEL`（例: `qwen3-coder-plus`）
+  - 当ツールの Qwen バックエンドは非対話モードで `qwen -p/--prompt` を使用し、モデルは `--model/-m` フラグまたは `OPENAI_MODEL` に従います（両方指定時は `--model` を優先）。
 
-#### Regarding Auggie Usage
-- Install CLI with `npm install -g @augmentcode/auggie`.
-- This tool calls `auggie --print --model <model name> "<prompt>"` in non-interactive mode.
-- Auggie backend calls are limited to 20 per day. The 21st and subsequent calls automatically stop until the date changes and fallback to other backends.
-- If `--model` is not specified, `GPT-5` is used as the default model. You can override with the `--model` option to specify any model.
+#### Auggie の利用について
+- CLI を `npm install -g @augmentcode/auggie` でインストールしてください。
+- 当ツールでは非対話モードで `auggie --print --model <モデル名> "<プロンプト>"` を呼び出します。
+- Auggie バックエンドの呼び出しは 1 日あたり 20 回までです。21 回目以降は日付が切り替わるまで自動的に停止し、他のバックエンドへフォールバックします。
+- `--model` を指定しない場合は `GPT-5` を既定モデルとして使用します。任意のモデルを指定したい場合は `--model` オプションで上書きできます。
 
-### CLI Commands
+### CLIコマンド
 
-#### Processing Issues and PRs
+#### issueとPRの処理
 ```bash
-# Run with configuration file defaults
+# デフォルト（codex バックエンド）で実行
 auto-coder process-issues --repo owner/repo
 
-# Process only specific Issue/PR (by number)
+# バックエンドを gemini に切替してモデル指定
+auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro
+
+# バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
+auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus
+
+# バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
+auto-coder process-issues --repo owner/repo --backend auggie
+
+# codex をデフォルト、Gemini をフォールバックに設定
+auto-coder process-issues --repo owner/repo --backend codex --backend gemini
+
+# ドライランモードで実行（変更を行わない）
+auto-coder process-issues --repo owner/repo --dry-run
+
+# 特定のIssue/PRのみ処理（番号指定）
 auto-coder process-issues --repo owner/repo --only 123
 
-# Process only specific PR (by URL)
+# 特定のPRのみ処理（URL指定）
 auto-coder process-issues --repo owner/repo --only https://github.com/owner/repo/pull/456
 ```
 
-#### Creating Feature Proposal Issues
+#### 機能提案issueの作成
 ```bash
-# Run with configuration file defaults
+# デフォルト（codex バックエンド）で実行
 auto-coder create-feature-issues --repo owner/repo
+
+# バックエンドを gemini に切替してモデル指定
+auto-coder create-feature-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro
+
+# バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
+auto-coder create-feature-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus
+
+# バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
+auto-coder create-feature-issues --repo owner/repo --backend auggie
+
+# codex をデフォルト、Gemini をフォールバックに設定
+auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini
 ```
 
-#### Auto-fix until tests pass (fix-to-pass-tests)
-Run local tests, and if they fail, ask the LLM for minimal fixes and repeatedly re-execute. Stops with an error if the LLM doesn't make any edits.
+#### テスト合格まで自動修正（fix-to-pass-tests）
+ローカルテストを実行し、失敗していたら LLM に最小限の修正を依頼して再実行を繰り返します。LLM が一切編集しなかった場合はエラーで停止します。
 
 ```bash
-# Run with configuration file defaults
+# デフォルト（codex バックエンド）で実行
 auto-coder fix-to-pass-tests
 
-# Specify number of attempts (example: max 5 times)
+# バックエンドを gemini に切替してモデル指定
+auto-coder fix-to-pass-tests --backend gemini --model-gemini gemini-2.5-pro
+
+# バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
+auto-coder fix-to-pass-tests --backend qwen --model-qwen qwen3-coder-plus
+
+# バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
+auto-coder fix-to-pass-tests --backend auggie
+
+# codex をデフォルト、Gemini をフォールバックに設定
+auto-coder fix-to-pass-tests --backend codex --backend gemini
+
+# 試行回数を指定（例: 最大5回）
 auto-coder fix-to-pass-tests --max-attempts 5
+
+# ドライラン（編集は行わず、実行フローのみ）
+auto-coder fix-to-pass-tests --dry-run
 ```
 
-### Command Options
+### コマンドオプション
 
 #### `process-issues`
-- `--repo`: GitHub repository (owner/repo format)
-- `--skip-main-update/--no-skip-main-update`: Switch behavior of whether to merge PR base branch into PR branch before attempting fixes when PR checks fail (default: skip base branch merge).
-  - Default: `--skip-main-update` (skip)
-  - Specify `--no-skip-main-update` to explicitly perform base branch merge
-- `--ignore-dependabot-prs/--no-ignore-dependabot-prs`: Exclude Dependabot PRs from processing (default: do not exclude)
-- `--only`: Process only specific Issue/PR (URL or number specification)
+- `--repo`: GitHubリポジトリ (owner/repo形式)
+- `--backend`: 使用するAIバックエンド（codex|codex-mcp|gemini|qwen|auggie）。複数指定すると指定順にフォールバックし、先頭がデフォルト。デフォルトは codex。
+- `--model`: モデル指定（Gemini/Qwen/Auggieで有効。backend=codex/codex-mcp の場合は無視され、警告が表示されます。Auggieは未指定時にGPT-5を使用）
+- `--dry-run`: ドライランモード（変更を行わない）
+- `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に PRのベースブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: ベースブランチ取り込みをスキップ）。
+  - 既定値: `--skip-main-update`（スキップ）
+  - 明示的に ベースブランチ 取り込みを行いたい場合は `--no-skip-main-update` を指定
+- `--ignore-dependabot-prs/--no-ignore-dependabot-prs`: Dependabot によるPRを処理対象から除外（デフォルト: 除外しない）
+- `--only`: 特定のIssue/PRのみ処理（URLまたは番号指定）
 
-Options:
-- `--github-token`: Manual specification when not using gh CLI authentication
+オプション:
+- `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
+- `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
 
 #### `create-feature-issues`
-- `--repo`: GitHub repository (owner/repo format)
+- `--repo`: GitHubリポジトリ (owner/repo形式)
+- `--backend`: 使用するAIバックエンド（codex|codex-mcp|gemini|qwen|auggie）。複数指定すると指定順にフォールバックし、先頭がデフォルト。デフォルトは codex。
+- `--model`: モデル指定（Gemini/Qwen/Auggieで有効。backend=codex/codex-mcp の場合は無視され、警告が表示されます。Auggieは未指定時にGPT-5を使用）
 
-Options:
-- `--github-token`: Manual specification when not using gh CLI authentication
+オプション:
+- `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
+- `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
 
 #### `fix-to-pass-tests`
-- `--max-attempts`: Maximum number of test fix attempts (uses engine default when omitted)
-
-Behavior Specification:
-- Test execution uses `scripts/test.sh` if it exists, otherwise runs `pytest -q --maxfail=1`.
-  - `scripts/test.sh` supports the following features:
-    - Prefers using uv runner for consistent, reproducible environments
-    - Falls back to system Python's pytest when uv is not installed
-    - Can optionally activate local virtual environment by setting `AC_USE_LOCAL_VENV=1`
-    - Always enables automatic dependency synchronization with uv
-    - Automatically applies code style fixes (black, isort) when run in local environments (non-CI)
-    - Runs code style checks in check-only mode when running in CI environments
-- For each failure, extracts important parts from error output and asks LLM for minimal fixes.
-- After fixes, stages and commits. Stops with error if there are no changes at all (`nothing to commit`).
-
-#### Lock Management Commands
-
-Auto-Coder includes a lock mechanism to prevent concurrent executions that could cause conflicts or data corruption. When you run an auto-coder command, it automatically acquires a lock to ensure only one instance is running at a time.
-
-**Automatic Lock Behavior:**
-- Auto-Coder automatically acquires a lock before executing any command (except read-only commands like `config` and `unlock`)
-- If another instance is already running, you'll see an error message with lock information
-- The lock is automatically released when the command completes
-- Lock files are stored in the `.git` directory of your repository
-
-**For Developers:**
-The `LockManager` class supports Python's context manager protocol for safe lock management:
-```python
-from auto_coder.lock_manager import LockManager
-
-# Recommended: Using context manager (automatic cleanup)
-with LockManager() as lock:
-    # Lock is automatically acquired here
-    do_work()
-# Lock is automatically released here, even if an exception occurs
-
-# Alternative: Manual management
-lock = LockManager()
-if lock.acquire():
-    try:
-        do_work()
-    finally:
-        lock.release()
-```
-
-**Manual Lock Control:**
-
-```bash
-# Remove a lock file (use when you know the process has terminated)
-auto-coder lock unlock
-
-# Force remove a lock file (use with caution - only if the process is not running)
-auto-coder lock unlock --force
-```
-
-**Lock Information:**
-When a lock is detected, Auto-Coder displays:
-- Process ID (PID) of the running instance
-- Hostname where the process is running
-- Start time of the process
-- Status (running or stale)
-
-If the status shows "stale lock" (the process is no longer running), you can safely remove the lock with `auto-coder lock unlock`. The `--force` flag should only be used if you're certain the process isn't running or if you need to override a lock for emergency recovery.
-
-**Stale Lock Detection:**
-Auto-Coder detects stale locks by checking if the process associated with the lock is still active. If the process has terminated but left behind a lock file, you can remove it without the `--force` flag. The system will automatically detect that the process is no longer running.
-
-## Branch Naming Best Practices
-
-### Naming Conventions
-
-#### Issue Branches
-
-- **Format**: `issue-<number>` (e.g., `issue-699`)
-- **Use case**: Use for main development work on an issue
-- **Example**:
-  ```bash
-  git checkout -b issue-699
-  ```
-
-#### Attempt Branches
-
-- **Format**: `issue-<number>_attempt-<number>` (e.g., `issue-699_attempt-1`)
-- **Use case**: Use when retrying work after a failed PR merge or regression
-- **Example**:
-  ```bash
-  git checkout -b issue-699_attempt-1
-  ```
-
-> **Note**: Prior to v1.x.x, attempt branches used slash separator (`issue-699/attempt-1`).
-> The new underscore format prevents Git errors when both base and attempt branches exist.
-> Both formats are supported for backward compatibility.
-
-### Git Ref Namespace Limitations
-
-Git stores branch references as filesystem paths under `.git/refs/heads/`. This creates
-a limitation: **a path cannot be both a file and a directory**.
-
-#### Conflicting Names ❌
-
-The following branch name combinations will conflict:
-
-- Having both `issue-699` AND `issue-699/attempt-1` (legacy format)
-- Having both `feature` AND `feature/new-api`
-- Having both `pr-123` AND `pr-123/fix-typo`
-
-#### Resolution
-
-If you encounter a branch name conflict:
-
-1. **Delete the parent branch**:
-   ```bash
-   git branch -D issue-699
-   ```
-
-2. **Then create the child branch**:
-   ```bash
-   git checkout -b issue-699/attempt-1
-   ```
-
-3. **Alternative**: Use a different branch name that doesn't conflict
-
-#### Prevention
-
-- Plan your branch naming hierarchy in advance
-- Clean up old branches regularly
-- Use consistent naming patterns
-- Prefer the underscore format for attempt branches to avoid namespace conflicts
-
-### Common Scenarios
-
-#### When to Use Attempt Branches
-
-Use attempt branches when:
-
-- Your PR failed CI/CD checks and you need to retry
-- You discovered a regression after merging
-- You need to try a different approach to solving the same issue
-- You want to preserve the original attempt for reference
-
-#### How to Clean Up Old Branches
-
-```bash
-# List all local branches
-git branch
-
-# Delete a local branch
-git branch -d issue-699_attempt-1
-
-# Delete a remote branch
-git push origin --delete issue-699_attempt-1
-
-# Bulk delete merged local branches
-git branch --merged | grep -v "\*" | xargs -n 1 git branch -d
-```
-
-#### Recommended Workflow
-
-1. **Initial work**: Create `issue-<number>` branch
-2. **If PR fails**: Keep the original branch for reference
-3. **Retry attempt**: Create `issue-<number>_attempt-1` from the base branch
-4. **Subsequent attempts**: Continue with `issue-<number>_attempt-2`, etc.
-5. **After successful merge**: Delete old attempt branches locally and remotely
-
-### Automated Conflict Detection
-
-As of v1.x.x, `auto-coder` automatically detects branch name conflicts and
-provides clear error messages with resolution steps.
-
-```bash
-# If you see this error:
-ERROR: Cannot create branch 'issue-699/attempt-1': conflicts with existing branch 'issue-699'
-
-# Resolve by deleting the conflicting branch:
-git branch -D issue-699
-```
-
-The system checks for conflicts before creating new branches and will:
-
-1. **Detect parent-child conflicts**: Prevent creating `branch/name` if `branch` exists
-2. **Detect child conflicts**: Prevent creating `branch` if `branch/*` branches exist
-3. **Provide clear error messages**: Include the name of the conflicting branch
-4. **Suggest resolution steps**: Tell you exactly which branch to delete
-
-### Migration from Legacy Format
-
-If you have existing branches with the old slash format (`issue-X/attempt-Y`), they will
-continue to work. However, new attempt branches will use the underscore format.
-
-For detailed migration instructions, see the [Branch Naming Migration Guide](docs/MIGRATION_GUIDE_BRANCH_NAMING.md).
-
-To migrate an existing branch manually:
-```bash
-# Rename local branch (legacy slash to underscore)
-git branch -m issue-699/attempt-1 issue-699_attempt-1
-
-# Delete old remote branch
-git push origin --delete issue-699/attempt-1
-
-# Push renamed branch
-git push origin issue-699_attempt-1
-```
-
-## Work-in-Progress (WIP) Branch Resumption
-
-When you run `auto-coder process` from a non-main branch, the system automatically detects work in progress and resumes processing:
-
-### Automatic WIP Detection
-
-1. Detects current branch is not `main`
-2. Searches for open PR with matching head branch
-3. If PR found, resumes work on that PR
-4. If no PR found, extracts issue number from branch name (e.g., `fix/123-description` → issue #123)
-
-### Label Handling in WIP Mode
-
-**Important**: When resuming WIP branches, `auto-coder` **ignores** the `\@auto-coder` label state:
-- Processing continues even if `\@auto-coder` label already exists on the PR/issue
-- This allows you to retry/continue work without manually removing labels
-- The label will be re-added if not present, or left as-is if already present
-
-**Regular Mode** (not on WIP branch):
-- Checks for `\@auto-coder` label before processing
-- Skips processing if label already exists (prevents concurrent work)
-- Use `--check-labels=false` to override this behavior
-
-### Example Usage
-
-```bash
-# On branch 'fix/toml-parsing' with PR #704
-auto-coder process
-# → Automatically resumes PR #704, ignoring existing \@auto-coder label
-
-# Explicit target (bypasses label checks)
-auto-coder process --only 704
-
-# Force label checking even on WIP branch (not recommended)
-auto-coder process --check-labels
-```
-
-## Parent Issue Auto-Reopen
-
-When processing child issues in a parent-child relationship, Auto-Coder automatically handles closed parent issues:
-
-### Auto-Reopen Behavior
-
-**When processing a child issue whose parent is closed:**
-1. The system automatically reopens the parent issue before continuing
-2. Branch selection and base branch selection use the parent issue context
-3. Attempt tracking operates within the parent issue context
-4. This ensures proper workflow continuity and prevents branch naming conflicts
-
-### Why This Matters
-
-This behavior is critical for maintaining consistency when:
-- Working with hierarchical issue structures
-- Managing parent-child issue dependencies
-- Ensuring branch and attempt tracking remain coherent
-- Preventing branch naming and base selection issues during child issue processing
-
-### Example
-
-If you have issue #100 (parent) with child issue #101:
-- Issue #101 is being processed
-- Issue #100 (parent) is closed
-- Auto-Coder automatically reopens #100
-- All branch operations and attempts now use #100's context
-- Processing continues with proper parent context maintained
-
-## Parent Issue Context Injection
-
-When processing sub-issues (child issues), Auto-Coder automatically injects parent issue context into LLM prompts to help maintain awareness of the broader context.
-
-### What is Parent Issue Context?
-
-**Parent Issue Context** is a feature that automatically retrieves and includes a parent issue's description and details when processing its sub-issues. This gives the LLM a complete understanding of the larger goal while maintaining focus on the specific sub-issue implementation.
-
-### When and Why It's Used
-
-**When:**
-- Only for sub-issues (issues that have a parent issue)
-- Automatically detected and applied during issue processing
-- Works across all prompt types (default, bug fix, urgent, breaking-change)
-
-**Why:**
-- Helps the LLM understand the broader context and goals
-- Ensures sub-issue implementations align with parent requirements
-- Provides visibility into the overall feature or project scope
-- Enables better decision-making during implementation
-
-### How It Works
-
-When processing a sub-issue:
-
-1. **Detection**: Auto-Coder detects if the issue has a parent using GitHub's sub-issues API
-2. **Context Retrieval**: Fetches the parent issue's title, body, and details
-3. **Prompt Injection**: Injects parent context into the LLM prompt with explicit scope limitations
-4. **LLM Processing**: The LLM receives both sub-issue and parent context to make informed decisions
-
-### Scope Limitations
-
-To prevent over-implementation, the feature includes **explicit scope limitations** in the prompt:
-
-```
-PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
-This issue is a sub-issue of #<parent_number>: <parent_title>
-
-Parent Issue Description:
-<parent_body>...
-
-IMPORTANT SCOPE LIMITATIONS:
-- The parent issue content above is for CONTEXT ONLY
-- Implementation must be LIMITED to the current sub-issue scope (Issue #<number>)
-- Changes should align with parent goals but only implement the specific requirements of this sub-issue
-- Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
-```
-
-### Example Scenario
-
-**Parent Issue #200**: "Implement user authentication system"
-
-**Sub-Issue #201**: "Add password reset functionality"
-
-When processing sub-issue #201:
-- The LLM receives context about the parent authentication system
-- Understands that password reset is part of a larger authentication feature
-- Remains focused on implementing only the password reset functionality
-- Ensures the implementation aligns with the overall authentication architecture
-
-### Benefits
-
-1. **Informed Decisions**: LLM can make better implementation choices with full context
-2. **Architectural Consistency**: Sub-issues align with overall parent goals
-3. **Reduced Rework**: Fewer implementation conflicts between parent and children
-4. **Better Testing**: Tests consider parent context for more comprehensive coverage
-
-### Technical Details
-
-- Uses GitHub's GraphQL API with the `sub_issues` feature flag
-- Retrieves parent issue via `get_parent_issue_details()` and `get_parent_issue_body()`
-- Injects context into all label-based prompts (default, bug, urgent, breaking-change, etc.)
-- Does not affect regular issues without parent issues
-- Branch and attempt tracking also respect parent-child relationships
-
-For complete technical documentation, see [docs/parent_issue_context.md](docs/parent_issue_context.md).
-
-## Configuration
-
-### Configuration File Locations
-
-Auto-Coder supports configuration files in multiple locations with the following priority:
-
-1. **Local configuration** (highest priority): `.auto-coder/llm_config.toml` in the current directory
-2. **Home configuration**: `~/.auto-coder/llm_config.toml` in your home directory
-3. **Default configuration**: Auto-generated if no configuration file exists
-
-#### When to Use Local Configuration
-
-Use local configuration (`.auto-coder/llm_config.toml`) when:
-- You need project-specific LLM backend settings
-- You want to version-control your configuration with your project
-- You're working in a team and want to share configuration
-- You're testing different configurations without affecting global settings
-- You're working in container/CI environments where configuration should be part of the project
-
-#### When to Use Home Configuration
-
-Use home configuration (`~/.auto-coder/llm_config.toml`) when:
-- You want the same configuration across all projects
-- You're working on personal projects with consistent settings
-- You want to keep API keys and credentials out of project repositories
-
-#### Configuration Search Behavior
-
-When Auto-Coder starts, it searches for configuration files in this order:
-1. Checks if `.auto-coder/llm_config.toml` exists in the current working directory
-2. If not found, falls back to `~/.auto-coder/llm_config.toml` in the home directory
-3. If neither exists, creates a default configuration in the home directory
-
-This approach is **backward compatible**: existing users with only home directory configs will see no change in behavior.
-
-### Configuration File (TOML)
-
-Auto-Coder uses a TOML configuration file for backend settings. You can place this file in either location mentioned above.
-
-**Note:** By default, all backends have `enabled = true`. You only need to specify `enabled = false` to disable a backend.
-
-#### Custom Backend Names
-
-You can define custom backend names using the `backend_type` field. This is useful for:
-- Using OpenRouter with specific model names
-- Configuring multiple versions of the same backend
-- Using OpenAI-compatible providers
-
-Example:
-```toml
-[backends.grok-4.1-fast]
-backend_type = "codex"  # Use codex CLI for OpenAI-compatible APIs
-model = "grok-4.1-fast"
-openai_api_key = "your-openrouter-api-key"
-openai_base_url = "https://openrouter.ai/api/v1"
-```
-
-Supported `backend_type` values: `codex`, `codex-mcp`, `gemini`, `qwen`, `auggie`, `claude`
-
-For detailed configuration examples and troubleshooting, including the new fallback backend feature, see:
-- [Configuration Guide](docs/configuration.md) - General configuration overview
-- [Configuration File Format Guide](docs/configuration_guide.md) - Detailed guide on configuration file format and placeholder system
-
-#### Configuring Model Provider
-
-For backends using `backend_type = "codex"`, you can specify the model provider using the `model_provider` field. This tells the codex CLI which provider to use when making API calls.
-
-##### Example: Using OpenRouter
-
-```toml
-[grok-4.1-fast]
-enabled = true
-model = "x-ai/grok-4.1-fast:free"
-backend_type = "codex"
-model_provider = "openrouter"
-```
-
-This configuration is equivalent to running:
-```bash
-codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter
-```
-
-##### Supported Providers
-
-The `model_provider` field supports any provider that the codex CLI recognizes, such as:
-- `openrouter` - For OpenRouter API
-- `anthropic` - For Anthropic Claude
-- `openai` - For OpenAI models
-
-> **Note:** You still need to configure provider-specific settings (like API endpoints and authentication) in your codex configuration file (`~/.codex/config.toml`) or via environment variables. The `model_provider` field simply tells codex which provider configuration to use.
-
-##### Complete Example with OpenRouter
-
-Here's a complete example showing how to configure a custom backend with OpenRouter:
-
-```toml
-[backends.openrouter-grok]
-enabled = true
-backend_type = "codex"
-model = "x-ai/grok-4.1-fast:free"
-model_provider = "openrouter"
-openai_api_key = "sk-or-v1-..."  # Your OpenRouter API key
-openai_base_url = "https://openrouter.ai/api/v1"
-```
-
-Make sure your codex configuration file (`~/.codex/config.toml`) contains the appropriate provider settings. For example:
-
-```toml
-# ~/.codex/config.toml
-[openrouter]
-api_base = "https://openrouter.ai/api/v1"
-default_model = "x-ai/grok-4.1-fast:free"
-```
-
-Check the codex CLI documentation for the full list of supported providers and their configuration options.
-
-#### Configuration Management
-
-To manage the configuration file, use the built-in config commands:
-```bash
-# Show current configuration
-auto-coder config show
-
-# Edit configuration file
-auto-coder config edit
-
-# Validate configuration
-auto-coder config validate
-
-# Create backup of configuration
-auto-coder config backup
-
-# Interactive setup wizard
-auto-coder config setup
-
-# Show usage examples
-auto-coder config examples
-
-# Migrate from environment variables
-auto-coder config migrate
-```
-
-**Note:** If you're migrating from an older configuration format with `message_backend` section, see the [Migration Guide for CLI Options](docs/MIGRATION_CLI_OPTIONS.md) for detailed instructions.
-
-Example configuration file (`.auto-coder/llm_config.toml` or `~/.auto-coder/llm_config.toml`):
-```toml
-version = "1.0.0"
-created_at = "2023-01-01T00:00:00"
-updated_at = "2023-01-01T00:00:00"
-
-[backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
-
-[backends.codex]
-api_key = ""
-base_url = ""
-model = "codex"
-temperature = 0.7
-timeout = 30
-max_retries = 3
-usage_limit_retry_count = 0
-usage_limit_retry_wait_seconds = 0
-
-[backends.codex_mcp]
-api_key = ""
-base_url = ""
-model = "codex-mcp"
-temperature = 0.7
-timeout = 30
-max_retries = 3
-usage_limit_retry_count = 0
-usage_limit_retry_wait_seconds = 0
-
-[backends.gemini]
-api_key = "your-gemini-api-key"  # Alternatively use GEMINI_API_KEY env var
-base_url = ""
-model = "gemini-2.5-pro"
-temperature = 0.7
-timeout = 30
-max_retries = 3
-usage_limit_retry_count = 3
-usage_limit_retry_wait_seconds = 30
-always_switch_after_execution = false
-
-[backends.qwen]
-api_key = "your-qwen-api-key"  # Alternatively use OPENAI_API_KEY env var
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Or your OpenAI-compatible endpoint
-model = "qwen3-coder-plus"
-temperature = 0.7
-timeout = 30
-max_retries = 3
-usage_limit_retry_count = 2
-usage_limit_retry_wait_seconds = 60
-always_switch_after_execution = false
-
-[backends.claude]
-api_key = "your-claude-api-key"  # Alternatively use ANTHROPIC_API_KEY env var
-base_url = ""
-model = "sonnet"
-temperature = 0.7
-timeout = 30
-max_retries = 3
-usage_limit_retry_count = 5
-usage_limit_retry_wait_seconds = 45
-
-[backends.auggie]
-api_key = ""
-base_url = ""
-model = "GPT-5"
-temperature = 0.7
-timeout = 30
-max_retries = 3
-usage_limit_retry_count = 1
-usage_limit_retry_wait_seconds = 120
-
-[message_backend]
-order = ["claude"]
-default = "claude"
-```
-
-### Supported Backend Types
-
-Auto-Coder supports multiple backend types. When using custom backend names, you must specify the `backend_type` field:
-
-| Backend Type | Description | Required Tools | Use Cases |
-|-------------|-------------|----------------|-----------|
-| `codex` | OpenAI Codex and OpenAI-compatible APIs | Codex CLI | OpenRouter, Azure OpenAI, custom endpoints |
-| `codex-mcp` | Codex with MCP support | Codex CLI | Advanced MCP integrations |
-| `gemini` | Google Gemini | Gemini CLI | Direct Google API integration |
-| `qwen` | Qwen Code | Qwen CLI | Native Qwen CLI with OAuth |
-| `claude` | Anthropic Claude | Claude CLI | Direct Anthropic API integration |
-| `jules` | Jules AI Assistant | Jules CLI | Session-based AI with PR feedback loop |
-| `auggie` | Auggie | Auggie CLI (`npm install -g @augmentcode/auggie`) | Auggie integration |
-
-**Important:** Custom backend names require the `backend_type` field. Standard backend names (`codex`, `gemini`, `qwen`, `claude`, `jules`, `auggie`) work without this field.
-
-For more details, see:
-- [Configuration Guide](docs/configuration.md)
-- [OpenRouter Setup Guide](OPENROUTER_SETUP.md)
-- [Example Configuration File](docs/llm_backend_config.example.toml)
-
-### Jules Mode Configuration
-
-Jules mode is a special operational mode that adds the `jules` label to issues and processes them using the Jules AI assistant. Jules mode can be enabled in two ways:
-
-#### 1. CLI Flag (Per-Command)
-
-You can enable or disable Jules mode for each command using the `--jules-mode` or `--no-jules-mode` flag:
-
-```bash
-# Enable Jules mode (default: ON)
-auto-coder process-issues --jules-mode
-
-# Disable Jules mode
-auto-coder process-issues --no-jules-mode
-```
-
-Jules mode is **ON by default** for `process-issues` commands.
-
-#### 2. Configuration File (Persistent)
-
-You can configure Jules as a backend in your `llm_config.toml` file for persistent settings:
-
-```toml
-[backend]
-# Add jules to your backend order
-order = ["jules", "gemini", "codex", "claude"]
-default = "codex"
-
-[backends.jules]
-enabled = true
-backend_type = "jules"
-# No additional configuration needed - uses Jules CLI with OAuth
-```
-
-**Configuration Options:**
-
-- **`enabled`**: Set to `true` to enable Jules backend, `false` to disable (default: true)
-- **`backend_type`**: Must be set to `"jules"` for Jules backend configuration
-- **`model`**: Optional - Jules model name (defaults to Jules CLI default)
-- **`temperature`**: Optional - Controls randomness (default: 0.7)
-- **`timeout`**: Optional - Request timeout in seconds (default: 300)
-- **`max_retries`**: Optional - Maximum retry attempts (default: 3)
-
-**Notes:**
-- Jules uses OAuth authentication - no API keys required
-- Requires Jules CLI to be installed and authenticated
-- Sessions are tracked in `~/.auto-coder/<repo>/cloud.csv` files
-- Jules automatically comments on issues with session information
-
-For more details about Jules mode architecture and migration from legacy Jules label logic, see the [Migration Guide: v2026.2.0](docs/MIGRATION_GUIDE_v2026.2.0.md).
-
-### Retry Configuration
-
-Auto-Coder supports automatic retry on usage limit errors for LLM backends. This feature helps handle temporary rate limits or quota exhaustion by allowing backends to retry requests before rotating to the next available backend.
-
-#### Configuration Fields
-
-Each backend in the TOML configuration file can specify retry behavior using these fields:
-
-- **`usage_limit_retry_count`**: Number of times to retry when a usage limit error is encountered (default: 0)
-  - Set to 0 to disable retries (immediately rotate to next backend)
-  - Set to a positive number to retry on the same backend before rotating
-
-- **`usage_limit_retry_wait_seconds`**: Number of seconds to wait between retry attempts (default: 0)
-  - This delay allows the backend's usage quota to reset or rate limits to expire
-  - Recommended values depend on the backend provider's rate limiting policies
-
-#### Behavior
-
-**When retry is configured (usage_limit_retry_count > 0):**
-1. Backend encounters a usage limit error
-2. System retries the same backend up to `usage_limit_retry_count` times
-3. Waits `usage_limit_retry_wait_seconds` between each retry attempt
-4. If all retries are exhausted, rotates to the next backend in the configured order
-5. Continues through the backend rotation until a successful response is received or all backends are exhausted
-
-**When retry is not configured (usage_limit_retry_count = 0, default):**
-1. Backend encounters a usage limit error
-2. Immediately rotates to the next backend in the configured order
-3. No retry attempts on the same backend
-
-#### Example Configuration
-
-The example configuration above demonstrates different retry settings for different backends:
-
-- **Gemini**: Retries 3 times with 30-second delays between attempts
-- **Qwen**: Retries 2 times with 60-second delays between attempts
-- **Claude**: Retries 5 times with 45-second delays between attempts (more aggressive retry policy)
-- **Auggie**: Retries 1 time with 120-second delays (longer wait time due to daily limits)
-- **Codex/Codex-MCP**: No retries (0 count, 0 wait) - immediately rotates on usage limits
-
-#### Recommended Settings
-
-Different LLM providers have different rate limiting behaviors:
-
-- **Gemini**: 3-5 retries with 30-60 second waits typically works well
-- **Claude**: 3-5 retries with 30-60 second waits
-- **Qwen**: 2-3 retries with 60-120 second waits, especially for API keys
-- **Auggie**: 1-2 retries with 120+ seconds (due to strict daily call limits)
-- **Codex**: 0-1 retries (OpenAI Codex has strict rate limits)
-
-Adjust these values based on your usage patterns and the specific rate limits of your LLM providers.
-
-### Post-Execution Backend Rotation
-
-Enable `always_switch_after_execution` on individual backends to rotate to the next backend in `backend.order` after every successful run. This is useful when you want round-robin usage across providers (for example, to spread traffic, avoid hitting soft limits, or comply with single-execution quotas) instead of sticking to the same backend until a failure occurs.
-
-Example:
-
-```toml
-[backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
-
-[backends.gemini]
-model = "gemini-2.5-pro"
-always_switch_after_execution = true  # switch to qwen after each gemini call
-
-[backends.qwen]
-model = "qwen3-coder-plus"
-always_switch_after_execution = true  # continue rotation to claude next
-```
-
-If `always_switch_after_execution` is omitted or set to `false`, Auto-Coder keeps using the active backend until a retry/rotation condition is triggered.
-
-### Session Resume Configuration
-
-Auto-Coder supports session resumption for backends that maintain stateful sessions (like Claude). When the same backend is used consecutively, the system can automatically resume the previous session instead of starting a new one, providing better context continuity.
-
-#### How Session Resume Works
-
-When configured, the system:
-1. Tracks the session ID from the last backend execution
-2. Detects when the same backend is used consecutively
-3. Automatically injects resume options with the previous session ID
-4. The backend resumes the previous session with full context
-
-#### Configuration
-
-Add the `options_for_resume` field to your backend configuration in `llm_config.toml`:
-
-```toml
-[backends.claude]
-model = "sonnet"
-# Resume options with session ID placeholder
-options_for_resume = ["--resume", "[sessionId]"]
-```
-
-The `[sessionId]` placeholder will be automatically replaced with the actual session ID from the previous execution.
-
-#### Example: Claude Backend with Session Resume
-
-```toml
-[backend]
-order = ["claude", "gemini", "codex"]
-default = "claude"
-
-[backends.claude]
-enabled = true
-model = "sonnet"
-timeout = 60
-max_retries = 3
-# Enable session resume for Claude
-options_for_resume = ["--resume", "[sessionId]"]
-```
-
-#### How It Works
-
-When you run multiple operations consecutively:
-
-```bash
-# First operation - starts new session
-auto-coder process-issues --only 123
-# Session ID: abc123 (tracked internally)
-
-# Second operation - resumes previous session
-auto-coder process-issues --only 124
-# Uses: claude --resume abc123
-```
-
-The second operation automatically resumes session `abc123`, providing Claude with context from the first operation.
-
-#### Supported Backends
-
-Currently, session resume is implemented for:
-- **Claude**: Uses `--resume <session-id>` flag
-
-Other backends may support session resume if they provide similar session management capabilities.
-
-#### Notes
-
-- Session IDs are tracked per backend
-- Session state is persisted to `~/.auto-coder/backend_session_state.json` so consecutive executions can resume when the backend supports it
-- Resume only happens when the same backend is used consecutively
-- If a different backend is used, the session tracking resets
-- The `options_for_resume` list can include multiple options if needed
-
-### Timeout Handling and Automatic Backend Fallback
-
-Auto-Coder includes automatic timeout handling that triggers fallback to the next configured backend when an LLM command exceeds its configured timeout. This ensures operations continue smoothly even when a backend becomes unresponsive or slow.
-
-#### How Timeout Fallback Works
-
-**When a timeout occurs:**
-1. The current backend command is terminated when it exceeds its configured timeout duration
-2. Auto-Coder catches the `AutoCoderTimeoutError` exception
-3. The system automatically switches to the next backend in the configured `backend.order` list
-4. The operation is retried with the new backend
-5. This continues through all configured backends until a successful response is received or all backends are exhausted
-
-**Timeout behavior varies by operation:**
-
-- **Normal Operations (`process-issues`, `create-feature-issues`)**:
-  - Timeouts trigger automatic fallback to the next backend
-  - System continues through all backends in order
-  - If all backends timeout, the last timeout error is raised
-
-- **Test Fix Operations (`fix-to-pass-tests`)**:
-  - Timeouts trigger immediate fallback to the next backend
-  - Operation is retried once with the new backend
-  - If the retry also times out, the error is propagated
-
-#### Example Scenario
-
-With the following configuration:
-```toml
-[backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
-
-[backends.gemini]
-model = "gemini-2.5-pro"
-timeout = 30
-
-[backends.qwen]
-model = "qwen3-coder-plus"
-timeout = 30
-
-[backends.claude]
-model = "sonnet"
-timeout = 30
-```
-
-**Execution flow:**
-1. First attempt uses `gemini` backend
-2. If `gemini` times out after 30 seconds → automatically switch to `qwen`
-3. If `qwen` times out after 30 seconds → automatically switch to `claude`
-4. If `claude` succeeds, return the result
-5. If `claude` also times out, raise the timeout error
-
-#### Configuration
-
-Timeout values are configured per backend in the TOML configuration file:
-
-```toml
-[backends.gemini]
-model = "gemini-2.5-pro"
-timeout = 30  # seconds
-```
-
-**Timeout recommendations by provider:**
-- **Gemini**: 30-60 seconds ( Google's API is generally fast)
-- **Claude**: 30-60 seconds (Anthropic's API is responsive)
-- **Qwen**: 60-120 seconds (Alibaba's API may need more time)
-- **Codex**: 30-60 seconds (OpenAI's Codex is typically fast)
-- **Auggie**: 60-120 seconds ( Auggie has daily call limits)
-
-Adjust timeout values based on your network conditions and the complexity of tasks you're running.
-
-#### Logging
-
-Timeout fallback events are logged for debugging:
-```
-WARNING - Timeout error on backend 'gemini', switching to next backend
-```
-
-Check the logs at `~/.auto-coder/logs/llm_output.jsonl` for detailed information about timeout occurrences and backend rotations.
-
-### Environment Variables
-
-Environment variables can be used to override configuration file values or provide sensitive information like API keys:
-
-| Variable Name | Description | Default Value | Required |
-|--------------|-------------|---------------|----------|
-| `GITHUB_TOKEN` | GitHub API token (to override gh CLI authentication) | - | ❌ |
+- `--backend`: 使用するAIバックエンド（codex|codex-mcp|gemini|qwen|auggie）。複数指定すると指定順にフォールバックし、先頭がデフォルト。デフォルトは codex。
+- `--model`: モデル指定（Gemini/Qwen/Auggieで有効。backend=codex/codex-mcp の場合は無視され、警告が表示されます。Auggieは未指定時にGPT-5を使用）
+- `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
+- `--max-attempts`: テスト修正の最大試行回数（省略時はエンジンの既定値）
+- `--dry-run`: ドライランモード（LLM へは依頼せず、フローのみ確認）
+
+動作仕様:
+- テスト実行は `scripts/test.sh` が存在すればそれを使用、なければ `pytest -q --maxfail=1` を実行します。
+- 各失敗ごとにエラー出力から重要部分を抽出し、LLM に最小限の修正を依頼します。
+- 修正後はステージングとコミットを行います。変更が全くない（`nothing to commit`）場合はエラーで停止します。
+
+## 設定
+
+### 環境変数
+
+| 変数名 | 説明 | デフォルト値 | 必須 |
+|--------|------|-------------|------|
+| `GITHUB_TOKEN` | GitHub APIトークン (gh CLIの認証情報を上書きする場合) | - | ❌ |
+| `GEMINI_API_KEY` | Gemini APIキー (Gemini CLIの認証情報を上書きする場合) | - | ❌ |
 | `GITHUB_API_URL` | GitHub API URL | `https://api.github.com` | ❌ |
-| `MAX_ISSUES_PER_RUN` | Maximum issues to process per run | `-1` | ❌ |
-| `MAX_PRS_PER_RUN` | Maximum PRs to process per run | `-1` | ❌ |
-| `LOG_LEVEL` | Log level | `INFO` | ❌ |
-| `AUTO_CODER_DEFAULT_BACKEND` | Set default backend (e.g., 'gemini', 'codex') | `codex` | ❌ |
-| `AUTO_CODER_<BACKEND>_API_KEY` | Set API key for specific backend | - | ❌ |
-| `AUTO_CODER_OPENAI_API_KEY` | Set OpenAI-compatible API key | - | ❌ |
-| `AUTO_CODER_OPENAI_BASE_URL` | Set OpenAI-compatible base URL | - | ❌ |
+| `GEMINI_MODEL` | 使用するGeminiモデル | `gemini-pro` | ❌ |
+| `MAX_ISSUES_PER_RUN` | 1回の実行で処理する最大issue数 | `-1` | ❌ |
+| `MAX_PRS_PER_RUN` | 1回の実行で処理する最大PR数 | `-1` | ❌ |
+| `DRY_RUN` | ドライランモード | `false` | ❌ |
+| `LOG_LEVEL` | ログレベル | `INFO` | ❌ |
 
-**Backend-specific environment variables:**
-- `AUTO_CODER_CODEX_API_KEY`, `AUTO_CODER_GEMINI_API_KEY`, `AUTO_CODER_QWEN_API_KEY`, `AUTO_CODER_CLAUDE_API_KEY`, `AUTO_CODER_AUGGIE_API_KEY`
-- Model-specific variables: `AUTO_CODER_<BACKEND>_MODEL` (e.g., `AUTO_CODER_GEMINI_MODEL`)
+`MAX_ISSUES_PER_RUN` と `MAX_PRS_PER_RUN` はデフォルトで制限なし (`-1`) に設定されています。処理件数を制限したい場合は、正の整数を指定してください。
 
-`MAX_ISSUES_PER_RUN` and `MAX_PRS_PER_RUN` are set to unlimited (`-1`) by default. Specify positive integers if you want to limit the number of items processed.
+## GraphRAG 統合（実験的機能）
 
-**Migration from old environment variables:**
-If you were using the old environment variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.), you can migrate them automatically:
-```bash
-auto-coder config migrate
-```
+Auto-Coder は Neo4j と Qdrant を使用した GraphRAG（Graph Retrieval-Augmented Generation）統合をサポートしています。
 
-## Logging and Monitoring
+### GraphRAG のセットアップ
 
-### Overview
-
-Auto-Coder provides comprehensive logging for all LLM interactions using the `LLMOutputLogger` class. Logs are written in structured JSON Lines format (one JSON object per line) for easy parsing and analysis.
-
-### Default Log Location
-
-```
-~/.auto-coder/logs/llm_output.jsonl
-```
-
-### Environment Variable Control
-
-Enable or disable logging using the `AUTO_CODER_LLM_OUTPUT_LOG_ENABLED` environment variable:
-
-```bash
-# Enable logging (default)
-export AUTO_CODER_LLM_OUTPUT_LOG_ENABLED=1
-# or: true, yes, on
-
-# Disable logging
-export AUTO_CODER_LLM_OUTPUT_LOG_ENABLED=0
-# or: false, no, off
-```
-
-### Example Log Entry
-
-Each log entry contains structured data about an LLM interaction:
-
-```json
-{
-  "timestamp": "2025-11-24T10:30:45.123Z",
-  "event_type": "llm_interaction",
-  "backend": "codex",
-  "model": "codex",
-  "prompt_length": 15420,
-  "response_length": 8956,
-  "duration_ms": 1234,
-  "status": "success"
-}
-```
-
-### Parsing Logs with jq
-
-```bash
-# Extract all successful interactions
-grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq 'select(.status == "success")'
-
-# Find errors
-grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq 'select(.status == "error")'
-
-# Filter by backend
-grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq 'select(.backend == "codex")'
-
-# Get statistics
-grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq -r '.backend' | sort | uniq -c
-```
-
-### Parsing Logs with Python
-
-```python
-import json
-from pathlib import Path
-
-log_file = Path.home() / ".auto-coder" / "logs" / "llm_output.jsonl"
-
-# Read all log entries
-with log_file.open("r") as f:
-    for line in f:
-        data = json.loads(line.strip())
-        print(f"{data['timestamp']}: {data['backend']} - {data['status']}")
-
-# Filter by backend
-with log_file.open("r") as f:
-    codex_logs = []
-    for line in f:
-        data = json.loads(line.strip())
-        if data['backend'] == 'codex':
-            codex_logs.append(data)
-
-print(f"Found {len(codex_logs)} Codex interactions")
-```
-
-### Log Entry Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `timestamp` | string | ISO 8601 timestamp with timezone |
-| `event_type` | string | Event type: `llm_request`, `llm_response`, or `llm_interaction` |
-| `backend` | string | Backend name (e.g., "codex", "gemini", "qwen") |
-| `model` | string | Model name |
-| `prompt_length` | integer | Prompt length in characters |
-| `response_length` | integer | Response length in characters |
-| `duration_ms` | float | Request duration in milliseconds |
-| `status` | string | Request status (e.g., "success", "error") |
-| `error` | string (optional) | Error message if status is "error" |
-| Additional metadata | any | Custom fields from the interaction |
-
-### Console Output
-
-In addition to JSON log files, Auto-Coder prints user-friendly execution summaries to console:
-
-```
-============================================================
-🤖 Codex CLI Execution Summary
-============================================================
-Backend: codex
-Model: codex
-Prompt Length: 15420 characters
-Response Length: 8956 characters
-Duration: 1234ms
-Status: SUCCESS
-============================================================
-```
-
-This provides immediate feedback during execution while detailed logs are saved to the file.
-
-### Custom Log Path
-
-You can configure a custom log path programmatically:
-
-```python
-from src.auto_coder.llm_output_logger import LLMOutputLogger
-
-# Use custom path
-logger = LLMOutputLogger(log_path="/custom/path/log.jsonl")
-
-# Disable logging
-logger = LLMOutputLogger(enabled=False)
-```
-
-For more detailed documentation, see [docs/llm_output_logger_usage.md](docs/llm_output_logger_usage.md).
-
-## Label-Based Prompt Routing
-
-Auto-Coder includes an intelligent label-based prompt system that dynamically selects appropriate prompt templates based on GitHub issue and PR labels. This enables more targeted and effective AI-driven automation by using context-specific instructions.
-
-### Overview
-
-The label-based prompt system works by:
-
-1. **Analyzing Labels**: Examining labels on GitHub issues and PRs
-2. **Priority Resolution**: Selecting the highest priority applicable label when multiple labels exist
-3. **Prompt Selection**: Using the selected label to choose an appropriate prompt template
-4. **Special Handling**: Applying special behaviors for breaking-change and urgent issues
-
-### Default Label Categories
-
-**Breaking-Change Labels** (highest priority):
-- `breaking-change`, `breaking`, `api-change`, `deprecation`, `version-major`
-
-**Priority Labels**:
-- `urgent`, `high-priority`, `critical`, `blocker`, `asap`
-
-**Issue Type Labels**:
-- `bug`, `bugfix`, `defect`, `error`, `fix`, `hotfix`, `patch`
-- `enhancement`, `feature`, `improvement`, `new-feature`
-- `refactor`, `optimization`, `optimisation`
-- `documentation`, `docs`, `doc`, `readme`, `guide`
-
-### Configuration
-
-You can configure the label-based prompt system using environment variables:
-
-#### Basic Setup
-
-```bash
-# Configure label-to-prompt mappings
-export AUTO_CODER_LABEL_PROMPT_MAPPINGS='{
-  "bug": "issue.bug",
-  "enhancement": "issue.enhancement",
-  "urgent": "issue.urgent",
-  "breaking-change": "issue.breaking_change",
-  "documentation": "issue.documentation"
-}'
-
-# Set priority order (highest priority first)
-export AUTO_CODER_LABEL_PRIORITIES='[
-  "breaking-change",
-  "urgent",
-  "bug",
-  "enhancement",
-  "documentation"
-]'
-```
-
-#### PR Label Copying
-
-The system can automatically copy semantic labels from issues to their corresponding PRs:
-
-```bash
-# Enable/disable (default: true)
-export AUTO_CODER_PR_LABEL_COPYING_ENABLED='true'
-
-# Maximum labels to copy (default: 3, range: 0-10)
-export AUTO_CODER_PR_MAX_LABELS='3'
-
-# Configure PR label mappings
-export AUTO_CODER_PR_LABEL_MAPPINGS='{
-  "breaking-change": ["breaking-change", "breaking"],
-  "urgent": ["urgent", "critical"],
-  "bug": ["bug", "bugfix", "defect"],
-  "enhancement": ["enhancement", "feature"],
-  "documentation": ["documentation", "docs"]
-}'
-
-# Set PR label priorities
-export AUTO_CODER_PR_LABEL_PRIORITIES='[
-  "urgent",
-  "breaking-change",
-  "bug",
-  "enhancement",
-  "documentation"
-]'
-```
-
-### How It Works
-
-**Priority Resolution Example:**
-
-If an issue has labels: `["bug", "enhancement", "urgent"]`
-And priorities are: `["urgent", "bug", "enhancement"]`
-Then the system uses the `urgent` prompt (highest priority).
-
-**Breaking-Change Detection:**
-
-Labels in the breaking-change category trigger special handling:
-- Automatically deletes failing tests that test removed features
-- Provides version bump recommendations (major version bump)
-- Generates migration guides
-- Updates CHANGELOG with breaking changes
-- Ensures backward compatibility guidance
-
-### Complete Example Configuration
-
-Create a `.env` file:
-
-```bash
-# Label prompt mappings
-AUTO_CODER_LABEL_PROMPT_MAPPINGS='{
-  "bug": "issue.bug",
-  "bugfix": "issue.bug",
-  "enhancement": "issue.enhancement",
-  "feature": "issue.enhancement",
-  "urgent": "issue.urgent",
-  "critical": "issue.urgent",
-  "breaking-change": "issue.breaking_change",
-  "documentation": "issue.documentation"
-}'
-
-# Label priorities
-AUTO_CODER_LABEL_PRIORITIES='[
-  "breaking-change",
-  "urgent",
-  "bug",
-  "enhancement",
-  "documentation"
-]'
-
-# PR label mappings
-AUTO_CODER_PR_LABEL_MAPPINGS='{
-  "breaking-change": ["breaking-change"],
-  "urgent": ["urgent", "critical"],
-  "bug": ["bug", "bugfix"],
-  "enhancement": ["enhancement", "feature"],
-  "documentation": ["documentation"]
-}'
-
-# PR label priorities
-AUTO_CODER_PR_LABEL_PRIORITIES='[
-  "urgent",
-  "breaking-change",
-  "bug",
-  "enhancement",
-  "documentation"
-]'
-
-# PR label copying
-AUTO_CODER_PR_LABEL_COPYING_ENABLED='true'
-AUTO_CODER_PR_MAX_LABELS='3'
-```
-
-### Project-Specific Examples
-
-See the `examples/` directory for detailed configuration templates for different project types:
-- [TypeScript/JavaScript projects](examples/typescript-project-config.json)
-- [Python projects](examples/python-project-config.json)
-- [Comprehensive configuration](examples/label-config.json)
-- [Minimal setup](examples/minimal-config.env)
-
-### Testing Your Configuration
-
-```bash
-# Process a specific issue to test label-based prompts
-auto-coder process-issues --repo owner/repo --only 123
-
-# Check configuration
-auto-coder config show
-```
-
-### Documentation
-
-For complete documentation with all options and best practices, see:
-- [Label-Based Prompt Configurations](examples/label-based-prompt-configurations.md)
-- [client-features.yaml](docs/client-features.yaml) (technical specification)
-
-## GraphRAG Integration (Experimental Feature)
-
-Auto-Coder supports GraphRAG (Graph Retrieval-Augmented Generation) integration using Neo4j and Qdrant.
-
-### GraphRAG Setup
-
-1. Install dependencies for GraphRAG:
+1. GraphRAG 用の依存関係をインストール:
 ```bash
 pip install -e ".[graphrag]"
 ```
 
-2. Start Neo4j and Qdrant with Docker:
+2. Docker で Neo4j と Qdrant を起動:
 ```bash
-# Start with Docker Compose
+# Docker Compose で起動
 docker compose -f docker-compose.graphrag.yml up -d
 
-# Check status
+# 状態確認
 docker compose -f docker-compose.graphrag.yml ps
 
-# Check logs
+# ログ確認
 docker compose -f docker-compose.graphrag.yml logs
 ```
 
-3. GraphRAG MCP Server Setup (optional):
+3. GraphRAG MCP サーバーのセットアップ（オプション）:
 ```bash
-# Automatic setup (recommended)
-# Use bundled custom MCP server (code-analysis specialized fork)
+# 自動セットアップ（推奨）
+# バンドルされたカスタムMCPサーバー（コード分析専用フォーク）を使用
 auto-coder graphrag setup-mcp
 
-# Manual setup
+# 手動セットアップ
 cd ~/graphrag_mcp
 uv sync
 uv run main.py
 ```
 
-**Note**: This MCP server is a custom fork of `rileylemm/graphrag_mcp`, specialized for TypeScript/JavaScript code analysis. See `docs/client-features.yaml` `external_dependencies.graphrag_mcp` section for details.
+**注**: このMCPサーバーは `rileylemm/graphrag_mcp` のカスタムフォークで、TypeScript/JavaScriptコード分析に特化しています。詳細は `docs/client-features.yaml` の `external_dependencies.graphrag_mcp` セクションを参照してください。
 
-### Verifying GraphRAG Service Operation
+### GraphRAG サービスの動作確認
 
-We have prepared a script to verify that Neo4j and Qdrant are operating correctly:
+Neo4j と Qdrant が正しく動作しているか確認するためのスクリプトを用意しています:
 
 ```bash
-# Test all (default)
+# 全部テスト（デフォルト）
 python scripts/check_graphrag_services.py
 
-# Test direct access only
+# 直接アクセスのみテスト
 python scripts/check_graphrag_services.py --direct-only
 
-# Test MCP only
+# MCP のみテスト
 python scripts/check_graphrag_services.py --mcp-only
 ```
 
-This script verifies:
-- Direct access to Neo4j (Bolt protocol)
-  - Database version check
-  - Node creation and search
-  - Relationship creation
-  - Path search
-- Direct access to Qdrant (HTTP API)
-  - Collection creation
-  - Vector insertion
-  - Similarity search
-  - Filtered search
-- Access via GraphRAG MCP
-  - Docker container status check
-  - MCP server status check
-  - Index status check
+このスクリプトは以下を確認します:
+- Neo4j への直接アクセス（Bolt プロトコル）
+  - データベースバージョン確認
+  - ノード作成・検索
+  - リレーションシップ作成
+  - パス検索
+- Qdrant への直接アクセス（HTTP API）
+  - コレクション作成
+  - ベクトル挿入
+  - 類似検索
+  - フィルタ付き検索
+- GraphRAG MCP 経由でのアクセス
+  - Docker コンテナ状態確認
+  - MCP サーバー状態確認
+  - インデックス状態確認
 
-### Debugging in VS Code
+### VS Code でのデバッグ実行
 
-The following debugging configurations are included in `.vscode/launch.json`:
+`.vscode/launch.json` に以下のデバッグ設定が含まれています:
 
-- **Check GraphRAG Services (All)**: Test all (default)
-- **Check GraphRAG Services (Direct only)**: Test direct access only
-- **Check GraphRAG Services (MCP only)**: Test MCP only
+- **Check GraphRAG Services (All)**: 全部テスト（デフォルト）
+- **Check GraphRAG Services (Direct only)**: 直接アクセスのみテスト
+- **Check GraphRAG Services (MCP only)**: MCP のみテスト
 
-### GraphRAG Connection Information
+### GraphRAG の接続情報
 
-Default connection information:
+デフォルトの接続情報:
 
-| Service | URL | Credentials |
-|---------|-----|-------------|
+| サービス | URL | 認証情報 |
+|---------|-----|---------|
 | Neo4j (Bolt) | `bolt://localhost:7687` | `neo4j` / `password` |
 | Neo4j (HTTP) | `http://localhost:7474` | `neo4j` / `password` |
-| Qdrant (HTTP) | `http://localhost:6333` | No authentication |
-| Qdrant (gRPC) | `http://localhost:6334` | No authentication |
+| Qdrant (HTTP) | `http://localhost:6333` | 認証なし |
+| Qdrant (gRPC) | `http://localhost:6334` | 認証なし |
 
-### Troubleshooting
+### トラブルシューティング
 
-#### Cannot connect to Neo4j
+#### Neo4j に接続できない
 
 ```bash
-# Check if container is running
+# コンテナが起動しているか確認
 docker ps | grep neo4j
 
-# Check logs
+# ログを確認
 docker logs auto-coder-neo4j
 
-# Check if port is open
+# ポートが開いているか確認
 nc -zv localhost 7687
 ```
 
-#### Cannot connect to Qdrant
+#### Qdrant に接続できない
 
 ```bash
-# Check if container is running
+# コンテナが起動しているか確認
 docker ps | grep qdrant
 
-# Check logs
+# ログを確認
 docker logs auto-coder-qdrant
 
-# Check if port is open
+# ポートが開いているか確認
 nc -zv localhost 6333
 ```
 
-## Development
+## 開発
 
-### Development Environment Setup
+### 開発環境のセットアップ
 
-1. Install development dependencies:
+1. 開発用依存関係をインストール:
 ```bash
 pip install -e ".[dev]"
 ```
 
-2. Setup pre-commit hooks:
+2. pre-commitフックをセットアップ:
 ```bash
 pre-commit install
 ```
 
-### VS Code Debug Settings
+### VS Code デバッグ設定
 
-The project includes the following debug configurations:
+プロジェクトには以下のデバッグ設定が含まれています：
 
-- **Auto-Coder: Create Feature Issues**: Feature proposal issue creation in outliner directory
-- **Auto-Coder: Auth Status**: Authentication status check in outliner directory
-- **Auto-Coder: Process Issues (Live)**: Actual processing execution in outliner directory
+- **Auto-Coder: Process Issues (Dry Run)**: outlinerディレクトリでドライランモード実行
+- **Auto-Coder: Create Feature Issues**: outlinerディレクトリで機能提案issue作成
+- **Auto-Coder: Auth Status**: outlinerディレクトリで認証状況確認
+- **Auto-Coder: Process Issues (Live)**: outlinerディレクトリで実際の処理実行
 
-To start debugging:
-1. Press `F5` in VS Code or open the "Run and Debug" panel
-2. Select from the above configurations and run
-3. Set breakpoints for step-by-step execution
+デバッグを開始するには：
+1. VS Codeで `F5` を押すか、「実行とデバッグ」パネルを開く
+2. 上記の設定から選択して実行
+3. ブレークポイントを設定してステップ実行が可能
 
-### Running Tests
+### テストの実行
 
 ```bash
-# Run all tests
+# 全テストを実行
 pytest
 
-# Run tests with coverage
+# カバレッジ付きでテストを実行
 pytest --cov=src/auto_coder --cov-report=html
 
-# Run specific test file
+# 特定のテストファイルを実行
 pytest tests/test_github_client.py
 ```
 
-### Code Quality Checks
+### コード品質チェック
 
 ```bash
-# Formatting
+# フォーマット
 black src/ tests/
 
-# Import sorting
+# インポート順序
 isort src/ tests/
 
-# Linting
+# リンター
 flake8 src/ tests/
 
-# Type checking
+# 型チェック
 mypy src/
-
-# Type checking via pre-commit (using uv)
-# Hooks are set up via pre-commit install
 ```
 
-## Architecture
+## アーキテクチャ
 
-### Component Structure
+### コンポーネント構成
 
 ```
 src/auto_coder/
-├── cli.py              # CLI entry point
-├── github_client.py    # GitHub API client (singleton)
-├── gemini_client.py    # Gemini AI client
-├── backend_manager.py  # LLM backend manager (singleton)
-├── automation_engine.py # Main automation engine
-└── config.py          # Configuration management
+├── cli.py              # CLIエントリーポイント
+├── github_client.py    # GitHub API クライアント
+├── gemini_client.py    # Gemini AI クライアント
+├── automation_engine.py # メイン自動化エンジン
+└── config.py          # 設定管理
 ```
 
-### Singleton Pattern
+### データフロー
 
-Auto-Coder implements the singleton pattern for key components to ensure consistent state and resource management:
+1. **CLI** → **AutomationEngine** → **GitHubClient** (データ取得)
+2. **AutomationEngine** → **GeminiClient** (AI分析)
+3. **AutomationEngine** → **GitHubClient** (アクション実行)
+4. **AutomationEngine** → **レポート生成**
 
-#### GitHubClient Singleton
-The `GitHubClient` class uses a thread-safe singleton pattern:
-```python
-from auto_coder.github_client import GitHubClient
+## 出力とレポート
 
-# Get the singleton instance
-client = GitHubClient.get_instance(token, disable_labels=False)
+実行結果は `~/.auto-coder/{repository}/` ディレクトリにJSON形式で保存されます:
 
-# Subsequent calls return the same instance
-client2 = GitHubClient.get_instance(token, disable_labels=False)
-# client is client2  # True
-```
+- `automation_report_*.json`: 自動化処理の結果（リポジトリごとに保存）
+- `jules_automation_report_*.json`: Jules モードでの自動化処理の結果
 
-#### LLMBackendManager Singleton
-The `LLMBackendManager` class manages LLM backends as a singleton:
-```python
-from auto_coder.backend_manager import get_llm_backend_manager
+例: `owner/repo` リポジトリの場合、レポートは `~/.auto-coder/owner_repo/` に保存されます。
 
-# Initialize once with configuration
-manager = get_llm_backend_manager(
-    default_backend="codex",
-    default_client=client,
-    factories={"codex": lambda: client}
-)
+## トラブルシューティング
 
-# Use globally
-response = run_llm_prompt("Your prompt here")
-```
+### よくある問題
 
-For detailed usage patterns, see [GLOBAL_BACKEND_MANAGER_USAGE.md](GLOBAL_BACKEND_MANAGER_USAGE.md).
+1. **GitHub API制限**: レート制限に達した場合は時間をおいて再実行
+2. **Gemini API エラー**: APIキーが正しく設定されているか確認
+3. **権限エラー**: GitHubトークンに適切な権限があるか確認
 
-### Data Flow
-
-1. **CLI** → **AutomationEngine** → **GitHubClient** (data retrieval)
-2. **AutomationEngine** → **GeminiClient** (AI analysis)
-3. **AutomationEngine** → **GitHubClient** (action execution)
-4. **AutomationEngine** → **Report Generation**
-
-## Output and Reports
-
-Execution results are saved in JSON format in the `~/.auto-coder/{repository}/` directory:
-
-- `automation_report_*.json`: Results of automation processing (saved per repository)
-- `jules_automation_report_*.json`: Results of automation processing in Jules mode
-
-Example: For `owner/repo` repository, reports are saved in `~/.auto-coder/owner_repo/`.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **GitHub API limits**: Wait some time before retrying if you hit rate limits
-2. **Gemini API errors**: Check if API keys are correctly configured
-3. **Permission errors**: Check if GitHub token has appropriate permissions
-
-#### "Unsupported backend specified" Error
-
-If you see this error with a custom backend name:
-1. Ensure you have set `backend_type` in your configuration
-2. Use a valid backend type: `codex`, `codex-mcp`, `gemini`, `qwen`, `claude`, or `auggie`
-3. Ensure the required CLI tool for the `backend_type` is installed
-
-**Example fix:**
-```toml
-[backends.my-custom-backend]
-backend_type = "codex"  # Add this line
-model = "grok-4.1-fast"
-openai_api_key = "your-key"
-openai_base_url = "https://openrouter.ai/api/v1"
-```
-
-See [Configuration Guide](docs/configuration.md) for detailed troubleshooting.
-
-### Checking Logs
+### ログの確認
 
 ```bash
-# Set log level to DEBUG
+# ログレベルを DEBUG に設定
 export LOG_LEVEL=DEBUG
-auto-coder process-issues --repo owner/repo
+auto-coder process-issues --repo owner/repo --dry-run
 ```
 
-## License
+## ライセンス
 
-This project is published under the MIT license. See the [LICENSE](LICENSE) file for details.
+このプロジェクトはMITライセンスの下で公開されています。詳細は[LICENSE](LICENSE)ファイルを参照してください。
 
-## Contributing
+## 貢献
 
-We welcome pull requests and issue reports. Before contributing, please ensure:
+プルリクエストや issue の報告を歓迎します。貢献する前に、以下を確認してください:
 
-1. Tests pass
-2. Code style is consistent
-3. New features include appropriate tests
+1. テストが通ること
+2. コードスタイルが統一されていること
+3. 新機能には適切なテストが含まれていること
 
-## Support
+## サポート
 
-If you have issues or questions, please create a GitHub issue.
+問題や質問がある場合は、GitHubのissueを作成してください。

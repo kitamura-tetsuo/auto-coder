@@ -66,10 +66,10 @@ def update_version_files(version: str) -> None:
             REPO_ROOT / "src" / "auto_coder" / "__init__.py",
             r'^(__version__\s*=\s*")([^\"]+)(")',
         ),
-        # (
-        #     REPO_ROOT / "docs" / "client-features.yaml",
-        #     r'^(\s*version:\s*")([^\"]+)(")',
-        # ),
+        (
+            REPO_ROOT / "docs" / "client-features.yaml",
+            r'^(\s*version:\s*")([^\"]+)(")',
+        ),
     ]
 
     uv_lock_path = REPO_ROOT / "uv.lock"

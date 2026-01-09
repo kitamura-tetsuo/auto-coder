@@ -1,9 +1,8 @@
 """
 Base class for LLM clients.
 """
-
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Optional
 
 
 class LLMClientBase(ABC):
@@ -11,13 +10,6 @@ class LLMClientBase(ABC):
 
     All LLM clients must implement the _run_llm_cli method and MCP configuration methods.
     """
-
-    def __init__(self) -> None:
-        """Initialize the LLM client base.
-
-        This is optional and can be overridden by subclasses.
-        """
-        self._extra_args: List[str] = []
 
     @abstractmethod
     def _run_llm_cli(self, prompt: str) -> str:
@@ -57,7 +49,9 @@ class LLMClientBase(ABC):
         """
         pass
 
-    def ensure_mcp_server_configured(self, server_name: str, command: str, args: list[str]) -> bool:
+    def ensure_mcp_server_configured(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Ensure a specific MCP server is configured, adding it if necessary.
 
         This is a convenience method that checks if the server is configured,
@@ -98,39 +92,6 @@ class LLMClientBase(ABC):
         """
         pass
 
-    def get_last_session_id(self) -> Optional[str]:
-        """Get the last session ID for session resumption.
-
-        This is optional and can be overridden by subclasses.
-        Default implementation returns None.
-
-        Returns:
-            The last session ID if available, None otherwise
-        """
-        return None
-
-    def set_extra_args(self, args: List[str]) -> None:
-        """Store extra arguments to be used in the next execution.
-
-        This is optional and can be overridden by subclasses.
-        Default implementation stores the args internally.
-
-        Args:
-            args: List of extra arguments to store for the next execution
-        """
-        self._extra_args = args
-
-    def consume_extra_args(self) -> List[str]:
-        """Return and clear any stored extra arguments.
-
-        Returns:
-            List of extra arguments previously set via set_extra_args.
-            Returns an empty list when no extra arguments are stored.
-        """
-        args = list(getattr(self, "_extra_args", []))
-        self._extra_args = []
-        return args
-
 
 class LLMBackendManagerBase(LLMClientBase):
     """Base class for LLM backend managers.
@@ -139,7 +100,9 @@ class LLMBackendManagerBase(LLMClientBase):
     """
 
     @abstractmethod
-    def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
+    def run_test_fix_prompt(
+        self, prompt: str, current_test_file: Optional[str] = None
+    ) -> str:
         """Execute LLM for test fix with optional test file tracking.
 
         Args:

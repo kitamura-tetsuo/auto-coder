@@ -6,22 +6,19 @@ Design: mirror GeminiClient/CodexClient public surface so AutomationEngine can u
 - switch_to_conflict_model() / switch_to_default_model()
 - suggest_features(repo_context)
 """
-
 from __future__ import annotations
 
 import json
 import os
 import subprocess
-import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
-from .llm_backend_config import get_llm_config
+from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMClientBase
-from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .usage_marker_utils import has_usage_marker_match
+from .qwen_provider_config import load_qwen_provider_configs
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -36,64 +33,28 @@ class QwenClient(LLMClientBase):
 
     def __init__(
         self,
-        backend_name: Optional[str] = None,
-        use_env_vars: bool = True,
-        preserve_existing_env: bool = False,
-    ) -> None:
-        """Initialize QwenClient.
-
-        Args:
-            backend_name: Backend name to use for configuration lookup (optional).
-            use_env_vars: If True, pass credentials via environment variables.
-                         If False, use command-line options (default: True)
-            preserve_existing_env: If True, preserve existing OPENAI_* env vars.
-                                  If False, clear them before setting new values (default: False)
-        """
-        super().__init__()
-        config = get_llm_config()
-        self.config_backend = config.get_backend_config(backend_name or "qwen")
-        self.model_name = (self.config_backend and self.config_backend.model) or "qwen3-coder-plus"
-
-        def _as_list(value: Any) -> List[str]:
-            if isinstance(value, list):
-                return value
-            if isinstance(value, tuple):
-                return list(value)
-            return []
-
-        options_for_noedit = _as_list(getattr(self.config_backend, "options_for_noedit", None) if self.config_backend else None)
-        general_options = _as_list(self.config_backend.options if self.config_backend else None)
-        # Backwards compatibility: use options_for_noedit if present, otherwise use general options
-        # This maintains the old behavior for existing configs
-        self.options = options_for_noedit or general_options
-        self.options_for_noedit = options_for_noedit
-        self.api_key = self.config_backend and self.config_backend.api_key
-        self.base_url = self.config_backend and self.config_backend.base_url
-        self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
-        self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
-        # Store usage_markers from config
-        self.usage_markers = _as_list(getattr(self.config_backend, "usage_markers", None) if self.config_backend else None)
-
+        model_name: str = "qwen3-coder-plus",
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+    ):
+        self.model_name = model_name or "qwen3-coder-plus"
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
         self.conflict_model = self.model_name
         self.timeout: Optional[int] = None
-        self.use_env_vars = use_env_vars
-        self.preserve_existing_env = preserve_existing_env
+        # OpenAI-compatible env overrides (Qwen backend only)
+        self.openai_api_key = openai_api_key
+        self.openai_base_url = openai_base_url
 
-        # Validate required options for this backend
-        if self.config_backend:
-            required_errors = self.config_backend.validate_required_options()
-            if required_errors:
-                for error in required_errors:
-                    logger.warning(error)
-
-        # Initialize LLM output logger
-        self.output_logger = LLMOutputLogger()
+        self._provider_chain: List[_QwenProviderOption] = self._build_provider_chain()
+        self._active_provider_index: int = 0
+        self._last_used_model: Optional[str] = self.model_name
 
         # Verify qwen CLI is available
         try:
-            result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["qwen", "--version"], capture_output=True, text=True, timeout=10
+            )
             if result.returncode != 0:
                 raise RuntimeError("qwen CLI not available or not working")
         except Exception as e:
@@ -103,12 +64,16 @@ class QwenClient(LLMClientBase):
     def switch_to_conflict_model(self) -> None:
         # Keep same model by default. In future, allow switching to a lighter model.
         self.model_name = self.conflict_model
-        logger.debug("QwenClient.switch_to_conflict_model: active model -> %s", self.model_name)
+        logger.debug(
+            "QwenClient.switch_to_conflict_model: active model -> %s", self.model_name
+        )
 
     def switch_to_default_model(self) -> None:
         # Restore to the initially configured default model.
         self.model_name = self.default_model
-        logger.debug("QwenClient.switch_to_default_model: active model -> %s", self.model_name)
+        logger.debug(
+            "QwenClient.switch_to_default_model: active model -> %s", self.model_name
+        )
 
     # ----- Helpers -----
     def _escape_prompt(self, prompt: str) -> str:
@@ -116,227 +81,177 @@ class QwenClient(LLMClientBase):
         return prompt.strip()
 
     # ----- Core execution -----
-    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        """Execute LLM with the given prompt.
+    def _run_qwen_cli(self, prompt: str) -> str:
+        """Run qwen CLI with the given prompt and stream output line by line.
 
-        This method is called by BackendManager which handles provider rotation.
-        Environment variables for the current provider are set by BackendManager.
-
-        Args:
-            prompt: The prompt to send to the LLM
-            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
-
-        Returns:
-            The LLM's response as a string
+        We set OPENAI_* env vars when provided and invoke non-interactively with -p/--prompt.
         """
         escaped_prompt = self._escape_prompt(prompt)
 
-        # Get model from environment or use current model
-        provider_model = os.environ.get("QWEN_MODEL")
+        if not self._provider_chain:
+            raise RuntimeError("No Qwen providers are configured")
 
-        # Always use OAuth path (native Qwen CLI)
-        # Note: options_for_noedit is already used in self.options during initialization
-        return self._run_qwen_cli(escaped_prompt, provider_model, is_noedit)
+        usage_errors: List[str] = []
+        start_index = self._active_provider_index
 
-    def _run_qwen_cli(self, escaped_prompt: str, model: Optional[str], is_noedit: bool = False) -> str:
-        """Run qwen CLI for OAuth (no provider credentials)."""
+        for offset in range(len(self._provider_chain)):
+            provider_index = (start_index + offset) % len(self._provider_chain)
+            provider = self._provider_chain[provider_index]
+
+            try:
+                output = self._execute_with_provider(provider, escaped_prompt, prompt)
+                self._active_provider_index = provider_index
+                self._last_used_model = provider.model or self.model_name
+                self.model_name = self._last_used_model or self.model_name
+                return output
+            except AutoCoderUsageLimitError as exc:
+                usage_errors.append(f"{provider.display_name}: {str(exc).strip()}")
+                logger.warning(
+                    "Qwen provider '%s' hit usage limit. Trying next provider.",
+                    provider.display_name,
+                )
+                continue
+
+        if usage_errors:
+            aggregated = " | ".join(usage_errors)
+            raise AutoCoderUsageLimitError(
+                f"All Qwen providers reached usage limits: {aggregated}"
+            )
+
+        raise RuntimeError("Qwen providers exhausted without usable response")
+
+    def _execute_with_provider(
+        self,
+        provider: "_QwenProviderOption",
+        escaped_prompt: str,
+        original_prompt: str,
+    ) -> str:
         env = os.environ.copy()
 
-        if self.api_key:
-            env["QWEN_API_KEY"] = self.api_key
-        if self.base_url:
-            env["QWEN_BASE_URL"] = self.base_url
-        if self.openai_api_key:
-            env["OPENAI_API_KEY"] = self.openai_api_key
-        if self.openai_base_url:
-            env["OPENAI_BASE_URL"] = self.openai_base_url
+        model_to_use = provider.model or self.default_model
 
-        # Get model: use provider_model from env, or self.model_name if not set
-        # If provider_model is provided (from env), use it
-        # Otherwise use current self.model_name (may have been switched)
-        # If that's also not set, fall back to self.default_model
-        if model:
-            model_to_use = model
-        elif self.model_name:
-            model_to_use = self.model_name
-        else:
-            model_to_use = self.default_model
+        # Reset OPENAI_* values before applying overrides.
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("OPENAI_BASE_URL", None)
+        env.pop("OPENAI_MODEL", None)
 
-        # Pass credentials via environment variables if use_env_vars is True
-        if self.use_env_vars:
-            if not self.preserve_existing_env:
-                # Reset QWEN_MODEL value before applying overrides
-                env.pop("QWEN_MODEL", None)
-            env["QWEN_MODEL"] = model_to_use
+        if provider.api_key:
+            env["OPENAI_API_KEY"] = provider.api_key
+        if provider.base_url:
+            env["OPENAI_BASE_URL"] = provider.base_url
+        if model_to_use:
+            env["OPENAI_MODEL"] = model_to_use
 
-        cmd = ["qwen"]
-
-        # Get processed options with placeholders replaced
-        if self.config_backend:
-            processed_options = self.config_backend.replace_placeholders(model_name=model_to_use)
-            # Use options_for_noedit if is_noedit is True, otherwise use general options
-            if is_noedit and processed_options["options_for_noedit"]:
-                options_to_use = processed_options["options_for_noedit"]
-            else:
-                options_to_use = processed_options["options"]
-        else:
-            # Fallback if config_backend is not available
-            options_to_use = self.options
-
-        # Add configured options from config
-        if options_to_use:
-            cmd.extend(options_to_use)
-
-        # Add model flag if model is specified
+        cmd = ["qwen", "-y"]
         if model_to_use:
             cmd.extend(["-m", model_to_use])
-
-        # Apply any extra arguments (e.g., session resume flags) before the prompt
-        extra_args = self.consume_extra_args()
-        if extra_args:
-            cmd.extend(extra_args)
-
-        # Add prompt flag and prompt
         cmd.extend(["-p", escaped_prompt])
 
-        return self._execute_cli(cmd, "qwen", env, model_to_use)
+        logger.warning(
+            "LLM invocation: qwen CLI is being called. Keep LLM calls minimized."
+        )
+        logger.debug(
+            "Running qwen CLI with prompt length: %d characters", len(original_prompt)
+        )
+        logger.info(
+            "🤖 Running (%s): qwen %s",
+            provider.display_name,
+            "-m %s -p [prompt]" % model_to_use if model_to_use else "-p [prompt]",
+        )
+        logger.info("=" * 60)
 
-    def _execute_cli(
-        self,
-        cmd: List[str],
-        cli_name: str,
-        env: Dict[str, str],
-        model: Optional[str],
-    ) -> str:
-        """Execute a CLI command and handle the response.
+        result = CommandExecutor.run_command(
+            cmd,
+            stream_output=True,
+            check_success=False,
+            env=env,
+        )
+        logger.info("=" * 60)
 
-        Args:
-            cmd: Command to execute
-            cli_name: Name of the CLI for logging
-            env: Environment variables
-            model: Model name for logging
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        combined_parts = [part for part in (stdout, stderr) if part]
+        full_output = (
+            "\n".join(combined_parts)
+            if combined_parts
+            else (result.stderr or result.stdout or "")
+        )
+        full_output = full_output.strip()
 
-        Returns:
-            The CLI's response as a string
+        if self._is_usage_limit(full_output, result.returncode):
+            raise AutoCoderUsageLimitError(full_output)
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"qwen CLI failed with return code {result.returncode}\n{full_output}"
+            )
+
+        return full_output
+
+    @staticmethod
+    def _is_usage_limit(message: str, returncode: int) -> bool:
+        low = message.lower()
+        if "rate limit" in low or "quota" in low:
+            return True
+        if returncode != 0 and ("429" in low or "too many requests" in low):
+            return True
+        return False
+
+    def _build_provider_chain(self) -> List["_QwenProviderOption"]:
+        providers: List[_QwenProviderOption] = []
+
+        if self.openai_api_key or self.openai_base_url:
+            providers.append(
+                _QwenProviderOption(
+                    name="custom-openai",
+                    display_name="Custom OpenAI-compatible",
+                    api_key=self.openai_api_key,
+                    base_url=self.openai_base_url,
+                    model=self.model_name,
+                )
+            )
+
+        configured = load_qwen_provider_configs()
+        for cfg in configured:
+            providers.append(
+                _QwenProviderOption(
+                    name=cfg.name,
+                    display_name=cfg.description or cfg.name,
+                    api_key=cfg.api_key,
+                    base_url=cfg.base_url,
+                    model=cfg.model or self.default_model,
+                )
+            )
+
+        # Always allow falling back to OAuth as the last resort so that API keys are
+        # consumed before the default shared pool is hit.
+        providers.append(
+            _QwenProviderOption(
+                name="qwen-oauth",
+                display_name="Qwen OAuth",
+                api_key=None,
+                base_url=None,
+                model=self.model_name,
+            )
+        )
+
+        return providers
+
+    def _run_gemini_cli(self, prompt: str) -> str:
+        """Temporary alias for backward compatibility.
+        Prefer calling _run_qwen_cli going forward; this delegates to _run_qwen_cli.
         """
-        start_time = time.time()
-        status = "success"
-        error_message = None
-        prompt = ""  # We'll extract this from cmd if available
-        full_output = ""
+        return self._run_qwen_cli(prompt)
 
-        # Try to extract prompt from command (last argument typically)
-        if len(cmd) > 0:
-            # The prompt is typically the last argument
-            prompt = cmd[-1]
-
-        try:
-            display_model = model or self.default_model
-            display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
-
-            logger.warning(
-                "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
-                cli_name,
-            )
-            logger.info(
-                "🤖 Running (qwen): %s",
-                display_cmd,
-            )
-            logger.info("=" * 60)
-
-            result = CommandExecutor.run_command(
-                cmd,
-                stream_output=True,
-                env=env,
-                idle_timeout=1800,
-            )
-            logger.info("=" * 60)
-
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
-            full_output = full_output.strip()
-
-            # Check for timeout (returncode -1 and "timed out" in stderr)
-            if result.returncode == -1 and "timed out" in full_output.lower():
-                status = "error"
-                error_message = full_output
-                raise AutoCoderTimeoutError(full_output)
-
-            if self._is_usage_limit(full_output, result.returncode):
-                status = "error"
-                error_message = full_output
-                raise AutoCoderUsageLimitError(full_output)
-
-            if result.returncode != 0:
-                status = "error"
-                error_message = f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}"
-                raise RuntimeError(error_message)
-
-            return full_output
-
-        except AutoCoderUsageLimitError:
-            # Re-raise without catching
-            raise
-        except AutoCoderTimeoutError:
-            # Re-raise timeout errors
-            raise
-        except Exception as e:
-            raise
-        finally:
-            # Always log the interaction and print summary
-            duration_ms = (time.time() - start_time) * 1000
-
-            # Determine backend name based on cli_name
-            backend_name = "qwen"
-
-            # Log to JSON file
-            self.output_logger.log_interaction(
-                backend=backend_name,
-                model=model or self.default_model,
-                prompt=prompt,
-                response=full_output,
-                duration_ms=duration_ms,
-                status=status,
-                error=error_message,
-            )
-
-            # Print user-friendly summary to stdout
-            print("\n" + "=" * 60)
-            print(f"🤖 {cli_name.upper()} CLI Execution Summary")
-            print("=" * 60)
-            print(f"Backend: {backend_name}")
-            print(f"Model: {model or self.default_model}")
-            print(f"Prompt Length: {len(prompt)} characters")
-            print(f"Response Length: {len(full_output)} characters")
-            print(f"Duration: {duration_ms:.0f}ms")
-            print(f"Status: {status.upper()}")
-            if error_message:
-                print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
-            print("=" * 60 + "\n")
-
-    def _is_usage_limit(self, message: str, returncode: int) -> bool:
-        """Check if the error message indicates a usage limit."""
-        # Use configured usage_markers if available, otherwise fall back to defaults
-        if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
-            usage_markers = self.usage_markers
-        else:
-            # Default hardcoded usage markers
-            usage_markers = [
-                "rate limit",
-                "quota",
-                "429",
-            ]
-
-        usage_limit_detected = has_usage_marker_match(message, usage_markers)
-        return usage_limit_detected
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral alias: delegate to _run_qwen_cli (migration helper)."""
+        return self._run_qwen_cli(prompt)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:
         prompt = self._create_feature_suggestion_prompt(repo_context)
         try:
-            response_text = self._run_llm_cli(prompt)
+            response_text = self._run_qwen_cli(prompt)
             suggestions = self._parse_feature_suggestions(response_text)
             logger.info(f"Generated {len(suggestions)} feature suggestions (Qwen)")
             return suggestions
@@ -345,7 +260,7 @@ class QwenClient(LLMClientBase):
             return []
 
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
-        result: str = render_prompt(
+        return render_prompt(
             "feature.suggestion",
             repo_name=repo_context.get("name", "Unknown"),
             description=repo_context.get("description", "No description"),
@@ -353,7 +268,6 @@ class QwenClient(LLMClientBase):
             recent_issues=repo_context.get("recent_issues", []),
             recent_prs=repo_context.get("recent_prs", []),
         )
-        return result
 
     def _parse_feature_suggestions(self, response_text: str) -> List[Dict[str, Any]]:
         try:
@@ -361,8 +275,7 @@ class QwenClient(LLMClientBase):
             end_idx = response_text.rfind("]") + 1
             if start_idx != -1 and end_idx != -1:
                 json_str = response_text[start_idx:end_idx]
-                result: List[Dict[str, Any]] = json.loads(json_str)
-                return result
+                return json.loads(json_str)
             return []
         except json.JSONDecodeError:
             return []
@@ -429,7 +342,10 @@ class QwenClient(LLMClientBase):
                 if "already" in result.stderr.lower() or "exists" in result.stderr.lower():
                     logger.info(f"MCP server '{server_name}' already configured in Qwen")
                     return True
-                logger.error(f"Failed to add MCP server '{server_name}': " f"returncode={result.returncode}, stderr={result.stderr}")
+                logger.error(
+                    f"Failed to add MCP server '{server_name}': "
+                    f"returncode={result.returncode}, stderr={result.stderr}"
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to add Qwen MCP config: {e}")
@@ -437,3 +353,12 @@ class QwenClient(LLMClientBase):
         except Exception as e:
             logger.error(f"Unexpected error adding Qwen MCP config: {e}")
             return False
+
+
+@dataclass
+class _QwenProviderOption:
+    name: str
+    display_name: str
+    api_key: Optional[str]
+    base_url: Optional[str]
+    model: Optional[str]

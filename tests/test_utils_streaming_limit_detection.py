@@ -30,7 +30,9 @@ class _FakeStream:
 
 
 class _FakePopen:
-    def __init__(self, cmd, stdout=None, stderr=None, text=True, bufsize=1, cwd=None, env=None):
+    def __init__(
+        self, cmd, stdout=None, stderr=None, text=True, bufsize=1, cwd=None, env=None
+    ):
         # Provide a few lines to simulate Gemini streaming 429/RESOURCE_EXHAUSTED
         self.stdout = _FakeStream(
             [
@@ -84,12 +86,10 @@ class _FakeCompleted:
         self.stderr = stderr
 
 
-@patch("src.auto_coder.gemini_client.get_llm_config")
 @patch("subprocess.run")
 @patch("subprocess.Popen", new=_FakePopen)
-def test_streaming_detects_usage_limit_and_aborts_early(mock_run, mock_config):
-    mock_config.return_value.get_backend_config.return_value = None
+def test_streaming_detects_usage_limit_and_aborts_early(mock_run):
     mock_run.return_value = _FakeCompleted()
-    client = GeminiClient(backend_name="gemini")
+    client = GeminiClient(model_name="gemini-2.5-pro")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_llm_cli("hello")
+        client._run_gemini_cli("hello")

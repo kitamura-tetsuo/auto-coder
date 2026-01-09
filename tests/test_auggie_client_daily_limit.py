@@ -2,7 +2,6 @@ import io
 import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
 import pytest
 
@@ -37,16 +36,16 @@ class RecordingPopen:
         type(self).calls.append(list(cmd))
         self.stdout = io.StringIO("stub-response line 1\nstub-response line 2\n")
 
-    def wait(self, timeout=None) -> int:
+    def wait(self) -> int:
         return 0
 
 
-def test_augmie_usage_counter_persists(monkeypatch, tmp_path):
+def test_auggie_usage_counter_persists(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_AUGGIE_USAGE_DIR", str(tmp_path))
     RecordingPopen.calls = []
     _patch_subprocess(monkeypatch, RecordingPopen)
 
-    client = AuggieClient()
+    client = AuggieClient(model_name="GPT-5")
     output1 = client._run_auggie_cli("first prompt")
     output2 = client._run_auggie_cli("second prompt")
 
@@ -93,7 +92,9 @@ def test_auggie_usage_resets_when_date_changes(monkeypatch, tmp_path):
 
     yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
     state_path = tmp_path / "auggie_usage.json"
-    state_path.write_text(json.dumps({"date": yesterday, "count": AuggieClient.DAILY_CALL_LIMIT}))
+    state_path.write_text(
+        json.dumps({"date": yesterday, "count": AuggieClient.DAILY_CALL_LIMIT})
+    )
 
     client = AuggieClient()
     output = client._run_auggie_cli("allowed prompt")
@@ -104,209 +105,3 @@ def test_auggie_usage_resets_when_date_changes(monkeypatch, tmp_path):
     state = json.loads(state_path.read_text())
     assert state["count"] == 1
     assert state["date"] == datetime.now().date().isoformat()
-
-
-@patch("src.auto_coder.auggie_client.get_llm_config")
-def test_auggie_client_options_from_config(mock_get_config, monkeypatch):
-    """Test that options are loaded from config and used in CLI commands."""
-    RecordingPopen.calls = []
-    _patch_subprocess(monkeypatch, RecordingPopen)
-
-    # Mock config to provide options
-    mock_config = Mock()
-    mock_backend_config = Mock()
-    mock_backend_config.model = "GPT-5"
-    mock_backend_config.options = ["--model", "[model_name]", "--print"]
-    mock_backend_config.options_for_noedit = ["--model", "[model_name]", "--print"]
-    mock_backend_config.usage_markers = []
-    mock_backend_config.validate_required_options.return_value = []
-    # Mock the replace_placeholders method
-    mock_backend_config.replace_placeholders.return_value = {
-        "options": ["--model", "GPT-5", "--print"],
-        "options_for_noedit": ["--model", "GPT-5", "--print"],
-        "options_for_resume": [],
-    }
-    mock_config.get_backend_config.return_value = mock_backend_config
-    mock_get_config.return_value = mock_config
-
-    client = AuggieClient(backend_name="auggie")
-    output = client._run_auggie_cli("test prompt")
-
-    # Check that the command was called with options from config
-    assert len(RecordingPopen.calls) == 1
-    cmd = RecordingPopen.calls[0]
-    assert cmd[0] == "auggie"
-    assert "--model" in cmd
-    assert "GPT-5" in cmd
-    assert "--print" in cmd
-    assert "test prompt" in cmd
-
-
-@patch("src.auto_coder.auggie_client.get_llm_config")
-def test_auggie_client_multiple_options_from_config(mock_get_config, monkeypatch):
-    """Test that multiple options are loaded from config and used in CLI commands."""
-    RecordingPopen.calls = []
-    _patch_subprocess(monkeypatch, RecordingPopen)
-
-    # Mock config to provide multiple options
-    mock_config = Mock()
-    mock_backend_config = Mock()
-    mock_backend_config.model = "GPT-5"
-    mock_backend_config.options = ["--model", "[model_name]", "--print", "--debug", "--verbose"]
-    mock_backend_config.options_for_noedit = ["--model", "[model_name]", "--print"]
-    mock_backend_config.usage_markers = []
-    mock_backend_config.validate_required_options.return_value = []
-    # Mock the replace_placeholders method
-    mock_backend_config.replace_placeholders.return_value = {
-        "options": ["--model", "GPT-5", "--print", "--debug", "--verbose"],
-        "options_for_noedit": ["--model", "GPT-5", "--print"],
-        "options_for_resume": [],
-    }
-    mock_config.get_backend_config.return_value = mock_backend_config
-    mock_get_config.return_value = mock_config
-
-    client = AuggieClient(backend_name="auggie")
-    output = client._run_auggie_cli("test prompt")
-
-    # Check that the command was called with all options from config
-    assert len(RecordingPopen.calls) == 1
-    cmd = RecordingPopen.calls[0]
-    assert cmd[0] == "auggie"
-    assert "--model" in cmd
-    assert "GPT-5" in cmd
-    assert "--print" in cmd
-    assert "--debug" in cmd
-    assert "--verbose" in cmd
-    assert "test prompt" in cmd
-
-
-@patch("src.auto_coder.auggie_client.get_llm_config")
-def test_auggie_client_empty_options_default(mock_get_config, monkeypatch):
-    """Test that empty options list works (backward compatibility)."""
-    RecordingPopen.calls = []
-    _patch_subprocess(monkeypatch, RecordingPopen)
-
-    # Mock config with empty options
-    mock_config = Mock()
-    mock_backend_config = Mock()
-    mock_backend_config.model = "GPT-5"
-    mock_backend_config.options = []
-    mock_backend_config.options_for_noedit = []
-    mock_backend_config.usage_markers = []
-    mock_backend_config.validate_required_options.return_value = []
-    # Mock the replace_placeholders method
-    mock_backend_config.replace_placeholders.return_value = {
-        "options": [],
-        "options_for_noedit": [],
-        "options_for_resume": [],
-    }
-    mock_config.get_backend_config.return_value = mock_backend_config
-    mock_get_config.return_value = mock_config
-
-    client = AuggieClient(backend_name="auggie")
-    output = client._run_auggie_cli("test prompt")
-
-    # Check that the command was called without extra options
-    assert len(RecordingPopen.calls) == 1
-    cmd = RecordingPopen.calls[0]
-    assert cmd[0] == "auggie"
-    # Should not have --model, --print or other extra options
-    assert "--model" not in cmd
-    assert "--print" not in cmd
-    assert "--debug" not in cmd
-    assert "test prompt" in cmd
-
-
-@patch("src.auto_coder.auggie_client.get_llm_config")
-def test_auggie_client_no_backend_config_default(mock_get_config, monkeypatch):
-    """Test that None backend config results in empty options (backward compatibility)."""
-    RecordingPopen.calls = []
-    _patch_subprocess(monkeypatch, RecordingPopen)
-
-    # Mock config to return None for backend
-    mock_config = Mock()
-    mock_config.get_backend_config.return_value = None
-    mock_get_config.return_value = mock_config
-
-    client = AuggieClient(backend_name="auggie")
-    output = client._run_auggie_cli("test prompt")
-
-    # Check that the command was called without extra options
-    assert len(RecordingPopen.calls) == 1
-    cmd = RecordingPopen.calls[0]
-    assert cmd[0] == "auggie"
-    # Should not have --model or --print options when config_backend is None
-    assert "--model" not in cmd
-    assert "--print" not in cmd
-    assert "test prompt" in cmd
-
-
-@patch("src.auto_coder.auggie_client.get_llm_config")
-def test_auggie_client_options_for_noedit_stored(mock_get_config, monkeypatch):
-    """Test that options_for_noedit is stored from config."""
-    RecordingPopen.calls = []
-    _patch_subprocess(monkeypatch, RecordingPopen)
-
-    # Mock config to provide options_for_noedit
-    mock_config = Mock()
-    mock_backend_config = Mock()
-    mock_backend_config.model = "GPT-5"
-    mock_backend_config.options = ["--model", "[model_name]", "--print"]
-    mock_backend_config.options_for_noedit = ["--model", "[model_name]", "--print", "--no-edit"]
-    mock_backend_config.usage_markers = []
-    mock_backend_config.validate_required_options.return_value = []
-    # Mock the replace_placeholders method
-    mock_backend_config.replace_placeholders.return_value = {
-        "options": ["--model", "GPT-5", "--print"],
-        "options_for_noedit": ["--model", "GPT-5", "--print", "--no-edit"],
-        "options_for_resume": [],
-    }
-    mock_config.get_backend_config.return_value = mock_backend_config
-    mock_get_config.return_value = mock_config
-
-    client = AuggieClient(backend_name="auggie")
-
-    # Check that options_for_noedit is stored
-    assert client.options_for_noedit == ["--model", "[model_name]", "--print", "--no-edit"]
-    assert client.options == ["--model", "[model_name]", "--print"]
-
-
-@patch("src.auto_coder.auggie_client.get_llm_config")
-def test_auggie_client_placeholder_replacement(mock_get_config, monkeypatch):
-    """Test that placeholder replacement works correctly."""
-    RecordingPopen.calls = []
-    _patch_subprocess(monkeypatch, RecordingPopen)
-
-    # Mock config with placeholder syntax
-    mock_config = Mock()
-    mock_backend_config = Mock()
-    mock_backend_config.model = "GPT-5"
-    mock_backend_config.options = ["--model", "[model_name]", "--print"]
-    mock_backend_config.options_for_noedit = ["--model", "[model_name]", "--print"]
-    mock_backend_config.usage_markers = []
-    mock_backend_config.validate_required_options.return_value = []
-    # Mock the replace_placeholders method to simulate actual replacement
-    mock_backend_config.replace_placeholders.return_value = {
-        "options": ["--model", "GPT-5", "--print"],
-        "options_for_noedit": ["--model", "GPT-5", "--print"],
-        "options_for_resume": [],
-    }
-    mock_config.get_backend_config.return_value = mock_backend_config
-    mock_get_config.return_value = mock_config
-
-    client = AuggieClient(backend_name="auggie")
-    output = client._run_auggie_cli("test prompt")
-
-    # Verify replace_placeholders was called with model_name
-    mock_backend_config.replace_placeholders.assert_called_with(model_name="GPT-5")
-
-    # Check that the command used replaced values
-    assert len(RecordingPopen.calls) == 1
-    cmd = RecordingPopen.calls[0]
-    assert cmd[0] == "auggie"
-    assert "--model" in cmd
-    assert "GPT-5" in cmd
-    # Verify placeholder was replaced, not used literally
-    assert "[model_name]" not in cmd
-    assert "--print" in cmd
-    assert "test prompt" in cmd

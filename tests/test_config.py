@@ -19,6 +19,7 @@ class TestSettings:
         assert settings.gemini_model == "gemini-pro"
         assert settings.max_issues_per_run == -1
         assert settings.max_prs_per_run == -1
+        assert settings.dry_run is False
         assert settings.log_level == "INFO"
         assert "%(asctime)s" in settings.log_format
 
@@ -31,6 +32,7 @@ class TestSettings:
             "GEMINI_MODEL": "gemini-pro-vision",
             "MAX_ISSUES_PER_RUN": "20",
             "MAX_PRS_PER_RUN": "10",
+            "DRY_RUN": "true",
             "LOG_LEVEL": "DEBUG",
             "LOG_FORMAT": "custom format",
         },
@@ -45,6 +47,7 @@ class TestSettings:
         assert settings.gemini_model == "gemini-pro-vision"
         assert settings.max_issues_per_run == 20
         assert settings.max_prs_per_run == 10
+        assert settings.dry_run is True
         assert settings.log_level == "DEBUG"
         assert settings.log_format == "custom format"
 
@@ -68,10 +71,36 @@ class TestSettings:
         settings = Settings(
             max_issues_per_run=5,
             max_prs_per_run=3,
+            dry_run=True,
         )
 
         assert settings.max_issues_per_run == 5
         assert settings.max_prs_per_run == 3
+        assert settings.dry_run is True
+
+    @patch.dict(os.environ, {"DRY_RUN": "false"})
+    def test_boolean_environment_variable_false(self):
+        """Test boolean environment variable parsing for false values."""
+        settings = Settings()
+        assert settings.dry_run is False
+
+    @patch.dict(os.environ, {"DRY_RUN": "True"})
+    def test_boolean_environment_variable_true_capitalized(self):
+        """Test boolean environment variable parsing for capitalized true."""
+        settings = Settings()
+        assert settings.dry_run is True
+
+    @patch.dict(os.environ, {"DRY_RUN": "1"})
+    def test_boolean_environment_variable_numeric_true(self):
+        """Test boolean environment variable parsing for numeric true."""
+        settings = Settings()
+        assert settings.dry_run is True
+
+    @patch.dict(os.environ, {"DRY_RUN": "0"})
+    def test_boolean_environment_variable_numeric_false(self):
+        """Test boolean environment variable parsing for numeric false."""
+        settings = Settings()
+        assert settings.dry_run is False
 
     def test_settings_immutability(self):
         """Test that settings can be modified after creation."""
@@ -84,10 +113,10 @@ class TestSettings:
         assert settings.github_token != original_token
 
     def test_config_class_attributes(self):
-        """Test model_config attributes."""
+        """Test Config class attributes."""
         settings = Settings()
 
-        # Check that model_config is properly set
-        assert hasattr(Settings, "model_config")
-        assert Settings.model_config["env_file"] == ".env"
-        assert Settings.model_config["env_file_encoding"] == "utf-8"
+        # Check that Config class is properly set
+        assert hasattr(settings.Config, "env_file")
+        assert settings.Config.env_file == ".env"
+        assert settings.Config.env_file_encoding == "utf-8"

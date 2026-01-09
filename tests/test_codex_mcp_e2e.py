@@ -15,7 +15,7 @@ def test_codex_mcp_jsonrpc_handshake_and_tool_call_e2e(tmp_path, monkeypatch):
 
     client = CodexMCPClient()
     try:
-        out = client._run_llm_cli("hello world")
+        out = client._run_gemini_cli("hello world")
         # MCP単発API優先（prompts/call -> inference/create -> tools/run/execute/workspace-write -> echo）
         assert "PROMPT: hello world" in out
     finally:

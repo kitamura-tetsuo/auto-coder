@@ -1,179 +1,27 @@
 """
-BackendManager: Manages multiple backends in rotation, handling usage limits and
-automatic switching when the same current_test_file appears 3 consecutive times in apply_workspace_test_fix.
+BackendManager: 複数バックエンドを循環的に管理し、使用料制限や
+apply_workspace_test_fix での同一 current_test_file 3連続時の自動切替を行う。
 """
-
 from __future__ import annotations
 
-import contextlib
-import json
-import re
-import threading
-import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .backend_provider_manager import BackendProviderManager
-from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
-from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
-from .llm_backend_config import LLMBackendConfiguration, get_llm_config
+from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
-from .progress_footer import ProgressStage
 
 logger = get_logger(__name__)
 
-# Global singleton instance for general LLM operations
-_llm_instance: Optional[BackendManager] = None
-_noedit_instance: Optional[BackendManager] = None
-_instance_lock = threading.Lock()
-_initialization_lock = threading.Lock()
-
-# Explicit exports for mypy
-__all__ = [
-    "BackendManager",
-    "get_llm_backend_manager",
-    "run_llm_prompt",
-    "get_llm_backend_and_model",
-    "get_llm_backend_provider_and_model",
-    "LLMBackendManager",
-    # New names (preferred)
-    "get_noedit_backend_manager",
-    "run_llm_noedit_prompt",
-    "get_noedit_backend_and_model",
-    # Deprecated names (kept for backward compatibility)
-    "get_message_backend_manager",
-    "run_llm_message_prompt",
-    "get_message_backend_and_model",
-    # Utility functions
-    "parse_llm_output_as_json",
-]
-
-
-def parse_llm_output_as_json(output: str) -> Any:
-    """
-    Parse LLM output as JSON and extract content.
-
-    This standalone helper function handles various JSON output formats:
-    - Pure JSON (dict or list)
-    - Text followed by JSON (e.g., "Here's the result: {...}")
-    - JSON followed by text (e.g., "{...}\n\nAdditional info")
-    - Text, JSON, and more text (e.g., "Result: {...}\nEnd")
-    - Responses that include the prompt content before the final JSON block
-    - Markdown code blocks (e.g., "```json\n{...}\n```")
-
-    For list outputs (conversation history), extracts the content from the last message.
-    For dict outputs, returns the dict directly.
-
-    Args:
-        output: The raw LLM output string to parse
-
-    Returns:
-        The extracted content (dict or string from the last message in a list)
-
-    Raises:
-        ValueError: If the output cannot be parsed as JSON
-    """
-
-    def _extract_content(parsed: Any) -> Any:
-        """Extract the relevant content from parsed JSON."""
-        if isinstance(parsed, list):
-            if not parsed:
-                raise ValueError("Parsed JSON is an empty list")
-            last_message = parsed[-1]
-            if isinstance(last_message, dict):
-                for key in ("content", "message", "text", "response"):
-                    if key in last_message:
-                        return last_message[key]
-                return last_message
-            return last_message
-        if isinstance(parsed, dict):
-            return parsed
-        return parsed
-
-    # First, try to handle markdown code blocks (common in LLM responses)
-    stripped_output = output.strip()
-    if "```json" in stripped_output:
-        try:
-            json_match = stripped_output.split("```json")[1].split("```")[0].strip()
-            parsed = json.loads(json_match)
-            return _extract_content(parsed)
-        except (json.JSONDecodeError, IndexError):
-            pass
-    elif "```" in stripped_output:
-        try:
-            json_match = stripped_output.split("```")[1].split("```")[0].strip()
-            parsed = json.loads(json_match)
-            return _extract_content(parsed)
-        except (json.JSONDecodeError, IndexError):
-            pass
-
-    # Try to parse the entire output (covers primitive JSON values)
-    try:
-        parsed_full = json.loads(stripped_output)
-        return _extract_content(parsed_full)
-    except json.JSONDecodeError:
-        pass
-
-    # Fall back to scanning for the last valid JSON block in the output
-    decoder = json.JSONDecoder()
-    json_candidates: List[Any] = []
-    search_pos = 0
-
-    while search_pos < len(output):
-        match = re.search(r"[\\[{]", output[search_pos:])
-        if not match:
-            break
-        start = search_pos + match.start()
-        try:
-            parsed_partial, end = decoder.raw_decode(output[start:])
-            json_candidates.append(parsed_partial)
-            search_pos = start + end
-        except json.JSONDecodeError:
-            search_pos = start + 1
-
-    if not json_candidates:
-        raise ValueError(f"Failed to parse output as JSON: No JSON object could be decoded\nOutput: {output}")
-
-    # Use the last successfully parsed JSON block (handles prompt + JSON scenarios)
-    parsed_json = _extract_content(json_candidates[-1])
-
-    # Special handling for agent runner output which wraps result in a "result" field
-    # and sometimes that result is a string containing JSON that needs to be parsed again
-    if isinstance(parsed_json, dict) and "result" in parsed_json:
-        inner_result = parsed_json["result"]
-        # If inner result is a string, try to parse it as JSON
-        if isinstance(inner_result, str):
-            try:
-                # Check for markdown code blocks in the inner string
-                if "```json" in inner_result:
-                    inner_json_match = inner_result.split("```json")[1].split("```")[0].strip()
-                    return json.loads(inner_json_match)
-                elif "```" in inner_result:
-                    inner_json_match = inner_result.split("```")[1].split("```")[0].strip()
-                    return json.loads(inner_json_match)
-                else:
-                    # Try direct parsing
-                    return json.loads(inner_result.strip())
-            except (json.JSONDecodeError, IndexError):
-                # If parsing fails, return the original parsed_json
-                pass
-        # If inner result is already a dict/list, return it
-        elif isinstance(inner_result, (dict, list)):
-            return inner_result
-
-    return parsed_json
-
 
 class BackendManager(LLMBackendManagerBase):
-    """Wrapper for managing LLM clients in circular rotation.
+    """LLMクライアントを循環的に切替管理するラッパー。
 
-    - Provides _run_llm_cli(prompt) (client compatibility)
-    - run_test_fix_prompt(prompt, current_test_file) is an extension for apply_workspace_test_fix:
-      If the same model and current_test_file are given 3 consecutive times, rotate to the next backend.
-      If a different current_test_file comes, reset to the default backend.
-    - Each client is expected to throw AutoCoderUsageLimitError when reaching usage limits,
-      and this triggers switching to the next backend for automatic retry.
+    - _run_llm_cli(prompt) を提供（クライアント互換）
+    - run_test_fix_prompt(prompt, current_test_file) は apply_workspace_test_fix 用の拡張:
+      同一モデル・同一 current_test_file が3回連続で与えられた場合に次のバックエンドへ循環切替。
+      異なる current_test_file が来た場合はデフォルトバックエンドに戻す。
+    - 各クライアントが使用料制限に達した場合、AutoCoderUsageLimitError を投げる前提で
+      これを受けて次のバックエンドに切替して自動リトライする。
     """
 
     def __init__(
@@ -182,105 +30,32 @@ class BackendManager(LLMBackendManagerBase):
         default_client: Any,
         factories: Dict[str, Callable[[], Any]],
         order: Optional[List[str]] = None,
-        provider_manager: Optional[BackendProviderManager] = None,
     ) -> None:
-        # Backend order (circular)
+        # バックエンド順序（循環）
         self._all_backends = order[:] if order else list(factories.keys())
-        # Rotate default to front
+        # デフォルトを先頭にローテート
         if default_backend in self._all_backends:
             while self._all_backends[0] != default_backend:
                 self._all_backends.append(self._all_backends.pop(0))
         else:
             self._all_backends.insert(0, default_backend)
-        # Client cache (lazy generation)
+        # クライアントのキャッシュ（遅延生成）
         self._factories = factories
         self._clients: Dict[str, Optional[Any]] = {k: None for k in self._all_backends}
         self._clients[default_backend] = default_client
         self._current_idx = 0
         self._default_backend = default_backend
 
-        # Track recent prompt/model/backend for apply_workspace_test_fix
+        # apply_workspace_test_fix のための直近プロンプト/モデル/バックエンド追跡
         self._last_prompt: Optional[str] = None
-        # Initialize _last_backend to current backend for testing purposes
-        self._last_backend: Optional[str] = default_backend
-        # Also record the most recently used model name to leave correct information in test CSV
-        # Initialize from default client if available
+        self._last_backend: Optional[str] = None
+        # 直近で使用したモデル名も記録し、テスト用CSVに正しい情報を残せるようにする
         self._last_model: Optional[str] = getattr(default_client, "model_name", None)
-        # If model_name is not available from client, try to get it from the client directly
-        if self._last_model is None and hasattr(default_client, "get_last_backend_and_model"):
-            # Some clients might have this method to get backend info
-            try:
-                backend, model = default_client.get_last_backend_and_model()
-                self._last_model = model
-            except Exception:
-                self._last_model = None
-        # Track current_test_file (switch if same file continues 3 times)
+        # current_test_file の追跡（3回同じファイルが続いたら切替）
         self._last_test_file: Optional[str] = None
         self._same_test_file_count: int = 0
 
-        # Track session ID of the last executed backend
-        self._last_session_id: Optional[str] = None
-
-        # Provider manager for backend provider metadata
-        # Implements provider rotation logic for switching between different provider implementations
-        # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
-        self._provider_manager: BackendProviderManager = provider_manager or BackendProviderManager.get_default_manager()
-
-        # State manager for persistence of backend state (e.g., for auto-reset functionality)
-        self._state_manager = BackendStateManager()
-        # Session state manager for resuming sessions across executions
-        self._session_state_manager = BackendSessionManager()
-        self._restore_session_state()
-
-    @property
-    def provider_manager(self) -> BackendProviderManager:
-        """
-        Get the provider manager for this backend manager.
-
-        Returns:
-            BackendProviderManager: The provider manager instance
-
-        Note: The provider manager implements provider rotation logic, including
-        automatic failover when AutoCoderUsageLimitError occurs, environment
-        variable handling for provider-specific configuration, and tracking of
-        last used providers for debugging and telemetry.
-        """
-        return self._provider_manager
-
-    def _restore_session_state(self) -> None:
-        """
-        Restore last session information from persisted state.
-
-        This enables session resume across process restarts when the same backend
-        is invoked consecutively and supports resume options.
-        """
-        try:
-            session_state = self._session_state_manager.load_state()
-            if session_state.last_backend and session_state.last_session_id and session_state.last_backend in self._all_backends:
-                self._last_backend = session_state.last_backend
-                self._last_session_id = session_state.last_session_id
-                logger.debug(
-                    "Restored session state for backend '%s' with session id present",
-                    session_state.last_backend,
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Failed to restore session state: %s", exc)
-
-    def _save_session_state(self, backend_name: str, session_id: Optional[str]) -> None:
-        """
-        Persist session metadata for the provided backend.
-
-        Args:
-            backend_name: Backend whose session should be saved
-            session_id: Session identifier or None to clear
-        """
-        try:
-            state: BackendSessionState = create_session_state(backend_name, session_id)
-            self._session_state_manager.save_state(state)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Failed to save session state for backend '%s': %s", backend_name, exc)
-
-    # ---------- Basic Operations ----------
+    # ---------- 基本操作 ----------
     def _current_backend_name(self) -> str:
         return self._all_backends[self._current_idx]
 
@@ -288,7 +63,7 @@ class BackendManager(LLMBackendManagerBase):
         cli = self._clients.get(name)
         if cli is not None:
             return cli
-        # Lazy generation
+        # 遅延生成
         fac = self._factories.get(name)
         if fac is None:
             raise RuntimeError(f"No factory for backend: {name}")
@@ -297,13 +72,13 @@ class BackendManager(LLMBackendManagerBase):
             self._clients[name] = cli
             return cli
         except Exception as e:
-            # Skip if unable to generate (proceed to next)
+            # 生成できない場合はスキップ（次へ）
             raise RuntimeError(f"Failed to initialize backend '{name}': {e}")
 
     def _switch_to_index(self, idx: int) -> None:
         self._current_idx = idx % len(self._all_backends)
         try:
-            # Model switching linkage: restore to default
+            # モデル切替連動：デフォルト戻し
             cli = self._get_or_create_client(self._current_backend_name())
             try:
                 cli.switch_to_default_model()
@@ -313,405 +88,93 @@ class BackendManager(LLMBackendManagerBase):
             pass
 
     def switch_to_next_backend(self) -> None:
-        """Switch to the next backend in the rotation.
-
-        This method rotates to the next backend and saves the new state
-        for persistence and auto-reset functionality.
-
-        The backend state is saved with the current timestamp to track
-        when the switch occurred, enabling the auto-reset feature to
-        reset back to the default backend after 2 hours.
-        """
         self._switch_to_index(self._current_idx + 1)
-        # Reset session ID when switching backends
-        self._last_session_id = None
-        self._save_session_state(self._current_backend_name(), self._last_session_id)
-        # Save the new backend state
-        current_backend = self._current_backend_name()
-        current_time = time.time()
-        self._state_manager.save_state(current_backend, current_time)
+        logger.info(
+            f"BackendManager: switched to next backend -> {self._current_backend_name()}"
+        )
 
     def switch_to_default_backend(self) -> None:
-        """Switch to the default backend.
-
-        This method resets the backend to the configured default and saves
-        the new state for persistence and auto-reset functionality.
-
-        The backend state is saved with the current timestamp to track
-        when the switch occurred, enabling the auto-reset feature to
-        maintain consistency across application restarts.
-
-        This is typically called when:
-        - A different test file is encountered
-        - Auto-reset is triggered after 2 hours
-        - Manual reset is needed
-        """
-        # To the default position
+        # デフォルトの位置へ
         try:
             idx = self._all_backends.index(self._default_backend)
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
-        # Reset session ID when switching backends
-        self._last_session_id = None
-        self._save_session_state(self._current_backend_name(), self._last_session_id)
-        # Save the new backend state
-        current_backend = self._current_backend_name()
-        current_time = time.time()
-        self._state_manager.save_state(current_backend, current_time)
+        logger.info(
+            f"BackendManager: switched back to default backend -> {self._current_backend_name()}"
+        )
 
-    def _switch_to_backend_by_name(self, backend_name: str) -> None:
-        """Switch to a specific backend by name.
-
-        This method finds the index of the specified backend and switches to it.
-        If the backend is not found, it raises a ValueError.
-
-        Args:
-            backend_name: Name of the backend to switch to
-
-        Raises:
-            ValueError: If the backend name is not found in the list of backends
-        """
-        try:
-            idx = self._all_backends.index(backend_name)
-            self._switch_to_index(idx)
-            # Reset session ID when switching backends
-            self._last_session_id = None
-            self._save_session_state(self._current_backend_name(), self._last_session_id)
-            # Save the new backend state
-            current_backend = self._current_backend_name()
-            current_time = time.time()
-            self._state_manager.save_state(current_backend, current_time)
-        except ValueError:
-            raise ValueError(f"Backend '{backend_name}' not found in configured backends: {self._all_backends}")
-
-    def check_and_reset_backend_if_needed(self) -> None:
-        """
-        Check if an auto-reset is needed based on the saved state.
-
-        This method loads the saved backend state and checks if:
-        1. The current backend is different from the default backend
-        2. More than 2 hours (7200 seconds) have passed since the last switch
-
-        If both conditions are met, it resets to the default backend.
-        Otherwise, it syncs the current index to match the saved state.
-
-        The auto-reset logic prevents getting stuck on a non-default backend
-        for extended periods, which could happen if an error occurs during
-        backend switching or if the application is left running for a long time.
-        """
-        # Load the saved state
-        state = self._state_manager.load_state()
-
-        # If no state file exists, nothing to do
-        if not state:
-            return
-
-        # Extract state information
-        saved_backend = state.get("current_backend")
-        last_switch_timestamp = state.get("last_switch_timestamp")
-
-        # Validate state data
-        if not saved_backend or not last_switch_timestamp:
-            return
-
-        if not isinstance(saved_backend, str):
-            return
-
-        if not isinstance(last_switch_timestamp, float):
-            return
-
-        # Ignore unknown backends to avoid index errors
-        try:
-            saved_backend_index = self._all_backends.index(saved_backend)
-        except ValueError:
-            logger.debug(f"Saved backend '{saved_backend}' not found in current backend list")
-            return
-
-        # Check if we should reset to default backend
-        time_since_switch = time.time() - last_switch_timestamp
-        if saved_backend != self._default_backend and time_since_switch >= 7200:  # 2 hours
-            # Auto-reset to default backend when non-default was active too long
-            current_backend = self._current_backend_name()
-            logger.info(
-                "Auto-resetting backend to default after %.0f seconds. Saved backend: %s, Current backend: %s",
-                time_since_switch,
-                saved_backend,
-                current_backend,
-            )
-            self.switch_to_default_backend()
-            return
-
-        # Otherwise, sync to the saved backend if different
-        if saved_backend_index != self._current_idx:
-            logger.debug(f"Syncing backend index to match saved state: {self._current_idx} -> {saved_backend_index}")
-            self._current_idx = saved_backend_index
-
-    def _get_current_provider_name(self, backend_name: str) -> Optional[str]:
-        """
-        Get the current provider name for a backend.
-
-        Args:
-            backend_name: Name of the backend
-
-        Returns:
-            Current provider name, or None if no providers configured
-        """
-        return self._provider_manager.get_current_provider_name(backend_name)
-
-    def _inject_resume_options_if_applicable(self, backend_name: str, cli: Any) -> None:
-        """
-        Inject resume options into the client if conditions are met.
-
-        Checks if:
-        1. Current backend matches the last backend
-        2. A session ID is available from the last execution
-        3. The backend has resume options configured
-
-        If all conditions are met, prepares resume options by replacing
-        "[sessionId]" placeholder with the actual session ID and sets
-        them as extra args for the next execution.
-
-        Args:
-            backend_name: Name of the current backend
-            cli: Client instance to inject resume options into
-        """
-        # Check if current backend matches the last backend
-        if backend_name != self._last_backend:
-            logger.debug(f"Backend changed from {self._last_backend} to {backend_name}, not resuming")
-            return
-
-        # Check if we have a session ID from the last execution
-        if self._last_session_id is None:
-            logger.debug("No session ID available, cannot resume")
-            return
-
-        # Get backend configuration
-        backend_config = get_llm_config().get_backend_config(backend_name)
-        if not backend_config or not backend_config.options_for_resume:
-            logger.debug(f"No resume options configured for backend '{backend_name}'")
-            return
-
-        # Create a copy of options_for_resume and replace [sessionId] placeholder
-        resume_options = []
-        for option in backend_config.options_for_resume:
-            # Replace [sessionId] placeholder with actual session ID
-            replaced_option = option.replace("[sessionId]", self._last_session_id)
-            resume_options.append(replaced_option)
-
-        # Set the resume options as extra args for the next execution
-        if hasattr(cli, "set_extra_args"):
-            cli.set_extra_args(resume_options)
-            logger.info(f"Injected resume options for backend '{backend_name}': {resume_options}")
-        else:
-            logger.warning(f"Client for backend '{backend_name}' does not support set_extra_args")
-
-    # ---------- Direct Compatibility Methods ----------
-    @log_calls  # type: ignore[misc]
+    # ---------- 直接互換メソッド ----------
+    @log_calls
     def _run_llm_cli(self, prompt: str) -> str:
-        """Normal execution (circular retry on usage limit with provider rotation)."""
-        from .utils import TemporaryEnvironment
-
-        # Check if we need to auto-reset the backend based on saved state
-        self.check_and_reset_backend_if_needed()
-
+        """通常の実行（使用料制限時は循環的リトライ）。"""
         attempts = 0
         tried: set[int] = set()
         last_error: Optional[Exception] = None
-        # Track retry attempts per backend
-        retry_attempts: Dict[str, int] = {}
-
         while attempts < len(self._all_backends):
-            backend_name = self._current_backend_name()
-            current_idx = self._current_idx
-
-            # Check if this backend index has already been tried (for rotation tracking)
-            # But allow retries of the same backend if configured and not exhausted
-            if current_idx in tried:
-                # Check if we should retry this backend before rotating
-                backend_config = get_llm_config().get_backend_config(backend_name)
-                if backend_config and backend_config.usage_limit_retry_count > 0:
-                    # retry_attempts tracks retries already done, check if we can do one more
-                    current_retries = retry_attempts.get(backend_name, 0)
-                    if current_retries < backend_config.usage_limit_retry_count:
-                        # Will retry this backend, don't add to tried yet
-                        pass
-                    else:
-                        # Retries exhausted, rotate to next backend
-                        self.switch_to_next_backend()
-                        continue
-                else:
-                    # No retry config or retries exhausted, rotate
-                    self.switch_to_next_backend()
-                    continue
-            else:
-                # First time trying this backend, add to tried
-                tried.add(current_idx)
-
-            try:
-                cli = self._get_or_create_client(backend_name)
-            except Exception as exc:  # pragma: no cover - defensive guard
-                last_error = exc
+            name = self._current_backend_name()
+            if self._current_idx in tried:
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
-
-            # Inject resume options if conditions are met
-            self._inject_resume_options_if_applicable(backend_name, cli)
-
+            tried.add(self._current_idx)
             try:
-                result = self._execute_backend_with_providers(
-                    backend_name=backend_name,
-                    cli=cli,
-                    prompt=prompt,
-                    backend_attempt_number=attempts + 1,
-                    temp_env_cls=TemporaryEnvironment,
+                cli = self._get_or_create_client(name)
+                out = cli._run_llm_cli(prompt)
+                # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
+                self._last_backend = name
+                self._last_model = getattr(cli, "model_name", None)
+                return out
+            except AutoCoderUsageLimitError as e:
+                logger.warning(
+                    f"Backend '{name}' hit usage limit: {e}. Rotating to next backend."
                 )
-                # Check if we should switch to next backend after successful execution
-                backend_config = get_llm_config().get_backend_config(backend_name)
-                if backend_config and backend_config.always_switch_after_execution:
-                    self.switch_to_next_backend()
-                return result
-            except AutoCoderUsageLimitError as exc:
-                last_error = exc
-                # Check if we should retry this backend
-                backend_config = get_llm_config().get_backend_config(backend_name)
-                if backend_config and backend_config.usage_limit_retry_count > 0:
-                    current_retries = retry_attempts.get(backend_name, 0)
-                    if current_retries < backend_config.usage_limit_retry_count:
-                        # Retry the same backend
-                        retry_attempts[backend_name] = current_retries + 1
-                        wait_seconds = backend_config.usage_limit_retry_wait_seconds
-                        time.sleep(wait_seconds)
-                        # Don't switch to next backend, retry on the same one
-                        continue
-
-                # If we reach here, either no retry config or retries exhausted
+                last_error = e
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
-            except AutoCoderTimeoutError as exc:
-                last_error = exc
-                logger.warning(f"Timeout error on backend '{backend_name}', switching to next backend")
-                self.switch_to_next_backend()
-                attempts += 1
-                continue
-            except Exception as exc:
-                last_error = exc
+            except Exception as e:
+                # 他の失敗は伝播（使用料制限以外は即エラー）
+                last_error = e
                 break
-
         if last_error:
             raise last_error
         raise RuntimeError("No backend available to run prompt")
 
-    def run_prompt(self, prompt: str) -> str:
-        """
-        Execute LLM with the given prompt.
-        Alias for _run_llm_cli for compatibility.
-        """
-        return self._run_llm_cli(prompt)
-
-    def _execute_backend_with_providers(
-        self,
-        backend_name: str,
-        cli: Any,
-        prompt: str,
-        backend_attempt_number: int,
-        temp_env_cls: Callable[[Dict[str, str]], Any],
+    # ---------- apply_workspace_test_fix 専用 ----------
+    @log_calls
+    def run_test_fix_prompt(
+        self, prompt: str, current_test_file: Optional[str] = None
     ) -> str:
+        """apply_workspace_test_fix 用の実行。
+        - 同一 current_test_file が3回連続で与えられたら次のバックエンドへ切替
+        - 異なる current_test_file が来たらデフォルトに戻す
+        - その上で _run_llm_cli を呼ぶ（使用料制限時はさらに循環）
         """
-        Execute a backend client while honoring provider rotation rules.
-
-        Args:
-            backend_name: Name of the backend being executed
-            cli: Backend client instance
-            prompt: Prompt to execute
-            backend_attempt_number: 1-based attempt number for logging context
-            temp_env_cls: Context manager factory (injected for easier testing)
-        """
-        backend_has_providers = self._provider_manager.has_providers(backend_name)
-        provider_count = self._provider_manager.get_provider_count(backend_name)
-        provider_attempts = 0
-
-        while True:
-            provider_name = self._get_current_provider_name(backend_name)
-            env_vars = self._provider_manager.create_env_context(backend_name) if backend_has_providers else {}
-            provider_context = f"{backend_name}"
-            if provider_name:
-                provider_context += f" (provider: {provider_name})"
-            message = f"Running LLM: {provider_context}, attempt {backend_attempt_number}"
-
-            env_context = temp_env_cls(env_vars) if env_vars else contextlib.nullcontext()
-
-            with ProgressStage(message), env_context:
-                try:
-                    # Determine if this is a no-edit operation
-                    is_noedit = getattr(self, "_is_noedit", False)
-                    out: str = cli._run_llm_cli(prompt, is_noedit=is_noedit)
-                    self._last_backend = backend_name
-                    self._last_model = getattr(cli, "model_name", None)
-                    self._provider_manager.mark_provider_used(backend_name, provider_name)
-                    # Track session ID from the client
-                    self._last_session_id = cli.get_last_session_id()
-                    # Persist session state to allow resume on subsequent executions
-                    self._save_session_state(backend_name, self._last_session_id)
-                    return out
-                except AutoCoderUsageLimitError as exc:
-                    if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
-                        rotated = self._provider_manager.advance_to_next_provider(backend_name)
-                        if rotated:
-                            provider_attempts += 1
-                            continue
-                    raise
-
-    # ---------- For apply_workspace_test_fix ----------
-    @log_calls  # type: ignore[misc]
-    def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
-        """Execution for apply_workspace_test_fix.
-        - If the same current_test_file is given 3 consecutive times, switch to the next backend
-        - If a different current_test_file comes, reset to default
-        - Then call _run_llm_cli (further rotation on usage limit)
-        """
-        # Get current backend and model name
+        # 現在のバックエンドとモデル名を取得
         current_backend = self._current_backend_name()
 
         if self._last_test_file is None or current_test_file != self._last_test_file:
-            # test_file changed -> reset to default (this is the 1st time)
+            # test_file が変わった → デフォルトに戻す（今回が1回目）
             self.switch_to_default_backend()
             self._same_test_file_count = 1
         else:
-            # Same test_file
+            # 同一 test_file
             if self._last_backend == current_backend:
-                # If the same backend continued twice before, switch before the 3rd execution
+                # 直前までに同一バックエンドで2回続いていたら、3回目の実行前に切替
                 if self._same_test_file_count >= 2:
                     self.switch_to_next_backend()
                     self._same_test_file_count = 1
                 else:
                     self._same_test_file_count += 1
             else:
-                # Backend has changed, reset counter (this is the 1st time)
+                # バックエンドが変わっている場合はカウンタリセット（今回が1回目）
                 self._same_test_file_count = 1
 
-        # Execute with provider-aware telemetry so logs show which provider is being used.
-        active_backend = self._current_backend_name()
-        provider_for_stage = self._get_current_provider_name(active_backend)
-        stage_label = f"Running LLM: {active_backend}"
-        if provider_for_stage:
-            stage_label += f" (provider: {provider_for_stage})"
+        # 実行
+        out = self._run_llm_cli(prompt)
 
-        with ProgressStage(stage_label):
-            try:
-                # This is not a no-edit operation
-                self._is_noedit = False
-                out: str = self._run_llm_cli(prompt)
-            except AutoCoderTimeoutError as exc:
-                logger.warning(f"Timeout error on backend '{active_backend}', switching to next backend")
-                self.switch_to_next_backend()
-                # Try again with the next backend
-                with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
-                    out = self._run_llm_cli(prompt)
-
-        # Update state
+        # 状態更新
         self._last_prompt = prompt
         self._last_test_file = current_test_file
         self._last_backend = self._current_backend_name()
@@ -720,57 +183,23 @@ class BackendManager(LLMBackendManagerBase):
     def get_last_backend_and_model(self) -> Tuple[Optional[str], Optional[str]]:
         """Return the backend/model used for the most recent execution."""
 
-        # Get current backend (last used or current)
         backend = self._last_backend or self._current_backend_name()
-
-        # Get model from last execution or from current client
         model = self._last_model
         if model is None:
             try:
-                # Get model from current backend client
-                current_backend = self._current_backend_name()
-                cli = self._get_or_create_client(current_backend)
+                cli = self._get_or_create_client(self._current_backend_name())
                 model = getattr(cli, "model_name", None)
             except Exception:
                 model = None
         return backend, model
 
-    def get_last_backend_provider_and_model(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """
-        Return the backend/provider/model used for the most recent execution.
-
-        Returns:
-            Tuple of (backend_name, provider_name, model_name).
-            Provider name may be None if no provider was used or no provider configured.
-        """
-        backend, model = self.get_last_backend_and_model()
-        provider = self._provider_manager.get_last_used_provider_name(backend) if backend else None
-
-        return backend, provider, model
-
-    def parse_llm_output_as_json(self, output: str) -> Any:
-        """
-        Parse LLM output as JSON and extract content.
-
-        This helper method delegates to the standalone parse_llm_output_as_json function.
-        Kept for backward compatibility with code that uses the instance method.
-
-        Args:
-            output: The raw LLM output string to parse
-
-        Returns:
-            The extracted content (dict or string from the last message in a list)
-
-        Raises:
-            ValueError: If the output cannot be parsed as JSON
-        """
-        return parse_llm_output_as_json(output)
-
-    # ---------- Compatibility Helpers ----------
+    # ---------- 互換補助 ----------
     def switch_to_conflict_model(self) -> None:
         try:
             cli = self._get_or_create_client(self._current_backend_name())
-            if hasattr(cli, "switch_to_conflict_model") and callable(getattr(cli, "switch_to_conflict_model")):
+            if hasattr(cli, "switch_to_conflict_model") and callable(
+                getattr(cli, "switch_to_conflict_model")
+            ):
                 cli.switch_to_conflict_model()
         except Exception:
             pass
@@ -783,7 +212,7 @@ class BackendManager(LLMBackendManagerBase):
             pass
 
     def close(self) -> None:
-        """Call client's close if available."""
+        """クライアントの close があれば呼ぶ。"""
         for _, cli in list(self._clients.items()):
             try:
                 if cli:
@@ -801,7 +230,7 @@ class BackendManager(LLMBackendManagerBase):
             True if the MCP server is configured, False otherwise
         """
         cli = self._get_or_create_client(self._current_backend_name())
-        return cli.check_mcp_server_configured(server_name)  # type: ignore[no-any-return]
+        return cli.check_mcp_server_configured(server_name)
 
     def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration for the current backend.
@@ -815,9 +244,11 @@ class BackendManager(LLMBackendManagerBase):
             True if configuration was added successfully, False otherwise
         """
         cli = self._get_or_create_client(self._current_backend_name())
-        return cli.add_mcp_server_config(server_name, command, args)  # type: ignore[no-any-return]
+        return cli.add_mcp_server_config(server_name, command, args)
 
-    def ensure_mcp_server_configured(self, server_name: str, command: str, args: list[str]) -> bool:
+    def ensure_mcp_server_configured(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Ensure a specific MCP server is configured for all backends, adding it if necessary.
 
         This method checks if the server is configured for each backend,
@@ -840,403 +271,8 @@ class BackendManager(LLMBackendManagerBase):
                 if not cli.ensure_mcp_server_configured(server_name, command, args):
                     all_success = False
 
-            except Exception:
+            except Exception as e:
+                logger.error(f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}")
                 all_success = False
 
         return all_success
-
-
-class LLMBackendManager:
-    """
-    Singleton manager for general-purpose LLM backend operations.
-
-    This singleton manages the general backend for all LLM operations except
-    commit messages (PR processing, test fixes, code generation, etc.).
-
-    Thread-safe singleton implementation ensures only one instance exists
-    across all threads in the application.
-
-    Usage Pattern:
-    -----------
-    1. First call: Provide initialization parameters (default_backend, default_client, factories)
-       ```python
-       manager = LLMBackendManager.get_llm_instance(
-           default_backend="gemini",
-           default_client=client,
-           factories={"gemini": lambda: client}
-       )
-       ```
-
-    2. Subsequent calls: Call without parameters to get the same instance
-       ```python
-       manager = LLMBackendManager.get_llm_instance()
-       # Returns the same instance created above
-       ```
-
-    3. Using convenience functions (recommended):
-       ```python
-       from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
-
-       # Using TOML configuration file (new approach)
-       from auto_coder.cli_helpers import build_backend_manager_from_config
-       manager = build_backend_manager_from_config()
-       response = run_llm_prompt("Your prompt here")
-       ```
-
-    Important Notes:
-    --------------
-    - Initialization parameters are required ONLY on the first call
-    - The singleton is thread-safe and can be accessed from multiple threads
-    - Use force_reinitialize=True to reconfigure with new parameters
-    - Call manager.close() during application shutdown for cleanup
-    - Configuration can now be read from a TOML file at ~/.auto-coder/llm_config.toml
-    """
-
-    _instance: Optional[BackendManager] = None
-    _noedit_instance: Optional[BackendManager] = None
-    _init_params: Optional[Dict[str, Any]] = None
-    _lock = threading.Lock()
-
-    @classmethod
-    def get_llm_instance(
-        cls,
-        default_backend: Optional[str] = None,
-        default_client: Optional[Any] = None,
-        factories: Optional[Dict[str, Callable[[], Any]]] = None,
-        order: Optional[List[str]] = None,
-        force_reinitialize: bool = False,
-    ) -> BackendManager:
-        """
-        Get or create the singleton LLM backend manager instance.
-
-        This class method returns the singleton instance for general-purpose LLM operations.
-        On first call, initialization parameters must be provided. Subsequent calls
-        can omit parameters to retrieve the existing instance.
-
-        Args:
-            default_backend: Name of the default backend
-            default_client: Default client instance
-            factories: Dictionary of backend name to factory function
-            order: Optional list specifying backend order
-            force_reinitialize: Force reinitialization with new parameters (default: False)
-
-        Returns:
-            BackendManager: The singleton instance for general LLM operations
-
-        Raises:
-            RuntimeError: If called without initialization parameters on first call
-        """
-        # Fast path: check if instance exists and is initialized
-        with cls._lock:
-            # Check if we need to initialize
-            if cls._instance is None or force_reinitialize:
-                # Validate initialization parameters
-                if default_backend is None or default_client is None or factories is None:
-                    if cls._instance is None or force_reinitialize:
-                        raise RuntimeError("LLMBackendManager.get_llm_instance() must be called with " "initialization parameters (default_backend, default_client, factories) " "on first use or when force_reinitialize=True")
-                else:
-                    # If force_reinitialize and instance exists, close it first
-                    if force_reinitialize and cls._instance is not None:
-                        try:
-                            cls._instance.close()
-                        except Exception:
-                            pass  # Best effort cleanup
-
-                    # Create new instance (or reuse if force_reinitialize)
-                    if cls._instance is None or force_reinitialize:
-                        cls._instance = BackendManager(
-                            default_backend=default_backend,
-                            default_client=default_client,
-                            factories=factories,
-                            order=order,
-                        )
-                        cls._init_params = {
-                            "default_backend": default_backend,
-                            "default_client": default_client,
-                            "factories": factories,
-                            "order": order,
-                        }
-            elif default_backend is not None or default_client is not None or factories is not None:
-                # Parameters provided but instance already exists (and not forcing reinit)
-                # This is allowed - we just ignore the parameters and return existing instance
-                pass
-
-            return cls._instance
-
-    @classmethod
-    def reset_singleton(cls) -> None:
-        """
-        Reset the singleton instance.
-
-        This should only be used in tests or when you need to completely
-        reinitialize the singleton with new parameters.
-
-        Thread-safe: Uses locks to ensure reset happens atomically.
-        """
-        with cls._lock:
-            if cls._instance is not None:
-                try:
-                    cls._instance.close()
-                except Exception:
-                    pass  # Best effort cleanup
-            cls._instance = None
-            cls._init_params = None
-
-    @classmethod
-    def is_initialized(cls) -> bool:
-        """
-        Check if the singleton instance has been initialized.
-
-        Returns:
-            bool: True if instance exists, False otherwise
-        """
-        with cls._lock:
-            return cls._instance is not None
-
-    @classmethod
-    def get_noedit_instance(
-        cls,
-        default_backend: Optional[str] = None,
-        default_client: Optional[Any] = None,
-        factories: Optional[Dict[str, Callable[[], Any]]] = None,
-        order: Optional[List[str]] = None,
-        force_reinitialize: bool = False,
-    ) -> BackendManager:
-        """
-        Get or create the singleton backend manager instance for non-editing operations.
-
-        Args:
-            default_backend: Name of the default backend
-            default_client: Default client instance
-            factories: Dictionary of backend name to factory function
-            order: Optional list specifying backend order
-            force_reinitialize: Force reinitialization with new parameters (default: False)
-
-        Returns:
-            BackendManager: The singleton instance for non-editing operations (commit messages, PR messages)
-
-        Raises:
-            RuntimeError: If called without initialization parameters on first call
-        """
-        # Fast path: check if instance exists and is initialized
-        with cls._lock:
-            # Check if we need to initialize
-            if cls._noedit_instance is None or force_reinitialize:
-                # Validate initialization parameters
-                if default_backend is None or default_client is None or factories is None:
-                    if cls._noedit_instance is None or force_reinitialize:
-                        raise RuntimeError("LLMBackendManager.get_noedit_instance() must be called with " "initialization parameters (default_backend, default_client, factories) " "on first use or when force_reinitialize=True")
-                else:
-                    # If force_reinitialize and instance exists, close it first
-                    if force_reinitialize and cls._noedit_instance is not None:
-                        try:
-                            cls._noedit_instance.close()
-                        except Exception:
-                            pass  # Best effort cleanup
-
-                    # Create new instance (or reuse if force_reinitialize)
-                    if cls._noedit_instance is None or force_reinitialize:
-                        cls._noedit_instance = BackendManager(
-                            default_backend=default_backend,
-                            default_client=default_client,
-                            factories=factories,
-                            order=order,
-                        )
-            elif default_backend is not None or default_client is not None or factories is not None:
-                # Parameters provided but instance already exists (and not forcing reinit)
-                # This is allowed - we just ignore the parameters and return existing instance
-                pass
-
-            return cls._noedit_instance
-
-
-# Global convenience functions for non-editing backend operations
-
-
-def get_noedit_backend_manager(
-    default_backend: Optional[str] = None,
-    default_client: Optional[Any] = None,
-    factories: Optional[Dict[str, Callable[[], Any]]] = None,
-    order: Optional[List[str]] = None,
-    force_reinitialize: bool = False,
-) -> BackendManager:
-    """
-    Get the global non-editing backend manager singleton instance.
-
-    This is a convenience function that delegates to LLMBackendManager.get_noedit_instance().
-    Use this when you need to access the non-editing backend manager from anywhere in your code.
-
-    Args:
-        default_backend: Name of the default backend
-        default_client: Default client instance
-        factories: Dictionary of backend name to factory function
-        order: Optional list specifying backend order
-        force_reinitialize: Force reinitialization with new parameters (default: False)
-
-    Returns:
-        BackendManager: The singleton instance for non-editing operations (commit messages, PR messages)
-
-    Raises:
-        RuntimeError: If called without initialization parameters on first call
-    """
-    return LLMBackendManager.get_noedit_instance(
-        default_backend=default_backend,
-        default_client=default_client,
-        factories=factories,
-        order=order,
-        force_reinitialize=force_reinitialize,
-    )
-
-
-def get_message_backend_manager(
-    default_backend: Optional[str] = None,
-    default_client: Optional[Any] = None,
-    factories: Optional[Dict[str, Callable[[], Any]]] = None,
-    order: Optional[List[str]] = None,
-    force_reinitialize: bool = False,
-) -> BackendManager:
-    """Deprecated: Use get_noedit_backend_manager() instead."""
-    logger.warning("get_message_backend_manager() is deprecated, use get_noedit_backend_manager()", opt={"depth": 1})
-    return get_noedit_backend_manager(
-        default_backend=default_backend,
-        default_client=default_client,
-        factories=factories,
-        order=order,
-        force_reinitialize=force_reinitialize,
-    )
-
-
-def run_llm_noedit_prompt(prompt: str) -> str:
-    """
-    Run a prompt using the global non-editing backend manager.
-
-    This is a convenience function that provides a simple way to execute non-editing
-    tasks (commit messages, PR messages) using the global non-editing backend manager singleton.
-
-    Args:
-        prompt: The prompt to send to the LLM
-
-    Returns:
-        str: The response from the LLM
-
-    Raises:
-        RuntimeError: If the non-editing backend manager hasn't been initialized
-    """
-    manager = LLMBackendManager.get_noedit_instance()
-    if manager is None:
-        raise RuntimeError("Non-editing backend manager not initialized. " "Call get_noedit_backend_manager() with initialization parameters first.")
-    # Mark this as a no-edit operation so clients use options_for_noedit
-    manager._is_noedit = True
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
-
-
-def run_llm_message_prompt(prompt: str) -> str:
-    """Deprecated: Use run_llm_noedit_prompt() instead."""
-    logger.warning("run_llm_message_prompt() is deprecated, use run_llm_noedit_prompt()", opt={"depth": 1})
-    return run_llm_noedit_prompt(prompt)
-
-
-def get_noedit_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Get the backend and model used for the most recent non-editing operation.
-
-    Returns:
-        Tuple[Optional[str], Optional[str]]: (backend_name, model_name) or (None, None) if not available
-    """
-    manager = LLMBackendManager.get_noedit_instance()
-    if manager is None:
-        return None, None  # type: ignore[unreachable]
-    return manager.get_last_backend_and_model()
-
-
-def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
-    """Deprecated: Use get_noedit_backend_and_model() instead."""
-    logger.warning("get_message_backend_and_model() is deprecated, use get_noedit_backend_and_model()", opt={"depth": 1})
-    return get_noedit_backend_and_model()
-
-
-# Global convenience functions for general LLM backend operations
-
-
-def get_llm_backend_manager(
-    default_backend: Optional[str] = None,
-    default_client: Optional[Any] = None,
-    factories: Optional[Dict[str, Callable[[], Any]]] = None,
-    order: Optional[List[str]] = None,
-    force_reinitialize: bool = False,
-) -> BackendManager:
-    """
-    Get the global LLM backend manager singleton instance.
-
-    This is a convenience function that delegates to LLMBackendManager.get_llm_instance().
-    Use this when you need to access the general LLM backend manager from anywhere in your code.
-
-    Args:
-        default_backend: Name of the default backend
-        default_client: Default client instance
-        factories: Dictionary of backend name to factory function
-        order: Optional list specifying backend order
-        force_reinitialize: Force reinitialization with new parameters (default: False)
-
-    Returns:
-        BackendManager: The singleton instance for general LLM operations
-
-    Raises:
-        RuntimeError: If called without initialization parameters on first call
-    """
-    return LLMBackendManager.get_llm_instance(
-        default_backend=default_backend,
-        default_client=default_client,
-        factories=factories,
-        order=order,
-        force_reinitialize=force_reinitialize,
-    )
-
-
-def run_llm_prompt(prompt: str) -> str:
-    """
-    Run a prompt using the global LLM backend manager.
-
-    This is a convenience function that provides a simple way to execute general LLM
-    tasks using the global LLM backend manager singleton.
-
-    Args:
-        prompt: The prompt to send to the LLM
-
-    Returns:
-        str: The response from the LLM
-
-    Raises:
-        RuntimeError: If the LLM backend manager hasn't been initialized
-    """
-    manager = LLMBackendManager.get_llm_instance()
-    if manager is None:
-        raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
-
-
-def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Get the backend and model used for the most recent general LLM execution.
-
-    Returns:
-        Tuple[Optional[str], Optional[str]]: (backend_name, model_name) or (None, None) if not available
-    """
-    manager = LLMBackendManager.get_llm_instance()
-    if manager is None:
-        return None, None  # type: ignore[unreachable]
-    return manager.get_last_backend_and_model()
-
-
-def get_llm_backend_provider_and_model() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """
-    Get the backend, provider, and model used for the most recent general LLM execution.
-
-    Returns:
-        Tuple[Optional[str], Optional[str], Optional[str]]: (backend_name, provider_name, model_name)
-        or (None, None, None) if not available. Provider name may be None if no provider was used.
-    """
-    manager = LLMBackendManager.get_llm_instance()
-    if manager is None:
-        return None, None, None  # type: ignore[unreachable]
-    return manager.get_last_backend_provider_and_model()

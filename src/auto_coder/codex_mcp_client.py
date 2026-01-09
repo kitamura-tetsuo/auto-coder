@@ -19,54 +19,25 @@ import os
 import select
 import shlex
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
-from .exceptions import AutoCoderTimeoutError
 from .graphrag_mcp_integration import GraphRAGMCPIntegration
-from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def _safe_debug(msg: Any) -> None:
-    """Safely call logger.debug, ignoring errors during shutdown."""
-    try:
-        # Check if logger handlers are still valid
-        if not logger._core.handlers:
-            return
-
-        # Skip logging of Mock/MagicMock objects to avoid spam
-        if "MagicMock" in str(msg) or "Mock" in str(msg):
-            return
-
-        logger.debug(msg)
-    except Exception:
-        # Silently ignore any logging errors during cleanup
-        pass
-
-
-def _is_running_under_pytest() -> bool:
-    """Check if we're running under pytest."""
-    return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
-
-
-def _pump_bytes(stream: Any, log_fn: Any) -> None:
+def _pump_bytes(stream, log_fn) -> None:
     try:
         for line in iter(stream.readline, b""):
             try:
                 log_fn(line.decode(errors="ignore").rstrip("\n"))
-            except (ValueError, BrokenPipeError):
-                # Ignore "I/O operation on closed file" errors during shutdown
-                pass
             except Exception:
-                # Ignore other logging errors
                 pass
     finally:
         try:
@@ -86,34 +57,15 @@ class CodexMCPClient(LLMClientBase):
 
     def __init__(
         self,
-        backend_name: Optional[str] = None,
+        model_name: str = "codex-mcp",
         enable_graphrag: bool = False,
     ) -> None:
-        super().__init__()
-        config = get_llm_config()
-
-        if backend_name:
-            config_backend = config.get_backend_config(backend_name)
-            self.model_name = (config_backend and config_backend.model) or "codex-mcp"
-        else:
-            config_backend = config.get_backend_config("codex-mcp")
-            self.model_name = (config_backend and config_backend.model) or "codex-mcp"
-
+        self.model_name = model_name or "codex-mcp"
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.proc: Optional[subprocess.Popen] = None
         self.enable_graphrag = enable_graphrag
         self.graphrag_integration: Optional[GraphRAGMCPIntegration] = None
-
-        # Store options from config for MCP session and fallback exec calls
-        self.options = (config_backend and config_backend.options) or []
-        self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
-        # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
-            if required_errors:
-                for error in required_errors:
-                    logger.warning(error)
 
         # Initialize GraphRAG integration if enabled
         if self.enable_graphrag:
@@ -122,7 +74,9 @@ class CodexMCPClient(LLMClientBase):
 
         # Verify codex CLI is available
         try:
-            chk = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
+            chk = subprocess.run(
+                ["codex", "--version"], capture_output=True, text=True, timeout=10
+            )
             if chk.returncode != 0:
                 raise RuntimeError("codex CLI not available or not working")
         except Exception as e:
@@ -138,9 +92,6 @@ class CodexMCPClient(LLMClientBase):
                 cmd = shlex.split(mcp_cmd_env)
             else:
                 cmd = ["codex", "mcp"]
-                # Apply configurable options from config
-                if self.options:
-                    cmd.extend(self.options)
 
             self.proc = subprocess.Popen(
                 cmd,
@@ -153,25 +104,30 @@ class CodexMCPClient(LLMClientBase):
             logger.info(f"spawned MCP process pid={self.proc.pid}; cmd={' '.join(cmd)}")
 
             # Keep only stderr pump for diagnostics; stdout is used for JSON-RPC
-            # Skip this during tests to avoid shutdown race conditions with loguru's enqueue=True
-            if self.proc.stderr is not None and not _is_running_under_pytest():
+            if self.proc.stderr is not None:
                 threading.Thread(
                     target=_pump_bytes,
-                    args=(self.proc.stderr, _safe_debug),
+                    args=(self.proc.stderr, lambda s: logger.debug(s)),
                     daemon=True,
                 ).start()
         except Exception as e:
             raise RuntimeError(f"Failed to start MCP subprocess: {e}")
 
         # Prepare JSON-RPC state
-        self._stdin = getattr(self.proc, "stdin", None) if self.proc is not None else None
-        self._stdout = getattr(self.proc, "stdout", None) if self.proc is not None else None
+        self._stdin = (
+            getattr(self.proc, "stdin", None) if self.proc is not None else None
+        )
+        self._stdout = (
+            getattr(self.proc, "stdout", None) if self.proc is not None else None
+        )
         self._req_id = 0
         self._initialized = False
 
         # Try minimal JSON-RPC handshake (non-fatal if it fails)
         self._default_timeout = float(os.environ.get("AUTOCODER_MCP_TIMEOUT", "60"))
-        self._handshake_timeout = float(os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0"))
+        self._handshake_timeout = float(
+            os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0")
+        )
 
         try:
             _ = self._rpc_call(
@@ -186,8 +142,11 @@ class CodexMCPClient(LLMClientBase):
             self._initialized = True
             logger.info("MCP JSON-RPC initialized successfully")
 
+
         except Exception as e:
-            logger.warning(f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}")
+            logger.warning(
+                f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}"
+            )
 
     # Compatibility no-ops (Codex has no model switching)
     def switch_to_conflict_model(self) -> None:  # pragma: no cover - trivial
@@ -265,9 +224,7 @@ class CodexMCPClient(LLMClientBase):
         length = self._read_headers(deadline)
         body = self._read_n(length, deadline)
         try:
-            parsed = json.loads(body.decode("utf-8"))
-            result: Dict[str, Any] = parsed if isinstance(parsed, dict) else {}
-            return result
+            return json.loads(body.decode("utf-8"))
         except Exception as e:
             raise RuntimeError(f"Invalid JSON-RPC body: {e}")
 
@@ -317,7 +274,11 @@ class CodexMCPClient(LLMClientBase):
         # Fallbacks
         if isinstance(result, str):
             return result
-        if isinstance(result, dict) and "text" in result and isinstance(result["text"], str):
+        if (
+            isinstance(result, dict)
+            and "text" in result
+            and isinstance(result["text"], str)
+        ):
             return result["text"]
         return json.dumps(result, ensure_ascii=False)
 
@@ -336,33 +297,7 @@ class CodexMCPClient(LLMClientBase):
     def _escape_prompt(self, prompt: str) -> str:
         return prompt.replace("@", "\\@").strip()
 
-    def _log_jsonrpc_event(self, event_type: str, method: str, params: Dict[str, Any] | None, result: Any = None, error: str | None = None) -> None:
-        """Log JSON-RPC events in structured JSON format."""
-        log_entry: Dict[str, Any] = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "type": event_type,
-            "method": method,
-        }
-        if params is not None:
-            log_entry["params"] = params
-        if result is not None:
-            log_entry["result"] = self._extract_text_from_result(result) if not isinstance(result, str) else result
-        if error is not None:
-            log_entry["error"] = error
-        logger.info(json.dumps(log_entry, ensure_ascii=False))
-
-    def _log_fallback_event(self, cmd: List[str], output: str, return_code: int) -> None:
-        """Log fallback exec events in structured JSON format."""
-        log_entry = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "type": "fallback_exec",
-            "command": " ".join(cmd),
-            "output": output,
-            "return_code": return_code,
-        }
-        logger.info(json.dumps(log_entry, ensure_ascii=False))
-
-    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+    def _run_gemini_cli(self, prompt: str) -> str:
         """Prefer MCP single-shot methods; fallback to echo; then to codex exec.
 
         Attempt order when MCP handshake succeeded:
@@ -371,10 +306,6 @@ class CodexMCPClient(LLMClientBase):
         3) tools/call name in [run, execute, workspace-write]
         4) tools/call name=echo
         Finally, fallback to `codex exec`.
-
-        Args:
-            prompt: The prompt to send
-            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
         """
         # Ensure GraphRAG environment is ready if enabled
         if self.graphrag_integration:
@@ -385,112 +316,92 @@ class CodexMCPClient(LLMClientBase):
                 logger.warning(f"Failed to ensure GraphRAG environment: {e}")
 
         escaped_prompt = self._escape_prompt(prompt)
-        extra_args = self.consume_extra_args()
-
-        # Store is_noedit for fallback operations
-        self._is_noedit = is_noedit
 
         # Try MCP single-shot first
         if getattr(self, "_initialized", False):
             # 1) prompts/call (default)
             try:
-                params = {"name": "default", "arguments": {"input": escaped_prompt}}
-                self._log_jsonrpc_event("jsonrpc_call", "prompts/call", params)
                 res = self._rpc_call(
                     method="prompts/call",
-                    params=params,
+                    params={"name": "default", "arguments": {"input": escaped_prompt}},
                 )
-                self._log_jsonrpc_event("jsonrpc_result", "prompts/call", params, result=res)
                 return self._extract_text_from_result(res)
-            except Exception as e:
-                self._log_jsonrpc_event("jsonrpc_error", "prompts/call", None, error=str(e))
+            except Exception:
+                pass
             # 2) inference/create
             try:
-                params = {"arguments": {"input": escaped_prompt}}
-                self._log_jsonrpc_event("jsonrpc_call", "inference/create", params)
                 res = self._rpc_call(
                     method="inference/create",
-                    params=params,
+                    params={"arguments": {"input": escaped_prompt}},
                 )
-                self._log_jsonrpc_event("jsonrpc_result", "inference/create", params, result=res)
                 return self._extract_text_from_result(res)
-            except Exception as e:
-                self._log_jsonrpc_event("jsonrpc_error", "inference/create", None, error=str(e))
+            except Exception:
+                pass
             # 3) tools/call with common names
             for tool_name in ("run", "execute", "workspace-write"):
                 try:
-                    params = {
-                        "name": tool_name,
-                        "arguments": {
-                            "text": escaped_prompt,
-                            "input": escaped_prompt,
-                        },
-                    }
-                    self._log_jsonrpc_event("jsonrpc_call", "tools/call", params)
                     res = self._rpc_call(
                         method="tools/call",
-                        params=params,
+                        params={
+                            "name": tool_name,
+                            "arguments": {
+                                "text": escaped_prompt,
+                                "input": escaped_prompt,
+                            },
+                        },
                     )
-                    self._log_jsonrpc_event("jsonrpc_result", "tools/call", params, result=res)
                     return self._extract_text_from_result(res)
-                except Exception as e:
-                    self._log_jsonrpc_event("jsonrpc_error", "tools/call", None, error=str(e))
+                except Exception:
                     continue
             # 4) tools/call echo as last MCP attempt
             try:
-                self._log_jsonrpc_event("jsonrpc_call", "tools/call", {"name": "echo", "arguments": {"text": escaped_prompt}})
-                result = self._call_echo_tool(escaped_prompt)
-                self._log_jsonrpc_event("jsonrpc_result", "tools/call", {"name": "echo", "arguments": {"text": escaped_prompt}}, result=result)
-                return result
+                return self._call_echo_tool(escaped_prompt)
             except Exception as e:
-                self._log_jsonrpc_event("jsonrpc_error", "tools/call", None, error=str(e))
                 logger.warning(f"MCP attempts failed, will fallback to codex exec: {e}")
 
         # Fallback: codex exec
         try:
-            cmd: List[str] = ["codex", "exec"]
-            # Apply configurable options from config
-            # Use options_for_noedit for no-edit operations if available
-            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            if options_to_use:
-                cmd.extend(options_to_use)
-            if extra_args:
-                cmd.extend(extra_args)
-            cmd.append(escaped_prompt)
-            logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
-            # Build display command for logging
-            display_options = " ".join(options_to_use) if options_to_use else ""
-            logger.info(f"🤖 Running under MCP session: codex exec {display_options} [prompt]")
+            cmd: List[str] = [
+                "codex",
+                "exec",
+                "-s",
+                "workspace-write",
+                "--dangerously-bypass-approvals-and-sandbox",
+                escaped_prompt,
+            ]
+            logger.warning(
+                "LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized."
+            )
+            logger.debug(
+                f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)"
+            )
+            logger.info(
+                "🤖 Running under MCP session: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]"
+            )
 
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                output_lines: List[str] = []
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    line = line.rstrip("\n")
-                    output_lines.append(line)
-                return_code = proc.wait(timeout=7200)  # 2 hour timeout
-                output = "\n".join(output_lines).strip()
-
-                # Log full response once using JSON format
-                self._log_fallback_event(cmd, output, return_code)
-
-                if return_code != 0:
-                    raise RuntimeError(f"codex exec failed with return code {return_code}")
-                return output
-            except subprocess.TimeoutExpired:
-                if proc:
-                    proc.kill()
-                raise AutoCoderTimeoutError("codex exec timed out after 7200 seconds")
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            output_lines: List[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                logger.info(line)
+                output_lines.append(line)
+            return_code = proc.wait()
+            if return_code != 0:
+                raise RuntimeError(f"codex exec failed with return code {return_code}")
+            return "\n".join(output_lines).strip()
         except Exception as e:
             raise RuntimeError(f"Failed to run codex exec under MCP session: {e}")
+
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
+        return self._run_gemini_cli(prompt)
 
     def close(self) -> None:
         """Terminate the persistent MCP process if running."""

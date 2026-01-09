@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Neo4j/Qdrant Operation Check Script
+Neo4j/Qdrant 動作確認スクリプト
 
-This script checks the following:
-1. Direct access to Neo4j (Bolt protocol)
-2. Direct access to Qdrant (HTTP API)
-3. Access via GraphRAG MCP
+このスクリプトは以下を確認します:
+1. Neo4j への直接アクセス（Bolt プロトコル）
+2. Qdrant への直接アクセス（HTTP API）
+3. GraphRAG MCP 経由でのアクセス
 
-Usage:
-    # Test all (default)
+使用方法:
+    # 全部テスト（デフォルト）
     python scripts/check_graphrag_services.py
 
-    # Test direct access only
+    # 直接アクセスのみテスト
     python scripts/check_graphrag_services.py --direct-only
 
-    # Test MCP only
+    # MCP のみテスト
     python scripts/check_graphrag_services.py --mcp-only
 """
 
@@ -28,15 +28,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from auto_coder.logger_config import get_logger
-from auto_coder.utils import is_running_in_container
 
 logger = get_logger(__name__)
 
 
+def is_running_in_container() -> bool:
+    """コンテナ内で実行されているかを判定"""
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
 def run_docker_command(args: list[str]) -> subprocess.CompletedProcess:
-    """Execute Docker command (use sudo if necessary)"""
+    """Dockerコマンドを実行（必要に応じてsudoを使用）"""
     try:
-        # Try without sudo first
+        # まずsudoなしで試行
         return subprocess.run(
             ["docker"] + args,
             capture_output=True,
@@ -44,7 +48,7 @@ def run_docker_command(args: list[str]) -> subprocess.CompletedProcess:
             check=True
         )
     except (subprocess.CalledProcessError, PermissionError):
-        # Retry with sudo if failed
+        # 失敗したらsudoで試行
         return subprocess.run(
             ["sudo", "docker"] + args,
             capture_output=True,
@@ -54,9 +58,9 @@ def run_docker_command(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def get_current_container_network() -> str | None:
-    """Get the network that the current container belongs to"""
+    """現在のコンテナが所属しているネットワークを取得"""
     try:
-        # Get hostname (container ID or container name)
+        # ホスト名を取得（コンテナIDまたはコンテナ名）
         hostname = subprocess.run(
             ["hostname"],
             capture_output=True,
@@ -64,7 +68,7 @@ def get_current_container_network() -> str | None:
             check=True
         ).stdout.strip()
 
-        # Get container network information
+        # コンテナのネットワーク情報を取得
         result = run_docker_command([
             "inspect", "-f",
             "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}",
@@ -77,9 +81,9 @@ def get_current_container_network() -> str | None:
 
 
 def ensure_container_on_network(container_name: str, network: str) -> bool:
-    """Ensure container is connected to the specified network, connect if necessary"""
+    """コンテナが指定されたネットワークに接続されていることを確認し、必要に応じて接続"""
     try:
-        # Check if container is already connected to the network
+        # コンテナが既にネットワークに接続されているか確認
         result = run_docker_command([
             "inspect", "-f",
             "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}",
@@ -88,60 +92,60 @@ def ensure_container_on_network(container_name: str, network: str) -> bool:
         networks = result.stdout.strip().split()
 
         if network in networks:
-            logger.info(f"✅ {container_name} is already connected to {network}")
+            logger.info(f"✅ {container_name} は既に {network} に接続されています")
             return True
 
-        # Connect to network
-        logger.info(f"🔗 Connecting {container_name} to {network}...")
+        # ネットワークに接続
+        logger.info(f"🔗 {container_name} を {network} に接続中...")
         run_docker_command(["network", "connect", network, container_name])
-        logger.info(f"✅ Connected {container_name} to {network}")
+        logger.info(f"✅ {container_name} を {network} に接続しました")
         return True
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Network connection error for {container_name}: {e.stderr}")
+        logger.error(f"❌ {container_name} のネットワーク接続エラー: {e.stderr}")
         return False
 
 
 def check_neo4j_direct():
-    """Test direct access to Neo4j"""
+    """Neo4j への直接アクセスをテスト"""
     logger.info("=" * 80)
-    logger.info("Neo4j Direct Access Test")
+    logger.info("Neo4j 直接アクセステスト")
     logger.info("=" * 80)
 
     try:
         from neo4j import GraphDatabase
     except ImportError:
-        logger.error("neo4j package is not installed")
-        logger.info("Install: pip install neo4j")
+        logger.error("neo4j パッケージがインストールされていません")
+        logger.info("インストール: pip install neo4j")
         return False
 
-    # If running in a container, check network and connect
+    # コンテナ内で実行されている場合、ネットワークを確認して接続
     in_container = is_running_in_container()
     if in_container:
-        logger.info("🐳 Running in container")
+        logger.info("🐳 コンテナ内で実行されています")
         current_network = get_current_container_network()
         if current_network:
-            logger.info(f"📡 Current network: {current_network}")
-            # Connect Neo4j container to the same network
+            logger.info(f"📡 現在のネットワーク: {current_network}")
+            # Neo4jコンテナを同じネットワークに接続
             if not ensure_container_on_network("auto-coder-neo4j", current_network):
-                logger.warning("⚠️ Failed to connect Neo4j container to network")
+                logger.warning("⚠️  Neo4jコンテナのネットワーク接続に失敗しました")
         else:
-            logger.warning("⚠️ Could not detect current network")
+            logger.warning("⚠️  現在のネットワークを検出できませんでした")
 
-    # Try multiple URIs
+    # 複数のURIを試行
     uris = []
 
-    # Prioritize container name if in container
+    # コンテナ内の場合はコンテナ名を優先
     if in_container:
         uris.append("bolt://auto-coder-neo4j:7687")
 
-    # Also try normal localhost access
+    # 通常のlocalhostアクセスも試行
     uris.extend([
         "bolt://localhost:7687",
         "bolt://127.0.0.1:7687",
     ])
 
-    # Also try container name if not in container
+    # コンテナ外の場合もコンテナ名を試行
     if not in_container:
         uris.append("bolt://auto-coder-neo4j:7687")
 
@@ -152,49 +156,49 @@ def check_neo4j_direct():
     last_error = None
 
     for uri in uris:
-        logger.info(f"Connection attempt: {uri}")
-        logger.info(f"User: {user}")
+        logger.info(f"接続試行: {uri}")
+        logger.info(f"ユーザー: {user}")
 
         try:
             driver = GraphDatabase.driver(uri, auth=(user, password), max_connection_lifetime=3600)
-            # Connection test
+            # 接続テスト
             driver.verify_connectivity()
-            logger.info(f"✅ Connection successful: {uri}")
+            logger.info(f"✅ 接続成功: {uri}")
             break
         except Exception as e:
             last_error = e
-            logger.warning(f"Connection failed: {uri} - {e}")
+            logger.warning(f"接続失敗: {uri} - {e}")
             if driver:
                 driver.close()
                 driver = None
 
     if not driver:
-        logger.error(f"❌ Neo4j connection error: Failed to connect to all URIs")
-        logger.error(f"Last error: {last_error}")
-        logger.info("\nTroubleshooting:")
-        logger.info("1. Check if Docker container is running:")
+        logger.error(f"❌ Neo4j 接続エラー: すべてのURIで接続失敗")
+        logger.error(f"最後のエラー: {last_error}")
+        logger.info("\nトラブルシューティング:")
+        logger.info("1. Docker コンテナが起動しているか確認:")
         logger.info("   docker ps | grep neo4j")
-        logger.info("2. Wait for Neo4j to start:")
+        logger.info("2. Neo4j が起動するまで待つ:")
         logger.info("   docker logs auto-coder-neo4j")
-        logger.info("3. Test connection from within container:")
+        logger.info("3. コンテナ内から接続テスト:")
         logger.info("   docker exec auto-coder-neo4j cypher-shell -u neo4j -p password 'RETURN 1;'")
         return False
 
     try:
 
         with driver.session() as session:
-            # 1. Check database version
+            # 1. データベースバージョン確認
             result = session.run("CALL dbms.components() YIELD name, versions RETURN name, versions")
             for record in result:
-                logger.info(f"✅ Neo4j connection successful: {record['name']} {record['versions']}")
+                logger.info(f"✅ Neo4j 接続成功: {record['name']} {record['versions']}")
 
-            # 2. Check existing node count
+            # 2. 既存ノード数確認
             result = session.run("MATCH (n) RETURN count(n) as count")
             count = result.single()["count"]
-            logger.info(f"📊 Existing node count: {count}")
+            logger.info(f"📊 既存ノード数: {count}")
 
-            # 3. Create sample node
-            logger.info("\n--- Sample Node Creation Test ---")
+            # 3. サンプルノード作成
+            logger.info("\n--- サンプルノード作成テスト ---")
             result = session.run(
                 """
                 CREATE (p:Person {name: $name, role: $role, created_at: datetime()})
@@ -204,10 +208,10 @@ def check_neo4j_direct():
                 role="Developer"
             )
             node = result.single()["p"]
-            logger.info(f"✅ Node creation successful: {dict(node)}")
+            logger.info(f"✅ ノード作成成功: {dict(node)}")
 
-            # 4. Node search
-            logger.info("\n--- Node Search Test ---")
+            # 4. ノード検索
+            logger.info("\n--- ノード検索テスト ---")
             result = session.run(
                 """
                 MATCH (p:Person {name: $name})
@@ -216,10 +220,10 @@ def check_neo4j_direct():
                 name="Test User"
             )
             for record in result:
-                logger.info(f"🔍 Search result: {dict(record['p'])}")
+                logger.info(f"🔍 検索結果: {dict(record['p'])}")
 
-            # 5. Create relationship
-            logger.info("\n--- Relationship Creation Test ---")
+            # 5. リレーションシップ作成
+            logger.info("\n--- リレーションシップ作成テスト ---")
             result = session.run(
                 """
                 MATCH (p:Person {name: $name})
@@ -230,12 +234,12 @@ def check_neo4j_direct():
                 project="GraphRAG Integration"
             )
             record = result.single()
-            logger.info(f"✅ Relationship creation successful")
+            logger.info(f"✅ リレーションシップ作成成功")
             logger.info(f"   Person: {dict(record['p'])}")
             logger.info(f"   Project: {dict(record['proj'])}")
 
-            # 6. Path search
-            logger.info("\n--- Path Search Test ---")
+            # 6. パス検索
+            logger.info("\n--- パス検索テスト ---")
             result = session.run(
                 """
                 MATCH path = (p:Person)-[r:WORKS_ON]->(proj:Project)
@@ -245,10 +249,10 @@ def check_neo4j_direct():
                 name="Test User"
             )
             for record in result:
-                logger.info(f"🔍 Path: {record['person']} -{record['relationship']}-> {record['project']}")
+                logger.info(f"🔍 パス: {record['person']} -{record['relationship']}-> {record['project']}")
 
-            # 7. Cleanup
-            logger.info("\n--- Cleanup ---")
+            # 7. クリーンアップ
+            logger.info("\n--- クリーンアップ ---")
             session.run(
                 """
                 MATCH (p:Person {name: $name})
@@ -256,14 +260,14 @@ def check_neo4j_direct():
                 """,
                 name="Test User"
             )
-            logger.info("✅ Test data deletion completed")
+            logger.info("✅ テストデータ削除完了")
 
         driver.close()
-        logger.info("\n✅ Neo4j direct access test completed")
+        logger.info("\n✅ Neo4j 直接アクセステスト完了")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Neo4j test execution error: {e}")
+        logger.error(f"❌ Neo4j テスト実行エラー: {e}")
         import traceback
         logger.error(traceback.format_exc())
         if driver:
@@ -272,50 +276,50 @@ def check_neo4j_direct():
 
 
 def check_qdrant_direct(test_mode: bool = False):
-    """Test direct access to Qdrant
+    """Qdrant への直接アクセスをテスト
 
     Args:
-        test_mode: If True, create a collection for connection testing
+        test_mode: Trueの場合、接続テスト用コレクションを作成
     """
     logger.info("\n" + "=" * 80)
-    logger.info("Qdrant Direct Access Test")
+    logger.info("Qdrant 直接アクセステスト")
     logger.info("=" * 80)
 
     try:
         from qdrant_client import QdrantClient
         from qdrant_client.models import Distance, VectorParams, PointStruct
     except ImportError:
-        logger.error("qdrant-client package is not installed")
-        logger.info("Install: pip install qdrant-client")
+        logger.error("qdrant-client パッケージがインストールされていません")
+        logger.info("インストール: pip install qdrant-client")
         return False
 
-    # If running in a container, check network and connect
+    # コンテナ内で実行されている場合、ネットワークを確認して接続
     in_container = is_running_in_container()
     if in_container:
-        logger.info("🐳 Running in container")
+        logger.info("🐳 コンテナ内で実行されています")
         current_network = get_current_container_network()
         if current_network:
-            logger.info(f"📡 Current network: {current_network}")
-            # Connect Qdrant container to the same network
+            logger.info(f"📡 現在のネットワーク: {current_network}")
+            # Qdrantコンテナを同じネットワークに接続
             if not ensure_container_on_network("auto-coder-qdrant", current_network):
-                logger.warning("⚠️ Failed to connect Qdrant container to network")
+                logger.warning("⚠️  Qdrantコンテナのネットワーク接続に失敗しました")
         else:
-            logger.warning("⚠️ Could not detect current network")
+            logger.warning("⚠️  現在のネットワークを検出できませんでした")
 
-    # Try multiple URLs
+    # 複数のURLを試行
     urls = []
 
-    # Prioritize container name if in container
+    # コンテナ内の場合はコンテナ名を優先
     if in_container:
         urls.append("http://auto-coder-qdrant:6333")
 
-    # Also try normal localhost access
+    # 通常のlocalhostアクセスも試行
     urls.extend([
         "http://localhost:6333",
         "http://127.0.0.1:6333",
     ])
 
-    # Also try container name if not in container
+    # コンテナ外の場合もコンテナ名を試行
     if not in_container:
         urls.append("http://auto-coder-qdrant:6333")
 
@@ -323,59 +327,59 @@ def check_qdrant_direct(test_mode: bool = False):
     last_error = None
 
     for url in urls:
-        logger.info(f"Connection attempt: {url}")
+        logger.info(f"接続試行: {url}")
 
         try:
             test_client = QdrantClient(url=url, timeout=5)
-            # Actually test the connection
+            # 実際に接続テスト
             collections = test_client.get_collections()
             client = test_client
-            logger.info(f"✅ Qdrant connection successful: {url}")
+            logger.info(f"✅ Qdrant 接続成功: {url}")
             break
         except Exception as e:
             last_error = e
-            logger.warning(f"Connection failed: {url} - {e}")
+            logger.warning(f"接続失敗: {url} - {e}")
 
     if not client:
-        logger.error(f"❌ Qdrant connection error: Failed to connect to all URLs")
-        logger.error(f"Last error: {last_error}")
-        logger.info("\nTroubleshooting:")
-        logger.info("1. Check if Docker container is running:")
+        logger.error(f"❌ Qdrant 接続エラー: すべてのURLで接続失敗")
+        logger.error(f"最後のエラー: {last_error}")
+        logger.info("\nトラブルシューティング:")
+        logger.info("1. Docker コンテナが起動しているか確認:")
         logger.info("   docker ps | grep qdrant")
-        logger.info("2. Wait for Qdrant to start:")
+        logger.info("2. Qdrant が起動するまで待つ:")
         logger.info("   docker logs auto-coder-qdrant")
-        logger.info("3. Test connection from within container:")
+        logger.info("3. コンテナ内から接続テスト:")
         logger.info("   docker exec auto-coder-qdrant wget -O- http://localhost:6333/collections")
         return False
 
     try:
-        # 2. Collection list
+        # 2. コレクション一覧
         collections = client.get_collections()
-        logger.info(f"📊 Existing collection count: {len(collections.collections)}")
+        logger.info(f"📊 既存コレクション数: {len(collections.collections)}")
 
-        # Display existing collection information
+        # 既存のコレクション情報を表示
         existing_collections = []
         for col in collections.collections:
             logger.info(f"   - {col.name}")
             existing_collections.append(col.name)
 
-            # Display detailed information for existing collections
+            # 既存コレクションの詳細情報を表示
             try:
                 col_info = client.get_collection(col.name)
-                logger.info(f"     Vector count: {col_info.points_count}")
+                logger.info(f"     ベクトル数: {col_info.points_count}")
                 if col_info.points_count > 0:
-                    logger.info(f"     Vector dimensions: {col_info.config.params.vectors.size}")
-                    logger.info(f"     Distance function: {col_info.config.params.vectors.distance}")
+                    logger.info(f"     ベクトル次元: {col_info.config.params.vectors.size}")
+                    logger.info(f"     距離関数: {col_info.config.params.vectors.distance}")
             except Exception as e:
-                logger.warning(f"     Collection info retrieval error: {e}")
+                logger.warning(f"     コレクション情報取得エラー: {e}")
 
-        # If code_embeddings collection exists, use it for testing
+        # 既存のcode_embeddingsコレクションがあれば、それを使用してテスト
         if "code_embeddings" in existing_collections:
-            logger.info("\n--- Existing Data Search Test (code_embeddings) ---")
+            logger.info("\n--- 既存データ検索テスト (code_embeddings) ---")
             try:
                 col_info = client.get_collection("code_embeddings")
                 if col_info.points_count > 0:
-                    # Get sample points
+                    # サンプルポイントを取得
                     sample_points = client.scroll(
                         collection_name="code_embeddings",
                         limit=3,
@@ -383,36 +387,36 @@ def check_qdrant_direct(test_mode: bool = False):
                         with_vectors=False
                     )
 
-                    logger.info(f"📊 Sample data (max 3 items):")
+                    logger.info(f"📊 サンプルデータ (最大3件):")
                     for point in sample_points[0]:
                         logger.info(f"  ID={point.id}")
                         logger.info(f"  Payload: {point.payload}")
                 else:
-                    logger.info("code_embeddings collection is empty")
+                    logger.info("code_embeddingsコレクションは空です")
             except Exception as e:
-                logger.warning(f"Existing data search error: {e}")
+                logger.warning(f"既存データ検索エラー: {e}")
 
-        # 3. Create test collection (for connection testing) - only if test_mode
+        # 3. テストコレクション作成（接続テスト用）- test_modeの場合のみ
         if test_mode:
             collection_name = "test_collection"
-            logger.info(f"\n--- Create Connection Test Collection: {collection_name} ---")
+            logger.info(f"\n--- 接続テスト用コレクション作成: {collection_name} ---")
 
-            # Delete existing test collection
+            # 既存のテストコレクションを削除
             try:
                 client.delete_collection(collection_name)
-                logger.info(f"Deleted existing collection {collection_name}")
+                logger.info(f"既存のコレクション {collection_name} を削除")
             except Exception:
                 pass
 
-            # Create new
+            # 新規作成
             client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(size=4, distance=Distance.COSINE),
             )
-            logger.info(f"✅ Collection creation successful: {collection_name}")
+            logger.info(f"✅ コレクション作成成功: {collection_name}")
 
-            # 4. Insert vectors (for connection testing)
-            logger.info("\n--- Vector Insertion Test ---")
+            # 4. ベクトル挿入（接続テスト用）
+            logger.info("\n--- ベクトル挿入テスト ---")
             points = [
                 PointStruct(
                     id=1,
@@ -426,96 +430,96 @@ def check_qdrant_direct(test_mode: bool = False):
                 ),
             ]
             client.upsert(collection_name=collection_name, points=points)
-            logger.info(f"✅ {len(points)} test vectors inserted successfully")
+            logger.info(f"✅ {len(points)} 件のテストベクトル挿入成功")
 
-            # 5. Check collection information
+            # 5. コレクション情報確認
             info = client.get_collection(collection_name)
-            logger.info(f"📊 Test collection information:")
-            logger.info(f"   Vector count: {info.points_count}")
-            logger.info(f"   Vector dimensions: {info.config.params.vectors.size}")
-            logger.info(f"   Distance function: {info.config.params.vectors.distance}")
+            logger.info(f"📊 テストコレクション情報:")
+            logger.info(f"   ベクトル数: {info.points_count}")
+            logger.info(f"   ベクトル次元: {info.config.params.vectors.size}")
+            logger.info(f"   距離関数: {info.config.params.vectors.distance}")
 
-            # 6. Similarity search test
-            logger.info("\n--- Similarity Search Test ---")
+            # 6. 類似検索テスト
+            logger.info("\n--- 類似検索テスト ---")
             search_vector = [0.15, 0.25, 0.35, 0.45]
             search_results = client.search(
                 collection_name=collection_name,
                 query_vector=search_vector,
                 limit=2
             )
-            logger.info(f"🔍 Search vector: {search_vector}")
-            logger.info(f"Search results (top {len(search_results)}):")
+            logger.info(f"🔍 検索ベクトル: {search_vector}")
+            logger.info(f"検索結果 (上位 {len(search_results)} 件):")
             for i, result in enumerate(search_results, 1):
                 logger.info(f"  {i}. ID={result.id}, Score={result.score:.4f}")
                 logger.info(f"     Payload: {result.payload}")
 
-            # 7. Cleanup
-            logger.info("\n--- Cleanup ---")
+            # 7. クリーンアップ
+            logger.info("\n--- クリーンアップ ---")
             client.delete_collection(collection_name)
-            logger.info(f"✅ Test collection deletion completed: {collection_name}")
+            logger.info(f"✅ テストコレクション削除完了: {collection_name}")
 
-        logger.info("\n✅ Qdrant direct access test completed")
+        logger.info("\n✅ Qdrant 直接アクセステスト完了")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Qdrant test execution error: {e}")
+        logger.error(f"❌ Qdrant テスト実行エラー: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
 
 
 def check_graphrag_mcp():
-    """Test access via GraphRAG MCP"""
+    """GraphRAG MCP 経由でのアクセスをテスト"""
     logger.info("\n" + "=" * 80)
-    logger.info("GraphRAG MCP Access Test")
+    logger.info("GraphRAG MCP 経由アクセステスト")
     logger.info("=" * 80)
 
     try:
         from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
         from auto_coder.graphrag_index_manager import GraphRAGIndexManager
     except ImportError as e:
-        logger.error(f"GraphRAG MCP module import error: {e}")
+        logger.error(f"GraphRAG MCP モジュールのインポートエラー: {e}")
         return False
 
     try:
-        # Use current directory as target
+        # カレントディレクトリを対象にする
         current_dir = Path.cwd()
-        logger.info(f"Target directory: {current_dir}")
+        logger.info(f"対象ディレクトリ: {current_dir}")
 
-        # Check if current directory is empty
+        # カレントディレクトリが空かどうかをチェック
         is_empty = not any(current_dir.iterdir())
 
-        # Initialize index manager with current directory
+        # インデックスマネージャーをカレントディレクトリで初期化
         index_manager = GraphRAGIndexManager(repo_path=str(current_dir))
         integration = GraphRAGMCPIntegration(index_manager=index_manager)
 
-        # 1. Check Docker container status
-        logger.info("\n--- Docker Container Status Check ---")
+        # 1. Docker コンテナ状態確認
+        logger.info("\n--- Docker コンテナ状態確認 ---")
         status = integration.docker_manager.get_status()
         logger.info(f"Neo4j: {status['neo4j']}")
         logger.info(f"Qdrant: {status['qdrant']}")
 
         if status['neo4j'] != 'running' or status['qdrant'] != 'running':
-            logger.warning("⚠️ Containers are not running. Attempting to start...")
+            logger.warning("⚠️  コンテナが起動していません。起動を試みます...")
             if not integration.docker_manager.start():
-                logger.error("❌ Failed to start containers")
+                logger.error("❌ コンテナの起動に失敗しました")
                 return False
 
-        # 2. Check MCP server status
-        logger.info("\n--- MCP Server Status Check ---")
+        # 2. MCP サーバー状態確認
+        logger.info("\n--- MCP サーバー状態確認 ---")
         if integration.is_mcp_server_running():
-            logger.info("✅ MCP server is running")
+            logger.info("✅ MCP サーバーは起動しています")
         else:
-            logger.warning("⚠️ MCP server is not running")
-            logger.info("How to start MCP server:")
+            logger.warning("⚠️  MCP サーバーが起動していません")
+            logger.info("MCP サーバーの起動方法:")
             logger.info("  cd ~/graphrag_mcp && uv run main.py")
 
-        # 3. Check and update index status
-        logger.info("\n--- Index Status Check ---")
+        # 3. インデックス状態確認と更新
+        logger.info("\n--- インデックス状態確認 ---")
 
-        # Create sample data if current directory is empty
+        # カレントディレクトリが空の場合はサンプルデータを作成
         if is_empty:
-            logger.info("📝 Current directory is empty. Creating sample data...")
+            logger.info("📝 カレントディレクトリが空です。サンプルデータを作成します...")
             sample_file = current_dir / "sample.py"
             sample_file.write_text("""# Sample Python file for GraphRAG indexing test
 def hello_world():
@@ -531,82 +535,82 @@ class SampleClass:
         \"\"\"Greet with the name.\"\"\"
         return f"Hello, {self.name}!"
 """)
-            logger.info(f"✅ Created sample file: {sample_file}")
+            logger.info(f"✅ サンプルファイルを作成しました: {sample_file}")
 
-        # Check if collections exist
+        # コレクションが存在するかチェック
         has_collections = False
         try:
             from qdrant_client import QdrantClient
 
-            # Use container name if running in container
+            # コンテナ内で実行されている場合はコンテナ名を使用
             in_container = is_running_in_container()
             qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
 
-            # Connect to Qdrant
+            # Qdrantに接続
             qdrant_client = QdrantClient(url=qdrant_url, timeout=5)
 
-            # Get existing collections
+            # 既存のコレクション一覧を取得
             collections = qdrant_client.get_collections()
             has_collections = len(collections.collections) > 0
         except Exception as e:
-            logger.warning(f"Qdrant connection error: {e}")
+            logger.warning(f"Qdrant接続エラー: {e}")
 
         if has_collections:
             if integration.index_manager.is_index_up_to_date():
-                logger.info("✅ Index is up to date")
+                logger.info("✅ インデックスは最新です")
             else:
-                logger.warning("⚠️ Index may be outdated")
+                logger.warning("⚠️  インデックスが古い可能性があります")
                 _, indexed_path = integration.index_manager.check_indexed_path()
                 if indexed_path:
-                    logger.info(f"Indexed path: {indexed_path}")
-                logger.info(f"Current path: {integration.index_manager.repo_path}")
+                    logger.info(f"インデックス済みパス: {indexed_path}")
+                logger.info(f"現在のパス: {integration.index_manager.repo_path}")
 
-                # Update index
-                logger.info("🔄 Updating index...")
+                # インデックスを更新
+                logger.info("🔄 インデックスを更新しています...")
                 if integration.index_manager.update_index(force=True):
-                    logger.info("✅ Index updated")
+                    logger.info("✅ インデックスを更新しました")
                 else:
-                    logger.error("❌ Failed to update index")
+                    logger.error("❌ インデックスの更新に失敗しました")
                     return False
         else:
-            logger.warning("⚠️ Collections do not exist")
-            logger.info(f"Target directory: {integration.index_manager.repo_path}")
+            logger.warning("⚠️  コレクションが存在しません")
+            logger.info(f"対象ディレクトリ: {integration.index_manager.repo_path}")
 
-            # Create index
-            logger.info("🔄 Creating index...")
+            # インデックスを作成
+            logger.info("🔄 インデックスを作成しています...")
             if integration.index_manager.update_index(force=True):
-                logger.info("✅ Index created")
+                logger.info("✅ インデックスを作成しました")
             else:
-                logger.error("❌ Failed to create index")
+                logger.error("❌ インデックスの作成に失敗しました")
                 return False
 
-        # 4. Check index data
-        logger.info("\n--- Index Data Check ---")
+        # 4. インデックスデータの確認
+        logger.info("\n--- インデックスデータ確認 ---")
         try:
             from qdrant_client import QdrantClient
 
-            # Use container name if running in container
+            # コンテナ内で実行されている場合はコンテナ名を使用
             in_container = is_running_in_container()
             qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
 
-            # Connect to Qdrant
+            # Qdrantに接続
             qdrant_client = QdrantClient(url=qdrant_url, timeout=5)
 
-            # Get existing collections
+            # 既存のコレクション一覧を取得
             collections = qdrant_client.get_collections()
-            logger.info(f"📊 Existing collection count: {len(collections.collections)}")
+            logger.info(f"📊 既存コレクション数: {len(collections.collections)}")
 
             if len(collections.collections) == 0:
-                logger.info("   No collections exist (index not created)")
+                logger.info("   コレクションが存在しません（インデックスが未作成）")
             else:
                 for col in collections.collections:
-                    logger.info(f"\n📦 Collection: {col.name}")
+                    logger.info(f"\n📦 コレクション: {col.name}")
                     try:
                         col_info = qdrant_client.get_collection(col.name)
-                        logger.info(f"   Vector count: {col_info.points_count}")
+                        logger.info(f"   ベクトル数: {col_info.points_count}")
 
                         if col_info.points_count > 0:
-                            # Get sample data
+                            # サンプルデータを取得
                             sample_points = qdrant_client.scroll(
                                 collection_name=col.name,
                                 limit=5,
@@ -614,34 +618,34 @@ class SampleClass:
                                 with_vectors=False
                             )
 
-                            logger.info(f"   Sample data (max 5 items):")
+                            logger.info(f"   サンプルデータ (最大5件):")
                             for point in sample_points[0]:
-                                # Display payload content
+                                # ペイロードの内容を表示
                                 payload_str = str(point.payload)
                                 if len(payload_str) > 100:
                                     payload_str = payload_str[:100] + "..."
                                 logger.info(f"     ID={point.id}: {payload_str}")
                     except Exception as e:
-                        logger.warning(f"   Collection info retrieval error: {e}")
+                        logger.warning(f"   コレクション情報取得エラー: {e}")
 
         except Exception as e:
-            logger.warning(f"Qdrant connection error: {e}")
+            logger.warning(f"Qdrant接続エラー: {e}")
 
-        # 5. Get MCP configuration
-        logger.info("\n--- MCP Configuration ---")
+        # 5. MCP 設定取得
+        logger.info("\n--- MCP 設定 ---")
 
-        # Check if MCP server is running
+        # MCPサーバーの起動状態を確認
         is_mcp_running = integration.is_mcp_server_running()
         if is_mcp_running:
-            logger.info("✅ MCP server: Running")
+            logger.info("✅ MCP サーバー: 起動中")
             mcp_config = integration.get_mcp_config_for_llm()
             if mcp_config:
-                logger.info("MCP configuration:")
+                logger.info("MCP 設定:")
                 logger.info(json.dumps(mcp_config, indent=2, ensure_ascii=False))
         else:
-            logger.info("ℹ️ MCP server: Not running")
-            logger.info("   (MCP server does not start in --mcp-only mode)")
-            logger.info("   Example MCP configuration:")
+            logger.info("ℹ️  MCP サーバー: 未起動")
+            logger.info("   (--mcp-only モードではMCPサーバーは起動しません)")
+            logger.info("   MCP設定の例:")
             example_config = {
                 "mcp_server": "graphrag",
                 "mcp_resources": [
@@ -652,11 +656,11 @@ class SampleClass:
             }
             logger.info(json.dumps(example_config, indent=2, ensure_ascii=False))
 
-        logger.info("\n✅ GraphRAG MCP test completed")
+        logger.info("\n✅ GraphRAG MCP テスト完了")
         return True
 
     except Exception as e:
-        logger.error(f"❌ GraphRAG MCP error: {e}")
+        logger.error(f"❌ GraphRAG MCP エラー: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -664,46 +668,46 @@ class SampleClass:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Neo4j/Qdrant Operation Check Script",
+        description="Neo4j/Qdrant 動作確認スクリプト",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Test all (default)
+使用例:
+  # 全部テスト（デフォルト）
   python scripts/check_graphrag_services.py
 
-  # Test direct access only
+  # 直接アクセスのみテスト
   python scripts/check_graphrag_services.py --direct-only
 
-  # Test MCP only
+  # MCP のみテスト
   python scripts/check_graphrag_services.py --mcp-only
 
-  # Test by creating a connection test collection
+  # 接続テスト用コレクションを作成してテスト
   python scripts/check_graphrag_services.py --test
         """
     )
     parser.add_argument(
         "--direct-only",
         action="store_true",
-        help="Run only direct access tests (Neo4j + Qdrant)"
+        help="直接アクセス（Neo4j + Qdrant）のテストのみ実行"
     )
     parser.add_argument(
         "--mcp-only",
         action="store_true",
-        help="Run only GraphRAG MCP tests"
+        help="GraphRAG MCP のテストのみ実行"
     )
     parser.add_argument(
         "--test",
         action="store_true",
-        help="Create and test with a connection test collection"
+        help="接続テスト用コレクションを作成してテスト"
     )
 
     args = parser.parse_args()
 
     results = {}
 
-    # Default: test all
-    # --direct-only: direct access only
-    # --mcp-only: MCP only
+    # デフォルト: 全部テスト
+    # --direct-only: 直接アクセスのみ
+    # --mcp-only: MCPのみ
     run_direct = not args.mcp_only
     run_mcp = not args.direct_only
 
@@ -714,15 +718,15 @@ Examples:
     if run_mcp:
         results["graphrag_mcp"] = check_graphrag_mcp()
 
-    # Summary
+    # サマリー
     logger.info("\n" + "=" * 80)
-    logger.info("Test Result Summary")
+    logger.info("テスト結果サマリー")
     logger.info("=" * 80)
     for name, result in results.items():
-        status = "✅ Success" if result else "❌ Failed"
+        status = "✅ 成功" if result else "❌ 失敗"
         logger.info(f"{name}: {status}")
 
-    # Exit code
+    # 終了コード
     all_passed = all(results.values())
     sys.exit(0 if all_passed else 1)
 

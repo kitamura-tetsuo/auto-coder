@@ -1,7 +1,7 @@
 import os
 import textwrap
 
-from src.auto_coder.test_log_utils import extract_first_failed_test
+from src.auto_coder.utils import extract_first_failed_test
 
 
 def test_extract_from_pytest_failed_summary_hyphen(monkeypatch):
@@ -58,8 +58,11 @@ def test_extract_from_playwright_spec(monkeypatch):
 
 
 def test_extract_playwright_candidate_returned_even_if_not_exists():
-    # Can return as candidate even with ANSI color or non-existent path
-    stdout = "\x1b[31m  ✘    1 [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \x1b[39m\n" "\n  1) [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \n\n"
+    # ANSIカラーや存在しないパスでも候補として返せること
+    stdout = (
+        "\x1b[31m  ✘    1 [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \x1b[39m\n"
+        "\n  1) [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \n\n"
+    )
     stderr = ""
 
     path = extract_first_failed_test(stdout, stderr)
@@ -67,12 +70,12 @@ def test_extract_playwright_candidate_returned_even_if_not_exists():
 
 
 def test_extract_playwright_from_sample_full_output_excerpt():
-    # Excerpt close to user-provided format (including ANSI colors, symbols, and Japanese)
+    # ユーザー提供のフォーマットに近い抜粋（ANSIカラーや記号・日本語含む）
     stdout = (
         "TestHelper: UserManager found, attempting authentication\n"
-        "  ✘    1 [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › Heading\n"
+        "  ✘    1 [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › 見出し\n"
         "\x1b[31mTesting stopped early after 1 maximum allowed failures.\x1b[39m\n\n"
-        "  1) [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › Heading \n\n"
+        "  1) [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › 見出し \n\n"
         "    at /home/ubuntu/src3/outliner/client/e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:11:10\n"
     )
     stderr = ""
@@ -81,15 +84,22 @@ def test_extract_playwright_from_sample_full_output_excerpt():
 
 
 def test_playwright_prefers_fail_over_pass_when_both_present():
-    # Return failing side even when success line comes first followed by fail line
-    stdout = "  \u2713    1 [basic] \u203a e2e/basic/pass-example.spec.ts:10:5 \u203a ok \n" "  \u2718   22 [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n" "\n  1) [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
+    # 先に成功(\u2713)行があり、その後に失敗(\u2718)行が出るケースでも、失敗側を返す
+    stdout = (
+        "  \u2713    1 [basic] \u203a e2e/basic/pass-example.spec.ts:10:5 \u203a ok \n"
+        "  \u2718   22 [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
+        "\n  1) [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
+    )
     stderr = ""
     path = extract_first_failed_test(stdout, stderr)
     assert path == "e2e/new/fail-example.spec.ts"
 
 
 def test_stderr_is_prioritized_over_stdout(monkeypatch):
-    stdout = "  \u2713    1 [basic] › e2e/basic/pass-example.spec.ts:10:5 › ok\n" "All tests passed\n"
+    stdout = (
+        "  \u2713    1 [basic] › e2e/basic/pass-example.spec.ts:10:5 › ok\n"
+        "All tests passed\n"
+    )
     stderr = "  ✘    1 [new] › e2e/new/fail-example.spec.ts:20:5 › broken\n"
 
     failing_path = "e2e/new/fail-example.spec.ts"
@@ -125,126 +135,3 @@ def test_vitest_fail_line_extracts_test_ts(monkeypatch):
 
     path = extract_first_failed_test(stdout, stderr)
     assert path == target
-
-
-def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
-    """When vitest succeeds and playwright fails, detect playwright's failure"""
-    stdout = textwrap.dedent(
-        """
-        ✓ src/tests/unit/foo.test.ts (5 tests) 125ms
-        ✓ src/tests/unit/bar.test.ts (3 tests) 89ms
-
-        Test Files  2 passed (2)
-             Tests  8 passed (8)
-          Start at  10:30:15
-          Duration  1.2s
-
-        Running Playwright tests...
-
-          ✘    1 [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
-
-          1) [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
-
-             Error: expect(received).toContain(expected)
-
-             Expected substring: "Welcome"
-             Received string: "Error: Invalid credentials"
-        """
-    )
-    stderr = ""
-
-    expected_path = "e2e/basic/login.spec.ts"
-    monkeypatch.setattr(os.path, "exists", lambda p: p == expected_path)
-
-    path = extract_first_failed_test(stdout, stderr)
-    assert path == expected_path
-
-
-def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
-    """When playwright succeeds and vitest fails, detect vitest's failure"""
-    stdout = textwrap.dedent(
-        """
-        Running Playwright tests...
-
-          ✓ [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
-          ✓ [basic] › e2e/basic/signup.spec.ts:15:5 › should signup successfully
-
-          2 passed (2.5s)
-
-        Running Vitest...
-
-         FAIL  src/tests/unit/auth.test.ts > auth > should validate token
-        AssertionError: expected false to be true
-
-         ❯ src/tests/unit/auth.test.ts:25:10
-
-        Test Files  1 failed (1)
-             Tests  1 failed (1)
-        """
-    )
-    stderr = ""
-
-    expected_path = "src/tests/unit/auth.test.ts"
-    monkeypatch.setattr(os.path, "exists", lambda p: p == expected_path)
-
-    path = extract_first_failed_test(stdout, stderr)
-    assert path == expected_path
-
-
-def test_pytest_success_playwright_fail_should_detect_playwright(monkeypatch):
-    """When pytest succeeds and playwright fails, detect playwright's failure"""
-    stdout = textwrap.dedent(
-        """
-        ============================= test session starts ==============================
-        collected 15 items
-
-        tests/test_api.py ............... [100%]
-
-        ============================== 15 passed in 2.34s ==============================
-
-        Running Playwright tests...
-
-          ✘    1 [core] › e2e/core/api-integration.spec.ts:30:5 › API integration test
-
-          1) [core] › e2e/core/api-integration.spec.ts:30:5 › API integration test
-
-             Error: Timeout 5000ms exceeded
-        """
-    )
-    stderr = ""
-
-    expected_path = "e2e/core/api-integration.spec.ts"
-    monkeypatch.setattr(os.path, "exists", lambda p: p == expected_path)
-
-    path = extract_first_failed_test(stdout, stderr)
-    assert path == expected_path
-
-
-def test_playwright_prioritize_failed_over_flaky(monkeypatch):
-    """
-    Ensure that when both 'failed' and 'flaky' tests are present in the summary,
-    the 'failed' test is prioritized.
-    """
-    stdout = textwrap.dedent(
-        """
-          1 failed
-            [project] › e2e/project/prj-delete-project-1129.spec.ts:7:5 › Project Deletion › should be able to delete a project 
-          2 flaky
-            [core] › e2e/core/slr-box-selection-copy-cancel-paste-timing-regression-9f2a1b3c.spec.ts:88:5 › ボックス選択のコピー・キャンセル・ペーストのタイミング回帰テスト › 矩形選択でコピー → Escでキャンセル → 再度矩形選択 → ペースト 
-            [new] › e2e/new/GRV-003-layout-persistence.spec.ts:46:5 › GRV-0002: Graph view layout persistence › layout persists after page reload 
-          1 skipped
-          2 did not run
-          357 passed (18.9m)
-          1 error was not a part of any test, see above for details
-        """
-    )
-    stderr = ""
-
-    failed_test = "e2e/project/prj-delete-project-1129.spec.ts"
-    flaky_test = "e2e/core/slr-box-selection-copy-cancel-paste-timing-regression-9f2a1b3c.spec.ts"
-
-    # Mock existence for both so we test priority, not just existence
-    monkeypatch.setattr(os.path, "exists", lambda p: p in [failed_test, flaky_test])
-
-    path = extract_first_failed_test(stdout, stderr)
-    assert path == failed_test

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.12.24.8+gaa189a51"
+version = "2025.10.23.8+g1292821"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -15,227 +15,110 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
     "requests>=2.31.0",
-    "pydantic>=2.0.0,<3.0.0",
+    "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "click>=8.1.0",
     "python-dotenv>=1.0.0",
-    "PyGithub>=2.0.0",
-    "GitPython>=3.1.0",
+    "PyGithub>=1.59.0",
     "pyyaml>=6.0",
+    "GitPython>=3.1.0",
     "loguru>=0.7.0",
     "neo4j>=5.14.0",
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
-    "watchdog>=6.0.0",
-    "pathspec>=0.12.0",
-    "playwright>=1.54.0",
-    "mcp-server>=0.1.4",
-    "build>=1.3.0",
-    "pytest-cov>=7.0.0",
-    "tomli-w>=1.0.0",
-    "google-auth>=2.0.0",
-    "httpx>=0.27.0",
-    "hishel[sqlite]>=1.0.0",
-    "ghapi>=1.0.0",
-    "aider-chat>=0.1.0",
 ]
 
 [project.optional-dependencies]
-test = [
-    "pytest>=9.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
-    "pytest-mock>=3.10.0",
-    "pytest-timeout>=2.1.0",
-    "pytest-xdist>=3.0.0",
-]
 dev = [
-    "black>=24.0.0",
-    "isort>=5.0.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
     "flake8>=6.0.0",
-    "mypy>=1.0.0",
-    "pre-commit>=4.3.0",
-    "pytest>=9.0.0",
-    "pytest-timeout>=2.1.0",
-    "types-toml>=0.10.8.20240310",
+    "mypy>=1.5.0",
+    "pre-commit>=3.3.0",
+]
+test = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "playwright>=1.40.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-dir]
-"" = "src"
-
-# Entry points for CLI commands
 [project.scripts]
 auto-coder = "auto_coder.cli:main"
 
-# Include package data files
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["*.tests", "*.tests.*", "tests.*", "tests"]
+
 [tool.setuptools.package-data]
-auto_coder = ["prompts.yaml", "*.yml", "*.yaml"]
+auto_coder = [
+    "prompts.yaml",
+    "docker-compose.graphrag.yml",
+    "graph_builder/dist/cli.bundle.js",
+    "graph_builder/dist/**/*.js",
+    "graph_builder/dist/**/*.d.ts",
+    "graph_builder/dist/**/*.map",
+    "graph_builder/src/**/*.py",
+    "graph_builder/src/**/*.ts",
+    "graph_builder/package.json",
+    "graph_builder/tsconfig.json",
+    "mcp_servers/graphrag_mcp/**/*.py",
+    "mcp_servers/graphrag_mcp/**/*.md",
+    "mcp_servers/graphrag_mcp/**/*.toml",
+    "mcp_servers/graphrag_mcp/**/*.sh",
+]
 
-[tool.pyright]
-# Python version
-pythonVersion = "3.11"
-
-# Basic checking
-strictParameterNoneValue = true
-reportGeneralTypeIssues = true
-reportOptionalSubscript = true
-reportOptionalMemberAccess = true
-reportOptionalCall = true
-reportOptionalIndexedValue = true
-reportOptionalIterable = true
-reportOptionalContextManager = true
-reportOptionalOperand = true
-
-# Report issues (設定して警告レベルに変更)
-reportUnknownParameterType = "warning"
-reportUnknownArgumentType = "warning"
-reportUnknownLambdaType = "warning"
-reportUnknownVariableType = "warning"
-reportUnknownMemberType = "warning"
-reportMissingTypeStubs = "warning"
-reportPossiblyUnboundVariable = "warning"
-
-# Import analysis
-reportImportCycles = "warning"
-reportUnusedImport = "warning"
-reportDuplicateImport = "warning"
-
-# Code quality
-reportUnusedVariable = "warning"
-reportPrivateUsage = "warning"
-reportConstantRedefinition = "warning"
-
-# Type annotations
-reportTypedDictNotRequiredAccess = "warning"
-reportPrivateImportUsage = "warning"
-
-# Advanced checking
-strictListInference = true
-strictDictInference = true
-strictSetInference = true
-
-# Exclude specific files from checking if needed
-exclude = [
-    "tests/",
-    "build/",
-    "dist/",
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "node_modules",
+    "node_modules/**",
+    "test-output",
+    "test-output/**",
+    "test-output-ts",
+    "test-output-ts/**",
+    "sample-repo",
+    "sample-repo/**",
+    "__pycache__",
+    "*.pyc",
+    "*/tests",
+    "*/tests/**",
+    "graph_builder/dist/tests",
+    "graph_builder/dist/tests/**",
+    "graph_builder/src/tests",
+    "graph_builder/src/tests/**",
 ]
 
 [tool.black]
-line-length = 300
-target-version = ['py311']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | build
-  | dist
-  | graph_builder
-)/
-'''
+line-length = 88
+target-version = ['py39']
 
 [tool.isort]
 profile = "black"
-line_length = 300
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-src_paths = ["src", "tests"]
-skip_glob = [
-    "*/mcp_servers/*",
-    "*/graph_builder/*",
-    "*/build/*",
-    "*/dist/*",
-]
+line_length = 88
 
 [tool.mypy]
-python_version = "3.11"
-namespace_packages = true
-# Enable explicit_package_bases to avoid module path conflicts
-explicit_package_bases = true
-# Specify the package root directory
-mypy_path = "src"
-# Disable strict mode temporarily to allow commit
-strict = false
-warn_return_any = false
-warn_unused_configs = false
-ignore_missing_imports = true
-disallow_untyped_defs = false
-disallow_any_generics = false
-disallow_incomplete_defs = false
-check_untyped_defs = false
-disallow_untyped_decorators = false
-no_implicit_optional = false
-exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/"]
-# Use packages instead of files to avoid module path conflicts
-packages = ["auto_coder"]
-
-[[tool.mypy.overrides]]
-module = [
-    "gitpython.*",
-    "pygithub.*",
-    "loguru.*",
-    "yaml.*",
-    "rich.*",
-    "dotenv.*",
-]
-ignore_missing_imports = true
-
-# Skip test files and external modules
-[[tool.mypy.overrides]]
-module = "tests.*"
-ignore_errors = true
-
-[[tool.mypy.overrides]]
-module = [
-    "mcp_servers.*",
-    "graph_builder.*",
-]
-ignore_errors = true
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-norecursedirs = [
-    ".*",
-    "build",
-    "dist",
-    "CVS",
-    "_darcs",
-    "{arch}",
-    "*.egg",
-    "venv",
-    "env",
-    "utils",
-]
-
-[dependency-groups]
-dev = [
-    "black>=25.9.0",
-    "isort>=5.0.0",
-    "flake8>=6.0.0",
-    "types-pyyaml>=6.0.12.20250915",
-    "pre-commit>=4.5.0",
-    "pylint>=4.0.4",
-    "types-setuptools>=80.9.0.20250822",
-    "pyright>=1.1.407",
-]
+addopts = "-v --cov=src/auto_coder --cov-report=html --cov-report=term-missing"

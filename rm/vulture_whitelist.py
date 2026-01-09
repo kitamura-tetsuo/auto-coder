@@ -29,3 +29,9 @@ extra = None  # unused variable (/target/src/auto_coder/config.py:37)
 
 
 # Git utilities - keep for future use
+def get_current_branch():
+    pass  # unused function (/target/src/auto_coder/git_utils.py:138)
+
+
+def get_repo_root():
+    pass  # unused function (/target/src/auto_coder/git_utils.py:163)

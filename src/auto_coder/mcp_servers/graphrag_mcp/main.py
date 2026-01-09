@@ -1,7 +1,5 @@
 import os
-
 from dotenv import load_dotenv
-
 
 def main():
     # Load environment variables from .env file
@@ -12,7 +10,6 @@ def main():
 
     # Run the MCP server directly
     mcp.run()
-
 
 if __name__ == "__main__":
     main()

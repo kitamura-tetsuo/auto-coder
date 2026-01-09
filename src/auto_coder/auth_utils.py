@@ -6,11 +6,10 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional, cast
+from typing import Optional
 
 import yaml
 
-from .gh_logger import get_gh_logger
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -34,18 +33,14 @@ def get_github_token() -> Optional[str]:
 
     # 2. Try to get token from gh CLI
     try:
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+        result = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=10
         )
         if result.returncode == 0:
             token = result.stdout.strip()
             if token:
                 logger.info("Using GitHub token from gh CLI authentication")
-                return cast(str, token)
+                return token
     except (
         subprocess.TimeoutExpired,
         subprocess.CalledProcessError,
@@ -64,7 +59,7 @@ def get_github_token() -> Optional[str]:
                 github_config = config["github.com"]
                 if "oauth_token" in github_config:
                     logger.info("Using GitHub token from gh config file")
-                    return cast(str, github_config["oauth_token"])
+                    return github_config["oauth_token"]
     except Exception as e:
         logger.debug(f"Could not read gh config file: {e}")
 
@@ -111,7 +106,9 @@ def get_gemini_api_key() -> Optional[str]:
 
     # 3. Try alternative gemini CLI command
     try:
-        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            ["gemini", "auth", "status"], capture_output=True, text=True, timeout=10
+        )
         if result.returncode == 0 and "authenticated" in result.stdout.lower():
             # Try to extract API key from status output
             lines = result.stdout.split("\n")
@@ -150,7 +147,7 @@ def get_gemini_api_key() -> Optional[str]:
                         api_key = config[key_name]
                         if api_key:
                             logger.info(f"Using Gemini API key from {config_path}")
-                            return cast(str, api_key)
+                            return api_key
         except Exception as e:
             logger.debug(f"Could not read config file {config_path}: {e}")
 
@@ -165,7 +162,9 @@ def get_gemini_api_key() -> Optional[str]:
         if result.returncode == 0:
             token = result.stdout.strip()
             if token:
-                logger.info("Using access token from gcloud CLI (may work for some Gemini APIs)")
+                logger.info(
+                    "Using access token from gcloud CLI (may work for some Gemini APIs)"
+                )
                 return token
     except (
         subprocess.TimeoutExpired,
@@ -186,12 +185,8 @@ def check_gh_auth() -> bool:
         True if authenticated, False otherwise.
     """
     try:
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+        result = subprocess.run(
+            ["gh", "auth", "status"], capture_output=True, text=True, timeout=10
         )
         return result.returncode == 0 and "logged in" in result.stdout.lower()
     except Exception:
@@ -207,7 +202,9 @@ def check_gemini_auth() -> bool:
     """
     try:
         # Try to check if gemini CLI is authenticated
-        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            ["gemini", "auth", "status"], capture_output=True, text=True, timeout=10
+        )
         if result.returncode == 0:
             return "authenticated" in result.stdout.lower()
 

@@ -3,248 +3,133 @@ Codex CLI client for Auto-Coder.
 """
 
 import json
-import os
 import subprocess
-import time
 from pathlib import Path
-from typing import Optional
 
-from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
-from .llm_backend_config import get_llm_config
+from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMClientBase
-from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
-from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
 
 class CodexClient(LLMClientBase):
-    """Codex CLI client for analyzing issues and generating solutions."""
+    """Codex CLI client for analyzing issues and generating solutions.
 
-    def __init__(
-        self,
-        backend_name: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        openai_api_key: Optional[str] = None,
-        openai_base_url: Optional[str] = None,
-        use_noedit_options: bool = False,
-    ) -> None:
+    Note: Provides a GeminiClient-compatible surface for integration.
+    """
+
+    def __init__(self, model_name: str = "codex"):
         """Initialize Codex CLI client.
-
-        Args:
-            backend_name: Backend name to use for configuration lookup (optional).
-                         If provided, will use config for this backend.
-            api_key: API key for the backend (optional, for custom backends).
-            base_url: Base URL for the backend (optional, for custom backends).
-            openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
-            openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
-            use_noedit_options: If True, use options_for_noedit instead of options.
+        model_name is accepted for compatibility; not used by codex CLI.
         """
-        super().__init__()
-        config = get_llm_config()
-
-        # If backend_name is provided, get config from that backend
-        if backend_name:
-            self.config_backend = config.get_backend_config(backend_name)
-            # Use backend config model, fall back to default "codex"
-            self.model_name = (self.config_backend and self.config_backend.model) or "codex"
-            # Use options_for_noedit if use_noedit_options is True
-            if use_noedit_options and self.config_backend and self.config_backend.options_for_noedit:
-                self.options = self.config_backend.options_for_noedit
-            else:
-                self.options = (self.config_backend and self.config_backend.options) or []
-            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
-            self.api_key = api_key or (self.config_backend and self.config_backend.api_key)
-            self.base_url = base_url or (self.config_backend and self.config_backend.base_url)
-            self.openai_api_key = openai_api_key or (self.config_backend and self.config_backend.openai_api_key)
-            self.openai_base_url = openai_base_url or (self.config_backend and self.config_backend.openai_base_url)
-            self.model_provider = self.config_backend and self.config_backend.model_provider
-            # Store usage_markers from config
-            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
-        else:
-            # Fall back to default codex config
-            self.config_backend = config.get_backend_config("codex")
-            self.model_name = (self.config_backend and self.config_backend.model) or "codex"
-            # Use options_for_noedit if use_noedit_options is True
-            if use_noedit_options and self.config_backend and self.config_backend.options_for_noedit:
-                self.options = self.config_backend.options_for_noedit
-            else:
-                self.options = (self.config_backend and self.config_backend.options) or []
-            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
-            self.api_key = api_key
-            self.base_url = base_url
-            self.openai_api_key = openai_api_key
-            self.openai_base_url = openai_base_url
-            self.model_provider = None
-            # Store usage_markers from config
-            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
-
+        self.model_name = model_name or "codex"
         self.default_model = self.model_name
-        self.conflict_model = self.model_name
+        self.conflict_model = self.model_name  # codex doesn't switch models; keep same
         self.timeout = None
-
-        # Validate required options for this backend
-        if self.config_backend:
-            required_errors = self.config_backend.validate_required_options()
-            if required_errors:
-                for error in required_errors:
-                    logger.warning(error)
-
-        # Initialize LLM output logger
-        self.output_logger = LLMOutputLogger()
 
         # Check if codex CLI is available
         try:
-            result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["codex", "--version"], capture_output=True, text=True, timeout=10
+            )
             if result.returncode != 0:
                 raise RuntimeError("codex CLI not available or not working")
         except Exception as e:
             raise RuntimeError(f"codex CLI not available: {e}")
 
     def switch_to_conflict_model(self) -> None:
-        """No-op; codex has no model switching."""
+        """No-op for compatibility; codex has no model switching."""
         logger.info("CodexClient: switch_to_conflict_model noop")
 
     def switch_to_default_model(self) -> None:
-        """No-op; codex has no model switching."""
+        """No-op for compatibility; codex has no model switching."""
         logger.info("CodexClient: switch_to_default_model noop")
 
     def _escape_prompt(self, prompt: str) -> str:
-        """Escape special characters that may confuse shell/CLI."""
+        """Escape special characters that may confuse shell/CLI.
+        Keep behavior aligned with GeminiClient for consistency.
+        """
         return prompt.replace("@", "\\@").strip()
 
-    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        """Run codex CLI with the given prompt and show real-time output."""
-        start_time = time.time()
-        status = "success"
-        error_message = None
-        full_output = ""
-
+    def _run_gemini_cli(self, prompt: str) -> str:
+        """Run codex CLI with the given prompt and show real-time output.
+        The method name matches GeminiClient for compatibility with AutomationEngine.
+        """
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = ["codex"]
+            cmd = [
+                "codex",
+                "exec",
+                "-s",
+                "workspace-write",
+                "--dangerously-bypass-approvals-and-sandbox",
+                escaped_prompt,
+            ]
 
-            # Get processed options with placeholders replaced
-            # Use options_for_noedit for no-edit operations if available
-            if self.config_backend:
-                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name, session_id=None)
-                if is_noedit and self.options_for_noedit:
-                    options_to_use = processed_options["options_for_noedit"]
-                else:
-                    options_to_use = processed_options["options"]
-            else:
-                # Fallback if config_backend is not available
-                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            # Warn that we are invoking an LLM (minimize calls)
+            logger.warning(
+                "LLM invocation: codex CLI is being called. Keep LLM calls minimized."
+            )
+            logger.debug(
+                f"Running codex CLI with prompt length: {len(prompt)} characters"
+            )
+            logger.info(
+                "🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]"
+            )
+            logger.info("=" * 60)
 
-            # Add configured options from config
-            if options_to_use:
-                cmd.extend(options_to_use)
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "usage limit",
+                "upgrade to pro",
+            )
 
-            # Append any one-time extra arguments (e.g., resume flags)
-            extra_args = self.consume_extra_args()
-            if extra_args:
-                cmd.extend(extra_args)
-
-            cmd.append(escaped_prompt)
-
-            # Use configured usage_markers if available, otherwise fall back to defaults
-            if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
-                usage_markers = self.usage_markers
-            else:
-                # Default hardcoded usage markers
-                usage_markers = [
-                    "rate limit",
-                    "usage limit",
-                    "upgrade to pro",
-                    "too many requests",
-                ]
-
-            # Prepare environment variables for subprocess
-            env = os.environ.copy()
-            if self.api_key:
-                env["CODEX_API_KEY"] = self.api_key
-            if self.base_url:
-                env["CODEX_BASE_URL"] = self.base_url
-            if self.openai_api_key:
-                env["OPENAI_API_KEY"] = self.openai_api_key
-            if self.openai_base_url:
-                env["OPENAI_BASE_URL"] = self.openai_base_url
+            def _on_stream(stream_name: str, chunk: str) -> None:
+                low_chunk = chunk.lower()
+                if any(marker in low_chunk for marker in usage_markers):
+                    raise AutoCoderUsageLimitError(chunk.strip())
 
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                env=env if len(env) > len(os.environ) else None,
-                dot_format=True,
-                idle_timeout=1800,
+                check_success=False,
+                on_stream=_on_stream,
             )
-
+            logger.info("=" * 60)
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+            full_output = (
+                "\n".join(combined_parts)
+                if combined_parts
+                else (result.stderr or result.stdout or "")
+            )
             full_output = full_output.strip()
             low = full_output.lower()
-
-            # Check for timeout (returncode -1 and "timed out" in stderr)
-            if result.returncode == -1 and "timed out" in low:
-                raise AutoCoderTimeoutError(full_output)
-
-            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
-
             if result.returncode != 0:
-                if usage_limit_detected:
-                    status = "error"
-                    error_message = full_output
+                # Detect usage/rate limit patterns
+                if any(marker in low for marker in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
-                status = "error"
-                error_message = f"codex CLI failed with return code {result.returncode}\n{full_output}"
-                raise RuntimeError(error_message)
+                raise RuntimeError(
+                    f"codex CLI failed with return code {result.returncode}\n{full_output}"
+                )
 
-            if usage_limit_detected:
-                status = "error"
-                error_message = full_output
+            # Even with 0, some CLIs may print limit messages
+            if any(marker in low for marker in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
-
             return full_output
         except AutoCoderUsageLimitError:
-            # Re-raise without catching
-            raise
-        except AutoCoderTimeoutError:
-            # Re-raise timeout errors
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to run codex CLI: {e}")
-        finally:
-            # Always log the interaction and print summary
-            duration_ms = (time.time() - start_time) * 1000
 
-            # Log to JSON file
-            self.output_logger.log_interaction(
-                backend="codex",
-                model=self.model_name,
-                prompt=prompt,
-                response=full_output,
-                duration_ms=duration_ms,
-                status=status,
-                error=error_message,
-            )
-
-            # Print user-friendly summary to stdout
-            print("\n" + "=" * 60)
-            print("🤖 Codex CLI Execution Summary")
-            print("=" * 60)
-            print(f"Backend: codex")
-            print(f"Model: {self.model_name}")
-            print(f"Prompt Length: {len(prompt)} characters")
-            print(f"Response Length: {len(full_output)} characters")
-            print(f"Duration: {duration_ms:.0f}ms")
-            print(f"Status: {status.upper()}")
-            if error_message:
-                print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
-            print("=" * 60 + "\n")
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
+        return self._run_gemini_cli(prompt)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Codex CLI.

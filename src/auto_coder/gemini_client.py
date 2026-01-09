@@ -3,24 +3,19 @@ Gemini CLI client for Auto-Coder.
 """
 
 import json
-import os
 import subprocess
-import time
 from typing import Any, Dict, List, Optional
 
-# genai is mocked in tests. Ensure the attribute is available even if the package is not installed at runtime
+# genai はテストでモックされる。実環境で未インストールでも属性が存在するようにする
 try:
     import google.generativeai as genai  # type: ignore
-except Exception:  # Avoid runtime dependency
-    genai = None  # Replaced via patch in tests
+except Exception:  # ランタイム依存を避けるため
+    genai = None  # テストでは patch により置き換えられる
 
-from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
-from .llm_backend_config import get_llm_config
+from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMClientBase
-from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -29,68 +24,45 @@ logger = get_logger(__name__)
 class GeminiClient(LLMClientBase):
     """Gemini client that uses google.generativeai SDK primarily in tests and a CLI fallback."""
 
-    def __init__(self, backend_name: Optional[str] = None) -> None:
+    def __init__(
+        self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-pro"
+    ):
         """Initialize Gemini client.
 
         In tests, genai is patched and used. In production, we still verify gemini CLI presence
         for the CLI-based paths used elsewhere in the tool.
-
-        Args:
-            backend_name: Backend name to use for configuration lookup (optional).
-                         If provided, will use config for this backend.
         """
-        super().__init__()
-        config = get_llm_config()
+        # Allow single positional argument to be treated as model_name when it looks like a model id
+        if (
+            api_key
+            and isinstance(api_key, str)
+            and api_key.lower().startswith("gemini-")
+            and model_name == "gemini-2.5-pro"
+        ):
+            model_name, api_key = api_key, None
 
-        if backend_name:
-            self.config_backend = config.get_backend_config(backend_name)
-            # Use backend config, fall back to default "gemini"
-            self.api_key = (self.config_backend and self.config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
-            self.model_name = (self.config_backend and self.config_backend.model) or "gemini-2.5-pro"
-            # Store usage_markers from config
-            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
-            # Store options from config
-            self.options = (self.config_backend and self.config_backend.options) or []
-            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
-        else:
-            # Fall back to default gemini config
-            self.config_backend = config.get_backend_config("gemini")
-            self.api_key = (self.config_backend and self.config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
-            self.model_name = (self.config_backend and self.config_backend.model) or "gemini-2.5-pro"
-            # Store usage_markers from config
-            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
-            # Store options from config
-            self.options = (self.config_backend and self.config_backend.options) or []
-            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
-
-        self.default_model = self.model_name
+        self.api_key = api_key
+        self.model_name = model_name
+        self.default_model = model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
         self.timeout = None  # No timeout - let gemini CLI run as long as needed
 
-        # Validate required options for this backend
-        if self.config_backend:
-            required_errors = self.config_backend.validate_required_options()
-            if required_errors:
-                for error in required_errors:
-                    logger.warning(error)
-
         # Configure genai if available (tests patch this symbol)
-        if genai is not None and self.api_key:
+        if genai is not None and api_key:
             try:
-                genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel(self.model_name)
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel(model_name)
             except Exception:
                 # Fall back silently for tests that don't rely on real SDK
                 self.model = None
         else:
             self.model = None
 
-        # Initialize LLM output logger
-        self.output_logger = LLMOutputLogger()
-
         # Check if gemini CLI is available for CLI-based flows
         try:
-            result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["gemini", "--version"], capture_output=True, text=True, timeout=10
+            )
             if result.returncode != 0:
                 raise RuntimeError("Gemini CLI not available or not working")
         except (
@@ -103,66 +75,71 @@ class GeminiClient(LLMClientBase):
     def switch_to_conflict_model(self) -> None:
         """Switch to faster model for conflict resolution."""
         if self.model_name != self.conflict_model:
-            logger.info(f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution")
+            logger.info(
+                f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution"
+            )
             self.model_name = self.conflict_model
 
     def switch_to_default_model(self) -> None:
         """Switch back to default model."""
         if self.model_name != self.default_model:
-            logger.info(f"Switching back from {self.model_name} to {self.default_model}")
+            logger.info(
+                f"Switching back from {self.model_name} to {self.default_model}"
+            )
             self.model_name = self.default_model
 
     def _escape_prompt(self, prompt: str) -> str:
         """Escape @ characters in prompt for Gemini."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+    def _run_gemini_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
-        start_time = time.time()
-        status = "success"
-        error_message = None
-        full_output = ""
-
         try:
+            # Escape @ characters in prompt for Gemini
             escaped_prompt = self._escape_prompt(prompt)
 
-            cmd = ["gemini"]
+            # Run gemini CLI with prompt via stdin and additional prompt parameter
+            cmd = [
+                "gemini",
+                "--yolo",
+                "--model",
+                self.model_name,
+                "--force-model",
+                "--prompt",
+                escaped_prompt,
+            ]
 
-            # Get processed options with placeholders replaced
-            # Use options_for_noedit for no-edit operations if available
-            if self.config_backend:
-                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name)
-                if is_noedit and self.options_for_noedit:
-                    options_to_use = processed_options["options_for_noedit"]
-                else:
-                    options_to_use = processed_options["options"]
-            else:
-                # Fallback if config_backend is not available
-                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-
-            # Add configured options from config
-            if options_to_use:
-                cmd.extend(options_to_use)
-
-            # Append any resume/continuation flags before the prompt payload
-            extra_args = self.consume_extra_args()
-            if extra_args:
-                cmd.extend(extra_args)
-
-            # Prompt should be last argument
-            cmd.append(escaped_prompt)
-
-            logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
-            # Build display command for logging
-            display_options = " ".join(self.options) if self.options else ""
-            logger.info(f"🤖 Running: gemini {display_options} [prompt]")
+            # Warn that we are invoking an LLM (keep calls minimized)
+            logger.warning(
+                "LLM invocation: gemini CLI is being called. Keep LLM calls minimized."
+            )
+            logger.debug(
+                f"Running gemini CLI with prompt length: {len(prompt)} characters"
+            )
+            logger.info(
+                f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]"
+            )
             logger.info("=" * 60)
+
+            # Streaming-time usage limit detection via callback
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "resource_exhausted",
+                "too many requests",
+            )
+
+            def _on_stream(stream_name: str, chunk: str) -> None:
+                low_chunk = chunk.lower()
+                if any(m in low_chunk for m in usage_markers):
+                    raise AutoCoderUsageLimitError(chunk.strip())
 
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                idle_timeout=1800,
+                check_success=False,
+                on_stream=_on_stream,
             )
 
             logger.info("=" * 60)
@@ -170,80 +147,41 @@ class GeminiClient(LLMClientBase):
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+            full_output = (
+                "\n".join(combined_parts)
+                if combined_parts
+                else (result.stderr or result.stdout or "")
+            )
             full_output = full_output.strip()
             low = full_output.lower()
 
-            # Check for timeout (returncode -1 and "timed out" in stderr)
-            if result.returncode == -1 and "timed out" in low:
-                raise AutoCoderTimeoutError(full_output)
-
-            # Use configured usage_markers if available, otherwise fall back to defaults
-            if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
-                usage_markers = self.usage_markers
-            else:
-                # Default hardcoded usage markers
-                usage_markers = [
-                    "rate limit",
-                    "resource_exhausted",
-                    "too many requests",
-                    "[api error: you have exhausted your capacity on this model. your quota will reset after ",
-                ]
-
-            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+            # Detect usage/rate limit conditions
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "resource_exhausted",
+                "too many requests",
+            )
 
             if result.returncode != 0:
-                if usage_limit_detected:
-                    status = "error"
-                    error_message = full_output
+                if any(m in low for m in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
-                status = "error"
-                error_message = f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
-                raise RuntimeError(error_message)
+                raise RuntimeError(
+                    f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
+                )
 
-            if usage_limit_detected:
-                status = "error"
-                error_message = full_output
+            # Even with 0, detect soft limit messages (some CLIs log 429 but exit 0)
+            if any(m in low for m in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
-
             return full_output
 
         except AutoCoderUsageLimitError:
-            # Re-raise without catching
-            raise
-        except AutoCoderTimeoutError:
-            # Re-raise timeout errors
             raise
         except Exception as e:
-            raise RuntimeError(f"Failed to run Gemini CLI: {e}")
-        finally:
-            # Always log the interaction and print summary
-            duration_ms = (time.time() - start_time) * 1000
-
-            # Log to JSON file
-            self.output_logger.log_interaction(
-                backend="gemini",
-                model=self.model_name,
-                prompt=prompt,
-                response=full_output,
-                duration_ms=duration_ms,
-                status=status,
-                error=error_message,
-            )
-
-            # Print user-friendly summary to stdout
-            print("\n" + "=" * 60)
-            print("🤖 Gemini CLI Execution Summary")
-            print("=" * 60)
-            print(f"Backend: gemini")
-            print(f"Model: {self.model_name}")
-            print(f"Prompt Length: {len(prompt)} characters")
-            print(f"Response Length: {len(full_output)} characters")
-            print(f"Duration: {duration_ms:.0f}ms")
-            print(f"Status: {status.upper()}")
-            if error_message:
-                print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
-            print("=" * 60 + "\n")
+            if "timed out" not in str(e):  # Don't mention timeout since we removed it
+                raise RuntimeError(f"Failed to run Gemini CLI: {e}")
+            raise
 
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Suggest new features based on repository analysis."""
@@ -256,7 +194,7 @@ class GeminiClient(LLMClientBase):
                 text = getattr(resp, "text", "")
                 suggestions = self._parse_feature_suggestions(text)
             else:
-                response_text = self._run_llm_cli(prompt)
+                response_text = self._run_gemini_cli(prompt)
                 suggestions = self._parse_feature_suggestions(response_text)
             logger.info(f"Generated {len(suggestions)} feature suggestions")
             return suggestions
@@ -267,7 +205,7 @@ class GeminiClient(LLMClientBase):
 
     def _create_pr_analysis_prompt(self, pr_data: Dict[str, Any]) -> str:
         """Create prompt for pull request analysis."""
-        result: str = render_prompt(
+        return render_prompt(
             "gemini.pr_analysis",
             title=pr_data.get("title", ""),
             body=pr_data.get("body", ""),
@@ -280,11 +218,10 @@ class GeminiClient(LLMClientBase):
             draft=pr_data.get("draft", False),
             mergeable=pr_data.get("mergeable", False),
         )
-        return result
 
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
         """Create prompt for feature suggestions."""
-        result: str = render_prompt(
+        return render_prompt(
             "feature.suggestion",
             repo_name=repo_context.get("name", "Unknown"),
             description=repo_context.get("description", "No description"),
@@ -292,9 +229,8 @@ class GeminiClient(LLMClientBase):
             recent_issues=repo_context.get("recent_issues", []),
             recent_prs=repo_context.get("recent_prs", []),
         )
-        return result
 
-    # SDK-based analysis helpers removed per LLM execution policy.
+    # ===== SDK-based analysis helpers (disabled per LLM execution policy) =====
     # analyze_issue / analyze_pull_request / generate_solution are intentionally removed.
     # The system must not perform analysis-only LLM calls. Single-run direct actions are used instead.
 
@@ -305,9 +241,7 @@ class GeminiClient(LLMClientBase):
             start = response_text.find("{")
             end = response_text.rfind("}") + 1
             if start != -1 and end != -1:
-                parsed = json.loads(response_text[start:end])
-                result: Dict[str, Any] = parsed if isinstance(parsed, dict) else {}
-                return result
+                return json.loads(response_text[start:end])
         except Exception:
             pass
         # Fallback default per tests expectations
@@ -319,18 +253,7 @@ class GeminiClient(LLMClientBase):
 
     def _parse_solution_response(self, response_text: str) -> Dict[str, Any]:
         try:
-            parsed = json.loads(response_text)
-            result: Dict[str, Any] = (
-                parsed
-                if isinstance(parsed, dict)
-                else {
-                    "solution_type": "investigation",
-                    "summary": f"Invalid JSON: {response_text[:200]}",
-                    "steps": [],
-                    "code_changes": [],
-                }
-            )
-            return result
+            return json.loads(response_text)
         except Exception:
             return {
                 "solution_type": "investigation",
@@ -348,13 +271,15 @@ class GeminiClient(LLMClientBase):
 
             if start_idx != -1 and end_idx != -1:
                 json_str = response_text[start_idx:end_idx]
-                parsed = json.loads(json_str)
-                result: List[Dict[str, Any]] = parsed if isinstance(parsed, list) else []
-                return result
+                return json.loads(json_str)
             else:
                 return []
         except json.JSONDecodeError:
             return []
+
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
+        return self._run_gemini_cli(prompt)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Gemini CLI.

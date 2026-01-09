@@ -5,17 +5,15 @@ Integrates graphrag_mcp server with LLM clients to provide
 Neo4j and Qdrant context during LLM invocations.
 """
 
-import hashlib
 import json
 import os
 import shlex
 import subprocess
 import threading
-from pathlib import Path
-from typing import IO, Optional
+from typing import Optional
 
 from .graphrag_docker_manager import GraphRAGDockerManager
-from .graphrag_index_manager import GraphRAGIndexManager, SnapshotCleanupResult
+from .graphrag_index_manager import GraphRAGIndexManager
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -47,23 +45,6 @@ class GraphRAGMCPIntegration:
         self.mcp_server_path = mcp_server_path
         self.mcp_process: Optional[subprocess.Popen] = None
 
-    def get_repository_label(self, repo_path: Optional[str] = None) -> str:
-        """Get repository-specific label for Neo4j nodes.
-
-        Args:
-            repo_path: Optional path to repository. If None, uses index manager's repo_path.
-
-        Returns:
-            Repository-specific label in the format 'Repo_XXXXXXXX'
-        """
-        if repo_path is None:
-            repo_path_obj = self.index_manager.repo_path
-        else:
-            repo_path_obj = Path(repo_path)
-
-        repo_hash = hashlib.sha256(str(repo_path_obj.resolve()).encode()).hexdigest()[:8].upper()
-        return f"Repo_{repo_hash}"
-
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
         """Ensure GraphRAG environment is ready for use.
 
@@ -90,7 +71,9 @@ class GraphRAGMCPIntegration:
                         logger.info("Docker containers started successfully")
                         break
                     else:
-                        logger.warning(f"Failed to start Docker containers (attempt {attempt + 1}/{max_retries})")
+                        logger.warning(
+                            f"Failed to start Docker containers (attempt {attempt + 1}/{max_retries})"
+                        )
                         if attempt < max_retries - 1:
                             logger.info("Retrying after cleanup...")
                             # Try to stop containers before retry
@@ -99,7 +82,9 @@ class GraphRAGMCPIntegration:
 
                             time.sleep(2)
                 except Exception as e:
-                    logger.error(f"Error starting Docker containers (attempt {attempt + 1}/{max_retries}): {e}")
+                    logger.error(
+                        f"Error starting Docker containers (attempt {attempt + 1}/{max_retries}): {e}"
+                    )
                     if attempt < max_retries - 1:
                         logger.info("Retrying after cleanup...")
                         try:
@@ -110,7 +95,10 @@ class GraphRAGMCPIntegration:
 
                         time.sleep(2)
             else:
-                logger.error("Failed to start Docker containers after all retries. " "Please check Docker installation and docker-compose.graphrag.yml configuration.")
+                logger.error(
+                    "Failed to start Docker containers after all retries. "
+                    "Please check Docker installation and docker-compose.graphrag.yml configuration."
+                )
                 return False
         else:
             logger.info("Docker containers are already running")
@@ -129,7 +117,10 @@ class GraphRAGMCPIntegration:
                     logger.error("Failed to force update index.")
                     return False
             elif indexed_path is not None and not path_matches:
-                logger.warning(f"Indexed path mismatch: indexed={indexed_path}, " f"current={self.index_manager.repo_path.resolve()}")
+                logger.warning(
+                    f"Indexed path mismatch: indexed={indexed_path}, "
+                    f"current={self.index_manager.repo_path.resolve()}"
+                )
                 logger.info("Updating index for current directory...")
                 # Force update when path changes
                 if not self.index_manager.update_index(force=True):
@@ -149,7 +140,10 @@ class GraphRAGMCPIntegration:
             logger.info("Starting GraphRAG MCP server...")
             try:
                 if not self.start_mcp_server():
-                    logger.error("Failed to start MCP server. " "Check GRAPHRAG_MCP_SERVER_PATH environment variable.")
+                    logger.error(
+                        "Failed to start MCP server. "
+                        "Check GRAPHRAG_MCP_SERVER_PATH environment variable."
+                    )
                     return False
             except Exception as e:
                 logger.error(f"Error starting MCP server: {e}")
@@ -194,7 +188,7 @@ class GraphRAGMCPIntegration:
             logger.error(f"Failed to start MCP server: {e}")
             return False
 
-    def _pump_stderr(self, stderr: IO[bytes]) -> None:
+    def _pump_stderr(self, stderr) -> None:
         """Pump stderr from MCP server to logger.
 
         Args:
@@ -220,7 +214,12 @@ class GraphRAGMCPIntegration:
 
         # Check if any MCP server process is running (started by another terminal)
         try:
-            result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
             # Look for graphrag_mcp main.py process
             for line in result.stdout.splitlines():
                 if "graphrag_mcp" in line and "main.py" in line and "grep" not in line:
@@ -249,28 +248,6 @@ class GraphRAGMCPIntegration:
         """Cleanup resources."""
         self.stop_mcp_server()
 
-    def run_cleanup(
-        self,
-        dry_run: bool = False,
-        retention_days: Optional[int] = None,
-        max_snapshots_per_repo: Optional[int] = None,
-    ) -> Optional[SnapshotCleanupResult]:
-        """Run GraphRAG snapshot cleanup via the index manager.
-
-        This is a thin wrapper so callers do not have to depend directly on
-        :class:`GraphRAGIndexManager`.
-        """
-
-        try:
-            return self.index_manager.cleanup_snapshots(
-                dry_run=dry_run,
-                retention_days=retention_days,
-                max_snapshots_per_repo=max_snapshots_per_repo,
-            )
-        except Exception as e:
-            logger.warning(f"GraphRAG cleanup via integration failed: {e}")
-            return None
-
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.
 
@@ -290,45 +267,3 @@ class GraphRAGMCPIntegration:
             ],
         }
 
-    def create_session(self, repo_path: str) -> str:
-        """Create a new session for repository isolation.
-
-        Args:
-            repo_path: Path to the repository
-
-        Returns:
-            Session identifier string
-        """
-        import time
-
-        # Create a unique session ID based on repository path and timestamp
-        session_id = f"session_{int(time.time() * 1000)}"
-        logger.info(f"Created session '{session_id}' for repository: {repo_path}")
-        return session_id
-
-    def get_session_context(self, session_id: str) -> Optional[dict]:
-        """Get session context information.
-
-        Args:
-            session_id: Session identifier
-
-        Returns:
-            Dictionary with session context or None if session not found
-        """
-        # For now, return basic session info
-        # In a full implementation, this would retrieve stored session data
-        return {"session_id": session_id}
-
-    def get_repo_label_for_session(self, session_id: str) -> Optional[str]:
-        """Get repository label for a session.
-
-        Args:
-            session_id: Session identifier
-
-        Returns:
-            Repository label string or None if session not found
-        """
-        # For now, use a simple session-based label
-        # In a full implementation, this would map session to repository
-        repo_hash = hashlib.sha256(session_id.encode()).hexdigest()[:8].upper()
-        return f"Repo_{repo_hash}"

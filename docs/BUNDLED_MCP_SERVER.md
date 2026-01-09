@@ -1,176 +1,176 @@
-# Bundled MCP Server
+# バンドルされたMCPサーバー
 
-## Overview
+## 概要
 
-Since auto-coder v2025.10.23, a customized GraphRAG MCP server is bundled with the package.
+auto-coder v2025.10.23以降、カスタマイズされたGraphRAG MCPサーバーがパッケージにバンドルされています。
 
-## Changes
+## 変更内容
 
-### Previous (before v2025.10.23)
+### 以前（v2025.10.23より前）
 
-- The `auto-coder graphrag setup-mcp` command cloned `https://github.com/rileylemm/graphrag_mcp`
-- Used a general-purpose documentation search MCP server
-- Tools: `search_documentation`, `hybrid_search`
+- `auto-coder graphrag setup-mcp`コマンドは`https://github.com/rileylemm/graphrag_mcp`をクローン
+- 汎用的なドキュメント検索用MCPサーバーを使用
+- ツール: `search_documentation`, `hybrid_search`
 
-### Current (v2025.10.23 and later)
+### 現在（v2025.10.23以降）
 
-- The `auto-coder graphrag setup-mcp` command copies the bundled custom MCP server
-- Uses a TypeScript/JavaScript code analysis dedicated MCP server
-- Tools: `find_symbol`, `get_call_graph`, `get_dependencies`, `impact_analysis`, `semantic_code_search`
+- `auto-coder graphrag setup-mcp`コマンドはバンドルされたカスタムMCPサーバーをコピー
+- TypeScript/JavaScriptコード分析専用MCPサーバーを使用
+- ツール: `find_symbol`, `get_call_graph`, `get_dependencies`, `impact_analysis`, `semantic_code_search`
 
-## Location of Bundled MCP Server
+## バンドルされたMCPサーバーの場所
 
-### Within Package
+### パッケージ内
 
 ```
 src/auto_coder/mcp_servers/graphrag_mcp/
-├── FORK_INFO.md              # Fork information
-├── server.py                 # MCP server main
-├── main.py                   # Entry point
-├── pyproject.toml            # Dependency definitions
-├── run_server.sh             # Startup script
+├── FORK_INFO.md              # フォーク情報
+├── server.py                 # MCPサーバー本体
+├── main.py                   # エントリーポイント
+├── pyproject.toml            # 依存関係定義
+├── run_server.sh             # 起動スクリプト
 └── graphrag_mcp/
-    ├── code_analysis_tool.py # Code analysis tool implementation
-    └── documentation_tool.py # Original tools (unused)
+    ├── code_analysis_tool.py # コード分析ツール実装
+    └── documentation_tool.py # 元のツール（未使用）
 ```
 
-### After Installation
+### インストール後
 
 ```bash
-# If installed via pipx
+# pipx経由でインストールした場合
 pipx install auto-coder
 
-# Setup MCP server using setup-mcp command
+# setup-mcpコマンドでMCPサーバーをコピー
 auto-coder graphrag setup-mcp
 
-# Default copy destination
+# デフォルトのコピー先
 ~/graphrag_mcp/
 ```
 
-## Usage
+## 使用方法
 
-### 1. Install auto-coder
+### 1. auto-coderのインストール
 
 ```bash
-# Via pipx (recommended)
+# pipx経由（推奨）
 pipx install auto-coder
 
-# Or via pip
+# または pip経由
 pip install auto-coder
 ```
 
-### 2. Start GraphRAG Services
+### 2. GraphRAGサービスの起動
 
 ```bash
-# Start Neo4j + Qdrant
+# Neo4j + Qdrantを起動
 auto-coder graphrag start
 ```
 
-### 3. Setup MCP Server
+### 3. MCPサーバーのセットアップ
 
-#### Automatic Setup (Recommended)
+#### 自動セットアップ（推奨）
 
-**Since v2025.10.23, the MCP server is automatically setup.**
+**v2025.10.23以降、MCPサーバーは自動的にセットアップされます。**
 
-When auto-coder is executed, if the `~/graphrag_mcp` directory does not exist, setup is automatically executed.
+auto-coderを実行すると、`~/graphrag_mcp`ディレクトリが存在しない場合、自動的にセットアップが実行されます。
 
 ```bash
-# Normal command execution triggers automatic setup
+# 通常のコマンドを実行するだけで自動セットアップされます
 auto-coder run
 
-# Or any command
+# または任意のコマンド
 auto-coder process-issues
 ```
 
-#### Manual Setup
+#### 手動セットアップ
 
-If you want to manually setup, run the following commands:
+手動でセットアップしたい場合は、以下のコマンドを実行します：
 
 ```bash
-# Copy bundled MCP server to ~/graphrag_mcp
+# バンドルされたMCPサーバーを~/graphrag_mcpにコピー
 auto-coder graphrag setup-mcp
 
-# Copy to custom directory
+# カスタムディレクトリにコピー
 auto-coder graphrag setup-mcp --install-dir /path/to/custom/dir
 ```
 
-This command performs the following:
-1. Copies the bundled MCP server to the specified directory
-2. Installs dependencies using `uv`
-3. Creates `.env` file (Neo4j/Qdrant connection information)
-4. Automatically updates configuration files for each backend (Codex, Gemini, Qwen, Windsurf/Claude)
+このコマンドは以下を実行します：
+1. バンドルされたMCPサーバーを指定ディレクトリにコピー
+2. `uv`を使用して依存関係をインストール
+3. `.env`ファイルを作成（Neo4j/Qdrant接続情報）
+4. 各バックエンド（Codex, Gemini, Qwen, Windsurf/Claude）の設定ファイルを自動更新
 
-### 4. Verify MCP Server Startup
+### 4. MCPサーバーの起動確認
 
 ```bash
-# Manually start MCP server (for testing)
+# MCPサーバーを手動起動（テスト用）
 cd ~/graphrag_mcp
 uv run main.py
 
-# Or use startup script
+# または起動スクリプトを使用
 ./run_server.sh
 ```
 
-## Customization Details
+## カスタマイズ内容
 
-### Fork Source
+### フォーク元
 
-- Original: https://github.com/rileylemm/graphrag_mcp
-- Purpose: General-purpose documentation search
+- オリジナル: https://github.com/rileylemm/graphrag_mcp
+- 用途: 汎用的なドキュメント検索
 
-### Customizations
+### カスタマイズ
 
-1. **Graph Schema Changes**
-   - Original: Document, Chunk, Category nodes
-   - Current: File, Symbol (Function, Method, Class, Interface, Type) nodes
+1. **グラフスキーマの変更**
+   - 元: Document, Chunk, Category ノード
+   - 現在: File, Symbol（Function, Method, Class, Interface, Type）ノード
 
-2. **Relationship Changes**
-   - Original: PART_OF, RELATED_TO, HAS_CATEGORY
-   - Current: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS
+2. **リレーションシップの変更**
+   - 元: PART_OF, RELATED_TO, HAS_CATEGORY
+   - 現在: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS
 
-3. **Added Tools**
-   - `find_symbol(fqname)`: Symbol search
-   - `get_call_graph(symbol_id, direction, depth)`: Call graph analysis
-   - `get_dependencies(file_path)`: Dependency analysis
-   - `impact_analysis(symbol_ids, max_depth)`: Impact scope analysis
-   - `semantic_code_search(query, limit, kind_filter)`: Semantic code search
+3. **ツールの追加**
+   - `find_symbol(fqname)`: シンボル検索
+   - `get_call_graph(symbol_id, direction, depth)`: 呼び出しグラフ分析
+   - `get_dependencies(file_path)`: 依存関係分析
+   - `impact_analysis(symbol_ids, max_depth)`: 影響範囲分析
+   - `semantic_code_search(query, limit, kind_filter)`: 意味的コード検索
 
-4. **Enhanced Self-Documentation**
-   - Added ts-morph specific information to tool docstrings
-   - Added code analysis domain knowledge to MCP resources
+4. **自己記述の強化**
+   - ツールdocstringにts-morph固有の情報を追加
+   - MCPリソースにコード分析ドメイン知識を追加
 
-## Technical Details
+## 技術的な詳細
 
-### Packaging
+### パッケージング
 
-- Added MCP server to `[tool.setuptools.package-data]` in `pyproject.toml`
-- Explicitly included MCP server files in `MANIFEST.in`
-- Automatically bundled during pipx/pip installation
+- `pyproject.toml`の`[tool.setuptools.package-data]`にMCPサーバーを追加
+- `MANIFEST.in`でMCPサーバーファイルを明示的に含める
+- pipx/pipインストール時に自動的にバンドル
 
-### Setup Flow
+### セットアップフロー
 
 ```python
 # src/auto_coder/cli_commands_graphrag.py
 
 def run_graphrag_setup_mcp_programmatically(...):
-    # 1. Find MCP server within package
+    # 1. パッケージ内のMCPサーバーを検索
     import auto_coder
     package_dir = Path(auto_coder.__file__).parent
     bundled_mcp = package_dir / "mcp_servers" / "graphrag_mcp"
 
-    # 2. Copy to installation destination
+    # 2. インストール先にコピー
     shutil.copytree(bundled_mcp, install_path)
 
-    # 3. Install dependencies
+    # 3. 依存関係をインストール
     subprocess.run(["uv", "sync"], cwd=install_path)
 
-    # 4. Create .env file
-    # 5. Update backend configurations
+    # 4. .envファイルを作成
+    # 5. バックエンド設定を更新
 ```
 
-### Integration with ts-morph
+### ts-morphとの統合
 
-The MCP server corresponds to the graph structure generated by the ts-morph scanner in `src/auto_coder/graph_builder/`:
+MCPサーバーは`src/auto_coder/graph_builder/`のts-morphスキャナーが生成するグラフ構造に対応：
 
 ```typescript
 // src/auto_coder/graph_builder/src/types.ts
@@ -191,57 +191,58 @@ export interface CodeNode {
 }
 ```
 
-## Troubleshooting
+## トラブルシューティング
 
-### MCP Server Not Found
+### MCPサーバーが見つからない
 
 ```bash
-# Verify package is correctly installed
+# パッケージが正しくインストールされているか確認
 python -c "import auto_coder; from pathlib import Path; print(Path(auto_coder.__file__).parent / 'mcp_servers' / 'graphrag_mcp')"
 
-# Reinstall
+# 再インストール
 pipx reinstall auto-coder
 ```
 
-### setup-mcp Fails
+### setup-mcpが失敗する
 
 ```bash
-# Verify uv is installed
+# uvがインストールされているか確認
 uv --version
 
-# Install uv
+# uvをインストール
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Delete existing directory and retry
+# 既存のディレクトリを削除して再実行
 rm -rf ~/graphrag_mcp
 auto-coder graphrag setup-mcp
 ```
 
-### MCP Server Won't Start
+### MCPサーバーが起動しない
 
 ```bash
-# Reinstall dependencies
+# 依存関係を再インストール
 cd ~/graphrag_mcp
 uv sync
 
-# Verify Neo4j/Qdrant are running
+# Neo4j/Qdrantが起動しているか確認
 auto-coder graphrag status
 
-# Check .env file
+# .envファイルを確認
 cat ~/graphrag_mcp/.env
 ```
 
-## References
+## 参照
 
-- Fork information: `src/auto_coder/mcp_servers/graphrag_mcp/FORK_INFO.md`
-- Feature documentation: `docs/client-features.yaml` (external_dependencies.graphrag_mcp)
-- Setup commands: `src/auto_coder/cli_commands_graphrag.py`
-- Tests: `tests/test_graphrag_mcp_fork.py`
+- フォーク情報: `src/auto_coder/mcp_servers/graphrag_mcp/FORK_INFO.md`
+- 機能ドキュメント: `docs/client-features.yaml` (external_dependencies.graphrag_mcp)
+- セットアップコマンド: `src/auto_coder/cli_commands_graphrag.py`
+- テスト: `tests/test_graphrag_mcp_fork.py`
 
-## Future Extensions
+## 今後の拡張
 
-1. **Multi-Language Support**: Add support for Python, Go, Rust
-2. **Advanced Queries**: Architecture analysis, dead code detection
-3. **Incremental Updates**: Optimization for large codebases
-4. **Caching**: Cache frequent queries
-5. **Visualization**: Call graph visualization tools
+1. **他言語対応**: Python, Go, Rustのサポート追加
+2. **高度なクエリ**: アーキテクチャ分析、デッドコード検出
+3. **増分更新**: 大規模コードベースの最適化
+4. **キャッシング**: 頻繁なクエリのキャッシュ
+5. **可視化**: コールグラフの可視化ツール
+

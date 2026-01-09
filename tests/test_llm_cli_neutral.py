@@ -8,11 +8,13 @@ from src.auto_coder.utils import CommandResult
 
 @patch("subprocess.run")
 @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_run, mock_gemini_api_key):
+def test_gemini_client_run_llm_cli_delegates(
+    mock_run_command, mock_run, mock_gemini_api_key
+):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "gem ok\n", "", 0)
 
-    client = GeminiClient(backend_name="gemini")
+    client = GeminiClient(mock_gemini_api_key, model_name="gemini-2.5-pro")
     out = client._run_llm_cli("hello")
     assert "gem ok" in out
 
@@ -23,13 +25,9 @@ def test_qwen_client_run_llm_cli_delegates(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "qwen ok\n", "", 0)
 
-    client = QwenClient(backend_name="qwen")
+    client = QwenClient(model_name="qwen3-coder-plus")
     out = client._run_llm_cli("hello")
     assert "qwen ok" in out
-
-    # Verify qwen CLI is used (OAuth, no API key)
-    args = mock_run_command.call_args[0][0]
-    assert args[0] == "qwen"
 
 
 @patch("subprocess.run")
@@ -38,6 +36,6 @@ def test_codex_client_run_llm_cli_delegates(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "codex ok\n", "", 0)
 
-    client = CodexClient(backend_name="codex")
+    client = CodexClient(model_name="codex")
     out = client._run_llm_cli("hello")
     assert "codex ok" in out

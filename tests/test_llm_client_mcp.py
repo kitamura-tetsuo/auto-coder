@@ -33,7 +33,6 @@ class TestGeminiClientMCP(unittest.TestCase):
     @patch("subprocess.run")
     def test_check_mcp_server_configured(self, mock_run):
         """Test checking for MCP server when configured."""
-
         # Mock subprocess.run to return success for --version and mcp list with graphrag
         def mock_run_side_effect(cmd, **kwargs):
             if "--version" in cmd:
@@ -58,7 +57,6 @@ class TestGeminiClientMCP(unittest.TestCase):
     @patch("subprocess.run")
     def test_add_mcp_server_config(self, mock_run):
         """Test adding MCP server configuration."""
-
         # Mock subprocess.run to return success for --version and mcp add
         def mock_run_side_effect(cmd, **kwargs):
             if "--version" in cmd:
@@ -77,7 +75,9 @@ class TestGeminiClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = GeminiClient()
-            result = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.add_mcp_server_config(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify gemini mcp add was called with correct arguments
@@ -130,7 +130,9 @@ class TestGeminiClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = GeminiClient()
-            result = client.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.ensure_mcp_server_configured(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify it's now configured
@@ -191,7 +193,9 @@ class TestQwenClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
-            result = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.add_mcp_server_config(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify qwen mcp add was called
@@ -231,7 +235,9 @@ class TestQwenClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
-            result = client.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.ensure_mcp_server_configured(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify qwen mcp add was called
@@ -261,7 +267,6 @@ class TestAuggieClientMCP(unittest.TestCase):
     @patch("subprocess.run")
     def test_add_mcp_server_config(self, mock_run):
         """Test adding MCP server configuration."""
-
         # Mock subprocess.run to return success for --version and mcp add
         def mock_run_side_effect(cmd, **kwargs):
             if "--version" in cmd:
@@ -281,7 +286,9 @@ class TestAuggieClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = AuggieClient()
-            result = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.add_mcp_server_config(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify auggie mcp add was called with correct arguments
@@ -326,7 +333,9 @@ class TestCodexClientMCP(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout="1.0.0")
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = CodexClient()
-            result = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.add_mcp_server_config(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify config was written
@@ -376,7 +385,9 @@ class TestCodexMCPClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = CodexMCPClient()
-            result = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = client.add_mcp_server_config(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
 
             # Verify config was written
@@ -429,9 +440,13 @@ class TestBackendManagerMCP(unittest.TestCase):
                 order=["gemini"],
             )
 
-            result = manager.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = manager.add_mcp_server_config(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
             self.assertTrue(result)
-            mock_client.add_mcp_server_config.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            mock_client.add_mcp_server_config.assert_called_once_with(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
 
     def test_ensure_mcp_server_configured_all_backends(self):
         """Test ensuring MCP server is configured for all backends."""
@@ -462,24 +477,28 @@ class TestBackendManagerMCP(unittest.TestCase):
             manager = BackendManager(
                 default_backend="gemini",
                 default_client=mock_gemini,
-                factories={
-                    "gemini": factory_gemini,
-                    "qwen": factory_qwen,
-                    "codex": factory_codex,
-                },
+                factories={"gemini": factory_gemini, "qwen": factory_qwen, "codex": factory_codex},
                 order=["gemini", "qwen", "codex"],
             )
 
             # Ensure MCP server is configured for all backends
-            result = manager.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = manager.ensure_mcp_server_configured(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
 
             # Should succeed for all backends
             self.assertTrue(result)
 
             # Verify ensure_mcp_server_configured was called for all backends
-            mock_gemini.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
-            mock_qwen.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
-            mock_codex.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            mock_gemini.ensure_mcp_server_configured.assert_called_once_with(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
+            mock_qwen.ensure_mcp_server_configured.assert_called_once_with(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
+            mock_codex.ensure_mcp_server_configured.assert_called_once_with(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
 
     def test_ensure_mcp_server_configured_partial_failure(self):
         """Test ensuring MCP server when one backend fails."""
@@ -504,126 +523,22 @@ class TestBackendManagerMCP(unittest.TestCase):
             )
 
             # Ensure MCP server is configured
-            result = manager.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            result = manager.ensure_mcp_server_configured(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
 
             # Should fail because gemini failed
             self.assertFalse(result)
 
             # Verify both backends were attempted
-            mock_gemini.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
-            mock_qwen.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            mock_gemini.ensure_mcp_server_configured.assert_called_once_with(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
+            mock_qwen.ensure_mcp_server_configured.assert_called_once_with(
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
+            )
 
 
 if __name__ == "__main__":
     unittest.main()
 
-
-class TestClaudeClientMCP(unittest.TestCase):
-    """Test Claude client MCP configuration methods."""
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.temp_dir = tempfile.mkdtemp()
-        self.config_dir = Path(self.temp_dir) / ".claude"
-        self.config_path = self.config_dir / "config.json"
-
-    @patch("subprocess.run")
-    def test_check_mcp_server_not_configured(self, mock_run):
-        """Test checking for MCP server when not configured."""
-
-        # First call from __init__: 'claude --version'
-        # Second call from check: 'claude mcp'
-        def side_effect(cmd, **kwargs):
-            if "--version" in cmd:
-                m = MagicMock()
-                m.returncode = 0
-                m.stdout = "1.0.0"
-                return m
-            elif len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
-                m = MagicMock()
-                m.returncode = 0
-                m.stdout = "other-server\n"
-                return m
-            raise FileNotFoundError()
-
-        mock_run.side_effect = side_effect
-
-        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
-
-            client = ClaudeClient()
-            result = client.check_mcp_server_configured("graphrag")
-            self.assertFalse(result)
-
-    @patch("subprocess.run")
-    def test_check_mcp_server_configured(self, mock_run):
-        """Test checking for MCP server when configured."""
-
-        def side_effect(cmd, **kwargs):
-            if "--version" in cmd:
-                m = MagicMock()
-                m.returncode = 0
-                m.stdout = "1.0.0"
-                return m
-            elif len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
-                m = MagicMock()
-                m.returncode = 0
-                m.stdout = "graphrag\n"
-                return m
-            raise FileNotFoundError()
-
-        mock_run.side_effect = side_effect
-
-        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
-
-            client = ClaudeClient()
-            self.assertTrue(client.check_mcp_server_configured("graphrag"))
-
-    @patch("subprocess.run")
-    def test_add_mcp_server_config(self, mock_run):
-        """Test adding MCP server configuration writes to ~/.claude/config.json."""
-        # Only __init__ uses subprocess.run here
-        mock_run.return_value = MagicMock(returncode=0, stdout="1.0.0")
-
-        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
-
-            client = ClaudeClient()
-            ok = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
-            self.assertTrue(ok)
-            # Verify config file created and contains the server
-            self.assertTrue(self.config_path.exists())
-            with open(self.config_path, "r") as f:
-                cfg = json.load(f)
-            self.assertIn("mcpServers", cfg)
-            self.assertIn("mcp-pdb", cfg["mcpServers"])
-
-    @patch("subprocess.run")
-    def test_ensure_mcp_server_configured(self, mock_run):
-        """Test ensuring MCP server is configured for Claude."""
-        calls = {"mcp": 0}
-
-        def side_effect(cmd, **kwargs):
-            if "--version" in cmd:
-                m = MagicMock()
-                m.returncode = 0
-                m.stdout = "1.0.0"
-                return m
-            if len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
-                calls["mcp"] += 1
-                m = MagicMock()
-                m.returncode = 0
-                # first check -> not configured, second check -> configured
-                m.stdout = "other\n" if calls["mcp"] == 1 else "graphrag\n"
-                return m
-            raise FileNotFoundError()
-
-        mock_run.side_effect = side_effect
-
-        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
-
-            client = ClaudeClient()
-            ok = client.ensure_mcp_server_configured("graphrag", "uv", ["run", "main.py"])
-            self.assertTrue(ok)

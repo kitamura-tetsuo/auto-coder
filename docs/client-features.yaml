@@ -1,607 +1,2012 @@
-# Client Features Documentation
+---
+# Auto-Coder Client Features Documentation
+# This file documents all features implemented in the Auto-Coder application
 
-This file documents the client-facing features and tools provided by auto-coder.
+application:
+  name: "Auto-Coder"
+  version: "2025.10.23.8+g1292821"
+  description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
-## GraphRAG MCP Server (Customized Fork)
+features:
+  graph_builder:
+    name: "Graph Builder for Neo4j"
+    description: "TypeScript and Python code analyzer that generates Neo4j graph database data"
+    location: "graph-builder/"
+    components:
+      - name: "TypeScript Scanner"
+        file: "graph-builder/src/scanner/typescript.ts"
+        description: "Scans TypeScript projects using ts-morph to extract functions, classes, types, imports, and call relationships"
+        methods:
+          - name: "scanTypeScriptProject"
+            description: "Scan TypeScript project and extract graph data"
+            parameters: ["tsConfigPath", "limit"]
+            returns: "GraphData with nodes and edges"
+      - name: "Python Scanner"
+        file: "graph-builder/src/scanner/python_scanner.py"
+        description: "Scans Python projects using ast module to extract functions, classes, types, imports, and call relationships"
+        methods:
+          - name: "scan_python_project"
+            description: "Scan entire Python project"
+            parameters: ["project_path", "limit"]
+            returns: "GraphData with nodes and edges"
+          - name: "scan_python_file"
+            description: "Scan a single Python file"
+            parameters: ["file_path", "module_name"]
+            returns: "GraphData with nodes and edges"
+      - name: "Normalizer"
+        file: "graph-builder/src/normalizer.ts"
+        description: "Generates fqname, sig, id, short, complexity, tokens_est for code nodes"
+        methods:
+          - name: "synthesizeShortSummary"
+            description: "Generate short summary from JSDoc or function name"
+            parameters: ["jsdoc", "name", "params"]
+            returns: "Short summary string"
+          - name: "normalizeNode"
+            description: "Normalize a code node with all required fields"
+            parameters: ["partial"]
+            returns: "Complete normalized CodeNode"
+          - name: "detectTags"
+            description: "Detect side-effect tags from code patterns"
+            parameters: ["code", "sig"]
+            returns: "Array of tags (IO, DB, NETWORK, ASYNC, PURE)"
+      - name: "CSV Emitter"
+        file: "graph-builder/src/emitter/csv.ts"
+        description: "Emits nodes and edges as CSV files for Neo4j bulk import"
+        methods:
+          - name: "emitCSV"
+            description: "Emit CSV files (nodes.csv, rels.csv)"
+            parameters: ["data", "outputDir"]
+            returns: "void"
+      - name: "JSON Emitter"
+        file: "graph-builder/src/emitter/json.ts"
+        description: "Emits graph data as JSON batch files"
+        methods:
+          - name: "emitJSON"
+            description: "Emit batch JSON file"
+            parameters: ["data", "outputDir", "timestamp"]
+            returns: "void"
+          - name: "emitDiffJSON"
+            description: "Emit diff JSON file"
+            parameters: ["diff", "outputDir", "commit"]
+            returns: "void"
+      - name: "CLI"
+        file: "graph-builder/src/cli.ts"
+        description: "Command-line interface for graph-builder"
+        commands:
+          - name: "scan"
+            description: "Scan project and extract graph data"
+            options: ["--project", "--out", "--mode", "--since", "--limit", "--batch-size", "--languages"]
+          - name: "emit-csv"
+            description: "Emit CSV files for Neo4j import"
+            options: ["--out"]
+          - name: "emit-json"
+            description: "Emit JSON batch file"
+            options: ["--out"]
+          - name: "diff"
+            description: "Generate diff from git changes"
+            options: ["--since", "--out"]
+    output_schema:
+      nodes:
+        - id: "Unique identifier (SHA1 hash, 16 chars)"
+        - kind: "Node type (File, Module, Function, Method, Class, Interface, Type)"
+        - fqname: "Fully qualified name (e.g., src/user/service.ts:UserService.getUserById)"
+        - sig: "Type signature (e.g., (string)->Promise<User>)"
+        - short: "Summary (30-80 tokens, from JSDoc or auto-generated)"
+        - complexity: "Cyclomatic complexity"
+        - tokens_est: "Estimated token count"
+        - tags: "Side-effect tags (IO, DB, NETWORK, ASYNC, PURE)"
+        - file: "Source file path"
+        - start_line: "Start line number"
+        - end_line: "End line number"
+      edges:
+        - from: "Source node ID"
+        - to: "Target node ID"
+        - type: "Edge type (IMPORTS, CALLS, CONTAINS, EXTENDS, IMPLEMENTS)"
+        - count: "Number of occurrences"
+        - locations: "Array of {file, line} objects"
+    usage:
+      typescript:
+        - "node dist/cli.js scan --project ./my-project --out ./out --languages typescript,python"
+        - "node dist/cli.js emit-csv --out ./out"
+        - "node dist/cli.js emit-json --out ./out"
+        - "node dist/cli.js diff --since HEAD~1 --out ./out"
+      python:
+        - "python3 src/cli_python.py scan --project ./my-project --out ./out"
+        - "python3 src/cli_python.py emit-csv --out ./out"
+        - "python3 src/cli_python.py emit-json --out ./out"
+        - "python3 src/cli_python.py diff --since HEAD~1 --out ./out"
+    tests:
+      - file: "graph-builder/src/tests/typescript-scanner.test.ts"
+        description: "TypeScript scanner comprehensive tests (21 test cases)"
+        status: "✅ All tests passed"
+        coverage:
+          - "Project scanning"
+          - "Node type extraction (File, Function, Class, Interface, Type, Method)"
+          - "Node properties validation (id, kind, fqname, sig, short, complexity, tokens_est)"
+          - "FQName generation"
+          - "Signature generation"
+          - "Tag detection (ASYNC, NETWORK, DB)"
+          - "Cyclomatic complexity calculation"
+          - "Edge extraction (CONTAINS, IMPORTS, CALLS)"
+          - "File path and line number tracking"
+          - "File limit option"
+        test_sample: "graph-builder/test-sample/typescript/"
+        results:
+          total_tests: 21
+          passed: 21
+          failed: 0
+          nodes_detected: 25
+          edges_detected: 34
+          files: 2
+          functions: 6
+          classes: 2
+          interfaces: 2
+          types: 1
+          methods: 12
+      - file: "graph-builder/src/tests/scanner.test.ts"
+        description: "TypeScript scanner basic tests"
+      - file: "graph-builder/src/tests/test_python_scanner.py"
+        description: "Python scanner tests"
+        status: "✅ All tests passed"
+        results:
+          nodes_detected: 10
+          edges_detected: 12
+          functions: 2
+          classes: 2
+          methods: 5
 
-Since auto-coder v2025.10.23, a customized GraphRAG MCP server is bundled with the package. This fork of [rileylemm/graphrag_mcp](https://github.com/rileylemm/graphrag_mcp) has been specialized for code analysis.
+  github_integration:
+    name: "GitHub API Integration"
+    description: "Integration with GitHub API to fetch and manage issues and pull requests"
+    components:
+      - name: "GitHubClient"
+        file: "src/auto_coder/github_client.py"
+        methods:
+          - name: "get_repository"
+            description: "Retrieve repository object by name"
+            parameters: ["repo_name"]
+            returns: "Repository object"
+          - name: "get_open_issues"
+            description: "Fetch open issues from repository, sorted by creation date (oldest first)"
+            parameters: ["repo_name", "limit"]
+            returns: "List of Issue objects"
+          - name: "get_open_pull_requests"
+            description: "Fetch open pull requests from repository, sorted by creation date (oldest first)"
+            parameters: ["repo_name", "limit"]
+            returns: "List of PullRequest objects"
+          - name: "get_issue_details"
+            description: "Extract detailed information from an issue"
+            parameters: ["issue"]
+            returns: "Dictionary with issue details"
+          - name: "get_pr_details"
+            description: "Extract detailed information from a pull request"
+            parameters: ["pr"]
+            returns: "Dictionary with PR details"
+          - name: "get_pr_details_by_number"
+            description: "Get PR details by repository name and PR number"
+            parameters: ["repo_name", "pr_number"]
+            returns: "Dictionary with PR details"
+          - name: "get_issue_details_by_number"
+            description: "Get Issue details by repository name and issue number"
+            parameters: ["repo_name", "issue_number"]
+            returns: "Dictionary with Issue details"
+          - name: "create_issue"
+            description: "Create a new issue in the repository"
+            parameters: ["repo_name", "title", "body", "labels"]
+            returns: "Issue object"
+          - name: "add_comment_to_issue"
+            description: "Add a comment to an existing issue"
+            parameters: ["repo_name", "issue_number", "comment"]
+            returns: "None"
+          - name: "close_issue"
+            description: "Close an issue with optional comment"
+            parameters: ["repo_name", "issue_number", "comment"]
+            returns: "None"
+          - name: "add_labels_to_issue"
+            description: "Add labels to an existing issue (avoids duplicates)"
+            parameters: ["repo_name", "issue_number", "labels"]
+            returns: "None"
+          - name: "remove_labels_from_issue"
+            description: "Remove labels from an existing issue"
+            parameters: ["repo_name", "issue_number", "labels"]
+            returns: "None"
+          - name: "has_label"
+            description: "Check if an issue has a specific label"
+            parameters: ["repo_name", "issue_number", "label"]
+            returns: "Boolean indicating if the label exists"
+          - name: "try_add_work_in_progress_label"
+            description: "Try to add work-in-progress label (@auto-coder) to an issue/PR for exclusive processing"
+            parameters: ["repo_name", "issue_number", "label (default: @auto-coder)"]
+            returns: "Boolean - True if label was added (not being processed), False if label already exists (being processed)"
+            behavior:
+              - "Checks if @auto-coder label already exists on the issue/PR"
+              - "Returns False if label exists (indicates another instance is processing)"
+              - "Adds label and returns True if label doesn't exist"
+              - "Provides basic exclusive processing control"
+            tests:
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_try_add_work_in_progress_label_success"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_try_add_work_in_progress_label_already_exists"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_remove_labels_from_issue"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_has_label_true"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_has_label_false"
+          - name: "get_linked_prs_via_graphql"
+            description: "Get linked PRs for an issue using GitHub GraphQL API (Development section)"
+            parameters: ["repo_name", "issue_number"]
+            returns: "List of PR numbers linked to the issue"
+            behavior:
+              - "Uses gh CLI to query GraphQL API for ConnectedEvent timeline items"
+              - "Returns only OPEN PRs that are linked in the Development section"
+              - "Returns empty list on errors (graceful degradation)"
+            implementation:
+              - "Queries repository.issue.timelineItems with CONNECTED_EVENT filter"
+              - "Extracts PR numbers from source.number where state is OPEN"
+          - name: "has_linked_pr"
+            description: "Check if an issue has a linked pull request (GraphQL + text search fallback)"
+            parameters: ["repo_name", "issue_number"]
+            returns: "Boolean indicating if a linked PR exists"
+            behavior:
+              - "First tries GraphQL API to check Development section (most accurate)"
+              - "Falls back to searching PR titles/bodies for issue references"
+              - "Detects patterns: #123, fixes #123, closes #123, resolves #123, issue #123"
+              - "Returns True if any open PR references the issue"
+              - "Returns False on exceptions (graceful degradation)"
+            tests:
+              - "tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_success"
+              - "tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_no_linked_prs"
+              - "tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_handles_error"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_uses_graphql_first"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_linked_pr"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_no_linked_pr"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_multiple_patterns"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_handles_exception"
 
-### Location
+  gemini_integration:
+    name: "Gemini AI Integration"
+    description: "Integration with Gemini AI for single-run direct actions (no analysis-only calls)"
+    components:
+      - name: "GeminiClient"
+        file: "src/auto_coder/gemini_client.py"
+        methods:
+          - name: "suggest_features"
+            description: "Suggest new features based on repository analysis"
+            parameters: ["repo_context"]
+            returns: "List of feature suggestions"
+          - name: "switch_to_conflict_model"
+            description: "Switch to faster model (gemini-2.5-flash) for conflict resolution"
+            parameters: []
+            returns: "None"
+          - name: "switch_to_default_model"
+            description: "Switch back to default model"
+            parameters: []
+            returns: "None"
+          - name: "_escape_prompt"
+            description: "Escape @ characters in prompts for safe Gemini CLI usage"
+            parameters: ["prompt"]
+            returns: "String with escaped @ characters"
 
-- **Source**: mcp/graphrag_mcp/
-- **Documentation**: `docs/BUNDLED_MCP_SERVER.md`
-- **Fork Info**: `src/auto_coder/mcp_servers/graphrag_mcp/FORK_INFO.md`
+  codex_mcp_integration:
+    name: "Codex MCP Integration"
+    description: "Integration with Codex MCP server maintaining a persistent session during a single PR or a single error-fix flow. Implements minimal JSON-RPC handshake (initialize) and a tools/call echo invocation; falls back to codex exec when unavailable."
+    components:
+      - name: "CodexMCPClient"
+        file: "src/auto_coder/codex_mcp_client.py"
+        details: |
+          - Spawns persistent MCP subprocess (default: `codex mcp`)
+          - Performs JSON-RPC initialize handshake
+          - Attempts `tools/call` with an `echo` tool first; if not supported, falls back to `codex exec` with session kept alive
+          - Environment overrides for testing:
+            - AUTOCODER_CODEX_CLI: overrides CLI check command (default: `codex`)
+            - AUTOCODER_MCP_COMMAND: overrides MCP subprocess command (default: `codex mcp`)
+            - AUTOCODER_MCP_TIMEOUT / AUTOCODER_MCP_HANDSHAKE_TIMEOUT: configure select-based read timeouts to prevent MCP hangs during handshake and requests
+        methods:
+          - name: "_run_gemini_cli"
+            description: "Prefer MCP tools/call (echo) then fallback to codex exec while MCP session stays alive"
+            parameters: ["prompt"]
+            returns: "String output"
+          - name: "close"
+            description: "Terminate the persistent MCP subprocess if running"
+            parameters: []
+            returns: "None"
 
-### Purpose
+  llm_client_mcp:
+    name: "LLM Client MCP Configuration"
+    description: |
+      Abstract MCP configuration interface for all LLM clients with automatic setup capability.
 
-This fork provides specialized TypeScript/JavaScript code analysis capabilities using TypeScript code structure indexed by ts-morph, replacing the original documentation search functionality.
+      MCP availability checking strategy:
+      - Uses CLI command exclusively (e.g., 'gemini mcp list', 'qwen mcp list', 'codex mcp list', 'auggie mcp list')
+      - No fallback to config file parsing
 
-### Key Modifications from Original
+      This ensures accurate detection using the official CLI tools.
+    components:
+      - name: "LLMClientBase"
+        file: "src/auto_coder/llm_client_base.py"
+        methods:
+          - name: "check_mcp_server_configured"
+            description: "Abstract method to check if a specific MCP server is configured"
+            parameters: ["server_name"]
+            returns: "Boolean indicating if the MCP server is configured"
+            behavior:
+              - "Must be implemented by all LLM client subclasses"
+              - "Uses CLI command exclusively (e.g., 'gemini mcp list')"
+              - "No fallback to config file parsing"
+          - name: "add_mcp_server_config"
+            description: "Abstract method to add MCP server configuration"
+            parameters: ["server_name", "command", "args"]
+            returns: "Boolean indicating if configuration was added successfully"
+            behavior:
+              - "Must be implemented by all LLM client subclasses"
+              - "Adds MCP server to backend-specific configuration files"
+          - name: "ensure_mcp_server_configured"
+            description: "Convenience method to ensure MCP server is configured"
+            parameters: ["server_name", "command", "args"]
+            returns: "Boolean indicating if the MCP server is configured"
+            behavior:
+              - "Checks if server is configured, adds if not"
+              - "Verifies configuration after adding"
+              - "Default implementation provided in base class"
+      - name: "GeminiClient"
+        file: "src/auto_coder/gemini_client.py"
+        description: "Gemini CLI client with MCP configuration support"
+        config_location: "~/.gemini/config.json"
+        config_format: "JSON"
+        mcp_check_command: "gemini mcp list"
+      - name: "QwenClient"
+        file: "src/auto_coder/qwen_client.py"
+        description: "Qwen Code CLI client with MCP configuration support"
+        config_location: "~/.qwen/config.toml (managed via qwen mcp add command)"
+        config_format: "TOML"
+        mcp_check_command: "qwen mcp list"
+        mcp_add_command: "qwen mcp add --scope user <name> <command> [args...]"
+        behavior:
+          - "Uses 'qwen mcp add' command to add MCP servers instead of manual file editing"
+          - "Automatically adds servers to user scope (--scope user)"
+          - "Verifies configuration via 'qwen mcp list' command"
+      - name: "AuggieClient"
+        file: "src/auto_coder/auggie_client.py"
+        description: "Auggie CLI client with MCP configuration support"
+        config_location: "~/.windsurf/settings.json or Claude Desktop config"
+        config_format: "JSON"
+        mcp_check_command: "auggie mcp list"
+      - name: "CodexClient"
+        file: "src/auto_coder/codex_client.py"
+        description: "Codex CLI client with MCP configuration support"
+        config_location: "~/.codex/config.json or ~/.config/codex/config.json"
+        config_format: "JSON"
+        mcp_check_command: "codex mcp list"
+      - name: "CodexMCPClient"
+        file: "src/auto_coder/codex_mcp_client.py"
+        description: "Codex MCP client with MCP configuration support"
+        config_location: "~/.codex/config.json or ~/.config/codex/config.json"
+        config_format: "JSON"
+        mcp_check_command: "codex mcp list"
+      - name: "BackendManager"
+        file: "src/auto_coder/backend_manager.py"
+        description: "Backend manager with MCP configuration delegation"
+        behavior:
+          - "Delegates MCP configuration to current backend client"
+          - "Supports all MCP operations through active client"
+    tests:
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_check_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_ensure_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_ensure_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestCodexClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestCodexClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_check_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_add_mcp_server_config"
 
-1. **Specialized for Code Analysis**: Changed from generic documentation search to TypeScript/JavaScript code structure analysis
-2. **Custom Graph Schema**: Adapted to work with ts-morph generated graph structure with node types like `File`, `Function`, `Method`, `Class`, `Interface`, and relationship types like `CONTAINS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `IMPORTS`
-3. **Code-Specific Tools**: Replaced original `search_documentation` and `hybrid_search` with code analysis tools
+  graphrag_mcp_checker:
+    name: "GraphRAG MCP Configuration Checker"
+    description: "File-based GraphRAG MCP configuration checker (fallback when client is not available). Guides users to run 'auto-coder graphrag setup-mcp' for automatic setup and configuration."
+    components:
+      - name: "MCPChecker"
+        file: "src/auto_coder/mcp_checker.py"
+        methods:
+          - name: "check_graphrag_mcp_for_backend"
+            description: "Check if graphrag MCP server is configured for a specific backend"
+            parameters: ["backend"]
+            returns: "Boolean indicating if graphrag MCP is configured"
+            behavior:
+              - "Reads backend-specific configuration files to check for graphrag MCP server"
+              - "Supports gemini, qwen, auggie, and codex backends"
+              - "Returns False for unknown backends"
+            config_locations:
+              - "Gemini: ~/.gemini/config.json"
+              - "Qwen: ~/.qwen/config.toml"
+              - "Auggie: ~/.windsurf/settings.json or Claude Desktop config"
+              - "Codex: ~/.codex/config.json or ~/.config/codex/config.json"
+          - name: "add_graphrag_mcp_config"
+            description: "Add graphrag MCP configuration for a specific backend"
+            parameters: ["backend"]
+            returns: "Boolean indicating if configuration was added successfully"
+            behavior:
+              - "Creates configuration directory if it doesn't exist"
+              - "Adds graphrag MCP server configuration to backend config file"
+              - "Preserves existing configuration when adding graphrag MCP"
+              - "Returns True on success, False on failure"
+          - name: "ensure_graphrag_mcp_configured"
+            description: "Ensure graphrag MCP is configured for a backend, automatically setting up MCP server if needed"
+            parameters:
+              - "backend: Backend name (gemini, qwen, auggie, codex, codex-mcp)"
+              - "auto_setup: If True (default), automatically run setup-mcp if MCP server directory doesn't exist"
+            returns: "Boolean indicating if graphrag MCP is configured (or was successfully added)"
+            behavior:
+              - "Checks if ~/graphrag_mcp directory exists"
+              - "If directory missing and auto_setup=True, automatically runs setup-mcp"
+              - "Checks if graphrag MCP is already configured for the backend"
+              - "If not configured, automatically adds the configuration"
+              - "Verifies configuration after adding"
+              - "Logs success or failure messages"
+            new_in_version: "v2025.10.23 - Added auto_setup parameter and automatic MCP server setup"
+          - name: "suggest_graphrag_mcp_setup"
+            description: "Provide setup instructions for configuring graphrag MCP for a specific backend. Guides users to run 'auto-coder graphrag setup-mcp' for automatic setup and configuration."
+            parameters: ["backend"]
+            returns: "String containing setup instructions with automatic setup command"
+          - name: "check_and_warn_graphrag_mcp"
+            description: "Check graphrag MCP configuration and log warning with setup instructions if not found"
+            parameters: ["backend"]
+            returns: "None"
+            behavior:
+              - "Calls check_graphrag_mcp_for_backend to verify configuration"
+              - "Logs info message if graphrag MCP is configured"
+              - "Logs warning with setup instructions if not configured"
+      - name: "CLI Integration"
+        file: "src/auto_coder/cli_helpers.py"
+        methods:
+          - name: "check_graphrag_mcp_for_backends"
+            description: "Ensure GraphRAG MCP is configured for all selected backends"
+            parameters: ["backends"]
+            returns: "None"
+            behavior:
+              - "Called during CLI initialization for process-issues, create-feature-issues, and fix-to-pass-tests commands"
+              - "Iterates through all selected backends and ensures graphrag MCP configuration"
+              - "Automatically adds configuration if not present"
+              - "Verifies configuration after adding"
+    tests:
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_not_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_other_servers_only"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_qwen_mcp_not_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_qwen_mcp_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_auggie_mcp_windsurf_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_codex_mcp_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_unknown_backend"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_gemini"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_qwen"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_auggie"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_codex"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_unknown"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_gemini_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_qwen_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_auggie_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_codex_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_adds_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_already_configured"
 
-### Configuration
+  graphrag_mcp_connection:
+    name: "GraphRAG MCP Server Connection Testing"
+    description: "Tests for verifying connection to graphrag MCP server and basic JSON-RPC operations. Uses real HOME directory and real commands (not mocked)."
+    components:
+      - name: "GraphRAG MCP Connection Tests"
+        file: "tests/test_graphrag_mcp_connection.py"
+        notes:
+          - "Tests use _use_real_home and _use_real_commands fixtures to bypass conftest.py mocking"
+          - "Tests will skip if graphrag_mcp server is not installed"
+          - "Install with: auto-coder graphrag setup-mcp"
+          - "setup-mcp automatically:"
+          - "  - Creates run_server.sh script for proper environment handling"
+          - "  - Patches main.py to load .env from script directory (using Path(__file__).parent)"
+          - "  - Configures all backends with: uv --directory /path/to/graphrag_mcp run main.py"
+          - "  - Qwen: Uses uv --directory option"
+          - "  - Gemini: Uses uv --directory option"
+          - "  - Auggie (Windsurf/Claude): Uses run_server.sh if available, otherwise uv --directory"
+          - "After setup, restart CLI (qwen/gemini/auggie) to connect to graphrag MCP server"
+        methods:
+          - name: "find_graphrag_mcp_server"
+            description: "Find graphrag_mcp server installation path"
+            returns: "Path to graphrag_mcp main.py if found, None otherwise"
+            behavior:
+              - "Checks common installation locations: ~/graphrag_mcp, ~/.local/share/graphrag_mcp, /opt/graphrag_mcp"
+              - "Also checks GRAPHRAG_MCP_SERVER_PATH environment variable"
+              - "Returns first found path or None"
+          - name: "check_graphrag_dependencies"
+            description: "Check if graphrag_mcp dependencies (uv) are available"
+            returns: "Boolean indicating if dependencies are available"
+            behavior:
+              - "Checks if 'uv' command is available"
+              - "Returns True if uv is available, False otherwise"
+          - name: "check_graphrag_env_config"
+            description: "Check if graphrag_mcp .env file is properly configured"
+            parameters: ["server_path"]
+            returns: "Boolean indicating if .env file exists and has required variables"
+            behavior:
+              - "Checks for .env file in graphrag_mcp directory"
+              - "Verifies presence of required variables: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, QDRANT_URL"
+              - "Returns True if all required variables are present, False otherwise"
+          - name: "send_jsonrpc_message"
+            description: "Send JSON-RPC message to MCP server and read response"
+            parameters: ["process", "message"]
+            returns: "JSON-RPC response dictionary"
+            behavior:
+              - "Sends JSON-RPC message to MCP server via stdin"
+              - "Reads response from stdout"
+              - "Parses and returns JSON response"
+          - name: "test_graphrag_mcp_server_starts"
+            description: "Test that graphrag_mcp server starts successfully"
+            behavior:
+              - "Starts graphrag_mcp server using 'uv run main.py'"
+              - "Verifies process is running"
+              - "Skips if server not found or dependencies missing"
+          - name: "test_graphrag_mcp_initialize"
+            description: "Test MCP initialize handshake"
+            behavior:
+              - "Sends JSON-RPC initialize request with protocol version 2024-11-05"
+              - "Verifies response contains result or no error"
+              - "Verifies response ID matches request ID"
+          - name: "test_graphrag_mcp_list_tools"
+            description: "Test listing available MCP tools"
+            behavior:
+              - "Sends initialize request first"
+              - "Sends tools/list request"
+              - "Verifies response contains tools list"
+              - "Checks that at least one tool is available"
+          - name: "test_graphrag_mcp_connection_from_python"
+            description: "Test connecting to graphrag_mcp server from Python code"
+            behavior:
+              - "Simulates actual connection flow without fixtures"
+              - "Starts server, sends initialize request, verifies response"
+              - "Tests real-world usage pattern"
+    tests:
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_server_starts"
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_initialize"
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_list_tools"
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_connection_from_python"
+    notes:
+      - "Tests are skipped if graphrag_mcp server is not installed"
+      - "Run 'auto-coder graphrag setup-mcp' to install and configure graphrag_mcp server"
+      - "Tests verify JSON-RPC protocol compliance and basic MCP operations"
 
-#### Backend Configuration
+  graphrag_code_analysis_integration:
+    name: "GraphRAG Code Analysis Integration"
+    description: "Integration of graph-builder code analysis into GraphRAG indexing process"
+    components:
+      - name: "GraphRAGIndexManager._index_codebase"
+        file: "src/auto_coder/graphrag_index_manager.py"
+        description: "Enhanced indexing that uses graph-builder to analyze Python and TypeScript code"
+        methods:
+          - name: "_index_codebase"
+            description: "Index codebase using graph-builder for structured code analysis"
+            behavior:
+              - "Runs graph-builder to extract structured graph data (nodes and edges)"
+              - "Stores graph data in Neo4j with proper node and relationship types"
+              - "Creates embeddings from node metadata and stores in Qdrant"
+              - "Falls back to simple Python indexing if graph-builder is not available"
+            workflow:
+              - "Step 1: Run graph-builder scan to analyze codebase"
+              - "Step 2: Store extracted nodes and edges in Neo4j"
+              - "Step 3: Create embeddings from node data and store in Qdrant"
+          - name: "_run_graph_builder"
+            description: "Execute graph-builder to analyze codebase"
+            returns: "Dictionary with 'nodes' and 'edges' keys"
+            behavior:
+              - "Searches for graph-builder installation in common locations"
+              - "Prefers TypeScript version (node dist/cli.js) if available"
+              - "Falls back to Python version (python3 src/cli_python.py)"
+              - "Runs scan command with --languages typescript,python"
+              - "Returns parsed JSON output with graph data"
+          - name: "_find_graph_builder"
+            description: "Locate graph-builder installation"
+            returns: "Path to graph-builder directory or None"
+            search_locations:
+              - "{repo_path}/graph-builder"
+              - "{cwd}/graph-builder"
+              - "~/graph-builder"
+          - name: "_fallback_python_indexing"
+            description: "Simple Python file indexing when graph-builder is unavailable"
+            returns: "Dictionary with basic file nodes"
+            behavior:
+              - "Scans for *.py files in repository"
+              - "Creates basic File nodes with content"
+              - "No edge extraction or advanced analysis"
+          - name: "_store_graph_in_neo4j"
+            description: "Store graph data in Neo4j database"
+            parameters: ["graph_data", "in_container"]
+            behavior:
+              - "Connects to Neo4j (bolt://localhost:7687 or container URL)"
+              - "Clears existing data for current repository"
+              - "Creates CodeNode nodes with all extracted properties"
+              - "Creates RELATES relationships with type and count metadata"
+              - "Tags all data with repo_path for multi-repository support"
+          - name: "_store_embeddings_in_qdrant"
+            description: "Create and store embeddings in Qdrant"
+            parameters: ["graph_data", "in_container"]
+            behavior:
+              - "Connects to Qdrant (http://localhost:6333 or container URL)"
+              - "Recreates code_embeddings collection"
+              - "Creates text representation from node metadata (fqname, sig, short)"
+              - "Generates embeddings using sentence-transformers (all-MiniLM-L6-v2)"
+              - "Stores embeddings with node metadata as payload"
+              - "Batch inserts every 100 nodes for efficiency"
+    integration_points:
+      - name: "Auto-Coder Commands"
+        description: "All auto-coder commands that initialize GraphRAG"
+        commands:
+          - "process-issues: Calls initialize_graphrag() which triggers indexing"
+          - "create-feature-issues: Calls initialize_graphrag() which triggers indexing"
+          - "fix-to-pass-tests: Calls initialize_graphrag() which triggers indexing"
+      - name: "GraphRAGMCPIntegration.ensure_ready"
+        file: "src/auto_coder/graphrag_mcp_integration.py"
+        description: "Ensures index is up to date before starting MCP server"
+        behavior:
+          - "Calls index_manager.ensure_index_up_to_date()"
+          - "Triggers _index_codebase() if codebase has changed"
+    data_flow:
+      - "1. User runs auto-coder command (process-issues, etc.)"
+      - "2. initialize_graphrag() is called"
+      - "3. GraphRAGMCPIntegration.ensure_ready() checks index status"
+      - "4. If outdated, GraphRAGIndexManager.update_index() is called"
+      - "5. _index_codebase() runs graph-builder scan"
+      - "6. Graph data is stored in Neo4j (nodes and edges)"
+      - "7. Embeddings are created and stored in Qdrant"
+      - "8. Index state is saved with codebase hash"
+      - "9. LLM can now query Neo4j and Qdrant via GraphRAG MCP"
+    supported_languages:
+      - "Python: Full AST analysis via graph-builder Python scanner"
+      - "TypeScript: Full AST analysis via graph-builder TypeScript scanner"
+    extracted_data:
+      nodes:
+        - "File: Source file nodes"
+        - "Module: Python module nodes"
+        - "Function: Function/method nodes with signatures"
+        - "Class: Class nodes with inheritance info"
+        - "Interface: TypeScript interface nodes"
+        - "Type: Type definition nodes"
+      edges:
+        - "IMPORTS: Import relationships"
+        - "CALLS: Function call relationships"
+        - "CONTAINS: Containment relationships (file contains class, etc.)"
+        - "EXTENDS: Inheritance relationships"
+        - "IMPLEMENTS: Interface implementation relationships"
+      metadata:
+        - "id: Unique identifier (SHA1 hash)"
+        - "kind: Node type"
+        - "fqname: Fully qualified name"
+        - "sig: Type signature"
+        - "short: Summary (from JSDoc or auto-generated)"
+        - "complexity: Cyclomatic complexity"
+        - "tokens_est: Estimated token count"
+        - "tags: Side-effect tags (IO, DB, NETWORK, ASYNC, PURE)"
+        - "file: Source file path"
+        - "start_line: Start line number"
+        - "end_line: End line number"
 
-The auto-coder system supports multiple LLM backends:
+  graphrag_services_checker:
+    name: "GraphRAG Services Verification Script"
+    description: "Standalone script to verify Neo4j and Qdrant services are running correctly, with both direct access and GraphRAG MCP integration testing"
+    components:
+      - name: "GraphRAG Services Checker Script"
+        file: "scripts/check_graphrag_services.py"
+        description: |
+          Comprehensive verification script for Neo4j and Qdrant services.
+          Tests both direct database access and GraphRAG MCP integration.
+          Provides detailed diagnostics and troubleshooting information.
+        usage:
+          - "python scripts/check_graphrag_services.py                # All tests (default)"
+          - "python scripts/check_graphrag_services.py --direct-only  # Direct access only"
+          - "python scripts/check_graphrag_services.py --mcp-only     # MCP tests only"
+        methods:
+          - name: "check_neo4j_direct"
+            description: "Test direct access to Neo4j database via Bolt protocol"
+            returns: "Boolean indicating success"
+            tests:
+              - "Database version verification"
+              - "Node count query"
+              - "Sample node creation (Person with name and role)"
+              - "Node search by property"
+              - "Relationship creation (WORKS_ON between Person and Project)"
+              - "Path traversal query"
+              - "Cleanup of test data"
+            connection:
+              - "URI: bolt://localhost:7687"
+              - "User: neo4j"
+              - "Password: password"
+          - name: "check_qdrant_direct"
+            description: "Test direct access to Qdrant vector database via HTTP API"
+            returns: "Boolean indicating success"
+            tests:
+              - "Health check"
+              - "Collection listing"
+              - "Test collection creation (4-dimensional vectors, COSINE distance)"
+              - "Vector insertion (3 sample documents with metadata)"
+              - "Collection info retrieval"
+              - "Similarity search (top 3 results)"
+              - "Filtered search (by metadata field)"
+              - "Cleanup of test collection"
+            connection:
+              - "URL: http://localhost:6333"
+              - "No authentication required"
+          - name: "check_graphrag_mcp"
+            description: "Test GraphRAG MCP integration and Docker container management"
+            returns: "Boolean indicating success"
+            tests:
+              - "Docker container status check (Neo4j and Qdrant)"
+              - "Automatic container startup if not running"
+              - "MCP server status verification"
+              - "Index state verification"
+              - "MCP configuration retrieval"
+            behavior:
+              - "Automatically starts Docker containers if not running"
+              - "Provides setup instructions for MCP server"
+              - "Shows indexed repository path information"
+        vscode_integration:
+          - name: "Check GraphRAG Services (Direct)"
+            description: "VS Code debug configuration for direct access tests only"
+          - name: "Check GraphRAG Services (with MCP)"
+            description: "VS Code debug configuration including MCP tests"
+          - name: "Check GraphRAG Services (MCP only)"
+            description: "VS Code debug configuration for MCP tests only"
+        dependencies:
+          - "neo4j>=5.14.0 (Python driver)"
+          - "qdrant-client>=1.7.0 (Python client)"
+          - "Install with: pip install -e '.[graphrag]'"
+        troubleshooting:
+          neo4j:
+            - "Check container: docker ps | grep neo4j"
+            - "View logs: docker logs auto-coder-neo4j"
+            - "Test port: nc -zv localhost 7687"
+          qdrant:
+            - "Check container: docker ps | grep qdrant"
+            - "View logs: docker logs auto-coder-qdrant"
+            - "Test port: nc -zv localhost 6333"
+    documentation:
+      - "README.md: GraphRAG 統合（実験的機能）section"
+      - "pyproject.toml: [project.optional-dependencies.graphrag]"
+      - ".vscode/launch.json: Debug configurations for script execution"
 
-```toml
-          [qwen.qwen-direct]
-          command = "uvx"
-          args = ["qwen-direct"]
-          description = "Direct Qwen API access"
-          QWEN_API_KEY = "your-api-key"
-```
+  automation_engine:
+    name: "Automation Engine"
+    description: "Main orchestration engine that coordinates GitHub and LLM integration"
+    components:
+      - name: "AutomationEngine"
+        file: "src/auto_coder/automation_engine.py"
+        methods:
+          - name: "run"
+            description: "Execute the main automation process for a repository"
+            parameters: ["repo_name", "jules_mode (optional)"]
+            returns: "Dictionary with automation results including llm_backend and llm_model"
+            report_fields:
+              - "repository: Repository name"
+              - "timestamp: ISO format timestamp"
+              - "dry_run: Boolean indicating dry run mode"
+              - "jules_mode: Boolean indicating Jules mode"
+              - "llm_backend: LLM backend used (e.g., 'codex', 'gemini', 'qwen', 'auggie')"
+              - "llm_model: LLM model name used"
+              - "issues_processed: List of processed issues (analysis/solution fields removed)"
+              - "prs_processed: List of processed PRs"
+              - "errors: List of errors encountered"
+          - name: "_get_llm_backend_info"
+            description: "Get LLM backend and model information from the LLM client"
+            parameters: []
+            returns: "Dictionary with 'backend' and 'model' keys"
+            behavior:
+              - "If llm client is None, returns {backend: None, model: None}"
+              - "If llm client has get_last_backend_and_model method (BackendManager), uses it"
+              - "Otherwise, infers backend from class name and gets model_name attribute"
+          - name: "_save_report"
+            description: "Save automation report to file. When repo_name is provided, saves to ~/.auto-coder/{repository}/ instead of reports/"
+            parameters: ["data", "filename", "repo_name (optional)"]
+            returns: "None"
+            behavior:
+              - "If repo_name is provided, saves to ~/.auto-coder/{repository}/"
+              - "If repo_name is not provided, saves to reports/ (legacy behavior)"
+              - "Filename format: {filename}_{timestamp}.json"
+              - "Repository name is excluded from filename (directory distinguishes repos)"
+          - name: "fix_to_pass_tests"
+            description: "Run local tests and iteratively request LLM fixes until tests pass; commits are gated and happen only when the test output or the LLM error summary changes by >=10%; at the beginning of each iteration the loop checks for Auto-Coder updates and restarts with the original CLI arguments when an upgrade is applied; errors if LLM makes no edits"
+            parameters: ["max_attempts (optional)"]
+            returns: "Dictionary with success, attempts, and messages"
+          - name: "process_single"
+            description: "Process a single issue or PR by number; supports 'auto' detection when number is given"
+            parameters: ["repo_name", "target_type ('issue'|'pr'|'auto')", "number", "jules_mode (optional)"]
+            returns: "Dictionary with results for the single target"
+          - name: "create_feature_issues"
+            description: "Analyze repository and create feature enhancement issues"
+            parameters: ["repo_name"]
+            returns: "List of created issues"
+          - name: "_process_issues"
+            description: "Process open issues in the repository"
+            parameters: ["repo_name"]
+            returns: "List of processed issues"
+          - name: "_process_issues_jules_mode"
+            description: "Process open issues in jules mode - only add 'jules' label"
+            parameters: ["repo_name"]
+            returns: "List of processed issues"
+          - name: "_process_pull_requests"
+            description: "Process open pull requests in the repository with two-loop priority order, checking for Auto-Coder updates at the start of each iteration and restarting with the recorded CLI arguments when an upgrade is applied"
+            parameters: ["repo_name"]
+            returns: "List of processed PRs"
+            details: "First loop merges PRs with passing Actions AND mergeable status, second loop fixes remaining PRs; each pass re-runs the auto-update check before contacting GitHub so upgrades are applied before continuing"
+          - name: "_take_issue_actions"
+            description: "Take automated actions based on issue analysis"
+            parameters: ["repo_name", "issue_data", "analysis", "solution"]
+            returns: "List of actions taken"
+          - name: "_take_pr_actions"
+            description: "Take automated actions based on PR analysis"
+            parameters: ["repo_name", "pr_data", "analysis"]
+            returns: "List of actions taken"
+          - name: "_process_pr_for_merge"
+            description: "Process a PR for quick merging when GitHub Actions are passing"
+            parameters: ["repo_name", "pr_data"]
+            returns: "Dictionary with PR processing results"
+          - name: "_process_pr_for_fixes"
+            description: "Process a PR for issue resolution when GitHub Actions are failing or pending"
+            parameters: ["repo_name", "pr_data"]
+            returns: "Dictionary with PR processing results"
+          - name: "_fix_pr_issues_with_testing"
+            description: "Fix PR issues by applying GitHub Actions log guidance then iterating local tests; every loop iteration begins with an auto-update check that restarts with the saved CLI arguments when an upgrade is detected"
+            parameters: ["repo_name", "pr_data", "config", "dry_run", "github_logs"]
+            returns: "List of actions taken"
+          - name: "_is_package_lock_only_conflict"
+            description: "Check if merge conflicts are only in package-lock.json or similar dependency files"
+            parameters: ["conflict_info"]
+            returns: "Boolean indicating if conflicts are dependency-file only"
+          - name: "_resolve_package_lock_conflicts"
+            description: "Resolve package-lock.json conflicts by deleting and regenerating dependency files"
+            parameters: ["pr_data", "conflict_info"]
+            returns: "List of actions taken during resolution"
+          - name: "_get_github_actions_logs"
+            description: "Use gh api to fetch failed job logs (ZIP) for the latest failed run on the PR branch and extract error snippets. Detect failing steps and extract Playwright-style failure blocks including expectation details. Fallback to gh run view --job --log when ZIP is unavailable."
+            parameters: ["repo_name", "pr_data", "failed_checks"]
+            returns: "String containing extracted error snippets per failed job (with step headings and expectation details when available)"
 
-#### Backend Configuration Fields
 
-The system supports extensive backend configuration options. Key fields include:
+  command_execution:
+    name: "Command Execution"
+    description: "Unified command runner with debugger-friendly streaming mode"
+    components:
+      - name: "CommandExecutor.run_command"
+        file: "src/auto_coder/utils.py"
+        description: |
+          Executes shell commands with consistent timeout handling and optional streaming.
+          Automatically streams stdout/stderr when a debugger is attached or when AUTOCODER_STREAM_COMMANDS=1.
+          Recognizes common debug adapters (debugpy, VS Code, PyCharm) via environment markers to ensure streaming during IDE sessions.
+          Uses background reader threads plus short-interval polling so debugger pauses land within a few hundred milliseconds even when the command is silent.
+          Consumed by Codex/Gemini/Qwen CLI clients for LLM invocations via CommandExecutor.run_command(..., stream_output=True).
+          Preserves captured output for downstream processing while logging live updates for active debugging.
+        parameters:
+          - "cmd: list[str]"
+          - "timeout: Optional[int]"
+          - "cwd: Optional[str]"
+          - "check_success: bool"
+          - "stream_output: Optional[bool]"
+          - "env: Optional[dict[str, str]]"
+        returns: "CommandResult(success, stdout, stderr, returncode)"
+        tests:
+          - "tests/test_utils_command_executor.py::test_run_command_respects_stream_flag"
+          - "tests/test_utils_command_executor.py::test_run_command_streams_output"
+          - "tests/test_utils_command_executor.py::test_should_stream_when_debugger_attached"
+          - "tests/test_utils_command_executor.py::test_should_stream_when_env_forced"
+          - "tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers"
+          - "tests/test_llm_cli_neutral.py::test_codex_client_run_llm_cli_delegates"
+          - "tests/test_llm_cli_neutral.py::test_gemini_client_run_llm_cli_delegates"
+          - "tests/test_llm_cli_neutral.py::test_qwen_client_run_llm_cli_delegates"
+  test_runner_utils:
+    name: "Test Runner Utilities"
+    description: "Utilities to parse test outputs and assist selective re-runs"
+    components:
+      - name: "extract_first_failed_test"
+        file: "src/auto_coder/utils.py"
+        description: "Robustly extracts the first failed test file from stdout/stderr across pytest and Playwright formats"
+        inputs:
+          - "stdout: string"
+          - "stderr: string"
+        returns: "Relative file path to the first failed test or null"
+        supports:
+          - "pytest summary lines: 'FAILED tests/test_foo.py::test_bar - ...'"
+          - "pytest traceback lines: 'tests/test_foo.py:12: in test_bar'"
+          - "Playwright specs: 'e2e/.../name.spec.ts:16:5'"
+        tests:
+          - "tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_failed_summary_hyphen"
+          - "tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_traceback_line"
+          - "tests/test_utils_extract_first_failed_test.py::test_extract_from_playwright_spec"
+      - name: "change_fraction"
+        file: "src/auto_coder/utils.py"
+        description: "Compute fraction of change using only the tail window (min of last 20 lines or last 1000 chars) for performance; returns 1 - difflib ratio on the selected windows. None is treated as empty, equal strings return 0.0."
+        tests:
+          - "tests/test_utils_change_fraction.py::test_change_fraction_ignores_large_prefix_when_last_20_lines_identical"
+          - "tests/test_utils_change_fraction.py::test_change_fraction_ignores_large_prefix_when_last_1000_chars_identical"
+          - "tests/test_utils_change_fraction.py::test_change_fraction_detects_tail_difference"
+          - "tests/test_utils_change_fraction.py::test_change_fraction_none_and_equal_cases"
 
-- **model_provider**: Specifies the model provider for backends using `backend_type = "codex"`
-  - Purpose: Allows users to configure providers like OpenRouter, Anthropic, etc.
-  - Example:
-    ```toml
-    [grok-4.1-fast]
-    enabled = true
-    model = "x-ai/grok-4.1-fast:free"
-    backend_type = "codex"
-    model_provider = "openrouter"
-    ```
-  - This translates to: `codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter`
-  - Optional field: Backward compatible with existing configurations
+      - name: "run_local_tests"
+        file: "src/auto_coder/fix_to_pass_tests_runner.py"
+        description: |
+          Executes local tests via TEST_SCRIPT_PATH (scripts/test.sh) with no pytest fallback.
+          Behavior:
+          - When a specific test file is provided, invokes: `bash $TEST_SCRIPT_PATH <file>`
+          - When running all tests via script and failures occur, extracts the first failed test and re-runs it via script with the file argument
+          - TEST_SCRIPT_PATH is validated once at CLI startup; if missing, the command errors and exits
+        tests:
+          - "tests/test_run_local_tests_script.py::test_run_local_tests_uses_script_for_single_file"
+          - "tests/test_run_local_tests_script.py::test_run_local_tests_uses_script_for_all_tests"
+          - "tests/test_run_local_tests_script.py::test_run_local_tests_reruns_first_failed_via_script"
 
-- **usage_markers**: Configurable patterns (strings or JSON snippets) to detect rate limits or usage errors in CLI output
-  - Purpose: Enables users to handle different localizations or new error messages without modifying source code
-  - Supported by: ClaudeClient, GeminiClient, CodexClient, AuggieClient, QwenClient
-  - Default behavior: Each client has built-in default markers (e.g., "rate limit", "quota", "429")
-  - Example:
-    ```toml
-    [backends.gemini]
-    model = "gemini-2.5-pro"
-    usage_markers = ["rate limit", "quota exceeded", "custom error message"]
 
-    [backends.claude]
-    model = "sonnet"
-    usage_markers = ["api error: 429", "usage limit exceeded", "5-hour limit reached"]
+  cli_interface:
+    name: "Command Line Interface"
+    description: "CLI for interacting with Auto-Coder functionality"
+    components:
+      - name: "CLI Commands"
+        file: "src/auto_coder/cli.py"
+        commands:
+          - name: "process-issues"
+            description: "Process GitHub issues and PRs using AI CLI (codex or gemini)"
+            options:
+              - "--repo": "GitHub repository (owner/repo)"
+              - "--github-token": "GitHub API token"
+              - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
+              - "--model-gemini": "Model to use when backend=gemini"
+              - "--model-qwen": "Model to use when backend=qwen"
+              - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
+              - "--dry-run": "Run in dry-run mode without making changes"
+              - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
+              - "--skip-main-update/--no-skip-main-update": "When PR checks fail, skip merging main into PR before attempting fixes (default: skip)"
+              - "--ignore-dependabot-prs/--no-ignore-dependabot-prs": "Ignore PRs opened by Dependabot when processing PRs (default: do not ignore)"
+              - "--only": "Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)"
+              - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
+              - "--log-file": "Log file path (optional)"
+          - name: "create-feature-issues"
+            description: "Analyze repository and create feature enhancement issues"
+            options:
+              - "--repo": "GitHub repository (owner/repo)"
+              - "--github-token": "GitHub API token"
+              - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
+              - "--model-gemini": "Model to use when backend=gemini"
+              - "--model-qwen": "Model to use when backend=qwen"
+              - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
+              - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
+          - name: "fix-to-pass-tests"
+            description: "Run tests and request LLM fixes until passing; automatically checks for Auto-Coder updates at the start of each LLM attempt and restarts with the original CLI flags when an upgrade completes; stop with error if LLM made no edits"
+            options:
+              - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
+              - "--model-gemini": "Model to use when backend=gemini"
+              - "--model-qwen": "Model to use when backend=qwen"
+              - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
+              - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
+              - "--max-attempts": "Maximum fix attempts before giving up (defaults to engine config)"
+              - "--dry-run": "Run without making changes"
+              - "--log-level": "Set logging level"
+              - "--log-file": "Log file path"
+          - name: "mcp-pdb"
+            description: "Helpers to set up and verify mcp-pdb (Model Context Protocol PDB server)"
+            options:
+              - "print-config --target [windsurf|claude]": "Print configuration snippet for Windsurf or Claude; optionally write to file"
+              - "status": "Check prerequisites (uv availability) and show setup tips"
 
-    [backends.codex]
-    model = "codex"
-    usage_markers = ["rate limit", "usage limit", "upgrade to pro"]
 
-    [backends.auggie]
-    model = "GPT-5"
-    usage_markers = ["rate limit", "quota", "429"]
+  configuration:
+    name: "Configuration Management"
+    description: "Application configuration and settings management"
+    components:
+      - name: "AutomationConfig"
+        file: "src/auto_coder/automation_config.py"
+        methods:
+          - name: "get_reports_dir"
+            description: "Get the reports directory for a specific repository"
+            parameters: ["repo_name"]
+            returns: "Path to ~/.auto-coder/{repository}/"
+            behavior:
+              - "Converts repo_name (e.g., 'owner/repo') to safe directory name (e.g., 'owner_repo')"
+              - "Returns path: ~/.auto-coder/{safe_repo_name}/"
+      - name: "Settings"
+        file: "src/auto_coder/config.py"
+        settings:
+          - name: "github_token"
+            description: "GitHub API token"
+            env_var: "GITHUB_TOKEN"
+            default: null
+          - name: "github_api_url"
+            description: "GitHub API URL"
+            env_var: "GITHUB_API_URL"
+            default: "https://api.github.com"
+          - name: "gemini_api_key"
+            description: "Gemini API key"
+            env_var: "GEMINI_API_KEY"
+            default: null
+          - name: "gemini_model"
+            description: "Gemini model to use"
+            env_var: "GEMINI_MODEL"
+            default: "gemini-pro"
+          - name: "max_issues_per_run"
+            description: "Maximum issues to process per run"
+            env_var: "MAX_ISSUES_PER_RUN"
+            default: 10
+          - name: "max_prs_per_run"
+            description: "Maximum PRs to process per run"
+            env_var: "MAX_PRS_PER_RUN"
+            default: 5
+          - name: "dry_run"
+            description: "Enable dry-run mode"
+            env_var: "DRY_RUN"
+            default: false
 
-    [backends.qwen]
-    model = "qwen3-coder-plus"
-    usage_markers = ["rate limit", "quota", "too many requests", "custom marker"]
-    ```
-  - Behavior:
-    - When configured, the specified markers are used to detect usage limit errors
-    - When not configured, clients fall back to their built-in default markers
-    - Markers are matched case-insensitively against the CLI output
-    - JSON markers are matched as partial JSON (subset) against any JSON payload found in the CLI output, including structured log lines
-  - Configuration file: "~/.auto-coder/llm_config.toml"
-  - Optional field: Backward compatible with existing configurations
+workflows:
+  issue_processing:
+    name: "Issue Processing Workflow"
+    description: "Automated workflow for processing GitHub issues (single-run, no analysis phase) with exclusive processing control"
+    steps:
+      1. "Fetch open issues from repository (oldest first)"
+      2. "Try to add @auto-coder label to issue for exclusive processing"
+      3. "Skip if @auto-coder label already exists (being processed by another instance)"
+      4. "Check if issue has a linked PR (via GraphQL Development section or text search)"
+      5. "Skip issues that already have linked PRs to avoid duplicate work"
+      6. "Switch to appropriate branch: PR head_branch if present, otherwise default branch"
+      7. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
+      8. "Add comments or close issues as appropriate"
+      9. "Remove @auto-coder label after processing (success or error)"
+      10. "Generate automation report"
+    exclusive_processing:
+      - "Uses @auto-coder label as work-in-progress flag"
+      - "Label is added at start of processing"
+      - "Label is removed after processing completes or on error"
+      - "Provides basic protection against concurrent processing"
+    tests:
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_skips_issue_with_linked_pr"
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_processes_all_when_no_linked_prs"
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_skips_all_when_all_have_linked_prs"
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_handles_has_linked_pr_exception"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_skips_when_label_exists"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_processes_when_label_added"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_removes_label_on_error"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_jules_mode_skips_when_label_exists"
 
-- **backend_with_high_score**: Fallback backend configuration for PRs when attempt count reaches 3
-  - Purpose: Automatically switches to a different backend when a PR has been attempted 3 times without success
-  - Trigger: When any linked issue in a PR has an attempt count >= 3, the system switches to this fallback backend for all subsequent LLM operations on that PR
-  - Configuration section: `[backend_with_high_score]` in the TOML config file
-  - Example:
-    ```toml
-    [backend_with_high_score]
-    name = "gemini"
-    model = "gemini-2.5-flash"
-    api_key = "your-api-key"
-    ```
-  - Behavior:
-    - Checks attempt count for all issues linked in the PR body (using keywords like "close", "fix", "resolve")
-    - Uses max attempt count across all linked issues
-    - When max attempt >= 3, switches to the fallback backend before making any LLM calls
-    - Supports all standard backend configuration fields (model, api_key, base_url, etc.)
-    - If no fallback is configured, processing continues with the current backend (no error)
-  - Configuration file: "~/.auto-coder/llm_config.toml"
-  - Optional field: Only used when automatic fallback is desired
+  pr_processing:
+    name: "Pull Request Processing Workflow"
+    description: "Automated workflow for processing GitHub pull requests with two-loop priority order and exclusive processing control"
+    steps:
+      1. "Fetch open pull requests from repository (oldest first)"
+      2. "At the beginning of each pass iteration, check for Auto-Coder updates and restart with the original CLI arguments when an upgrade is applied"
+      3. "First loop: Try to add @auto-coder label, skip if already exists, check GitHub Actions status AND mergeable status, merge qualifying PRs, remove @auto-coder label"
+      4. "Second loop: Try to add @auto-coder label, skip if already exists or already handled, process remaining PRs for issue resolution, remove @auto-coder label"
+      5. "Generate automation report"
+    exclusive_processing:
+      - "Uses @auto-coder label as work-in-progress flag"
+      - "Label is added at start of processing in each loop"
+      - "Label is removed after processing completes or on error"
+      - "Provides basic protection against concurrent processing"
+    tests:
+      - "tests/test_exclusive_processing_label.py::TestPRProcessorExclusiveProcessing::test_process_pull_requests_skips_when_label_exists"
 
-- **`options` field**: CLI options for code editing operations
-  - Purpose: Pass additional command-line arguments to backend CLIs when performing code editing operations
-  - Type: List[str]
-  - Default: `[]` (empty list)
-  - Usage: Applied when the LLM is invoked for analyzing issues, generating code, fixing bugs, and other file-modifying operations
-  - Example:
-    ```toml
-    [backends.codex]
-    model = "codex"
-    options = ["--dangerously-bypass-approvals-and-sandbox"]
-    ```
-  - Behavior:
-    - The system automatically adds required flags for each backend type during execution (e.g., `--dangerously-bypass-approvals-and-sandbox` for Codex)
-    - Custom options specified here are appended to the automatically-added flags
-    - Different backends may interpret options differently
-    - Supports placeholder replacement for dynamic values (see Placeholder Replacement System below)
-  - Configuration file: "~/.auto-coder/llm_config.toml"
-  - Optional field: Backward compatible with existing configurations
+  feature_suggestion:
+    name: "Feature Suggestion Workflow"
+    description: "Automated workflow for suggesting and creating feature issues"
+    steps:
+      1. "Analyze repository context"
+      2. "Generate feature suggestions using Gemini AI"
+      3. "Create feature issues in repository"
+      4. "Generate feature suggestions report"
 
-- **`options_for_noedit` field**: CLI options for message generation (non-editing operations)
-  - Purpose: Pass additional command-line arguments to backend CLIs when generating commit messages, PR descriptions, and other non-code operations
-  - Type: List[str]
-  - Default: `[]` (empty list)
-  - Usage: Applied when the LLM is invoked for message generation operations (not code editing)
-  - Example:
-    ```toml
-    [backends.gemini]
-    model = "gemini-2.5-pro"
-    options = ["--debug"]
-    options_for_noedit = ["--silent"]
-    ```
-  - Behavior:
-    - If not specified or empty, falls back to using `options` value
-    - Allows different configurations for editing vs message generation
-    - The system automatically adds required flags for each backend type during execution
-    - Useful for optimizing different operations with different option sets
-  - Configuration file: "~/.auto-coder/llm_config.toml"
-  - Optional field: Backward compatible with existing configurations
+  jules_mode:
+    name: "Jules Mode Workflow"
+    description: "Jules mode - simple label addition for issues; PRs processed without analysis-only phase, with exclusive processing control"
+    steps:
+      1. "Fetch open issues from repository (oldest first)"
+      2. "Try to add @auto-coder label to issue for exclusive processing"
+      3. "Skip if @auto-coder label already exists (being processed by another instance)"
+      4. "Check if 'jules' label already exists on each issue"
+      5. "Add 'jules' label to issues that don't have it"
+      6. "Remove @auto-coder label after processing"
+      7. "Process PRs with single-run direct actions (no analysis-only phase)"
+      8. "Generate automation report"
+    exclusive_processing:
+      - "Uses @auto-coder label as work-in-progress flag"
+      - "Label is added at start of processing"
+      - "Label is removed after processing completes or on error"
+      - "Provides basic protection against concurrent processing"
 
-- **`backend_for_noedit` configuration**: Separate backend configuration for non-editing operations
-  - Purpose: Configure a different backend (or backend order) for message generation compared to code editing
-  - Breaking Change: Renamed from `message_backend` to `backend_for_noedit`
-  - Configuration Sections:
-    - `[backend_for_noedit]`: Top-level section for non-editing backend configuration
-    - Fields:
-      - `default`: Default backend name for non-editing operations
-      - `order`: List of backend names to try for non-editing operations (in order)
-  - Example:
-    ```toml
-    [backend]
-    default = "qwen"
-    order = ["qwen", "gemini", "claude"]
+special_features:
+  prompt_escaping:
+    name: "Gemini Prompt @ Character Escaping"
+    description: "Automatically escapes @ characters in prompts to prevent Gemini CLI parsing issues"
+    behavior:
+      - "Detects @ characters in prompts before sending to Gemini CLI"
+      - "Replaces @ with \\@ to prevent CLI argument parsing conflicts"
+      - "Ensures safe transmission of user mentions and email addresses in prompts"
+    benefits:
+      - "Prevents CLI parsing errors with @ characters"
+      - "Allows safe inclusion of user mentions and email addresses"
+      - "Maintains prompt integrity during Gemini CLI communication"
+    implementation:
+      - "Applied automatically in _run_gemini_cli method"
+      - "Uses simple string replacement: @ → \\@"
+      - "No user intervention required"
 
-    [backend_for_noedit]
-    default = "claude"
-    order = ["claude", "qwen"]
-    ```
-  - Behavior:
-    - If not specified, falls back to general backend configuration (`[backend]` section)
-    - Allows optimization: use fast/cheap models for messages, premium models for code
-    - Backward compatible: old `message_backend` key still works but emits deprecation warning
-  - Migration:
-    - Replace `[message_backend]` with `[backend_for_noedit]` in config files
-    - Replace environment variable `AUTO_CODER_MESSAGE_DEFAULT_BACKEND` with `AUTO_CODER_NOEDIT_DEFAULT_BACKEND`
-  - Configuration file: "~/.auto-coder/llm_config.toml"
-  - Optional field: Defaults to general backend configuration if not specified
+  enhanced_pr_merge_criteria:
+    name: "Enhanced PR Merge Criteria"
+    description: "Improved first-loop PR processing with both GitHub Actions success AND mergeable status checks"
+    behavior:
+      - "First loop only processes PRs that have BOTH passing GitHub Actions AND mergeable status"
+      - "PRs with passing Actions but not mergeable are deferred to second loop"
+      - "PRs with mergeable status but failing Actions are deferred to second loop"
+      - "Only PRs meeting both criteria are processed for immediate merge"
+    benefits:
+      - "Reduces merge failures by checking mergeable status upfront"
+      - "Prevents wasted processing time on unmergeable PRs"
+      - "Improves automation reliability and success rate"
+    criteria:
+      - "GitHub Actions: success = true"
+      - "PR mergeable: mergeable = true"
+      - "Both conditions must be met for first-loop processing"
 
-#### Placeholder Replacement System
+  conflict_resolution:
+    name: "Automatic Model Switching for Conflicts"
+    description: "Automatically switches to faster model (gemini-2.5-flash) when resolving PR merge conflicts"
+    behavior:
+      - "Detects merge conflicts in PRs"
+      - "Switches from default model to gemini-2.5-flash for faster conflict resolution"
+      - "Resolves conflicts using AI analysis"
+      - "Switches back to default model after resolution"
+    benefits:
+      - "Faster conflict resolution with optimized model"
+      - "Cost-effective processing for conflict scenarios"
+      - "Maintains quality while improving speed"
 
-- **Purpose**: Enable dynamic configuration values in option lists using placeholders
-- **Documentation**: See [Configuration Guide](configuration_guide.md) for complete documentation
-- **Supported Placeholders**:
-  - `[model_name]` - Replaced with the backend's model value
-  - `[sessionId]` - Replaced with session ID for resume functionality
-  - `[settings]` - Replaced with backend's settings file path
-  - `[model_provider]` - Replaced with backend's model_provider value
-- **Implementation**: The `BackendConfig.replace_placeholders()` method processes all three option lists (`options`, `options_for_noedit`, `options_for_resume`)
-- **Behavior**:
-  - Placeholders are replaced with provided values at runtime
-  - If a placeholder value is not provided, the placeholder remains unchanged
-  - The method returns a new dictionary with processed lists, leaving the original configuration unmodified
-  - Multiple occurrences of the same placeholder in a list are all replaced
-- **Example Configuration**:
-  ```toml
-  [backends.codex]
-  model = "gpt-5.1-codex-max"
-  options = ["--model", "[model_name]", "--json", "--dangerously-bypass-approvals-and-sandbox"]
-  options_for_noedit = ["--model", "[model_name]", "--json"]
-  options_for_resume = ["--model", "[model_name]"]
+  package_lock_conflict_resolution:
+    name: "Specialized Package Lock Conflict Resolution"
+    description: "Automatically resolves package-lock.json conflicts by regenerating dependency files"
+    behavior:
+      - "Detects conflicts that only affect package-lock.json, yarn.lock, or pnpm-lock.yaml"
+      - "Removes conflicted dependency lock files"
+      - "Runs appropriate package manager (npm install, yarn install) to regenerate lock files"
+      - "Commits and pushes the resolved changes"
+      - "Bypasses AI analysis for faster resolution"
+    benefits:
+      - "Instant resolution of common dependency conflicts"
+      - "No manual intervention required"
+      - "Maintains dependency integrity"
+      - "Faster than AI-based conflict resolution"
+    supported_files:
+      - "package-lock.json"
+      - "yarn.lock"
+      - "pnpm-lock.yaml"
 
-  [backends.custom-claude]
-  model = "opus"
-  backend_type = "claude"
-  settings = "/path/to/settings.json"
-  options = ["--print", "--model", "[model_name]", "--settings", "[settings]"]
+  package_json_dependency_conflict_resolution:
+    name: "package.json Dependency-only Conflict Resolver"
+    description: "When conflicts in package.json affect only dependency sections, automatically merge by preferring newer versions and the side with more dependencies."
+    behavior:
+      - "Detects conflicts limited to package.json where non-dependency fields are identical between sides"
+      - "For dependency sections, merges keys (union)"
+      - "On version mismatch, selects newer semver; if indeterminable or equal, prefers the side with more entries"
+      - "Writes merged package.json, commits, and pushes changes"
+      - "Skips further LLM analysis after successful push"
+      - "When both package.json (deps-only) and lockfiles are conflicted, resolves package.json first and then regenerates lockfiles sequentially"
+    benefits:
+      - "Resolves common dependency bumps without manual intervention"
+      - "Prefers safer, newer dependency versions when possible"
+      - "Consistent and deterministic merging policy"
+    sections:
+      - "dependencies"
+      - "devDependencies"
+      - "peerDependencies"
+      - "optionalDependencies"
+    implementation:
+      - "AutomationEngine._is_package_json_deps_only_conflict"
+      - "AutomationEngine._get_deps_only_conflicted_package_json_paths"
+      - "AutomationEngine._resolve_package_json_dependency_conflicts"
 
-  [backends.openrouter-backend]
-  model = "some/model:free"
-  backend_type = "codex"
-  model_provider = "openrouter"
-  options = ["--model", "[model_name]", "-c", "model_provider=[model_provider]"]
-  ```
-- **Usage in Code**:
-  ```python
-  config = BackendConfig(name="codex", ...)
-  processed = config.replace_placeholders(
-      model_name="gpt-5.1-codex-max",
-      session_id="sess_20241204",
-      settings="/path/to/settings.json"
-  )
-  # processed['options'] = ["--model", "gpt-5.1-codex-max", "--json", "--dangerously-bypass-approvals-and-sandbox"]
-  ```
-- **Benefits**:
-  - Single configuration template can be used with different models
-  - Session-based backends can dynamically inject session IDs
-  - Settings files can be configured without hardcoding paths in options
-  - Model providers can be specified dynamically for OpenAI-compatible backends
-  - Reduces configuration duplication
-  - Supports dynamic runtime values without modifying configuration files
-- **Backward Compatibility**: Fully backward compatible - configurations without placeholders work unchanged
+  commit_formatting_auto_fix:
+    name: "Commit auto-fix for dprint formatting"
+    description: "When git commit fails due to dprint pre-commit formatting errors, the tool automatically runs 'npx dprint fmt', stages changes, and retries commit once."
+    behavior:
+      - "Detects dprint-related failures from commit stdout/stderr (e.g., 'Formatting issues detected. Run \'npx dprint fmt\' to fix.')"
+      - "Runs 'npx dprint fmt' and stages files, then retries 'git commit'"
+      - "If formatting still fails, the commit is reported as failed with the original error"
+    implementation:
+      - "git_utils.git_commit_with_retry: Centralized commit helper with automatic dprint retry logic"
+      - "git_utils.git_push: Centralized push helper for consistent error handling"
+      - "All git commit/push operations use these helpers to avoid duplicated logic"
+    tests:
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_successful_commit"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_and_retry"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_fmt_fails"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_non_dprint_error"
+      - "tests/test_git_utils.py::TestGitPush::test_successful_push"
+      - "tests/test_git_utils.py::TestGitPush::test_push_with_branch"
+      - "tests/test_git_utils.py::TestGitPush::test_push_failure"
 
-#### Backend Management
+  commit_failure_history_and_exit:
+    name: "Commit Failure History and Immediate Exit"
+    description: "When git commit fails, the application saves failure details to a history file and immediately exits to prevent uncommitted changes from being lost."
+    behavior:
+      - "Detects commit failures from git_commit_with_retry"
+      - "Saves failure details (error message, context, timestamp) to JSON file"
+      - "History file location: ~/.auto-coder/{repository}/commit_failure_{timestamp}.json (with repo_name) or .auto-coder/commit_failure_{timestamp}.json (without repo_name)"
+      - "Immediately exits with code 1 after saving history"
+      - "Prevents further processing that could lose uncommitted changes"
+    implementation:
+      - "git_utils.save_commit_failure_history: Saves failure history and exits"
+      - "issue_processor._commit_changes: Calls save_commit_failure_history on commit failure"
+      - "fix_to_pass_tests_runner.fix_to_pass_tests: Calls save_commit_failure_history on commit failure"
+    tests:
+      - "tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_with_repo_name"
+      - "tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_without_repo_name"
 
-    nested_managers:
-      description: "Multiple backend manager instances can exist with different configurations"
-      llm_backend: "Singleton instance for general LLM operations (PR processing, test fixes, code generation)"
-      noedit_backend: "Separate singleton instance for non-editing operations (commit messages, PR messages)"
-      usage: "Access via get_llm_backend_manager() and get_noedit_backend_manager() for different use cases"
-      provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
-      deprecated_names: "get_message_backend_manager(), run_llm_message_prompt(), get_message_backend_and_model() are deprecated - use get_noedit_backend_manager(), run_llm_noedit_prompt(), get_noedit_backend_and_model() instead"
-  session_resume:
-      description: "Persist and reuse backend session identifiers so supported backends can resume previous conversations."
-      prerequisites:
-        - "Backend configuration includes options_for_resume with a [sessionId] placeholder that matches the backend CLI flag"
+  message_backend:
+    name: "Dedicated Message Backend"
+    description: "Allows specifying separate AI backend(s) for message generation (commit messages, PR messages), independent from the main backend used for code analysis and fixes."
+    behavior:
+      - "CLI option --message-backend accepts multiple backends in priority order"
+      - "If not specified, uses the same backends as --backend"
+      - "Supports all backend types: codex, codex-mcp, gemini, qwen, auggie"
+      - "Automatically switches to next backend on usage limit errors"
+      - "Uses dedicated BackendManager instance for message generation"
+    implementation:
+      - "cli_commands_main.py: Added --message-backend option to process-issues and fix-to-pass-tests commands"
+      - "fix_to_pass_tests_runner.generate_commit_message_via_llm: Updated to accept message_backend_manager parameter"
+      - "fix_to_pass_tests_runner.fix_to_pass_tests: Added message_backend_manager parameter"
+      - "automation_engine.AutomationEngine.fix_to_pass_tests: Added message_backend_manager parameter"
+    cli_options:
+      - name: "--message-backend"
+        scope: "process-issues and fix-to-pass-tests commands"
+        description: "AI backend(s) for message generation in priority order (default: same as --backend)"
+        multiple: true
+        choices: ["codex", "codex-mcp", "gemini", "qwen", "auggie"]
+    examples:
+      - command: "auto-coder fix-to-pass-tests --backend codex --message-backend gemini"
+        description: "Use codex for code fixes and gemini for messages"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex --message-backend gemini --message-backend qwen"
+        description: "Use codex for main processing, gemini for messages (with qwen as fallback)"
+
+  llm_invocation_warn_logging:
+    name: "Warn log for LLM invocations"
+    description: "Emit warning logs whenever an LLM backend (Gemini or Codex CLI) is invoked, to keep LLM calls minimized."
+    behavior:
+      - "GeminiClient._run_gemini_cli emits warning before invoking gemini CLI"
+      - "CodexClient._run_gemini_cli emits warning before invoking codex CLI"
+    tests:
+      - "tests/test_gemini_client.py::TestGeminiClient::test_llm_invocation_warn_log"
+      - "tests/test_codex_client.py::TestCodexClient::test_llm_invocation_warn_log"
+
+
+  pr_action_oriented_prompt:
+    name: "PR Action-Oriented Prompt (No Comments)"
+    description: "LLM prompt for PRs forbids posting comments and enforces direct code changes, git add/commit/push, and optional gh pr merge."
+    behavior:
+      - "Prohibits PR comments or narrative outputs from LLM"
+      - "Instructs safe edits to make CI pass"
+      - "Requires git add/commit/push to the PR branch"
+      - "If mergeable and CI passing, performs gh pr merge"
+      - "Standardizes output to a single line starting with ACTION_SUMMARY: or CANNOT_FIX"
+    implementation:
+      - "AutomationEngine._create_pr_analysis_prompt updated to action-oriented style"
+      - "AutomationEngine._apply_pr_actions_directly updated to avoid posting comments and parse ACTION_SUMMARY/CANNOT_FIX"
+    tests:
+      - "tests/test_automation_engine.py::test_create_pr_prompt_is_action_oriented_no_comments"
+      - "tests/test_automation_engine.py::test_apply_pr_actions_directly_does_not_post_comments"
+
+  llm_prompts_yaml_config:
+    name: "YAML-configured LLM prompts"
+    description: "All LLM instruction prompts (PR, issues, conflicts, test fixes, feature suggestions) are read from src/auto_coder/prompts.yaml."
+    behavior:
+      - "Central prompt templates defined in YAML with $placeholders"
+      - "Functions render prompts via prompt_loader.render_prompt"
+      - "Supports cache invalidation and custom prompt paths for tests"
+      - "Fail-fast: If prompts.yaml is missing or invalid, terminate immediately (SystemExit) with a clear error message"
+    implementation:
+      - "prompt_loader.py parses YAML and caches templates; on failure, logs critical and raises SystemExit"
+      - "pr_processor, issue_processor, test_runner, gemini_client, qwen_client, conflict_resolver consume YAML prompts"
+      - "packaging: prompts.yaml included in wheel/sdist via setuptools package-data; verified via pipx install presence in site-packages"
+
+    tests:
+      - "tests/test_prompt_loader.py::test_render_prompt_with_custom_path"
+      - "tests/test_prompt_loader.py::test_get_prompt_template_uses_cache"
+      - "tests/test_prompt_loader.py::test_missing_prompt_file_causes_system_exit"
+      - "tests/test_prompt_loader.py::test_invalid_yaml_causes_system_exit"
+      - "tests/test_e2e_prompt_yaml.py::test_pr_prompt_uses_yaml_template"
+
+      - "AutomationEngine._resolve_merge_conflicts_with_gemini updated to use specialized resolver and sequential handling"
+
+  base_branch_merge_for_conflicts:
+    name: "PR Base Branch Merge for Updates/Conflicts"
+    description: "When updating a PR branch or resolving conflicts, merge the PR's base branch (not necessarily main) into the PR branch."
+    behavior:
+      - "Detect PR base branch from pr_data.base_branch (or base.ref) and use it as merge target"
+      - "Fetch and merge origin/<base_branch> into the PR branch for updates and conflict resolution"
+      - "Prompts and logs refer to the actual base branch dynamically"
+    benefits:
+      - "Handles repositories where default branch is not main (e.g., develop)"
+      - "Reduces unnecessary rebases when PR targets a non-main branch"
+    implementation:
+      - "AutomationEngine._update_with_main_branch (uses base_branch; function name kept for compatibility)"
+      - "AutomationEngine._resolve_pr_merge_conflicts"
+      - "AutomationEngine._resolve_merge_conflicts_with_gemini (prompt mentions base branch)"
+    tests:
+      - "tests/test_automation_engine.py::test_resolve_pr_merge_conflicts_uses_base_branch"
+      - "tests/test_automation_engine.py::test_update_with_main_branch_uses_provided_base_branch"
+
+
+
+  github_actions_fix_commit_push:
+    name: "GitHub Actions Fix with Commit/Push"
+    description: "When applying fixes from GitHub Actions logs, the LLM is instructed to stage, commit, and push changes to the PR branch within the single-run action."
+    behavior:
+      - "_apply_github_actions_fix constructs a prompt that includes explicit git add/commit/push commands"
+      - "The LLM applies fixes and then executes the git commands to update the PR branch"
+      - "The output should summarize changes and include commit/push results for logging"
+    benefits:
+      - "Ensures fixes are not only generated but also persisted to the PR branch"
+      - "Aligns with single-run LLM policy (no analysis-only steps)"
+    implementation:
+      - "AutomationEngine._apply_github_actions_fix updated to include commit/push instructions"
+
+  simple_merge_fallbacks:
+    name: "Simple Non-LLM Merge Fallbacks"
+    description: "When gh pr merge fails after conflict resolution, try non-AI simple strategies"
+    behavior:
+      - "Poll mergeable state briefly via gh pr view --json mergeable"
+      - "Fallback to alternative merge methods allowed by repository settings (--merge/--rebase/--squash)"
+      - "Do not invoke LLM for these fallbacks"
+    benefits:
+      - "Avoids unnecessary LLM calls for operational merge issues"
+      - "Improves success rate by adapting to repo settings"
+      - "Handles delayed mergeability on GitHub side"
+    implementation:
+      - "AutomationEngine._poll_pr_mergeable"
+      - "AutomationEngine._get_allowed_merge_methods"
+
+  pr_checks_fail_skip_main_update:
+    name: "Skip Base Branch Update When PR Checks Fail"
+    description: "Adds a CLI option to skip merging the PR's base branch into PR branches when CI checks are failing; default is to skip."
+    behavior:
+      - "On failing CI checks, the engine skips updating PR branch with the base branch and proceeds directly to GitHub Actions log extraction and fix attempts."
+      - "If --no-skip-main-update is provided, the engine will attempt to merge the base branch into PR branch first (previous behavior)."
+    implementation:
+      - "AutomationConfig.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL (default True)"
+      - "AutomationEngine._handle_pr_merge respects the flag and branches logic accordingly"
+      - "CLI flag --skip-main-update/--no-skip-main-update wires to the config"
+      - "CLI and AutomationEngine log the main-update policy explicitly at runtime"
+    tests:
+      - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_no_skip_main_update_flag"
+      - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_success_default_codex (verifies default True)"
+      - "tests/test_automation_engine.py::TestAutomationEngineExtended::test_handle_pr_merge_skips_main_update_when_flag_true"
+
+      - "AutomationEngine._merge_pr updated to use these fallbacks"
+
+  actions_log_fetcher:
+    name: "GitHub Actions URL Log Fetcher"
+    description: "Fetch error logs from a GitHub Actions job URL for debugging"
+    components:
+      - name: "AutomationEngine.get_github_actions_logs_from_url"
+        file: "src/auto_coder/automation_engine.py"
+        description: |
+          Retrieve error logs from a GitHub Actions job URL, focusing on:
+          - Filter to only include failing steps when step metadata is available via `gh api repos/{owner}/{repo}/actions/jobs/{job_id}`
+          - Match step logs by normalized step names against step log filenames and headers
+          - Preserve Playwright/Jest expectation blocks (Expected/Received) verbatim
+          - Strict prelude trimming via _slice_relevant_error_window with triggers including:
+            - Expected substring / Received string / expect(received)
+            - Error headers / .spec.ts / ##[error]
+            - Command failed/Process completed exit code
+            - notice/##[notice] and "error was not a part of any test"
+          - ZIP and text log paths both ensure slicing is applied at the end.
+          - Step snippets include only error-bearing content (e2e .spec.ts/expect/exit code markers), non-error steps are excluded.
+          - Appends a --- Summary --- block when failure summary lines are present.
+      - name: "CLI command get-actions-logs"
+        file: "src/auto_coder/cli.py"
+        description: |
+          CLI command to fetch GitHub Actions job logs for debugging.
+          - Logger output is routed to stderr to avoid polluting stdout (which is intended to be piped to files).
+          - Token source messages are logged (stderr) instead of echoed to stdout.
+    tests:
+      - "tests/test_actions_log_cli_e2e.py::test_get_actions_logs_cli"
+      - "tests/test_github_actions_logs_from_url.py::test_get_github_actions_logs_from_url_fetches_job_zip_and_extracts_errors"
+      - "tests/test_github_actions_logs.py::test_get_github_actions_logs_uses_gh_api_and_extracts_errors"
+      - "tests/test_github_actions_logs_fallback.py::test_get_github_actions_logs_fallback_to_text_when_zip_fails"
+      - "tests/test_actions_log_prelude_strip.py::test_cli_get_actions_logs_strips_prelude_and_is_compact"
+
+testing:
+  unit_tests:
+    description: "Unit tests for individual components"
+    files:
+      - "tests/test_github_client.py"
+      - "tests/test_gemini_client.py"
+      - "tests/test_automation_engine.py"
+      - "tests/test_cli_main.py"
+      - "tests/test_cli_process_issues.py"
+      - "tests/test_cli_create_feature_issues.py"
+      - "tests/test_config.py"
+    coverage: "All public methods and error conditions"
+
+  integration_tests:
+    description: "Integration tests for component interactions"
+    included_in: "tests/test_automation_engine.py"
+    coverage: "GitHub-Gemini integration, CLI-Engine integration"
+
+  e2e_tests:
+    description: "End-to-end tests for complete workflows"
+    files:
+      - "tests/test_e2e.py"
+    coverage: "Complete automation workflows, CLI integration"
+
+deployment:
+  installation:
+    method: "pip install"
+    requirements: "Python 3.9+"
+    dependencies: "Listed in pyproject.toml"
+
+  configuration:
+    environment_variables:
+      required:
+        - "GITHUB_TOKEN"
+        - "GEMINI_API_KEY"
+      optional:
+        - "GITHUB_API_URL"
+        - "GEMINI_MODEL"
+        - "MAX_ISSUES_PER_RUN"
+        - "MAX_PRS_PER_RUN"
+        - "DRY_RUN"
+        - "LOG_LEVEL"
+
+  ci:
+    github_actions_pr_checks:
+      name: "GitHub Actions PR Checks"
+      description: "Run lint, type-check, and tests on every push/PR; gate merges on required checks."
+      workflow_file: ".github/workflows/ci.yml"
+      jobs:
+        - id: "lint"
+          name: "Lint & Type Check"
+          steps:
+            - "actions/checkout@v4"
+            - "actions/setup-python@v5 (python=3.12)"
+            - "pip install -e .[dev]"
+            - "black --check src/ tests/"
+            - "isort --check-only src/ tests/"
+            - "flake8 src/ tests/"
+            - "mypy src/"
+        - id: "tests"
+          name: "Tests (pytest)"
+          matrix: ["3.11", "3.12"]
+          steps:
+            - "actions/checkout@v4"
+            - "actions/setup-python@v5 (python=${{ matrix.python-version }})"
+            - "pip install -e .[dev,test]"
+            - "pytest -v"
+      tests:
+        - "tests/test_ci_workflow.py::test_github_actions_ci_workflow_exists_and_has_required_jobs"
+
+  qwen_integration:
+    name: "Qwen Code Integration"
+    description: "Integration with Qwen Code CLI for single-run direct actions (no analysis-only calls)."
+    migration_plan_phase3:
+      goal: "Eliminate 'gemini' from internal method names in QwenClient while preserving engine compatibility"
+      impacted_components:
+        - "AutomationEngine (calls _run_gemini_cli on client object)"
+        - "QwenClient (private method names)"
+        - "Tests referencing _run_gemini_cli/_run_qwen_cli"
+      strategy:
+        - "Make _run_qwen_cli the primary implementation in QwenClient"
+        - "Keep _run_gemini_cli as a delegating alias during transition"
+        - "Update internal QwenClient calls (e.g., suggest_features) to use _run_qwen_cli"
+        - "Plan a later phase to rename AutomationEngine.gemini and callers to neutral naming before alias removal"
+      deprecation:
+        - "Mark _run_gemini_cli as temporary alias; remove after engine rename and downstream updates"
+
+    migration_plan_phase4:
+      goal: "Neutralize AutomationEngine LLM invocation naming and reduce alias dependencies"
+      impacted_components:
+        - "AutomationEngine (introduce _run_llm_cli helper; progressively replace call sites)"
+        - "GeminiClient/QwenClient/CodexClient/CodexMCPClient (add _run_llm_cli delegating alias)"
+        - "CLI/Docs/Tests (ensure consistency)"
+      strategy:
+        - "Phase 1: Introduce _run_llm_cli in all clients, keep existing methods for compatibility"
+        - "Phase 2: Replace AutomationEngine call sites to use self._run_llm_cli(...) while keeping self.gemini attr"
+        - "Phase 3: Plan removal conditions for QwenClient._run_gemini_cli alias once engine neutralization reaches 100% and downstream usage is gone"
+      deprecation:
+        - "Deprecate QwenClient._run_gemini_cli; remove after a grace period when CI shows zero usages across engine/tests"
+      tests:
+        - "tests/test_llm_cli_neutral.py::test_gemini_client_llm_alias"
+        - "tests/test_llm_cli_neutral.py::test_qwen_client_llm_alias"
+        - "tests/test_llm_cli_neutral.py::test_codex_client_llm_alias"
+
+    provider_fallback:
+      name: "Qwen OAuth usage limit fallback"
+      description: |
+        Prefer configured OpenAI-compatible providers (ModelStudio, OpenRouter, etc.)
+        before falling back to the shared Qwen OAuth pool when usage limits occur.
+      configuration:
+        files:
+          - path: "~/.auto-coder/qwen-providers.toml"
+            description: |
+              TOML file defining fallback providers. Each entry supplies ``name`` and
+              ``api_key``; known providers auto-fill ``base_url``/``model``.
+          - env: "AUTO_CODER_QWEN_CONFIG"
+            description: "Override the exact config file path"
+          - env: "AUTO_CODER_CONFIG_DIR"
+            description: "Override the directory that contains qwen-providers.toml"
       behavior:
-        - "Captures session IDs from backend clients after each execution and persists them to ~/.auto-coder/backend_session_state.json"
-        - "Automatically injects configured resume options when the same backend runs consecutively and a session ID is available"
-        - "Clears persisted session data when rotating to a different backend to avoid cross-backend leakage"
-      configuration_file: "~/.auto-coder/llm_config.toml"
-      persistence_file: "~/.auto-coder/backend_session_state.json"
+        - "Providers are attempted in file order before OAuth"
+        - "OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL are injected per provider"
+        - "Successful provider becomes the active default for subsequent calls"
+        - "Aggregates AutoCoderUsageLimitError details if all providers are exhausted"
+      implementation:
+        - "src/auto_coder/qwen_client.py"
+        - "src/auto_coder/qwen_provider_config.py"
+      tests:
+        - "tests/test_qwen_provider_config.py::test_load_qwen_provider_configs_defaults"
+        - "tests/test_qwen_provider_config.py::test_load_qwen_provider_configs_skips_missing_key"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_prefers_configured_api_keys_before_oauth"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_fallback_to_openrouter"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_fallbacks_to_oauth_after_api_keys"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_all_limits_raise"
 
-  retry_configuration:
-      description: "Configurable retry mechanism for LLM backends when usage limits are hit"
-      fields:
-        - name: "usage_limit_retry_count"
-          type: "int"
-          default: 0
-          purpose: "Number of retry attempts before switching to next backend"
-        - name: "usage_limit_retry_wait_seconds"
-          type: "int"
-          default: 0
-          purpose: "Seconds to wait between retry attempts"
+    backend_manager:
+      name: "Cyclic Multi-Backend Manager"
+      description: "Manages multiple AI backends and switches cyclically on usage limits or repeated failures."
       behavior:
-        - "When AutoCoderUsageLimitError is caught, backend manager checks retry configuration"
-        - "Retries the same backend up to configured count with specified wait time between attempts"
-        - "After retries are exhausted, rotates to next available backend"
-        - "Default behavior (0 retries, 0 wait) maintains backward compatibility with immediate rotation"
-      example:
-        toml_example: |
-          [backends.gemini]
-          model = "gemini-2.5-pro"
-          usage_limit_retry_count = 3
-          usage_limit_retry_wait_seconds = 30
-      configuration_file: "~/.auto-coder/llm_config.toml"
-      scope: "Per-backend configuration allows different backends to have different retry policies"
-  post_execution_rotation:
-      description: "Optional round-robin style rotation after every successful backend call"
-      fields:
-        - name: "always_switch_after_execution"
-          type: "bool"
-          default: false
-          purpose: "If true, immediately switch to the next backend in backend.order after a successful execution"
-      use_cases:
-        - "Distribute traffic evenly across providers"
-        - "Avoid soft per-backend limits by rotating proactively"
-        - "Comply with backends that only permit a single execution per window"
-      example:
-        toml_example: |
-          [backend]
-          order = ["gemini", "qwen", "claude"]
+        - "Detects AutoCoderUsageLimitError from clients and rotates to the next backend; tries each backend at most once per prompt"
+        - "apply_workspace_test_fix: when the same model receives the same prompt 3 times consecutively, rotate to the next backend before executing the 3rd call"
+        - "When a different prompt arrives, revert to the default backend"
+        - "Order is cyclic among: codex -> codex-mcp -> gemini -> qwen -> auggie (starting from selected default)"
+      implementation:
+        - file: "src/auto_coder/backend_manager.py"
+        - methods:
+          - "_run_llm_cli(prompt)"
+          - "run_test_fix_prompt(prompt)"
+          - "switch_to_next_backend() / switch_to_default_backend()"
+      client_side_limit_detection:
+        - "Clients raise AutoCoderUsageLimitError on rate/quota limit detection in CLI outputs"
+        - files:
+          - "src/auto_coder/gemini_client.py"
+          - "src/auto_coder/qwen_client.py"
+          - "src/auto_coder/codex_client.py"
+      cli_wiring:
+        - "CLI constructs the selected backend immediately (preserving tests that assert constructor args) and wraps it with BackendManager that lazily instantiates alternates"
+        - files:
+          - "src/auto_coder/cli.py"
+      tests:
+        - "tests/test_backend_manager.py::test_manager_switches_on_usage_limit"
+        - "tests/test_backend_manager.py::test_run_test_fix_prompt_switch_after_three_same_prompts"
+        - "tests/test_apply_workspace_test_fix_switch.py::test_apply_workspace_test_fix_switch_after_three_same_prompts"
+      hardening_2025_09:
+        description: "Hardened usage limit detection for Gemini streaming errors to ensure BackendManager rotation on quota exhaustion."
+        recognizes:
+          - "rate limit"
+          - "quota"
+          - "429"
+          - "RESOURCE_EXHAUSTED"
+          - "Too Many Requests"
+        tests:
+          - "tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_429_only"
+          - "tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_resource_exhausted"
+      hardening_2025_09_codex:
+        description: "Detect Codex CLI upgrade banner that signals usage/quota exhaustion."
+        recognizes:
+          - "usage limit"
+          - "Upgrade to Pro"
+        sample_error: "[2025-09-24T07:13:47] ERROR: You've hit your usage limit. Upgrade to Pro (...)"
+        tests:
+          - "tests/test_usage_limit_detection.py::test_codex_raises_usage_limit_on_upgrade_to_pro_message"
+          - "tests/test_cli_codex_usage_limit_e2e.py::test_codex_cli_usage_limit_detection_e2e"
 
-          [backends.gemini]
-          model = "gemini-2.5-pro"
-          always_switch_after_execution = true
+    components:
+      - name: "QwenClient"
+        file: "src/auto_coder/qwen_client.py"
+        methods:
+          - name: "suggest_features"
+            description: "Suggest new features based on repository analysis via Qwen Code"
+            parameters: ["repo_context"]
+            returns: "List of feature suggestions"
+          - name: "switch_to_conflict_model"
+            description: "No-op switch for conflict resolution (same model by default)"
+            parameters: []
+            returns: "None"
+          - name: "switch_to_default_model"
+            description: "No-op switch back to default model"
+            parameters: []
+            returns: "None"
+          - name: "_run_qwen_cli"
+            description: "Primary method: run qwen CLI non-interactively (-p/--prompt); prefers -m/--model; sets OPENAI_MODEL and applies OPENAI_API_KEY/OPENAI_BASE_URL env when provided; streams output"
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
 
-          [backends.qwen]
-          model = "qwen3-coder-plus"
-          always_switch_after_execution = true
-      configuration_file: "~/.auto-coder/llm_config.toml"
-      scope: "Per-backend flag; defaults to false when omitted"
+          - name: "_run_gemini_cli"
+            description: "Temporary alias delegating to _run_qwen_cli (for AutomationEngine compatibility)"
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
 
-#### Per-Backend Option Examples
+          - name: "_run_llm_cli"
+            description: "Neutral method delegating to _run_qwen_cli; preferred by AutomationEngine during migration"
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
 
-The following examples demonstrate typical `options` and `options_for_noedit` configurations for each supported backend:
 
-- **Codex Backend** (`backend_type = "codex"`):
-  ```toml
-  [codex]
-  model = "codex"
-  options = ["--dangerously-bypass-approvals-and-sandbox"]
-  options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
-  ```
-  - Typical use: OpenAI-compatible providers (OpenRouter, Azure OpenAI, custom endpoints)
-  - Automatic flags: `--dangerously-bypass-approvals-and-sandbox` during code editing operations
-  - Custom options: Add tracking headers, timeouts, or provider-specific flags
+        probes:
+          - name: "qwen_help_has_flags"
+            file: "src/auto_coder/cli_helpers.py"
+            description: "Lightweight probe executing 'qwen --help' to verify required flags; tolerates short/long forms (-p/--prompt, -m/--model) and normalizes ANSI/whitespace/dashes; fully mocked in CI"
+            tests:
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_detects_required_flags"
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_missing_flag_returns_false"
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_accepts_long_form_for_short_flags"
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_accepts_short_form_for_long_flags"
+              - "tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_trailing_space_and_text"
+              - "tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_table_style"
 
-- **Claude Backend** (`backend_type = "claude"`):
-  ```toml
-  [claude]
-  model = "sonnet"
-  backend_type = "claude"
-  options = []
-  options_for_noedit = []
-  ```
-  - Typical use: Anthropic Claude API
-  - Automatic flags: `--print`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`
-  - Custom options: Path to settings file, debug modes
+        cli_options:
+          - name: "--openai-api-key"
+            scope: "backend=qwen only"
+            envvar: "OPENAI_API_KEY"
+            description: "OpenAI-style API key forwarded to QwenClient and exported to env for qwen CLI invocations"
+          - name: "--openai-base-url"
+            scope: "backend=qwen only"
+            envvar: "OPENAI_BASE_URL"
+            description: "OpenAI-style Base URL forwarded to QwenClient and exported to env for qwen CLI invocations"
 
-- **Gemini Backend** (`backend_type = "gemini"`):
-  ```toml
-  [gemini]
-  model = "gemini-2.5-pro"
-  backend_type = "gemini"
-  options = []
-  options_for_noedit = []
-  ```
-  - Typical use: Google Gemini API
-  - Automatic flags: `--yolo`, `--force-model`
-  - Custom options: Debug modes, output formatting
+  auggie_integration:
+    name: "Auggie CLI Integration"
+    description: "Integration with Auggie CLI for non-interactive execution. Defaults to the GPT-5 model when the user does not override --model. Enforces a daily call ceiling to prevent accidental overuse."
+    components:
+      - name: "AuggieClient"
+        file: "src/auto_coder/auggie_client.py"
+        methods:
+          - name: "_run_auggie_cli"
+            description: "Invoke `auggie --print --model <model> "<prompt>"` and stream output via logger; raises AutoCoderUsageLimitError on rate-limit phrases."
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
+          - name: "switch_to_conflict_model"
+            description: "Compatibility no-op; Auggie uses the same model for conflict handling."
+            parameters: []
+            returns: "None"
+          - name: "switch_to_default_model"
+            description: "Compatibility no-op; Auggie sticks to the configured model."
+            parameters: []
+            returns: "None"
+          - name: "_check_and_increment_usage"
+            description: "Persisted counter that caps Auggie invocations at 20 per day and raises AutoCoderUsageLimitError before exceeding the quota."
+            parameters: []
+            returns: "None"
 
-- **Qwen Backend** (`backend_type = "qwen"`):
-  ```toml
-  [qwen]
-  model = "qwen3-coder-plus"
-  backend_type = "qwen"
-  options = []
-  options_for_noedit = []
-  ```
-  - Typical use: Native Qwen CLI with OAuth authentication
-  - Automatic flags: `-y` (auto-confirm)
-  - Custom options: Stream settings, debug modes, timeouts
-
-- **Qwen via OpenRouter** (`backend_type = "codex"`):
-  ```toml
-  [qwen-openrouter]
-  model = "qwen/qwen3-coder:free"
-  backend_type = "codex"
-  openai_api_key = "sk-or-v1-your-key"
-  openai_base_url = "https://openrouter.ai/api/v1"
-  options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
-  options_for_noedit = ["-o", "timeout", "30"]
-  ```
-  - Typical use: Qwen models through OpenAI-compatible API
-  - Automatic flags: `--dangerously-bypass-approvals-and-sandbox`
-  - Custom options: Tracking headers, timeouts, stream settings
-
-- **Auggie Backend** (`backend_type = "auggie"`):
-  ```toml
-  [auggie]
-  model = "GPT-5"
-  backend_type = "auggie"
-  options = []
-  options_for_noedit = []
-  ```
-  - Typical use: AugmentCode Auggie CLI
-  - Automatic flags: `--print`
-  - Custom options: Debug modes, output formatting
-
-- **Jules Backend** (`backend_type = "jules"`):
-  ```toml
-  [jules]
-  backend_type = "jules"
-  options = []
-  options_for_noedit = []
-  ```
-  - Typical use: Session-based AI assistant (Jules)
-  - Automatic flags: Minimal - Jules manages sessions internally
-  - Custom options: Usually minimal due to session-based nature
-
-#### Breaking Changes Documentation
-
-Recent configuration schema changes that require migration:
-
-**BREAKING CHANGE (v2026.1.0.0)**: Removed hardcoded default options from CodexClient
-   - **What Changed**: The CodexClient no longer includes hardcoded `-s workspace-write` options in codex CLI commands.
-   - **Impact**: Users who relied on these hardcoded options will need to explicitly configure them in their backend configuration.
-   - **Migration Required**:
-     - Add the following to your `~/.auto-coder/llm_config.toml`:
-       ```toml
-       [backends.codex]
-       model = "codex"
-       options = ["-s", "workspace-write"]
-       ```
-     - Or configure any custom options you need for your specific use case.
-   - **Rationale**: Hardcoded options were considered excessive and limited flexibility. This change allows users to configure exactly the options they need.
-   - **Version**: v2026.1.0.0 (Major version bump due to breaking change)
-
-**1. Configuration Field Renames**:
-   - **`message_backend` → `backend_for_noedit`**:
-     - Old config:
-       ```toml
-       [message_backend]
-       default = "claude"
-       order = ["claude", "qwen"]
-       ```
-     - New config:
-       ```toml
-       [backend_for_noedit]
-       default = "claude"
-       order = ["claude", "qwen"]
-       ```
-     - Migration: Update all config files to use new field name
-     - Deprecation: Old name still works but emits warning and will be removed in future version
-
-**2. Environment Variable Renames**:
-   - **`AUTO_CODER_MESSAGE_DEFAULT_BACKEND` → `AUTO_CODER_NOEDIT_DEFAULT_BACKEND`**:
-     - Migration: Update environment variables to new name
-     - Deprecation: Old name still works but emits warning
-
-**3. Hardcoded Options Removal**:
-   - **Before**: CLI options were hardcoded in client implementations
-     - Codex: always used `--dangerously-bypass-approvals-and-sandbox`
-     - Claude: always used `--print --dangerously-skip-permissions --allow-dangerously-skip-permissions`
-     - Gemini: always used `--yolo --force-model`
-     - Qwen: always used `-y`
-   - **After**: Options are configurable through `options` and `options_for_noedit` fields
-     - System automatically adds required flags for each backend
-     - Users can add custom options beyond the defaults
-     - Allows fine-tuning per-operation-type behavior
-   - Migration: No action required - configuration is backward compatible
-   - Benefits: Full customization, better separation of concerns
-
-**4. Default Option Behavior**:
-   - When `options_for_noedit` is not specified, it now falls back to `options` value
-   - Previously, each backend had different default behaviors
-   - Migration: No action required - existing configs work as expected
-   - Note: Empty list `[]` means use defaults, not "no options"
-
-#### GraphRAG Integration
+    cli_support:
+      defaults:
+        model: "GPT-5 (default)"
+      checks:
+        - "cli.check_auggie_cli_or_fail performs `auggie --version` probe and instructs installation via npm"
+      tests:
+        - "tests/test_cli_auggie.py::test_process_issues_backend_auggie_defaults_to_gpt5"
+        - "tests/test_cli_auggie.py::test_process_issues_backend_auggie_respects_model_override"
+        - "tests/test_cli_auggie.py::test_create_feature_issues_backend_auggie"
+        - "tests/test_cli_auggie.py::test_fix_to_pass_tests_backend_auggie_default_model"
+        - "tests/test_auggie_client_daily_limit.py::test_auggie_usage_limit_blocks_21st_call"
+        - "tests/test_cli_auggie_usage_limit_e2e.py::test_process_issues_rotates_when_auggie_daily_limit_reached"
 
   graphrag_integration:
-    auto_setup: true
-    mcp_config_check: true
-    index_update: available via CLI
-    snapshot_cleanup:
-      retention_days_default: 7
-      max_snapshots_per_repo_default: 9
-      env_flags:
-        - GRAPHRAG_RETENTION_DAYS
-        - GRAPHRAG_MAX_SNAPSHOTS_PER_REPO
-        - GRAPHRAG_CLEANUP_ON_INIT
-        - GRAPHRAG_CLEANUP_ON_UPDATE
-      cli_command: "auto-coder graphrag cleanup [--dry-run] [--retention-days N] [--max-per-repo M] [--repo-path PATH]"
-      hooks:
-        - initialize_graphrag
-        - GraphRAGIndexManager.update_index
-    pytest_fallback: "Under pytest, GraphRAGIndexManager avoids external graph-builder and uses fast Python fallback indexing"
-    docker_manager:
-      fallback_recovery: true
-      external_network: true
-      auto_retry_on_failure: true
-
-#### Test Watcher
-
-  test_watcher:
-    playwright_safety:
-      - "Skips Playwright execution under pytest or when AC_DISABLE_PLAYWRIGHT=1; returns synthetic report"
-      - "Quick availability probe: 'npx playwright --version' with 5s timeout"
-      - "Process timeout: 120s communicate() timeout; force-kill on timeout"
-    watchdog_daemon: "Observer thread is daemonized; does not block interpreter exit"
-    concurrency:
-      - "Run-on-change spawns daemon threads for Playwright and GraphRAG update"
-      - "GraphRAG retry timers are daemonized"
-      - "GraphRAG index updates in TestWatcherTool are scoped to project_root, keeping pytest flows fast on temporary project trees"
-
-### Available Tools
-
-The following code analysis tools are available through the MCP server:
-
-#### find_symbol
-Find code symbols by fully qualified name in the codebase.
-
-#### get_call_graph
-Analyze function/method call relationships to understand code flow.
-
-#### get_dependencies
-Analyze file dependencies to understand project structure.
-
-#### impact_analysis
-Analyze change impact across the codebase to understand how a change might affect other parts of the system.
-
-#### semantic_code_search
-Search for code using semantic understanding rather than just text matching.
-
-### Setup
-
-The MCP server is automatically set up when running:
-
-```bash
-auto-coder graphrag setup-mcp
-```
-
-This command copies the bundled server from `src/auto_coder/mcp_servers/graphrag_mcp/` to `~/graphrag_mcp/` and starts the Docker container.
-
-### Usage
-
-After setup, the tools can be accessed through the auto-coder CLI when the MCP server is running.
-
-### Fork Attribution
-
-This fork maintains full attribution to the original author Riley Lemm. The original repository is https://github.com/rileylemm/graphrag_mcp and uses the MIT License.
-
-## Attempt Mechanism
-
-  attempt_management:
-    description: "Tracks retries per issue/PR and aligns work branches to the current attempt."
-    tracking:
-      - "Attempts are recorded as standardized comments 'Auto-Coder Attempt: <N>' with an optional detail suffix."
-      - "get_current_attempt reads the latest attempt number from those comments (legacy timestamped comments stay compatible)."
-    branching:
-      - "Work branches follow issue-<number> for the first pass and issue-<number>/attempt-<N> for subsequent passes; parent branches cascade to sub-issues."
-      - "When the local branch is behind the recorded attempt, Auto-Coder switches or recreates the correct attempt branch before continuing work."
-      - "New attempt branches are created from the validated base branch (main or the parent's current attempt branch) to re-implement changes safely."
-    fallback:
-      - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
-      - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
-      - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
-      - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."
-    propagation:
-      - "increment_attempt also reopens closed sub-issues and bumps their counters to keep parent/child attempts in sync."
-    parent_handling:
-      - "When processing a child issue whose parent issue is closed, the system automatically reopens the parent issue before continuing"
-      - "This ensures branch selection, base branch selection, and attempt tracking use the parent issue context"
-      - "Reopening closed parents maintains proper workflow continuity and prevents branch naming and base selection issues"
-
-## Lock Mechanism
-
-  lock_mechanism:
-    description: "Prevents concurrent auto-coder executions to avoid conflicts and data corruption"
-    behavior:
-      - "Automatically acquires a lock before executing any command (except read-only commands like 'config' and 'unlock')"
-      - "Lock files are stored in the repository's .git directory as 'auto-coder.lock'"
-      - "Lock information includes PID, hostname, and start time"
-      - "Automatically detects stale locks (process no longer running)"
-      - "Lock is released when command completes successfully"
-      - "Supports context manager protocol for safe lock acquisition and release"
-    usage_patterns:
-      context_manager:
-        description: "Recommended pattern using Python's with statement"
-        example: |
-          with LockManager() as lock:
-              # Lock is automatically acquired here
-              do_work()
-          # Lock is automatically released here, even if an exception occurs
-        benefits:
-          - "Automatic cleanup even on exceptions"
-          - "More Pythonic and readable code"
-          - "Prevents accidental lock leaks"
-      manual_management:
-        description: "Explicit acquire/release pattern"
-        example: |
-          lock = LockManager()
-          if lock.acquire():
-              try:
-                  do_work()
-              finally:
-                  lock.release()
-        use_cases:
-          - "Complex control flow requiring early release"
-          - "Legacy code compatibility"
-    commands:
-      auto_lock:
-        description: "Lock is automatically acquired by default for all commands"
-        exceptions: "Read-only commands ('config', 'unlock', 'auth-status', 'get-actions-logs', 'mcp-pdb')"
-      unlock:
-        description: "Manually remove a lock file"
-        usage: "auto-coder lock unlock"
-        options:
-          - "--force: Force remove lock file even if process appears to be running (use with caution)"
+    name: "GraphRAG Integration"
+    description: "Integration with GraphRAG MCP server for enhanced code context using Neo4j (graph database) and Qdrant (vector database). GraphRAG is always enabled and automatically initialized at startup for all commands (process-issues, create-feature-issues, fix-to-pass-tests). All commands support --force-reindex flag to force reindexing even if index is up to date."
+    components:
+      - name: "GraphRAGDockerManager"
+        file: "src/auto_coder/graphrag_docker_manager.py"
+        description: "Manages Neo4j and Qdrant Docker containers. Automatically detects and uses either 'docker compose' (newer) or 'docker-compose' (legacy) command. Automatically retries with sudo on permission errors."
+        methods:
+          - name: "_detect_docker_compose_command"
+            description: "Detect which docker compose command is available"
+            parameters: []
+            returns: "List of command parts (either ['docker', 'compose'] or ['docker-compose'])"
+            raises: "RuntimeError if neither command is available"
+          - name: "_is_permission_error"
+            description: "Check if error message indicates a permission error"
+            parameters: ["stderr"]
+            returns: "Boolean indicating if error is a permission error"
+          - name: "_run_docker_compose"
+            description: "Run docker-compose command with automatic sudo retry on permission errors"
+            parameters: ["args", "timeout", "retry_with_sudo"]
+            returns: "CommandResult with execution results"
+          - name: "start"
+            description: "Start Neo4j and Qdrant containers"
+            parameters: ["wait_for_health", "timeout"]
+            returns: "Boolean indicating success"
+          - name: "stop"
+            description: "Stop Neo4j and Qdrant containers"
+            parameters: ["timeout"]
+            returns: "Boolean indicating success"
+          - name: "is_running"
+            description: "Check if containers are running"
+            parameters: []
+            returns: "Boolean indicating if both containers are running"
+          - name: "get_status"
+            description: "Get health status of containers"
+            parameters: []
+            returns: "Dictionary with container names and health status"
+          - name: "wait_for_health"
+            description: "Wait for containers to be healthy"
+            parameters: ["timeout", "check_interval"]
+            returns: "Boolean indicating if containers are healthy"
+        tests:
+          - "tests/test_graphrag_docker_manager.py::test_init_default_compose_file"
+          - "tests/test_graphrag_docker_manager.py::test_init_custom_compose_file"
+          - "tests/test_graphrag_docker_manager.py::test_detect_docker_compose_command_docker_compose"
+          - "tests/test_graphrag_docker_manager.py::test_detect_docker_compose_command_docker_compose_legacy"
+          - "tests/test_graphrag_docker_manager.py::test_detect_docker_compose_command_not_found"
+          - "tests/test_graphrag_docker_manager.py::test_is_permission_error"
+          - "tests/test_graphrag_docker_manager.py::test_run_docker_compose_with_sudo_retry"
+          - "tests/test_graphrag_docker_manager.py::test_run_docker_compose_no_retry_on_other_errors"
+          - "tests/test_graphrag_docker_manager.py::test_run_docker_compose_no_retry_when_disabled"
+          - "tests/test_graphrag_docker_manager.py::test_start_success"
+          - "tests/test_graphrag_docker_manager.py::test_start_failure"
+          - "tests/test_graphrag_docker_manager.py::test_stop_success"
+          - "tests/test_graphrag_docker_manager.py::test_stop_failure"
+          - "tests/test_graphrag_docker_manager.py::test_is_running_true"
+          - "tests/test_graphrag_docker_manager.py::test_is_running_false"
+          - "tests/test_graphrag_docker_manager.py::test_wait_for_health_success"
+          - "tests/test_graphrag_docker_manager.py::test_wait_for_health_timeout"
+          - "tests/test_graphrag_docker_manager.py::test_get_status"
+          - "tests/test_graphrag_docker_manager.py::test_check_neo4j_health_success"
+          - "tests/test_graphrag_docker_manager.py::test_check_neo4j_health_failure"
+          - "tests/test_graphrag_docker_manager.py::test_check_qdrant_health_success"
+          - "tests/test_graphrag_docker_manager.py::test_check_qdrant_health_failure"
+          - "tests/test_graphrag_docker_manager.py::test_restart_success"
+          - "tests/test_graphrag_docker_manager.py::test_restart_stop_failure"
+          - "tests/test_graphrag_docker_manager.py::test_restart_start_failure"
+      - name: "GraphRAGIndexManager"
+        file: "src/auto_coder/graphrag_index_manager.py"
+        description: "Manages indexing of codebase into Neo4j and Qdrant"
+        methods:
+          - name: "is_index_up_to_date"
+            description: "Check if index is up to date with codebase"
+            parameters: []
+            returns: "Boolean indicating if index is up to date"
+          - name: "update_index"
+            description: "Update index if needed"
+            parameters: ["force"]
+            returns: "Boolean indicating success"
+          - name: "ensure_index_up_to_date"
+            description: "Ensure index is up to date, updating if necessary"
+            parameters: []
+            returns: "Boolean indicating success"
+        tests:
+          - "tests/test_graphrag_index_manager.py"
+      - name: "GraphRAGMCPIntegration"
+        file: "src/auto_coder/graphrag_mcp_integration.py"
+        description: "Integrates graphrag_mcp server with LLM clients"
+        methods:
+          - name: "ensure_ready"
+            description: "Ensure GraphRAG environment is ready (Docker containers, index, MCP server)"
+            parameters: ["max_retries (default: 2)", "force_reindex (default: False)"]
+            returns: "Boolean indicating if environment is ready"
+            notes: "force_reindex parameter forces reindexing even if index is up to date"
+          - name: "start_mcp_server"
+            description: "Start graphrag_mcp server"
+            parameters: []
+            returns: "Boolean indicating success"
+          - name: "stop_mcp_server"
+            description: "Stop graphrag_mcp server"
+            parameters: []
+            returns: "Boolean indicating success"
+          - name: "is_mcp_server_running"
+            description: "Check if MCP server is running"
+            parameters: []
+            returns: "Boolean indicating if server is running"
+          - name: "get_mcp_config_for_llm"
+            description: "Get MCP configuration to pass to LLM client"
+            parameters: []
+            returns: "Dictionary with MCP configuration or None"
+        tests:
+          - "tests/test_graphrag_mcp_integration.py"
+      - name: "CLI Force Reindex Option"
+        description: "All CLI commands (process-issues, create-feature-issues, fix-to-pass-tests) support --force-reindex flag to force GraphRAG reindexing even if index is up to date"
+        file: "src/auto_coder/cli_commands_main.py"
+        option: "--force-reindex"
+        default: "false"
         behavior:
-          - "Shows lock information before removing"
-          - "Prevents removal if process is still running (unless --force is used)"
-          - "Automatically detects and removes stale locks without --force flag"
-    error_handling:
-      concurrent_execution:
-        description: "When another instance is already running"
-        message: "Displays error with lock information (PID, hostname, start time, status)"
-        action: "User must wait for existing instance to complete or use 'unlock' command"
-      stale_lock:
-        description: "When lock file exists but process is no longer running"
-        detection: "Checks if PID is still active using os.kill(pid, 0) on Unix or OpenProcess on Windows"
-        action: "Safe to remove without --force flag"
-    technical_details:
-      implementation: "LockManager class in src/auto_coder/lock_manager.py"
-      cli_commands: "src/auto_coder/cli_commands_lock.py"
-      integration: "Lock check in cli.py before command execution"
-      skip_conditions: "Temporary directories (paths containing 'tmp' or 'pytest')"
-      storage_format: "JSON file with pid, hostname, and started_at fields"
+          - "When --force-reindex is specified, initialize_graphrag is called with force_reindex=True"
+          - "GraphRAGMCPIntegration.ensure_ready receives force_reindex parameter and calls index_manager.update_index(force=True)"
+          - "Index is updated regardless of whether it is up to date"
+        tests:
+          - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_force_reindex_flag"
+          - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_default_no_force_reindex"
+          - "tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_force_reindex_flag"
+          - "tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_default_no_force_reindex"
+          - "tests/test_fix_to_pass_tests.py::test_cli_fix_to_pass_tests_force_reindex_flag"
+          - "tests/test_fix_to_pass_tests.py::test_cli_fix_to_pass_tests_default_no_force_reindex"
+    cli_commands:
+      - command: "auto-coder graphrag setup-mcp"
+        description: "Automatically setup GraphRAG MCP server (clone, install dependencies, configure all backends)"
+        options:
+          - "--install-dir: Installation directory (default: ~/graphrag_mcp)"
+          - "--neo4j-uri: Neo4j connection URI (default: bolt://localhost:7687)"
+          - "--neo4j-user: Neo4j username (default: neo4j)"
+          - "--neo4j-password: Neo4j password (default: password)"
+          - "--qdrant-url: Qdrant connection URL (default: http://localhost:6333)"
+          - "--skip-clone: Use existing directory (skip cloning)"
+          - "--backends: Specify backends to configure (choices: codex, gemini, qwen, windsurf; default: all)"
+        behavior:
+          - "Clones https://github.com/rileylemm/graphrag_mcp to specified directory"
+          - "Installs dependencies using uv sync"
+          - "Creates .env file with Neo4j and Qdrant configuration"
+          - "Creates run_server.sh script for proper environment handling"
+          - "Patches main.py to load .env from script directory (using Path(__file__).parent)"
+          - "Automatically updates configuration files for all supported backends (Codex, Gemini, Qwen, Windsurf/Claude)"
+          - "Codex: Updates ~/.codex/config.json or ~/.config/codex/config.json"
+          - "Gemini: Updates ~/.gemini/config.json with uv --directory option"
+          - "Qwen: Updates ~/.qwen/settings.json with uv --directory option"
+          - "Windsurf/Claude: Updates ~/.windsurf/settings.json or ~/Library/Application Support/Claude/claude_desktop_config.json with run_server.sh"
+          - "After setup, restart CLI (qwen/gemini/auggie) to connect to graphrag MCP server"
+        automatic_setup:
+          description: "GraphRAG MCP is automatically set up when not configured or when MCP server directory is missing"
+          trigger:
+            - "When check_graphrag_mcp_for_backends detects missing configuration"
+            - "When ensure_graphrag_mcp_configured detects missing ~/graphrag_mcp directory"
+          implementation:
+            - "cli_helpers.py::check_graphrag_mcp_for_backends calls run_graphrag_setup_mcp_programmatically"
+            - "mcp_checker.py::ensure_graphrag_mcp_configured checks for ~/graphrag_mcp directory"
+            - "If directory missing and auto_setup=True, automatically runs setup-mcp"
+            - "Automatically runs setup with default parameters (silent=True for mcp_checker, silent=False for cli_helpers)"
+            - "Configures all backends by default, or specific backend if called from backend-specific check"
+            - "No user confirmation required for automatic setup (uses existing directory if present)"
+          files:
+            - "src/auto_coder/cli_helpers.py: check_graphrag_mcp_for_backends function"
+            - "src/auto_coder/mcp_checker.py: ensure_graphrag_mcp_configured function"
+          tests:
+            - "tests/test_mcp_auto_setup.py: Comprehensive tests for automatic MCP setup"
+            - "src/auto_coder/cli_commands_graphrag.py: run_graphrag_setup_mcp_programmatically function"
+      - command: "auto-coder graphrag start"
+        description: "Start Neo4j and Qdrant Docker containers"
+        options:
+          - "--wait/--no-wait: Wait for containers to be healthy (default: True)"
+          - "--timeout: Health check timeout in seconds (default: 120)"
+      - command: "auto-coder graphrag stop"
+        description: "Stop Neo4j and Qdrant Docker containers"
+        options:
+          - "--timeout: Command timeout in seconds (default: 60)"
+      - command: "auto-coder graphrag status"
+        description: "Check status of Neo4j and Qdrant Docker containers"
+      - command: "auto-coder graphrag update-index"
+        description: "Update codebase index in Neo4j and Qdrant"
+        options:
+          - "--force: Force update even if index is up to date"
+          - "--repo-path: Path to repository to index (default: current directory)"
+    integration:
+      - name: "CodexMCPClient GraphRAG Support"
+        description: "CodexMCPClient always uses GraphRAG integration (always enabled)"
+        file: "src/auto_coder/codex_mcp_client.py"
+        parameters:
+          - "enable_graphrag: Enable GraphRAG integration (always True)"
+        behavior:
+          - "GraphRAG is always enabled and initialized at startup"
+          - "Automatically starts Docker containers if not running"
+          - "Updates index if outdated (failure is fatal)"
+          - "Starts MCP server if configured (failure is fatal)"
+          - "All GraphRAG initialization failures will terminate the process"
+        tests:
+          - "tests/test_codex_mcp_client_graphrag.py"
+    external_dependencies:
+      - name: "graphrag_mcp (CUSTOMIZED FORK - BUNDLED)"
+        original_url: "https://github.com/rileylemm/graphrag_mcp"
+        bundled_location: "src/auto_coder/mcp_servers/graphrag_mcp/"
+        development_location: "mcp/graphrag_mcp/"
+        description: "Customized MCP server for TypeScript/JavaScript code analysis using ts-morph indexed graph structure"
+        note: "Tool definitions are provided dynamically by the MCP server via MCP protocol. This fork is bundled with auto-coder package."
+        installation: "Run 'auto-coder graphrag setup-mcp' to copy bundled MCP server to ~/graphrag_mcp"
+        customizations:
+          - "Specialized for code analysis (not generic documentation)"
+          - "Adapted to ts-morph graph schema (File, Symbol nodes with code relationships)"
+          - "Added code-specific tools (find_symbol, get_call_graph, impact_analysis, etc.)"
+          - "Enhanced self-description with code analysis domain knowledge"
+        tools:
+          - name: "find_symbol"
+            description: "Find a code symbol by fully qualified name"
+            parameters:
+              - "fqname: str - Fully qualified name (e.g., 'src/utils.ts::calculateHash')"
+            returns: "Symbol details (id, kind, signature, complexity, location, etc.)"
+          - name: "get_call_graph"
+            description: "Analyze function/method call relationships"
+            parameters:
+              - "symbol_id: str - Symbol ID (from find_symbol)"
+              - "direction: str - 'callers' | 'callees' | 'both' (default: 'both')"
+              - "depth: int - Traversal depth 1-3 (default: 1)"
+            returns: "Call graph with nodes (related symbols) and edges (call relationships)"
+          - name: "get_dependencies"
+            description: "Analyze file import relationships"
+            parameters:
+              - "file_path: str - File path (e.g., 'src/utils.ts')"
+            returns: "Dependency info (imports and imported_by lists)"
+          - name: "impact_analysis"
+            description: "Analyze impact of changing symbols across codebase"
+            parameters:
+              - "symbol_ids: list[str] - List of symbol IDs to analyze"
+              - "max_depth: int - Maximum traversal depth 1-3 (default: 2)"
+            returns: "Impact analysis (affected_symbols, affected_files, impact_summary)"
+          - name: "semantic_code_search"
+            description: "Search code using natural language semantic similarity"
+            parameters:
+              - "query: str - Natural language description"
+              - "limit: int - Maximum results (default: 10)"
+              - "kind_filter: list[str] | None - Filter by symbol kinds (e.g., ['Function', 'Class'])"
+            returns: "Semantically similar symbols with scores"
+        resources:
+          - "https://graphrag.db/schema/neo4j: Neo4j graph schema (node labels, relationships, properties)"
+          - "https://graphrag.db/collection/qdrant: Qdrant collection info (vector count, size, distance function)"
+      - name: "Neo4j"
+        description: "Graph database for storing code relationships"
+        default_port: 7687
+      - name: "Qdrant"
+        description: "Vector database for storing code embeddings"
+        default_port: 6333
+
+  usage:
+    examples:
+      # Note: GraphRAG is always enabled for all commands. Containers are automatically started if not running.
+      - command: "auto-coder process-issues --repo owner/repo"
+        description: "Process issues and PRs with codex backend (default); jules mode and GraphRAG are ON by default"
+      - command: "auto-coder process-issues --repo owner/repo --force-reindex"
+        description: "Process issues and PRs with forced GraphRAG reindexing even if index is up to date"
+      - command: "auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro"
+        description: "Process issues and PRs using Gemini backend with GraphRAG (you can override the model via --model-gemini)"
+      - command: "auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus"
+        description: "Process issues and PRs using Qwen Code backend with GraphRAG (you can override the model via --model-qwen)"
+      - command: "auto-coder process-issues --repo owner/repo --backend auggie"
+        description: "Process issues and PRs using Auggie backend with GraphRAG (defaults to GPT-5; override with --model-auggie)"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex --backend gemini"
+        description: "Process issues with codex as the default backend and fall back to Gemini if limits are hit (GraphRAG enabled)"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
+        description: "Create feature enhancement issues using Qwen Code backend with GraphRAG"
+      - command: "auto-coder create-feature-issues --repo owner/repo --force-reindex"
+        description: "Create feature enhancement issues with forced GraphRAG reindexing"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend auggie"
+        description: "Create feature enhancement issues using Auggie backend with GraphRAG (defaults to GPT-5)"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini"
+        description: "Create feature issues with codex default and Gemini fallback order (GraphRAG enabled)"
+      - command: "auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus"
+        description: "Run local tests and request fixes using Qwen Code backend with GraphRAG"
+      - command: "auto-coder fix-to-pass-tests --force-reindex"
+        description: "Run local tests and request fixes with forced GraphRAG reindexing"
+      - command: "auto-coder fix-to-pass-tests --backend auggie"
+        description: "Run local tests and request fixes using Auggie backend with GraphRAG (defaults to GPT-5)"
+      - command: "auto-coder fix-to-pass-tests --backend codex --backend gemini"
+        description: "Run fix-to-pass-tests with codex by default and Gemini as a secondary option (GraphRAG enabled)"
+
+      - command: "auto-coder process-issues --repo owner/repo --no-jules-mode"
+        description: "Disable jules mode and process issues with AI analysis"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex-mcp"
+        description: "Process issues and PRs using Codex MCP backend (persistent session for a single PR or a single error-fix)"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend codex-mcp"
+        description: "Create feature enhancement issues using Codex MCP backend (persistent session)"
+      - command: "auto-coder fix-to-pass-tests --backend codex-mcp"
+        description: "Run local tests and request fixes using Codex MCP backend (session maintained); --model is ignored"
+
+      - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"
+        description: "Run jules mode in dry-run mode"
+      - command: "auto-coder process-issues --repo owner/repo --only 123"
+        description: "Process only issue/PR #123"
+      - command: "auto-coder process-issues --repo owner/repo --only https://github.com/owner/repo/pull/456"
+        description: "Process only PR #456 by URL"
+      - command: "auto-coder create-feature-issues --repo owner/repo"
+        description: "Create feature enhancement issues"
+
+      # GraphRAG Integration Examples
+      # Note: GraphRAG is always enabled. Containers are automatically started if not running.
+      - command: "auto-coder graphrag setup-mcp"
+        description: "Automatically setup GraphRAG MCP server (clone, install, configure all backends)"
+      - command: "auto-coder graphrag setup-mcp --install-dir /custom/path"
+        description: "Setup GraphRAG MCP server in a custom directory"
+      - command: "auto-coder graphrag setup-mcp --backends codex --backends gemini"
+        description: "Setup GraphRAG MCP server and configure only Codex and Gemini backends"
+      - command: "auto-coder graphrag start"
+        description: "Manually start Neo4j and Qdrant Docker containers for GraphRAG"
+      - command: "auto-coder graphrag stop"
+        description: "Stop GraphRAG Docker containers"
+      - command: "auto-coder graphrag status"
+        description: "Check status of GraphRAG Docker containers"
+      - command: "auto-coder graphrag update-index"
+        description: "Update codebase index in Neo4j and Qdrant"
+      - command: "auto-coder graphrag update-index --force"
+        description: "Force update index even if it's up to date"
+      - command: "auto-coder process-issues --repo owner/repo"
+        description: "Process issues with GraphRAG integration (always enabled, containers auto-started if needed)"

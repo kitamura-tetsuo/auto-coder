@@ -15,7 +15,9 @@ def clear_disable_flag(monkeypatch):
 
 
 def test_maybe_run_auto_update_skips_outside_pipx(monkeypatch):
-    with patch("src.auto_coder.update_manager._running_inside_pipx_env", return_value=False):
+    with patch(
+        "src.auto_coder.update_manager._running_inside_pipx_env", return_value=False
+    ):
         with patch("src.auto_coder.update_manager.shutil.which") as mock_which:
             result = update_manager.maybe_run_auto_update()
             mock_which.assert_not_called()
@@ -36,11 +38,13 @@ def test_maybe_run_auto_update_runs_pipx(monkeypatch, tmp_path):
         stderr="",
     )
 
-    with (
-        patch("src.auto_coder.update_manager._running_inside_pipx_env", return_value=True),
-        patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result) as mock_run,
-    ):
+    with patch(
+        "src.auto_coder.update_manager._running_inside_pipx_env", return_value=True
+    ), patch(
+        "src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"
+    ), patch(
+        "src.auto_coder.update_manager.subprocess.run", return_value=fake_result
+    ) as mock_run:
         result = update_manager.maybe_run_auto_update()
         mock_run.assert_called_once_with(
             ["/usr/bin/pipx", "upgrade", "auto-coder"],
@@ -71,10 +75,12 @@ def test_maybe_run_auto_update_reports_failure(monkeypatch, tmp_path, capsys):
         stderr="network error",
     )
 
-    with (
-        patch("src.auto_coder.update_manager._running_inside_pipx_env", return_value=True),
-        patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+    with patch(
+        "src.auto_coder.update_manager._running_inside_pipx_env", return_value=True
+    ), patch(
+        "src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"
+    ), patch(
+        "src.auto_coder.update_manager.subprocess.run", return_value=fake_result
     ):
         result = update_manager.maybe_run_auto_update()
 
@@ -108,7 +114,9 @@ def test_check_for_updates_and_restart_triggers_capture(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_UPDATE_INTERVAL_SECONDS", "0")
     monkeypatch.setenv("AUTO_CODER_TEST_CAPTURE_RESTART", str(marker))
 
-    update_manager.record_startup_options(["auto-coder", "fix-to-pass-tests"], {"PATH": "/tmp"})
+    update_manager.record_startup_options(
+        ["auto-coder", "fix-to-pass-tests"], {"PATH": "/tmp"}
+    )
 
     fake_result = subprocess.CompletedProcess(
         args=["pipx", "upgrade", "auto-coder"],
@@ -117,10 +125,12 @@ def test_check_for_updates_and_restart_triggers_capture(monkeypatch, tmp_path):
         stderr="",
     )
 
-    with (
-        patch("src.auto_coder.update_manager._running_inside_pipx_env", return_value=True),
-        patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+    with patch(
+        "src.auto_coder.update_manager._running_inside_pipx_env", return_value=True
+    ), patch(
+        "src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"
+    ), patch(
+        "src.auto_coder.update_manager.subprocess.run", return_value=fake_result
     ):
         with pytest.raises(SystemExit) as exc:
             update_manager.check_for_updates_and_restart()

@@ -1,85 +1,314 @@
 """
-Git utilities compatibility module.
-
-This module provides backward compatibility by re-exporting functions from the new focused modules:
-- git_info.py: Read-only git information functions
-- git_branch.py: Branch management and operations
-- git_commit.py: Commit and push operations
-
-This module exists to maintain compatibility with existing imports.
-For new code, prefer importing directly from the specific modules.
+Git utilities for Auto-Coder.
 """
 
-# Re-export functions from git_branch.py (branch operations)
-from .git_branch import (
-    branch_context,
-    branch_exists,
-    extract_attempt_from_branch,
-    extract_number_from_branch,
-    get_all_branches,
-    get_branches_by_pattern,
-    git_checkout_branch,
-    git_commit_with_retry,
-    git_pull,
-    migrate_pr_branches,
-    resolve_pull_conflicts,
-    switch_to_branch,
-    try_llm_commit_push,
-    try_llm_dprint_fallback,
-    validate_branch_name,
-)
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
-# Re-export functions from git_commit.py (commit and push operations)
-from .git_commit import (
-    commit_and_push_changes,
-    ensure_pushed,
-    git_push,
-    save_commit_failure_history,
-)
+try:
+    from git import InvalidGitRepositoryError, Repo
 
-# Re-export functions from git_info.py (read-only git functions)
-from .git_info import (
-    check_unpushed_commits,
-    get_commit_log,
-    get_current_branch,
-    get_current_repo_name,
-    is_git_repository,
-    parse_github_repo_from_url,
-)
+    GIT_AVAILABLE = True
+except ImportError:
+    GIT_AVAILABLE = False
 
-# Import CommandExecutor and CommandResult for test compatibility
+from .logger_config import get_logger
 from .utils import CommandExecutor, CommandResult
 
-__all__ = [
-    # From utils.py for test compatibility
-    "CommandExecutor",
-    "CommandResult",
-    # From git_info.py
-    "check_unpushed_commits",
-    "get_commit_log",
-    "get_current_branch",
-    "get_current_repo_name",
-    "is_git_repository",
-    "parse_github_repo_from_url",
-    # From git_branch.py
-    "branch_context",
-    "branch_exists",
-    "extract_number_from_branch",
-    "extract_attempt_from_branch",
-    "get_all_branches",
-    "get_branches_by_pattern",
-    "git_checkout_branch",
-    "git_commit_with_retry",
-    "git_pull",
-    "migrate_pr_branches",
-    "resolve_pull_conflicts",
-    "switch_to_branch",
-    "try_llm_commit_push",
-    "try_llm_dprint_fallback",
-    "validate_branch_name",
-    # From git_commit.py
-    "commit_and_push_changes",
-    "ensure_pushed",
-    "git_push",
-    "save_commit_failure_history",
-]
+logger = get_logger(__name__)
+
+
+def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
+    """
+    Get the GitHub repository name (owner/repo) from the current directory.
+
+    Args:
+        path: Optional path to check. If None, uses current directory.
+
+    Returns:
+        Repository name in format "owner/repo" or None if not found.
+    """
+    if not GIT_AVAILABLE:
+        logger.warning("GitPython not available. Cannot auto-detect repository.")
+        return None
+
+    try:
+        # Use provided path or current directory
+        repo_path = path or os.getcwd()
+
+        # Try to find git repository
+        repo = Repo(repo_path, search_parent_directories=True)
+
+        # Get remote origin URL
+        if "origin" not in repo.remotes:
+            logger.debug("No 'origin' remote found in repository")
+            return None
+
+        origin_url = repo.remotes.origin.url
+        logger.debug(f"Found origin URL: {origin_url}")
+
+        # Parse GitHub repository name from URL
+        repo_name = parse_github_repo_from_url(origin_url)
+        if repo_name:
+            logger.info(f"Auto-detected repository: {repo_name}")
+            return repo_name
+        else:
+            logger.debug(f"Could not parse GitHub repository from URL: {origin_url}")
+            return None
+
+    except InvalidGitRepositoryError:
+        logger.debug(f"No git repository found in {repo_path}")
+        return None
+    except Exception as e:
+        logger.debug(f"Error detecting repository: {e}")
+        return None
+
+
+def parse_github_repo_from_url(url: str) -> Optional[str]:
+    """
+    Parse GitHub repository name from various URL formats.
+
+    Args:
+        url: Git remote URL
+
+    Returns:
+        Repository name in format "owner/repo" or None if not a GitHub URL.
+    """
+    if not url:
+        return None
+
+    # Remove .git suffix if present
+    url = url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+
+    # Handle different URL formats
+    patterns = [
+        # HTTPS: https://github.com/owner/repo
+        r"https://github\.com/([^/]+)/([^/]+)",
+        # SSH: git@github.com:owner/repo
+        r"git@github\.com:([^/]+)/([^/]+)",
+        # SSH alternative: ssh://git@github.com/owner/repo
+        r"ssh://git@github\.com/([^/]+)/([^/]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.match(pattern, url)
+        if match:
+            owner, repo = match.groups()
+            return f"{owner}/{repo}"
+
+    # Try parsing as URL
+    try:
+        parsed = urlparse(url)
+        if parsed.hostname == "github.com" and parsed.path:
+            # Remove leading slash and split path
+            path_parts = parsed.path.lstrip("/").split("/")
+            if len(path_parts) >= 2:
+                owner, repo = path_parts[0], path_parts[1]
+                return f"{owner}/{repo}"
+    except Exception:
+        pass
+
+    return None
+
+
+def is_git_repository(path: Optional[str] = None) -> bool:
+    """
+    Check if the given path (or current directory) is a Git repository.
+
+    Args:
+        path: Optional path to check. If None, uses current directory.
+
+    Returns:
+        True if it's a Git repository, False otherwise.
+    """
+    if not GIT_AVAILABLE:
+        return False
+
+    try:
+        repo_path = path or os.getcwd()
+        Repo(repo_path, search_parent_directories=True)
+        return True
+    except InvalidGitRepositoryError:
+        return False
+    except Exception:
+        return False
+
+
+def git_commit_with_retry(
+    commit_message: str, cwd: Optional[str] = None, max_retries: int = 1
+) -> CommandResult:
+    """
+    Commit changes with automatic handling of formatter hook failures.
+
+    This function centralizes git commit operations and handles well-known
+    hook failures like dprint formatting errors by automatically running
+    the formatter and retrying the commit once.
+
+    Args:
+        commit_message: The commit message to use
+        cwd: Optional working directory for the git command
+        max_retries: Maximum number of retries (default: 1)
+
+    Returns:
+        CommandResult with the result of the commit operation
+    """
+    cmd = CommandExecutor()
+
+    for attempt in range(max_retries + 1):
+        result = cmd.run_command(
+            ["git", "commit", "-m", commit_message], cwd=cwd, check_success=False
+        )
+
+        # If commit succeeded, return immediately
+        if result.success:
+            logger.info("Successfully committed changes")
+            return result
+
+        # Check if the failure is due to dprint formatting issues
+        is_dprint_error = (
+            "dprint fmt" in result.stderr
+            or "Formatting issues detected" in result.stderr
+            or "dprint fmt" in result.stdout
+            or "Formatting issues detected" in result.stdout
+        )
+
+        if is_dprint_error:
+            if attempt < max_retries:
+                logger.info(
+                    "Detected dprint formatting issues, running 'npx dprint fmt' and retrying..."
+                )
+
+                # Run dprint formatter
+                fmt_result = cmd.run_command(
+                    ["npx", "dprint", "fmt"], cwd=cwd, check_success=False
+                )
+
+                if fmt_result.success:
+                    logger.info("Successfully ran dprint formatter")
+                    # Stage the formatted files
+                    add_result = cmd.run_command(
+                        ["git", "add", "-u"], cwd=cwd, check_success=False
+                    )
+                    if add_result.success:
+                        logger.info("Staged formatted files, retrying commit...")
+                        continue
+                    else:
+                        logger.warning(
+                            f"Failed to stage formatted files: {add_result.stderr}"
+                        )
+                else:
+                    logger.warning(
+                        f"Failed to run dprint formatter: {fmt_result.stderr}"
+                    )
+            else:
+                logger.warning(
+                    f"Max retries ({max_retries}) reached for commit with dprint formatting"
+                )
+        else:
+            # Non-dprint error, exit immediately
+            logger.warning(f"Failed to commit changes: {result.stderr}")
+            return result
+
+    # If we get here, all attempts failed (dprint error case)
+    logger.warning(f"Failed to commit changes: {result.stderr}")
+    return result
+
+
+def git_push(
+    cwd: Optional[str] = None, remote: str = "origin", branch: Optional[str] = None
+) -> CommandResult:
+    """
+    Push changes to remote repository.
+
+    This function centralizes git push operations for consistent error handling.
+
+    Args:
+        cwd: Optional working directory for the git command
+        remote: Remote name (default: 'origin')
+        branch: Optional branch name. If None, pushes current branch
+
+    Returns:
+        CommandResult with the result of the push operation
+    """
+    cmd = CommandExecutor()
+
+    push_cmd: List[str] = ["git", "push"]
+    if branch:
+        push_cmd.extend([remote, branch])
+
+    result = cmd.run_command(push_cmd, cwd=cwd, check_success=False)
+
+    if result.success:
+        logger.info(
+            f"Successfully pushed changes to {remote}"
+            + (f"/{branch}" if branch else "")
+        )
+    else:
+        logger.warning(f"Failed to push changes: {result.stderr}")
+
+    return result
+
+
+def save_commit_failure_history(
+    error_message: str,
+    context: Dict[str, Any],
+    repo_name: Optional[str] = None,
+) -> None:
+    """
+    Save commit failure history to a JSON file and exit the application.
+
+    This function is called when git_commit_with_retry fails. It saves the
+    failure details to a history file and immediately exits the application
+    to prevent uncommitted changes from being lost.
+
+    Args:
+        error_message: The error message from the failed commit
+        context: Additional context information (e.g., issue number, PR number, etc.)
+        repo_name: Repository name (e.g., 'owner/repo'). If provided, saves to
+                  ~/.auto-coder/{repository}/ directory.
+    """
+    try:
+        # Determine the history directory
+        if repo_name:
+            # リポジトリ名から安全なディレクトリ名を生成
+            safe_repo_name = repo_name.replace("/", "_")
+            history_dir = Path.home() / ".auto-coder" / safe_repo_name
+        else:
+            history_dir = Path(".auto-coder")
+
+        # Create directory if it doesn't exist
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create history file path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        history_file = history_dir / f"commit_failure_{timestamp}.json"
+
+        # Prepare history data
+        history_data = {
+            "timestamp": datetime.now().isoformat(),
+            "error_message": error_message,
+            "context": context,
+        }
+
+        # Save history to file
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history_data, f, indent=2, ensure_ascii=False)
+
+        logger.error(f"Commit failed. History saved to {history_file}")
+        logger.error(f"Error: {error_message}")
+        logger.error("Application will now exit to prevent data loss.")
+
+    except Exception as e:
+        logger.error(f"Failed to save commit failure history: {e}")
+        logger.error(f"Original commit error: {error_message}")
+
+    # Exit the application immediately
+    sys.exit(1)

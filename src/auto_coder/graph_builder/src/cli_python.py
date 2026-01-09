@@ -10,11 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from emitter.python_emitter import emit_csv, emit_diff_json, emit_json
-from scanner.python_scanner import GraphData, scan_python_project
-
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
+
+from scanner.python_scanner import scan_python_project, GraphData
+from emitter.python_emitter import emit_csv, emit_json, emit_diff_json
 
 
 def scan_command(args):
@@ -28,17 +28,17 @@ def scan_command(args):
 
     # Parse languages option
     languages = []
-    if hasattr(args, "languages") and args.languages:
-        languages = [lang.strip() for lang in args.languages.split(",")]
+    if hasattr(args, 'languages') and args.languages:
+        languages = [lang.strip() for lang in args.languages.split(',')]
     else:
-        languages = ["python"]  # Default to Python only
+        languages = ['python']  # Default to Python only
 
     print(f"Languages: {', '.join(languages)}")
 
     graph_data = GraphData(nodes=[], edges=[])
 
     # Scan Python files if requested
-    if "python" in languages:
+    if 'python' in languages:
         print("Scanning Python files...")
         python_data = scan_python_project(str(project_path), args.limit)
         graph_data.nodes.extend(python_data.nodes)
@@ -46,26 +46,21 @@ def scan_command(args):
         print(f"Found {len(python_data.nodes)} Python nodes")
 
     # Scan TypeScript/JavaScript files if requested
-    if "typescript" in languages or "javascript" in languages:
+    if 'typescript' in languages or 'javascript' in languages:
         # Check if TypeScript CLI is available
         ts_cli = Path(__file__).parent.parent / "dist" / "cli.js"
         if ts_cli.exists():
             print("Scanning TypeScript/JavaScript files using TypeScript CLI...")
-            ts_languages = ",".join(
-                [lang for lang in languages if lang in ["typescript", "javascript"]]
-            )
+            ts_languages = ','.join([lang for lang in languages if lang in ['typescript', 'javascript']])
             try:
                 result = subprocess.run(
                     [
-                        "node",
+                        'node',
                         str(ts_cli),
-                        "scan",
-                        "--project",
-                        str(project_path),
-                        "--out",
-                        str(output_dir),
-                        "--languages",
-                        ts_languages,
+                        'scan',
+                        '--project', str(project_path),
+                        '--out', str(output_dir),
+                        '--languages', ts_languages,
                     ],
                     capture_output=True,
                     text=True,
@@ -74,41 +69,31 @@ def scan_command(args):
 
                 if result.returncode == 0:
                     # Read the generated graph-data.json
-                    ts_data_path = output_dir / "graph-data.json"
+                    ts_data_path = output_dir / 'graph-data.json'
                     if ts_data_path.exists():
-                        with open(ts_data_path, "r", encoding="utf-8") as f:
+                        with open(ts_data_path, 'r', encoding='utf-8') as f:
                             ts_data = json.load(f)
                             # Merge TypeScript/JavaScript data
-                            for node in ts_data.get("nodes", []):
+                            for node in ts_data.get('nodes', []):
                                 from scanner.python_scanner import CodeNode
-
                                 graph_data.nodes.append(CodeNode(**node))
-                            for edge in ts_data.get("edges", []):
+                            for edge in ts_data.get('edges', []):
                                 from scanner.python_scanner import CodeEdge
-
-                                graph_data.edges.append(
-                                    CodeEdge(
-                                        from_id=edge["from"],
-                                        to_id=edge["to"],
-                                        type=edge["type"],
-                                        count=edge.get("count", 1),
-                                        locations=edge.get("locations", []),
-                                    )
-                                )
-                            print(
-                                f"Found {len(ts_data.get('nodes', []))} TypeScript/JavaScript nodes"
-                            )
+                                graph_data.edges.append(CodeEdge(
+                                    from_id=edge['from'],
+                                    to_id=edge['to'],
+                                    type=edge['type'],
+                                    count=edge.get('count', 1),
+                                    locations=edge.get('locations', [])
+                                ))
+                            print(f"Found {len(ts_data.get('nodes', []))} TypeScript/JavaScript nodes")
                 else:
-                    print(
-                        f"Warning: TypeScript CLI failed with return code {result.returncode}"
-                    )
+                    print(f"Warning: TypeScript CLI failed with return code {result.returncode}")
                     print(f"stderr: {result.stderr}")
             except Exception as e:
                 print(f"Warning: Failed to run TypeScript CLI: {e}")
         else:
-            print(
-                f"Warning: TypeScript CLI not found at {ts_cli}, skipping TypeScript/JavaScript scan"
-            )
+            print(f"Warning: TypeScript CLI not found at {ts_cli}, skipping TypeScript/JavaScript scan")
 
     print(f"Total: {len(graph_data.nodes)} nodes, {len(graph_data.edges)} edges")
 
@@ -116,40 +101,36 @@ def scan_command(args):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save intermediate data
-    data_path = output_dir / "graph-data.json"
-    with open(data_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "nodes": [
-                    {
-                        "id": n.id,
-                        "kind": n.kind,
-                        "fqname": n.fqname,
-                        "sig": n.sig,
-                        "short": n.short,
-                        "complexity": n.complexity,
-                        "tokens_est": n.tokens_est,
-                        "tags": n.tags,
-                        "file": n.file,
-                        "start_line": n.start_line,
-                        "end_line": n.end_line,
-                    }
-                    for n in graph_data.nodes
-                ],
-                "edges": [
-                    {
-                        "from": e.from_id,
-                        "to": e.to_id,
-                        "type": e.type,
-                        "count": e.count,
-                        "locations": e.locations,
-                    }
-                    for e in graph_data.edges
-                ],
-            },
-            f,
-            indent=2,
-        )
+    data_path = output_dir / 'graph-data.json'
+    with open(data_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'nodes': [
+                {
+                    'id': n.id,
+                    'kind': n.kind,
+                    'fqname': n.fqname,
+                    'sig': n.sig,
+                    'short': n.short,
+                    'complexity': n.complexity,
+                    'tokens_est': n.tokens_est,
+                    'tags': n.tags,
+                    'file': n.file,
+                    'start_line': n.start_line,
+                    'end_line': n.end_line,
+                }
+                for n in graph_data.nodes
+            ],
+            'edges': [
+                {
+                    'from': e.from_id,
+                    'to': e.to_id,
+                    'type': e.type,
+                    'count': e.count,
+                    'locations': e.locations,
+                }
+                for e in graph_data.edges
+            ],
+        }, f, indent=2)
 
     print(f"Saved graph data to {data_path}")
     print(f"Total nodes: {len(graph_data.nodes)}")
@@ -159,30 +140,26 @@ def scan_command(args):
 def emit_csv_command(args):
     """Emit CSV files for Neo4j import"""
     output_dir = Path(args.out).resolve()
-    data_path = output_dir / "graph-data.json"
+    data_path = output_dir / 'graph-data.json'
 
     if not data_path.exists():
         print(f"Graph data not found at {data_path}. Run 'scan' first.")
         sys.exit(1)
 
-    with open(data_path, "r", encoding="utf-8") as f:
+    with open(data_path, 'r', encoding='utf-8') as f:
         data_dict = json.load(f)
 
     # Convert dict back to GraphData
-    from scanner.python_scanner import CodeEdge, CodeNode
-
+    from scanner.python_scanner import CodeNode, CodeEdge
     graph_data = GraphData(
-        nodes=[CodeNode(**n) for n in data_dict["nodes"]],
-        edges=[
-            CodeEdge(
-                from_id=e["from"],
-                to_id=e["to"],
-                type=e["type"],
-                count=e["count"],
-                locations=e.get("locations", []),
-            )
-            for e in data_dict["edges"]
-        ],
+        nodes=[CodeNode(**n) for n in data_dict['nodes']],
+        edges=[CodeEdge(
+            from_id=e['from'],
+            to_id=e['to'],
+            type=e['type'],
+            count=e['count'],
+            locations=e.get('locations', [])
+        ) for e in data_dict['edges']],
     )
 
     emit_csv(graph_data, str(output_dir))
@@ -192,30 +169,26 @@ def emit_csv_command(args):
 def emit_json_command(args):
     """Emit JSON batch file"""
     output_dir = Path(args.out).resolve()
-    data_path = output_dir / "graph-data.json"
+    data_path = output_dir / 'graph-data.json'
 
     if not data_path.exists():
         print(f"Graph data not found at {data_path}. Run 'scan' first.")
         sys.exit(1)
 
-    with open(data_path, "r", encoding="utf-8") as f:
+    with open(data_path, 'r', encoding='utf-8') as f:
         data_dict = json.load(f)
 
     # Convert dict back to GraphData
-    from scanner.python_scanner import CodeEdge, CodeNode
-
+    from scanner.python_scanner import CodeNode, CodeEdge
     graph_data = GraphData(
-        nodes=[CodeNode(**n) for n in data_dict["nodes"]],
-        edges=[
-            CodeEdge(
-                from_id=e["from"],
-                to_id=e["to"],
-                type=e["type"],
-                count=e["count"],
-                locations=e.get("locations", []),
-            )
-            for e in data_dict["edges"]
-        ],
+        nodes=[CodeNode(**n) for n in data_dict['nodes']],
+        edges=[CodeEdge(
+            from_id=e['from'],
+            to_id=e['to'],
+            type=e['type'],
+            count=e['count'],
+            locations=e.get('locations', [])
+        ) for e in data_dict['edges']],
     )
 
     emit_json(graph_data, str(output_dir))
@@ -232,20 +205,21 @@ def diff_command(args):
     try:
         # Get changed files
         result = subprocess.run(
-            ["git", "diff", "--name-only", since],
+            ['git', 'diff', '--name-only', since],
             capture_output=True,
             text=True,
             check=True,
         )
         changed_files = [
-            f for f in result.stdout.strip().split("\n") if f.endswith(".py")
+            f for f in result.stdout.strip().split('\n')
+            if f.endswith('.py')
         ]
 
         print(f"Found {len(changed_files)} changed Python files")
 
         # Get current commit
         commit_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ['git', 'rev-parse', 'HEAD'],
             capture_output=True,
             text=True,
             check=True,
@@ -253,14 +227,14 @@ def diff_command(args):
         commit_hash = commit_result.stdout.strip()
 
         diff_data = {
-            "meta": {
-                "commit": commit_hash,
-                "files": changed_files,
-                "timestamp": __import__("datetime").datetime.now().isoformat(),
+            'meta': {
+                'commit': commit_hash,
+                'files': changed_files,
+                'timestamp': __import__('datetime').datetime.now().isoformat(),
             },
-            "added": {"nodes": [], "edges": []},
-            "updated": {"nodes": [], "edges": []},
-            "removed": {"nodes": [], "edges": []},
+            'added': {'nodes': [], 'edges': []},
+            'updated': {'nodes': [], 'edges': []},
+            'removed': {'nodes': [], 'edges': []},
         }
 
         emit_diff_json(diff_data, str(output_dir), commit_hash[:8])
@@ -273,60 +247,46 @@ def diff_command(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Python code analyzer for Neo4j graph database"
+        description='Python code analyzer for Neo4j graph database'
     )
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
 
     # Scan command
-    scan_parser = subparsers.add_parser(
-        "scan", help="Scan project and extract graph data"
-    )
-    scan_parser.add_argument("--project", default=".", help="Project path")
-    scan_parser.add_argument("--out", default="./out", help="Output directory")
-    scan_parser.add_argument(
-        "--mode", default="full", choices=["full", "diff"], help="Scan mode"
-    )
-    scan_parser.add_argument("--since", help="Git reference for diff mode")
-    scan_parser.add_argument(
-        "--limit", type=int, help="Limit number of files to process"
-    )
-    scan_parser.add_argument(
-        "--languages",
-        default="python",
-        help="Languages to scan (comma-separated): typescript,javascript,python",
-    )
+    scan_parser = subparsers.add_parser('scan', help='Scan project and extract graph data')
+    scan_parser.add_argument('--project', default='.', help='Project path')
+    scan_parser.add_argument('--out', default='./out', help='Output directory')
+    scan_parser.add_argument('--mode', default='full', choices=['full', 'diff'], help='Scan mode')
+    scan_parser.add_argument('--since', help='Git reference for diff mode')
+    scan_parser.add_argument('--limit', type=int, help='Limit number of files to process')
+    scan_parser.add_argument('--languages', default='python', help='Languages to scan (comma-separated): typescript,javascript,python')
 
     # Emit CSV command
-    csv_parser = subparsers.add_parser(
-        "emit-csv", help="Emit CSV files for Neo4j import"
-    )
-    csv_parser.add_argument("--out", default="./out", help="Output directory")
+    csv_parser = subparsers.add_parser('emit-csv', help='Emit CSV files for Neo4j import')
+    csv_parser.add_argument('--out', default='./out', help='Output directory')
 
     # Emit JSON command
-    json_parser = subparsers.add_parser("emit-json", help="Emit JSON batch file")
-    json_parser.add_argument("--out", default="./out", help="Output directory")
+    json_parser = subparsers.add_parser('emit-json', help='Emit JSON batch file')
+    json_parser.add_argument('--out', default='./out', help='Output directory')
 
     # Diff command
-    diff_parser = subparsers.add_parser("diff", help="Generate diff from git changes")
-    diff_parser.add_argument(
-        "--since", default="HEAD~1", help="Git reference to compare against"
-    )
-    diff_parser.add_argument("--out", default="./out", help="Output directory")
+    diff_parser = subparsers.add_parser('diff', help='Generate diff from git changes')
+    diff_parser.add_argument('--since', default='HEAD~1', help='Git reference to compare against')
+    diff_parser.add_argument('--out', default='./out', help='Output directory')
 
     args = parser.parse_args()
 
-    if args.command == "scan":
+    if args.command == 'scan':
         scan_command(args)
-    elif args.command == "emit-csv":
+    elif args.command == 'emit-csv':
         emit_csv_command(args)
-    elif args.command == "emit-json":
+    elif args.command == 'emit-json':
         emit_json_command(args)
-    elif args.command == "diff":
+    elif args.command == 'diff':
         diff_command(args)
     else:
         parser.print_help()
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

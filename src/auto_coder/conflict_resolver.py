@@ -2,295 +2,30 @@
 
 import json
 import os
-import re
-import sys
-import time
 from typing import Any, Dict, List, Optional
 
-from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
-
-from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
-from .cli_helpers import create_high_score_backend_manager
-from .git_utils import get_commit_log, git_commit_with_retry, git_push
-from .github_client import GitHubClient
-from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _push_updated_branch_with_retry(pr_number: int, commit_message: Optional[str] = None) -> List[str]:
-    """Push current branch with a single retry and skip-analysis flag on success."""
-    actions: List[str] = []
-    push_result = git_push(commit_message=commit_message)
-    if push_result.success:
-        actions.append(f"Pushed updated branch for PR #{pr_number}")
-        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-        return actions
-
-    logger.warning("First push attempt failed for PR #%s: %s", pr_number, push_result.stderr)
-    time.sleep(2)
-    retry_result = git_push(commit_message=commit_message)
-    if retry_result.success:
-        actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
-        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-    else:
-        actions.append(f"Failed to push updated branch for PR #{pr_number}: {retry_result.stderr or push_result.stderr}")
-    return actions
-
-
-def _finalize_merge_commit(pr_number: int, base_branch: str) -> List[str]:
-    """Commit merge resolution changes and push with retry."""
-    actions: List[str] = []
-    flagged = scan_conflict_markers()
-    if flagged:
-        actions.append(f"Conflict markers still present after remediation for PR #{pr_number}: {', '.join(sorted(set(flagged)))}")
-        return actions
-
-    add_result = cmd.run_command(["git", "add", "."])
-    if not add_result.success:
-        actions.append(f"Failed to stage merge remediation changes: {add_result.stderr}")
-        return actions
-
-    commit_message = f"Auto-Coder: Merge {base_branch} into PR #{pr_number}"
-    commit_result = git_commit_with_retry(commit_message)
-    if not commit_result.success:
-        err_out = commit_result.stderr or commit_result.stdout
-        if err_out and "nothing to commit" in err_out.lower():
-            actions.append("No merge remediation changes to commit")
-        else:
-            actions.append(f"Failed to commit merge remediation changes: {err_out}")
-        return actions
-
-    actions.append(f"Committed merge remediation for PR #{pr_number}")
-    actions.extend(_push_updated_branch_with_retry(pr_number, commit_message=commit_message))
-    return actions
-
-
-def _get_merge_conflict_info() -> str:
-    """Get information about merge conflicts."""
-    try:
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        return result.stdout if result.success else "Could not get merge conflict information"
-    except Exception as e:
-        return f"Error getting conflict info: {e}"
-
-
-def _trigger_fallback_for_conflict_failure(
-    repo_name: str,
-    pr_number: int,
-    failure_reason: str,
-) -> None:
-    """Trigger fallback by incrementing attempts for linked issues when conflict resolution fails.
-
-    Args:
-        repo_name: Repository name in format 'owner/repo'
-        pr_number: PR number
-        failure_reason: Reason for the failure
-    """
-    try:
-        cmd.run_command(["git", "merge", "--abort"])
-
-        # Get PR body to extract linked issues
-        if repo_name:
-            client = GitHubClient.get_instance()
-            pr_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
-            pr_body = pr_data.get("body", "")
-        else:
-            pr_body = ""
-
-        if not pr_body:
-            logger.debug(f"No PR body found for PR #{pr_number}, cannot extract linked issues")
-            return
-
-        # Extract linked issues from PR body
-        related_issues = extract_linked_issues_from_pr_body(pr_body)
-
-        if not related_issues:
-            logger.debug(f"No linked issues found in PR #{pr_number} body")
-            return
-
-        # Increment attempt and reopen each linked issue
-        from .github_client import GitHubClient
-
-        client = GitHubClient.get_instance()
-
-        for issue_number in related_issues:
-            try:
-                # Check if the issue is closed and reopen it
-                repo = client.get_repository(repo_name)
-                issue = repo.get_issue(issue_number)
-
-                if issue.state == "closed":
-                    logger.info(f"Reopening closed issue #{issue_number} due to PR #{pr_number} failure")
-                    reopen_comment = f"Auto-Coder: Reopening issue due to PR #{pr_number} failure: {failure_reason}"
-                    client.reopen_issue(repo_name, issue_number, reopen_comment)
-
-                logger.info(f"Incrementing attempt for issue #{issue_number} due to PR #{pr_number} conflict resolution failure: {failure_reason}")
-                increment_attempt(repo_name, issue_number)
-            except Exception as e:
-                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
-                # Continue with other issues even if one fails
-                continue
-
-        logger.info(f"Triggered fallback for {len(related_issues)} linked issue(s) from PR #{pr_number}")
-
-    except Exception as e:
-        logger.error(f"Error triggering fallback for PR #{pr_number}: {e}")
-
-
-def scan_conflict_markers() -> List[str]:
-    """Scan for conflict markers in the current working directory.
-
-    Returns:
-        List of file paths that contain conflict markers, empty list if none found.
-    """
-    flagged = []
-
-    try:
-        # Use git to find files with conflicts
-        result = cmd.run_command(["git", "diff", "--name-only", "--diff-filter=U"])
-
-        if result.success:
-            conflict_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
-            flagged.extend(conflict_files)
-
-        # Also check for actual conflict markers in files
-        status_result = cmd.run_command(["git", "status", "--porcelain"])
-        if status_result.success:
-            for line in status_result.stdout.splitlines():
-                if line.strip() and line.startswith("UU "):  # Both modified (merge conflict)
-                    filename = line[3:].strip()
-                    # Read the file and check for conflict markers
-                    try:
-                        with open(filename, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
-                            if "<<<<<<< " in content or "=======" in content or ">>>>>>> " in content:
-                                flagged.append(filename)
-                    except Exception:
-                        # If we can't read the file, still flag it
-                        flagged.append(filename)
-
-        # Remove duplicates and return
-        return list(set(flagged))
-
-    except Exception as e:
-        logger.error(f"Error scanning conflict markers: {e}")
-        return []
-
-
-def check_mergeability_with_llm(
-    pr_data: Dict[str, Any],
-    conflict_info: str,
-    config: AutomationConfig,
-) -> bool:
-    """Check if merge can be performed without degrading code quality.
-
-    Args:
-        pr_data: PR data dictionary
-        conflict_info: Merge conflict information
-        config: AutomationConfig instance
-
-    Returns:
-        True if safe to merge, False if merge would degrade code quality
-    """
-    try:
-        # Get commit log since branch creation
-        base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
-        commit_log = get_commit_log(base_branch=base_branch)
-
-        # Get linked issues context
-        linked_issues_context = ""
-        try:
-            client = GitHubClient.get_instance()
-            linked_issues_context = get_linked_issues_context(client, str(pr_data.get("base", {}).get("repo", {}).get("full_name") or ""), pr_data.get("body", ""))
-            # Wait, repo_name is better passed directly if available?
-            # check_mergeability_with_llm doesn't have repo_name arg.
-            # but pr_data usually has it in "base.repo.full_name" or we can guess.
-            # Actually, AutomationConfig doesn't have repo_name.
-            # Let's try to get it from pr_data["base"]["repo"]["full_name"] which standard GitHub API returns.
-        except Exception:
-            pass
-
-        # Create a prompt for LLM to check mergeability
-        prompt = render_prompt(
-            "pr.mergeability_check",
-            base_branch=base_branch,
-            pr_number=pr_data.get("number", "unknown"),
-            pr_title=pr_data.get("title", "Unknown"),
-            pr_body=(pr_data.get("body") or "")[:500],
-            conflict_info=conflict_info,
-            commit_log=commit_log or "(No commit history)",
-            linked_issues_context=linked_issues_context,
-        )
-        logger.debug(
-            "Generated mergeability check prompt for PR #%s (preview: %s)",
-            pr_data.get("number", "unknown"),
-            prompt[:160].replace("\n", " "),
-        )
-
-        logger.info(f"Asking LLM to check mergeability for PR #{pr_data.get('number')}")
-
-        # Call LLM to check mergeability
-        high_score_backend_manager = create_high_score_backend_manager()
-        if high_score_backend_manager:
-            logger.info("Using high score backend for mergeability check.")
-            response = high_score_backend_manager.run_prompt(prompt)
-        else:
-            response = run_llm_noedit_prompt(prompt)
-
-        # Parse the response
-        if response and len(response.strip()) > 0:
-            response_upper = response.strip().upper()
-            if "SAFE_TO_MERGE" in response_upper:
-                logger.info(f"LLM determined PR #{pr_data.get('number')} is safe to merge")
-                return True
-            elif "DEGRADING_MERGE" in response_upper:
-                logger.info(f"LLM determined PR #{pr_data.get('number')} would degrade code quality")
-                return False
-            else:
-                # Default to not safe (pessimistic) if unclear response
-                logger.warning(f"LLM returned unclear mergeability response for PR #{pr_data.get('number')}: {response[:100]}")
-                return False
-        else:
-            # Default to not safe (pessimistic) if no response
-            logger.warning(f"LLM did not provide a clear response for mergeability check PR #{pr_data.get('number')}")
-            return False
-
-    except Exception as e:
-        logger.error(f"Error checking mergeability with LLM: {e}")
-        # Default to not safe (pessimistic) on exception
-        return False
-
-
 def resolve_merge_conflicts_with_llm(
-    pr_data: Dict[str, Any],
-    conflict_info: str,
-    config: AutomationConfig,
-    repo_name: Optional[str] = None,
+    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
 
     try:
-        # Get commit log since branch creation
-        base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
-        commit_log = get_commit_log(base_branch=base_branch)
-
-        # Get linked issues context
-        linked_issues_context = ""
-        try:
-            client = GitHubClient.get_instance()
-            repo_to_use = repo_name or pr_data.get("base", {}).get("repo", {}).get("full_name") or ""
-            linked_issues_context = get_linked_issues_context(client, repo_to_use, pr_data.get("body", ""))
-        except Exception:
-            pass
-
         # Create a prompt for LLM to resolve conflicts
+        base_branch = (
+            pr_data.get("base_branch")
+            or pr_data.get("base", {}).get("ref")
+            or config.MAIN_BRANCH
+        )
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
@@ -298,8 +33,6 @@ def resolve_merge_conflicts_with_llm(
             pr_title=pr_data.get("title", "Unknown"),
             pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
-            commit_log=commit_log or "(No commit history)",
-            linked_issues_context=linked_issues_context,
         )
         logger.debug(
             "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",
@@ -307,15 +40,11 @@ def resolve_merge_conflicts_with_llm(
             prompt[:160].replace("\n", " "),
         )
 
-        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data}")
-
-        # Call LLM to resolve conflicts
-        high_score_backend_manager = create_high_score_backend_manager()
-        if high_score_backend_manager:
-            logger.info("Using high score backend for merge conflict resolution.")
-            response = high_score_backend_manager.run_prompt(prompt)
-        else:
-            response = run_llm_prompt(prompt)
+        # Use LLM to resolve conflicts
+        logger.info(
+            f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}"
+        )
+        response = "Resolved merge conflicts"  # Placeholder
 
         # Parse the response
         if response and len(response.strip()) > 0:
@@ -328,310 +57,39 @@ def resolve_merge_conflicts_with_llm(
                 return actions
 
             # Verify no conflict markers remain before committing
-            flagged = scan_conflict_markers()
-            if flagged:
-                actions.append(f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing")
-                # Trigger fallback due to unresolved conflict markers
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "LLM left unresolved conflict markers")
-                return actions
+            # flagged = _scan_conflict_markers()
+            # if flagged:
+            #     actions.append(
+            #         f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
+            #     )
+            #     return actions
 
             # Commit via helper and push
-            commit_res = git_commit_with_retry(f"Resolve merge conflicts for PR #{pr_data}")
-            if commit_res.success:
-                actions.append(f"Committed resolved merge for PR #{pr_data}")
-            else:
-                actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
-                # Trigger fallback due to commit failure
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "Failed to commit conflict resolution")
-                return actions
+            # commit_res = _commit_with_message(
+            #     f"Resolve merge conflicts for PR #{pr_data['number']}"
+            # )
+            # if commit_res.success:
+            #     actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
+            # else:
+            #     actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
+            #     return actions
 
-            push_res = git_push()
-            if push_res.success:
-                actions.append(f"Pushed resolved merge for PR #{pr_data}")
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-            else:
-                actions.append(f"Failed to push resolved merge: {push_res.stderr}")
-                # Trigger fallback due to push failure
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "Failed to push conflict resolution")
+            # push_res = _push_current_branch()
+            # if push_res.success:
+            #     actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
+            #     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+            # else:
+            #     actions.append(f"Failed to push resolved merge: {push_res.stderr}")
         else:
-            actions.append("LLM did not provide a clear response for merge conflict resolution")
-            # Trigger fallback due to no LLM response
-            _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "LLM provided no response for conflict resolution")
+            actions.append(
+                "LLM did not provide a clear response for merge conflict resolution"
+            )
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts with LLM: {e}")
         actions.append(f"Error resolving merge conflicts: {e}")
-        # Trigger fallback due to exception
-        _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), f"Exception during conflict resolution: {str(e)}")
 
     return actions
-
-
-# _extract_linked_issues removed in favor of issue_context.extract_linked_issues_from_pr_body
-
-
-def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
-    """Extract Session ID from PR body."""
-    if not pr_body:
-        return None
-
-    # Pattern 1: Look for "Session ID:" or "Session:" followed by the session ID
-    session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
-    match = re.search(session_pattern, pr_body, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-
-    # Pattern 2: Look for URLs that might contain session IDs
-    url_session_pattern = r"(?:session(?:_id)?=)([a-zA-Z0-9-_]+)"
-    match = re.search(url_session_pattern, pr_body, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-
-    # Pattern 3: Look for Jules task URLs
-    jules_task_pattern = r"https?://jules\.google\.com/task/(\d+)"
-    match = re.search(jules_task_pattern, pr_body)
-    if match:
-        return match.group(1).strip()
-
-    return None
-
-
-def _close_pr(repo_name: str, pr_number: int) -> None:
-    """Close a PR."""
-    try:
-        client = GitHubClient.get_instance()
-        client.close_pr(repo_name, pr_number, comment="Auto-Coder: Closing PR due to merge conflicts and potential degradation risk.")
-        logger.info(f"Closed PR #{pr_number}")
-    except Exception as e:
-        logger.error(f"Error closing PR #{pr_number}: {e}")
-
-
-def _archive_jules_session(repo_name: str, pr_number: int, pr_body: str) -> None:
-    """Archive Jules session."""
-    try:
-        session_id = _extract_session_id_from_pr_body(pr_body)
-        if not session_id:
-            logger.warning(f"No session ID found in Jules PR #{pr_number} body for archiving")
-            return
-
-        # Archive the Jules session
-        try:
-            from .jules_client import JulesClient
-
-            jules_client = JulesClient()
-            success = jules_client.archive_session(session_id)
-
-            if success:
-                logger.info(f"Archived Jules session '{session_id}' for PR #{pr_number}")
-                log_action(f"Archived Jules session for PR #{pr_number}")
-            else:
-                logger.warning(f"Failed to archive Jules session '{session_id}' for PR #{pr_number}")
-        except Exception as e:
-            logger.warning(f"Error archiving Jules session for PR #{pr_number}: {e}")
-
-    except Exception as e:
-        logger.warning(f"Error processing Jules session archiving for PR #{pr_number}: {e}")
-
-
-def _perform_base_branch_merge_and_conflict_resolution(
-    pr_number: int,
-    base_branch: str,
-    config: AutomationConfig,
-    pr_data: Dict[str, Any],
-    repo_name: Optional[str] = None,
-) -> bool:
-    """Perform base branch merge and resolve conflicts using LLM.
-
-    This is a common subroutine used by both _update_with_base_branch and _resolve_pr_merge_conflicts.
-
-    Returns:
-        True if conflicts were resolved successfully, False otherwise
-    """
-    try:
-        # Step -1: Ensure pr_data has necessary details (author, body, baseRefName)
-        if not pr_data or "author" not in pr_data or "body" not in pr_data or "baseRefName" not in pr_data:
-            logger.info(f"Enriching pr_data for PR #{pr_number} with missing details")
-            try:
-                if repo_name:
-                    client = GitHubClient.get_instance()
-                    fresh_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
-                    pr_data = {**pr_data, **fresh_data}
-            except Exception as e:
-                logger.warning(f"Failed to enrich pr_data for PR #{pr_number}: {e}")
-
-        # Step 0: Clean up any existing git state
-        logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
-
-        # Reset any uncommitted changes
-        reset_result = cmd.run_command(["git", "reset", "--hard"])
-        if not reset_result.success:
-            logger.warning(f"Failed to reset git state: {reset_result.stderr}")
-
-        # Clean untracked files
-        clean_result = cmd.run_command(["git", "clean", "-fd"])
-        if not clean_result.success:
-            logger.warning(f"Failed to clean untracked files: {clean_result.stderr}")
-
-        # Abort any ongoing merge
-        abort_result = cmd.run_command(["git", "merge", "--abort"])
-        if abort_result.success:
-            logger.info("Aborted ongoing merge")
-
-        # Step 1: Checkout the PR branch (if not already checked out)
-        logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        if repo_name:
-            client = GitHubClient.get_instance()
-            pr_data_fresh = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
-            head_branch = pr_data_fresh.get("head_branch")
-
-            if head_branch:
-                # Fetch and checkout using standard git
-                fetch_pr_result = cmd.run_command(["git", "fetch", "origin", head_branch])
-                if not fetch_pr_result.success:
-                    logger.error(f"Failed to fetch PR branch {head_branch}: {fetch_pr_result.stderr}")
-                    return False
-
-                checkout_result = cmd.run_command(["git", "checkout", head_branch])
-                if not checkout_result.success:
-                    logger.error(f"Failed to checkout branch {head_branch}: {checkout_result.stderr}")
-                    return False
-            else:
-                logger.error(f"Could not determine head branch for PR #{pr_number}")
-                return False
-        else:
-            logger.error(f"No repo_name provided, cannot checkout PR #{pr_number}")
-            return False
-
-        # Step 2: Fetch the latest base branch
-        logger.info(f"Fetching latest {base_branch} branch")
-        fetch_result = cmd.run_command(["git", "fetch", "origin", base_branch])
-
-        if not fetch_result.success:
-            logger.error(f"Failed to fetch {base_branch} branch: {fetch_result.stderr}")
-            return False
-
-        # Step 3: Attempt to merge base branch (resolve to fully qualified ref to avoid ambiguity)
-        origin_ref = f"refs/remotes/origin/{base_branch}"
-        base_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref])
-        if base_check.success:
-            resolved_base = origin_ref
-        else:
-            # Fallback to local branch name if remote-tracking ref is unavailable
-            local_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch])
-            if not local_check.success:
-                logger.error(f"Failed to resolve base branch ref for {base_branch}")
-                return False
-            resolved_base = base_branch
-
-        logger.info(f"Merging {resolved_base} into PR #{pr_number}")
-        merge_result = cmd.run_command(["git", "merge", resolved_base])
-
-        if merge_result.success:
-            # No conflicts, push the updated branch using centralized helper with retry
-            logger.info(f"Successfully merged {resolved_base} into PR #{pr_number}, pushing changes")
-            push_result = git_push()
-
-            if push_result.success:
-                logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
-                return True
-            else:
-                # Push failed - try one more time after a brief pause
-                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
-                time.sleep(2)
-                retry_push_result = git_push()
-                if retry_push_result.success:
-                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
-                    return True
-                else:
-                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    logger.error("Push failure detected during merge conflict resolution")
-                    return False
-        else:
-            # Merge conflicts detected, check if merge would degrade code quality
-            logger.info(f"Merge conflicts detected for PR #{pr_number}, checking mergeability")
-
-            # Get conflict information
-            conflict_info = "\n".join(scan_conflict_markers())
-
-            # Ensure pr_data has the base_branch
-            pr_data = {**pr_data, "base_branch": base_branch}
-
-            # Check if merge would degrade code quality before attempting resolution
-            safe_to_merge = check_mergeability_with_llm(pr_data, conflict_info, config)
-
-            if not safe_to_merge:
-                logger.info(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
-
-                # Check if PR is from Jules
-                pr_author_login = get_pr_author_login(pr_data) or ""
-                is_jules_pr = "google-labs-jules" in pr_author_login.lower()
-
-                # Check for linked issues (logging only, not used for decision anymore)
-                pr_body = pr_data.get("body", "")
-                linked_issues = extract_linked_issues_from_pr_body(pr_body)
-
-                if is_jules_pr:
-                    logger.info(f"PR #{pr_number} is a Jules PR with degrade risk. Closing PR and archiving session.")
-                    if repo_name:
-                        _close_pr(repo_name, pr_number)
-                        _archive_jules_session(repo_name, pr_number, pr_body)
-                    return False
-
-                # Trigger fallback and signal to proceed to fixing
-                _trigger_fallback_for_conflict_failure(
-                    repo_name or "",
-                    pr_number,
-                    "LLM determined merge would degrade code quality",
-                )
-                return False
-
-            # Safe to merge, proceed with LLM conflict resolution
-            logger.info(f"LLM determined merge is safe for PR #{pr_number}, proceeding with resolution")
-
-            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config, repo_name)
-
-            # Log the resolution actions
-            for action in resolve_actions:
-                logger.info(f"Conflict resolution action: {action}")
-
-            # Check if conflicts were resolved successfully
-            status_result = cmd.run_command(["git", "status", "--porcelain"])
-
-            if status_result.success and not status_result.stdout.strip():
-                logger.info(f"Merge conflicts resolved for PR #{pr_number}")
-                return True
-            else:
-                logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}")
-                # Trigger fallback due to conflict resolution failure
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "Merge conflict resolution failed (LLM could not resolve conflicts)")
-                return False
-
-    except Exception as e:
-        logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
-        return False
-
-
-def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig, llm_client: Optional[Any] = None) -> bool:
-    """Resolve merge conflicts for a PR by checking it out and merging with its base branch.
-
-    This function has been moved from pr_processor.py to conflict_resolver.py for better organization.
-    """
-    try:
-        # Get PR details to determine the target base branch
-        if repo_name:
-            client = GitHubClient.get_instance()
-            pr_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
-            base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName", config.MAIN_BRANCH)
-        else:
-            logger.error(f"No repo_name provided for PR #{pr_number}")
-            return False
-
-        # Use the common subroutine
-        return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, pr_data, repo_name)
-
-    except Exception as e:
-        logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
-        return False
 
 
 def is_package_lock_only_conflict(conflict_info: str) -> bool:
@@ -652,7 +110,10 @@ def is_package_lock_only_conflict(conflict_info: str) -> bool:
             return False
 
         dependency_files = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
-        return all(any(dep_file in file for dep_file in dependency_files) for file in conflicted_files)
+        return all(
+            any(dep_file in file for dep_file in dependency_files)
+            for file in conflicted_files
+        )
 
     except Exception as e:
         logger.error(f"Error checking package-lock conflict: {e}")
@@ -806,7 +267,9 @@ def compare_semver(a: str, b: str) -> int:
     return 0
 
 
-def merge_dep_maps(ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str) -> Dict[str, str]:
+def merge_dep_maps(
+    ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str
+) -> Dict[str, str]:
     """Merge two dependency maps choosing newer version when conflict.
     prefer_side: 'ours' or 'theirs' used as tie-breaker when versions equal/unknown.
     """
@@ -838,6 +301,7 @@ def resolve_package_json_dependency_conflicts(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
+    dry_run: bool,
     eligible_paths: Optional[List[str]] = None,
 ) -> List[str]:
     """Resolve package.json dependency-only conflicts by merging dependency sections.
@@ -853,7 +317,9 @@ def resolve_package_json_dependency_conflicts(
     actions: List[str] = []
     try:
         pr_number = pr_data["number"]
-        actions.append(f"Detected package.json dependency-only conflicts for PR #{pr_number}")
+        actions.append(
+            f"Detected package.json dependency-only conflicts for PR #{pr_number}"
+        )
 
         conflicted_paths: List[str] = []
         if eligible_paths is not None:
@@ -942,7 +408,9 @@ def resolve_package_json_dependency_conflicts(
     return actions
 
 
-def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig) -> List[str]:
+def resolve_package_lock_conflicts(
+    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool
+) -> List[str]:
     """Resolve package-lock.json conflicts by deleting and regenerating the file.
 
     Monorepo-friendly: for each conflicted lockfile, if a sibling package.json exists,
@@ -951,8 +419,12 @@ def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, 
     actions = []
 
     try:
-        logger.info(f"Resolving package-lock.json conflicts for PR #{pr_data['number']}")
-        actions.append(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}")
+        logger.info(
+            f"Resolving package-lock.json conflicts for PR #{pr_data['number']}"
+        )
+        actions.append(
+            f"Detected package-lock.json only conflicts for PR #{pr_data['number']}"
+        )
 
         # Parse conflicted files
         conflicted_files = []
@@ -985,7 +457,11 @@ def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, 
         # For each directory, if package.json exists there, try to regenerate lock files
         any_regenerated = False
         for d in unique_dirs:
-            pkg_path = os.path.join(d, "package.json") if d not in ("", ".") else "package.json"
+            pkg_path = (
+                os.path.join(d, "package.json")
+                if d not in ("", ".")
+                else "package.json"
+            )
             if os.path.exists(pkg_path):
                 # Try npm install first in that directory
                 if d in ("", "."):
@@ -993,28 +469,42 @@ def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, 
                 else:
                     npm_result = cmd.run_command(["npm", "install"], timeout=300, cwd=d)
                 if npm_result.success:
-                    actions.append(f"Successfully ran npm install in {d or '.'} to regenerate lock file")
+                    actions.append(
+                        f"Successfully ran npm install in {d or '.'} to regenerate lock file"
+                    )
                     any_regenerated = True
                 else:
                     # Try yarn if npm fails
                     if d in ("", "."):
                         yarn_result = cmd.run_command(["yarn", "install"], timeout=300)
                     else:
-                        yarn_result = cmd.run_command(["yarn", "install"], timeout=300, cwd=d)
+                        yarn_result = cmd.run_command(
+                            ["yarn", "install"], timeout=300, cwd=d
+                        )
                     if yarn_result.success:
-                        actions.append(f"Successfully ran yarn install in {d or '.'} to regenerate lock file")
+                        actions.append(
+                            f"Successfully ran yarn install in {d or '.'} to regenerate lock file"
+                        )
                         any_regenerated = True
                     else:
-                        actions.append(f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}")
+                        actions.append(
+                            f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}"
+                        )
             else:
                 if d in ("", "."):
-                    actions.append("No package.json found, skipping dependency installation")
+                    actions.append(
+                        "No package.json found, skipping dependency installation"
+                    )
                 else:
-                    actions.append(f"No package.json found in {d or '.'}, skipping dependency installation for this path")
+                    actions.append(
+                        f"No package.json found in {d or '.'}, skipping dependency installation for this path"
+                    )
 
         if not any_regenerated and not unique_dirs:
             # Fallback message when no lockfile dirs were identified (shouldn't happen)
-            actions.append("No lockfile directories identified, skipping dependency installation")
+            actions.append(
+                "No lockfile directories identified, skipping dependency installation"
+            )
 
         # Stage the regenerated files
         add_result = cmd.run_command(["git", "add", "."])

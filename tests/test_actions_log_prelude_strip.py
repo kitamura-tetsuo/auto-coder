@@ -1,28 +1,10 @@
-import importlib
 import subprocess
 import sys
 
 
-def test_cli_get_actions_logs_strips_prelude_and_is_compact(_use_real_home, _use_real_commands):
-    importlib.reload(subprocess)
+def test_cli_get_actions_logs_strips_prelude_and_is_compact():
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
     # Run CLI and capture output; pass dummy token to avoid auth prompt
-    # Use a wrapper script that checks PYTHONPATH before running the CLI
-    check_script = """
-import os
-print("PYTHONPATH_CHECK:", os.environ.get('PYTHONPATH', 'NOT_SET'))
-import sys
-print("Executing:", ' '.join(sys.argv[1:]))
-sys.exit(0)
-"""
-    # First, verify PYTHONPATH is set correctly by running a simple check
-    check_result = subprocess.run(
-        [sys.executable, "-c", check_script],
-        capture_output=True,
-        text=True,
-    )
-    print(f"Check script output: {check_result.stdout}", file=sys.stderr)
-
     result = subprocess.run(
         [
             sys.executable,
@@ -38,7 +20,6 @@ sys.exit(0)
         text=True,
         timeout=300,
     )
-    print(f"CLI stderr: {result.stderr}", file=sys.stderr)
     assert result.returncode == 0
     # Standard output should start with Job header (no logger prelude)
     head = (result.stdout.splitlines() + [""])[:3]

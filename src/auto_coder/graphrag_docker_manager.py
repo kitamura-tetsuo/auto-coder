@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from .logger_config import get_logger
-from .utils import CommandExecutor, CommandResult, is_running_in_container
+from .utils import CommandExecutor, CommandResult
 
 logger = get_logger(__name__)
 
@@ -48,39 +48,54 @@ class GraphRAGDockerManager:
             FileNotFoundError: If docker-compose.graphrag.yml is not found in package
         """
         try:
-            # Get compose file from package resources
-            package_files = resources.files("auto_coder")
-            compose_resource = package_files / "docker-compose.graphrag.yml"
+            # Try Python 3.9+ importlib.resources API
+            if hasattr(resources, "files"):
+                package_files = resources.files("auto_coder")
+                compose_resource = package_files / "docker-compose.graphrag.yml"
 
-            # Read the content and write to a temporary file
-            compose_content = compose_resource.read_text()
+                # Read the content and write to a temporary file
+                compose_content = compose_resource.read_text()
 
-            # Create a temporary file that persists
-            # Use a directory under the user's home directory for better stability
-            # than /tmp which can be cleaned up
-            temp_dir = Path.home() / ".auto-coder" / "graphrag"
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            compose_file = temp_dir / "docker-compose.graphrag.yml"
-            compose_file.write_text(compose_content)
+                # Create a temporary file that persists
+                temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
+                temp_dir.mkdir(exist_ok=True)
+                compose_file = temp_dir / "docker-compose.graphrag.yml"
+                compose_file.write_text(compose_content)
 
-            # Ensure the directory is writable and accessible
-            os.chmod(temp_dir, 0o755)
+                logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
+                return str(compose_file)
+            else:
+                # Fallback for older Python versions
+                import pkg_resources
+                compose_content = pkg_resources.resource_string(
+                    "auto_coder", "docker-compose.graphrag.yml"
+                ).decode("utf-8")
 
-            logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
-            return str(compose_file)
+                # Create a temporary file that persists
+                temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
+                temp_dir.mkdir(exist_ok=True)
+                compose_file = temp_dir / "docker-compose.graphrag.yml"
+                compose_file.write_text(compose_content)
+
+                logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
+                return str(compose_file)
         except Exception as e:
             logger.error(f"Failed to extract docker-compose.graphrag.yml from package: {e}")
-            raise FileNotFoundError("docker-compose.graphrag.yml not found in package. " "Please ensure the package is installed correctly.") from e
+            raise FileNotFoundError(
+                "docker-compose.graphrag.yml not found in package. "
+                "Please ensure the package is installed correctly."
+            ) from e
 
     def _detect_docker_compose_command(self) -> list[str]:
         """Detect which docker compose command is available.
 
         Returns:
-            List of command parts for docker compose (['docker', 'compose'])
+            List of command parts for docker compose (either ['docker', 'compose'] or ['docker-compose'])
 
         Raises:
-            RuntimeError: If docker compose command is not available
+            RuntimeError: If neither docker compose command is available
         """
+        # Try 'docker compose' (newer Docker CLI plugin)
         try:
             result = subprocess.run(
                 ["docker", "compose", "version"],
@@ -90,6 +105,19 @@ class GraphRAGDockerManager:
             if result.returncode == 0:
                 logger.debug("Using 'docker compose' command")
                 return ["docker", "compose"]
+        except Exception:
+            pass
+
+        # Try 'docker-compose' (legacy standalone)
+        try:
+            result = subprocess.run(
+                ["docker-compose", "version"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.debug("Using 'docker-compose' command")
+                return ["docker-compose"]
         except Exception:
             pass
 
@@ -122,41 +150,38 @@ class GraphRAGDockerManager:
         stderr_lower = stderr.lower()
         return any(indicator in stderr_lower for indicator in permission_indicators)
 
-    def _run_docker_compose(self, args: list[str], timeout: int = 60, retry_with_sudo: bool = True) -> CommandResult:
-        """Run docker compose command.
+    def _run_docker_compose(
+        self, args: list[str], timeout: int = 60, retry_with_sudo: bool = True
+    ) -> CommandResult:
+        """Run docker-compose command.
 
         Args:
-            args: Arguments to pass to docker compose
+            args: Arguments to pass to docker-compose
             timeout: Command timeout in seconds
             retry_with_sudo: If True, retry with sudo on permission error
 
         Returns:
             CommandResult with execution results
         """
-        # The -f flag must come after 'compose'
+        # For 'docker compose', the -f flag must come after 'compose'
+        # For 'docker-compose', the -f flag comes after 'docker-compose'
+        # Both cases are handled the same way: cmd + ["-f", file] + args
         cmd = self._docker_compose_cmd + ["-f", self.compose_file] + args
         logger.debug(f"Running docker compose command: {' '.join(cmd)}")
-
-        # Set working directory to the directory containing the compose file
-        # This prevents "getwd: no such file or directory" errors during validation
-        compose_dir: str | None = os.path.dirname(self.compose_file)
-        if not compose_dir:
-            compose_dir = None
-
-        result = self.executor.run_command(cmd, timeout=timeout, cwd=compose_dir)
+        result = self.executor.run_command(cmd, timeout=timeout)
 
         # If permission error and retry is enabled, try with sudo
-        if not result.success and retry_with_sudo and self._is_permission_error(result.stderr):
-            logger.warning("Permission denied when accessing Docker. Retrying with sudo...")
-            sudo_cmd = ["sudo"]
-
-            # Preserve NEO4J_PASSWORD if set in environment to prevent fallback to weak default
-            if "NEO4J_PASSWORD" in os.environ:
-                sudo_cmd.append("--preserve-env=NEO4J_PASSWORD")
-
-            sudo_cmd.extend(cmd)
+        if (
+            not result.success
+            and retry_with_sudo
+            and self._is_permission_error(result.stderr)
+        ):
+            logger.warning(
+                "Permission denied when accessing Docker. Retrying with sudo..."
+            )
+            sudo_cmd = ["sudo"] + cmd
             logger.debug(f"Running docker compose command with sudo: {' '.join(sudo_cmd)}")
-            result = self.executor.run_command(sudo_cmd, timeout=timeout, cwd=compose_dir)
+            result = self.executor.run_command(sudo_cmd, timeout=timeout)
 
         return result
 
@@ -175,9 +200,6 @@ class GraphRAGDockerManager:
         # Start containers
         result = self._run_docker_compose(["up", "-d"], timeout=timeout)
         if not result.success:
-            result = self._run_docker_compose(["down"], timeout=timeout)
-            result = self._run_docker_compose(["rm", "-f"], timeout=timeout)
-            result = self._run_docker_compose(["up", "-d"], timeout=timeout)
             logger.error(f"Failed to start containers: {result.stderr}")
             return False
 
@@ -269,7 +291,10 @@ class GraphRAGDockerManager:
             if neo4j_healthy and qdrant_healthy:
                 return True
 
-            logger.debug(f"Waiting for containers to be healthy... " f"(Neo4j: {neo4j_healthy}, Qdrant: {qdrant_healthy})")
+            logger.debug(
+                f"Waiting for containers to be healthy... "
+                f"(Neo4j: {neo4j_healthy}, Qdrant: {qdrant_healthy})"
+            )
             time.sleep(check_interval)
 
         return False
@@ -282,12 +307,7 @@ class GraphRAGDockerManager:
         """
         try:
             # Use docker inspect to check health status
-            cmd = [
-                "docker",
-                "inspect",
-                "--format={{.State.Health.Status}}",
-                "auto-coder-neo4j",
-            ]
+            cmd = ["docker", "inspect", "--format={{.State.Health.Status}}", "auto-coder-neo4j"]
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -318,12 +338,7 @@ class GraphRAGDockerManager:
         """
         try:
             # Use docker inspect to check health status
-            cmd = [
-                "docker",
-                "inspect",
-                "--format={{.State.Health.Status}}",
-                "auto-coder-qdrant",
-            ]
+            cmd = ["docker", "inspect", "--format={{.State.Health.Status}}", "auto-coder-qdrant"]
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -352,8 +367,8 @@ class GraphRAGDockerManager:
         Returns:
             Container ID if running in container, None otherwise
         """
-        # Check if running in container using robust detection
-        if not is_running_in_container():
+        # Check if running in container
+        if not (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")):
             return None
 
         try:
@@ -377,15 +392,7 @@ class GraphRAGDockerManager:
             # The network name is typically prefixed with the project name
             # For docker-compose, it's usually <directory>_<network_name>
             # We'll use docker network ls to find it
-            cmd = [
-                "docker",
-                "network",
-                "ls",
-                "--format",
-                "{{.Name}}",
-                "--filter",
-                "name=graphrag",
-            ]
+            cmd = ["docker", "network", "ls", "--format", "{{.Name}}", "--filter", "name=graphrag"]
             result = subprocess.run(cmd, capture_output=True, timeout=5)
 
             if result.returncode != 0:
@@ -429,14 +436,7 @@ class GraphRAGDockerManager:
             container_name = result.stdout.decode().strip().lstrip("/") if result.returncode == 0 else None
 
             # Check if already connected
-            cmd = [
-                "docker",
-                "network",
-                "inspect",
-                network_name,
-                "--format",
-                "{{range .Containers}}{{.Name}} {{end}}",
-            ]
+            cmd = ["docker", "network", "inspect", network_name, "--format", "{{range .Containers}}{{.Name}} {{end}}"]
             result = subprocess.run(cmd, capture_output=True, timeout=5)
 
             if result.returncode != 0:
