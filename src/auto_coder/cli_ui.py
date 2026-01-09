@@ -3,11 +3,15 @@ UI helper functions for the CLI.
 """
 
 import os
+import shutil
 import sys
 import time
 from typing import Any, Dict, Optional, TextIO
 
 import click
+
+SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
@@ -84,10 +88,7 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
-    if not no_color:
-        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    else:
-        spinner_frames = ["|", "/", "-", "\\"]
+    spinner_frames = SPINNER_FRAMES_ASCII if no_color else SPINNER_FRAMES_UNICODE
 
     end_time = time.time() + seconds
     spinner_idx = 0
@@ -116,13 +117,13 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             message = f"{spinner} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
 
             # Pad the message to ensure we overwrite previous longer messages
-            # Use a safe length, e.g. 80 chars
-            padding = " " * max(0, 80 - len(message))
+            # Use terminal width if possible, else 80
+            cols = shutil.get_terminal_size((80, 20)).columns
+            padding = " " * max(0, cols - len(message) - 1)  # -1 to avoid accidental wrap
             padded_message = message + padding
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
-                # Spinner can have a different color (cyan) if desired, but let's keep it consistent
                 padded_message = click.style(padded_message, fg="bright_black")
 
             stream.write(f"\r{padded_message}")
@@ -135,10 +136,12 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
         # Clear the line after done
         # We need to clear enough space for the longest message
-        stream.write("\r" + " " * 100 + "\r")
+        cols = shutil.get_terminal_size((80, 20)).columns
+        stream.write("\r" + " " * (cols - 1) + "\r")
         stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        stream.write("\r" + " " * 100 + "\r")
+        cols = shutil.get_terminal_size((80, 20)).columns
+        stream.write("\r" + " " * (cols - 1) + "\r")
         stream.flush()
         raise

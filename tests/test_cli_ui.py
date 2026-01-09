@@ -19,7 +19,12 @@ def test_sleep_with_countdown_execution(mock_sleep, mock_time):
     # We want 2 seconds of sleep, so that's ~20 loops
     # Let's make it simple: start, loop once, end
     start_time = 1000.0
-    mock_time.side_effect = [start_time, start_time, start_time + 0.1, start_time + 2.1]  # initial check  # first loop check  # second loop check  # final check (exits loop)
+    mock_time.side_effect = [
+        start_time,          # initial check
+        start_time,          # first loop check
+        start_time + 0.1,    # second loop check
+        start_time + 2.1     # final check (exits loop)
+    ]
 
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 
