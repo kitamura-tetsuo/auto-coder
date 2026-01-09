@@ -991,21 +991,21 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
                                     # Collect job-wide summary candidates (maintain order)
-                                    for ln in content.split("\n"):
-                                        ll = ln.lower()
-                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
-                                            job_summary_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        ll = line.lower()
+                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in line):
+                                            job_summary_lines.append(line)
                                     step_name = step_file_label
                                     # Extract important error-related information
                                     snippet = _extract_error_context(content)
                                     # Enhance with expected/received original lines (for strict matching)
                                     exp_lines = []
-                                    for ln in content.split("\n"):
-                                        if ("Expected substring:" in ln) or ("Received string:" in ln):
-                                            exp_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        if ("Expected substring:" in line) or ("Received string:" in line):
+                                            exp_lines.append(line)
                                     if exp_lines:
                                         # Also add normalized lines with backslash escapes removed
-                                        norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
+                                        norm_lines = [line.replace('\\"', '"') for line in exp_lines]
                                         if "--- Expectation Details ---" not in snippet:
                                             snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
