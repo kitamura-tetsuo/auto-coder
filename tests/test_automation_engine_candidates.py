@@ -19,7 +19,7 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}
+        pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch", "sha": "mocksha"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]
@@ -71,7 +71,7 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Jules PR", "draft": False, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}  # Already ready
+        pr_data = {"number": 123, "title": "Jules PR", "draft": False, "head": {"ref": "jules-branch", "sha": "mocksha"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}  # Already ready
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]
@@ -116,7 +116,7 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Regular PR", "draft": True, "head": {"ref": "feature-branch"}, "labels": [], "body": "Description", "created_at": "2023-01-01T00:00:00Z"}
+        pr_data = {"number": 123, "title": "Regular PR", "draft": True, "head": {"ref": "feature-branch", "sha": "mocksha"}, "labels": [], "body": "Description", "created_at": "2023-01-01T00:00:00Z"}
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]

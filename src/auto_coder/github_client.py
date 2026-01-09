@@ -69,6 +69,12 @@ class GitHubClient:
         self._caching_client: Optional[httpx.Client] = None
         self._caching_client_lock = threading.Lock()
 
+        # In-memory cache for open issues/PRs to prevent N+1 fetches in loops
+        self._memory_cache_lock = threading.Lock()
+        self._open_issues_cache: Dict[Tuple[str, int], Tuple[float, List[Dict[str, Any]]]] = {}
+        self._open_prs_cache: Dict[Tuple[str, int], Tuple[float, List[Dict[str, Any]]]] = {}
+        self._cache_ttl = 300  # 5 minutes
+
         # MONKEY-PATCHING PYGTIHUB FOR CACHING
         # -------------------------------------
         # WHAT: We are replacing PyGithub's internal `requestJsonAndCheck` method with our own
@@ -256,6 +262,79 @@ class GitHubClient:
         """Clear the sub-issue cache."""
         self._sub_issue_cache.clear()
 
+    def _invalidate_cache(self, repo_name: str) -> None:
+        """Invalidate all in-memory caches for a repository."""
+        with self._memory_cache_lock:
+            # Clear issues cache for this repo
+            keys_to_remove = [k for k in self._open_issues_cache.keys() if k[0] == repo_name]
+            for k in keys_to_remove:
+                del self._open_issues_cache[k]
+
+            # Clear PRs cache for this repo
+            keys_to_remove = [k for k in self._open_prs_cache.keys() if k[0] == repo_name]
+            for k in keys_to_remove:
+                del self._open_prs_cache[k]
+
+            logger.debug(f"Invalidated in-memory cache for {repo_name}")
+
+    def _update_cache_labels(self, repo_name: str, item_number: int, item_type: str, labels: List[str], operation: str = "add") -> None:
+        """Update labels in the in-memory cache without full invalidation.
+
+        Args:
+            repo_name: Repository name
+            item_number: Item number
+            item_type: 'issue' or 'pr'
+            labels: List of labels to add or remove
+            operation: 'add' or 'remove'
+        """
+        is_pr = item_type.lower() == "pr"
+
+        with self._memory_cache_lock:
+            # Select appropriate cache
+            cache = self._open_prs_cache if is_pr else self._open_issues_cache
+
+            # Update all cached lists for this repo (ignoring limit)
+            for key, (timestamp, items) in cache.items():
+                if key[0] != repo_name:
+                    continue
+
+                # Find the item
+                for item in items:
+                    if item.get("number") == item_number:
+                        current_labels = set(item.get("labels", []))
+                        if operation == "add":
+                            current_labels.update(labels)
+                        elif operation == "remove":
+                            current_labels.difference_update(labels)
+
+                        item["labels"] = list(current_labels)
+                        logger.debug(f"Updated cache labels for {item_type} #{item_number} ({operation}: {labels})")
+                        break
+
+    def _remove_from_cache(self, repo_name: str, item_number: int, item_type: str) -> None:
+        """Remove an item from the in-memory cache (e.g., when closed).
+
+        Args:
+            repo_name: Repository name
+            item_number: Item number
+            item_type: 'issue' or 'pr'
+        """
+        is_pr = item_type.lower() == "pr"
+
+        with self._memory_cache_lock:
+            cache = self._open_prs_cache if is_pr else self._open_issues_cache
+
+            for key, (timestamp, items) in cache.items():
+                if key[0] != repo_name:
+                    continue
+
+                # Filter out the item
+                original_len = len(items)
+                items[:] = [item for item in items if item.get("number") != item_number]
+
+                if len(items) < original_len:
+                    logger.debug(f"Removed {item_type} #{item_number} from cache")
+
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
         try:
@@ -338,6 +417,17 @@ class GitHubClient:
             plus additional fields needed by automation engine.
         """
         try:
+            # Check in-memory cache
+            cache_key = (repo_name, limit)
+            with self._memory_cache_lock:
+                if cache_key in self._open_prs_cache:
+                    timestamp, cached_data = self._open_prs_cache[cache_key]
+                    if time.time() - timestamp < self._cache_ttl:
+                        logger.info(f"Retrieved {len(cached_data)} open pull requests from {repo_name} (memory cache)")
+                        return list(cached_data)  # Return shallow copy
+                    else:
+                        del self._open_prs_cache[cache_key]  # Expired
+
             owner, repo = repo_name.split("/")
 
             query = """
@@ -438,6 +528,11 @@ class GitHubClient:
                 cursor = page_info.get("endCursor")
 
             logger.info(f"Retrieved {len(all_prs)} open pull requests from {repo_name} via GraphQL (oldest first)")
+
+            # Update cache
+            with self._memory_cache_lock:
+                self._open_prs_cache[cache_key] = (time.time(), all_prs)
+
             return all_prs
 
         except Exception as e:
@@ -459,6 +554,17 @@ class GitHubClient:
             plus additional fields needed by automation engine (sub_issues_count, parent_issue_number, linked_pr_numbers).
         """
         try:
+            # Check in-memory cache
+            cache_key = (repo_name, limit)
+            with self._memory_cache_lock:
+                if cache_key in self._open_issues_cache:
+                    timestamp, cached_data = self._open_issues_cache[cache_key]
+                    if time.time() - timestamp < self._cache_ttl:
+                        logger.info(f"Retrieved {len(cached_data)} open issues from {repo_name} (memory cache)")
+                        return list(cached_data)  # Return shallow copy
+                    else:
+                        del self._open_issues_cache[cache_key]  # Expired
+
             owner, repo = repo_name.split("/")
 
             query = """
@@ -585,6 +691,11 @@ class GitHubClient:
                 cursor = page_info.get("endCursor")
 
             logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via GraphQL (oldest first)")
+
+            # Update cache
+            with self._memory_cache_lock:
+                self._open_issues_cache[cache_key] = (time.time(), all_issues)
+
             return all_issues
 
         except Exception as e:
@@ -1042,6 +1153,8 @@ class GitHubClient:
             repo = self.get_repository(repo_name)
             issue = repo.create_issue(title=title, body=body, labels=labels or [])
             logger.info(f"Created issue #{issue.number}: {title}")
+            # New issue created, invalidate cache as we can't easily append without details
+            self._invalidate_cache(repo_name)
             return issue
 
         except GithubException as e:
@@ -1055,6 +1168,10 @@ class GitHubClient:
             issue = repo.get_issue(issue_number)
             issue.create_comment(comment)
             logger.info(f"Added comment to issue #{issue_number}")
+
+            # Comments affect metadata used in prompt generation, invalidate cache
+            # Optimization: We could potentially update comments_count in cache, but simple invalidation is safer
+            self._invalidate_cache(repo_name)
 
         except GithubException as e:
             logger.error(f"Failed to add comment to issue #{issue_number}: {e}")
@@ -1071,6 +1188,9 @@ class GitHubClient:
 
             issue.edit(state="closed")
             logger.info(f"Closed issue #{issue_number}")
+
+            # Invalidate cache to ensure next fetch gets a full page (prevents starvation)
+            self._invalidate_cache(repo_name)
 
         except GithubException as e:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
@@ -1093,6 +1213,9 @@ class GitHubClient:
 
             issue.edit(state="open")
             logger.info(f"Reopened issue #{issue_number}")
+
+            # Reopened issue needs to be added back to cache, easiest to invalidate
+            self._invalidate_cache(repo_name)
 
         except GithubException as e:
             logger.error(f"Failed to reopen issue #{issue_number}: {e}")
@@ -1150,6 +1273,9 @@ class GitHubClient:
             pr.edit(state="closed")
             logger.info(f"Closed PR #{pr_number}")
 
+            # Invalidate cache to ensure next fetch gets a full page (prevents starvation)
+            self._invalidate_cache(repo_name)
+
         except GithubException as e:
             logger.error(f"Failed to close PR #{pr_number}: {e}")
             raise
@@ -1167,6 +1293,9 @@ class GitHubClient:
             pr = repo.get_pull(pr_number)
             pr.create_issue_comment(comment)
             logger.info(f"Added comment to PR #{pr_number}")
+
+            # Invalidate cache due to comments count change
+            self._invalidate_cache(repo_name)
 
         except GithubException as e:
             logger.error(f"Failed to add comment to PR #{pr_number}: {e}")
@@ -1306,6 +1435,9 @@ class GitHubClient:
                 issue.edit(labels=all_labels)
                 logger.info(f"Added labels {labels} to issue #{issue_number}")
 
+            # Update cache locally without invalidating
+            self._update_cache_labels(repo_name, issue_number, item_type, labels, operation="add")
+
         except GithubException as e:
             logger.error(f"Failed to add labels to {item_type} #{issue_number}: {e}")
             raise
@@ -1359,6 +1491,9 @@ class GitHubClient:
                 issue.edit(labels=all_labels)
                 logger.info(f"Added labels {labels} to issue #{issue_number}")
 
+            # Update cache locally without invalidating
+            self._update_cache_labels(repo_name, issue_number, item_type, labels, operation="add")
+
             return True
 
         except GithubException as e:
@@ -1395,6 +1530,9 @@ class GitHubClient:
                 # Update issue with remaining labels
                 issue.edit(labels=remaining_labels)
                 logger.info(f"Removed labels {labels} from issue #{item_number}")
+
+            # Update cache locally without invalidating
+            self._update_cache_labels(repo_name, item_number, item_type, labels, operation="remove")
 
         except GithubException as e:
             logger.error(f"Failed to remove labels from {item_type} #{item_number}: {e}")
