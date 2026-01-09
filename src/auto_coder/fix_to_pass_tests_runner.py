@@ -113,7 +113,7 @@ def _log_fix_attempt_metadata(test_file: Optional[str], backend: str, provider: 
 
     base_dir = Path(".auto-coder")
     base_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = base_dir / "fix_to_pass_tests_summury.csv"
+    csv_path = base_dir / "fix_to_pass_tests_summary.csv"
     file_exists = csv_path.exists()
     record = [
         _normalize_test_file(test_file),

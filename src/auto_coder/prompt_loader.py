@@ -65,7 +65,7 @@ def clear_prompt_cache() -> None:
 def _traverse(prompts: Dict[str, Any], key: str) -> Any:
     """Traverse nested dictionaries using dot-separated keys.
 
-    Supports both flat keys with dots (e.g., "issue.action" as a single key)
+    Supports both flat keys with dots (e.g., 'issue.action' as a single key)
     and nested keys (e.g., issue -> action). Flat keys are checked first.
     """
     # First, check if the full key exists as-is (flat key with dots)
