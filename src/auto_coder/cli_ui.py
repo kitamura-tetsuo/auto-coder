@@ -2,6 +2,7 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
@@ -66,7 +67,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with spinner.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -84,9 +85,18 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    start_time = time.time()
+    end_time = start_time + seconds
 
     try:
-        for remaining in range(seconds, 0, -1):
+        while True:
+            current_time = time.time()
+            if current_time >= end_time:
+                break
+
+            remaining = int(math.ceil(end_time - current_time))
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,15 +108,23 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            # Spinner animation
+            idx = int((current_time * 10) % len(spinner_frames))
+            spinner = spinner_frames[idx]
 
             if not no_color:
+                spinner_display = click.style(spinner, fg="cyan")
                 # Dim the text (bright_black is usually dark gray)
-                message = click.style(message, fg="bright_black")
+                message = click.style(f" ⏱️  Sleeping... {time_str} remaining (Ctrl+C to interrupt)", fg="bright_black")
+                final_msg = f"\r{spinner_display}{message}"
+            else:
+                final_msg = f"\rWaiting... {time_str} remaining (Ctrl+C to interrupt)"
 
-            stream.write(f"\r{message}")
+            stream.write(final_msg)
             stream.flush()
-            time.sleep(1)
+
+            # Sleep a small amount for animation
+            time.sleep(0.1)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
