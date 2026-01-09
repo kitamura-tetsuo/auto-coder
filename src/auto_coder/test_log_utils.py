@@ -191,7 +191,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
 
     # Filter out path suffixes if a longer version exists
     # e.g. "utils/foo.spec.ts" should be removed if "e2e/utils/foo.spec.ts" exists
-    final_candidates: list[str] = []
+    final_candidates = []
     # Process longer paths first to identify parents
     unique_candidates = []
     seen = set()

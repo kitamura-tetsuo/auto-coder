@@ -4,7 +4,6 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -24,7 +23,8 @@ from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import _is_dependabot_pr, _is_jules_pr, _should_skip_waiting_for_jules, process_pull_request
+from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
+from .pr_processor import _is_dependabot_pr, _is_jules_pr
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
@@ -34,19 +34,6 @@ from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
-
-# Pre-compiled regex patterns for fallback error extraction
-FALLBACK_ERROR_PATTERNS = [
-    re.compile(p, re.IGNORECASE)
-    for p in [
-        r"ERROR:.*",
-        r"FAILED:.*",
-        r"Failures?:.*",
-        r"Error.*",
-        r"Exception.*",
-        r"Traceback.*",
-    ]
-]
 
 
 class AutomationEngine:
@@ -400,22 +387,6 @@ class AutomationEngine:
                 # Build map for fast lookup of open issues
                 issue_map = {i["number"]: i for i in all_issues}
 
-                # Build map of issues linked by open PRs via text reference (body/title)
-                # This covers cases where the GitHub API doesn't report a ConnectedEvent
-                # (e.g. cross-references or recent links)
-                linked_issues_from_prs = set()
-                for pr_data in pr_data_list:
-                    # Extract from body
-                    body = pr_data.get("body", "")
-                    # Reuse extract_linked_issues_from_pr_body to find "fixes #123" patterns
-                    linked = extract_linked_issues_from_pr_body(body)
-                    linked_issues_from_prs.update(linked)
-
-                    # Extract from title
-                    title = pr_data.get("title", "")
-                    linked_title = extract_linked_issues_from_pr_body(title)
-                    linked_issues_from_prs.update(linked_title)
-
                 for issue_data in all_issues:
                     labels = issue_data.get("labels", []) or []
 
@@ -487,9 +458,8 @@ class AutomationEngine:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    # Use pre-fetched data and manual text scan
-                    if issue_data.get("has_linked_prs") or number in linked_issues_from_prs:
-                        logger.info(f"Skipping issue #{number} - has linked PRs (API: {issue_data.get('has_linked_prs')}, Text Scan: {number in linked_issues_from_prs})")
+                    # Use pre-fetched data
+                    if issue_data.get("has_linked_prs"):
                         continue
 
                     # Calculate priority
@@ -1336,10 +1306,17 @@ class AutomationEngine:
                 pass
 
             if output:
-                # Use pre-compiled regex patterns
+                error_patterns = [
+                    r"ERROR:.*",
+                    r"FAILED:.*",
+                    r"Failures?:.*",
+                    r"Error.*",
+                    r"Exception.*",
+                    r"Traceback.*",
+                ]
                 for line in output.split("\n"):
                     line = line.strip()
-                    if any(pattern.search(line) for pattern in FALLBACK_ERROR_PATTERNS):
+                    if any(re.search(pattern, line, re.IGNORECASE) for pattern in error_patterns):
                         if line and line not in important_lines:
                             important_lines.append(line)
 
@@ -1366,7 +1343,7 @@ class AutomationEngine:
             # Derive a concise error summary using the structured extractor
             error_summary = cast(
                 str,
-                fix_to_pass_tests_runner_module.extract_important_errors_from_local_tests(test_result),
+                fix_to_pass_tests_runner_module.extract_important_errors(test_result),
             )
             if not github_logs:
                 github_logs = error_summary

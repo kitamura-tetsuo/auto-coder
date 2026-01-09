@@ -34,8 +34,8 @@ class TestJulesEngine(unittest.TestCase):
         # First call for session1
         args1, _ = call_args_list[0]
         assert args1[0] == session1
-        assert args1[1] == {"s1": 1}  # retry_state
-        assert args1[2] is not None  # github_client
+        assert args1[1] == {"s1": 1} # retry_state
+        assert args1[2] is not None # github_client
 
         # Second call for session2
         args2, _ = call_args_list[1]

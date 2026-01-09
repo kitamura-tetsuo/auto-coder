@@ -1,14 +1,11 @@
 import os
 import subprocess
-
 import pytest
 from click.testing import CliRunner
-
 from src.auto_coder.cli import fix_to_pass_tests_command
 
 # Define the path to the test repository
 TEST_REPO_PATH = "/home/node/src/auto-coder-test"
-
 
 @pytest.fixture
 def setup_test_repo():
@@ -31,7 +28,6 @@ def setup_test_repo():
     subprocess.run(["git", "checkout", "main"], check=True, capture_output=True)
     os.chdir(original_cwd)
 
-
 def test_fix_to_pass_tests_e2e(setup_test_repo, _use_real_home, _use_real_commands):
     """
     End-to-end test for fix-to-pass-tests command.
@@ -53,7 +49,11 @@ def test_fix_to_pass_tests_e2e(setup_test_repo, _use_real_home, _use_real_comman
     # Invoke the command
     # We use --max-attempts 3 to ensure it has enough tries,
     # but based on manual test it worked in 1-3 tries.
-    result = runner.invoke(fix_to_pass_tests_command, ["--max-attempts", "3", "--github-token", token], catch_exceptions=False)
+    result = runner.invoke(
+        fix_to_pass_tests_command,
+        ["--max-attempts", "3", "--github-token", token],
+        catch_exceptions=False
+    )
 
     # Assert command success
     assert result.exit_code == 0, f"Command failed with output: {result.output}"

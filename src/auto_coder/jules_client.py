@@ -428,29 +428,6 @@ class JulesClient(LLMClientBase):
         return repo_name, pr_number
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        """Run Jules HTTP API with the given prompt and no return response.
-
-        Orchestrates the entire session lifecycle:
-        1. Starts a session (or reuses existing one)
-
-        Args:
-            prompt: The prompt to send
-            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
-
-        Returns:
-            Fixed message that means to start session.
-        """
-        # Try to detect repo context from current environment
-        repo_name = get_current_repo_name() or "unknown/repo"
-        base_branch = get_current_branch() or "main"
-
-        logger.info(f"_run_llm_cli called for JulesClient. Using inferred context: repo={repo_name}, branch={base_branch}")
-
-        session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
-
-        return session_id
-
-    def _run_llm_cli_with_polling(self, prompt: str, is_noedit: bool = False) -> str:
         """Run Jules HTTP API with the given prompt and return response.
 
         Orchestrates the entire session lifecycle:
@@ -474,26 +451,26 @@ class JulesClient(LLMClientBase):
 
         # Check if we have an active session to reuse
         if self.current_session_id and not is_noedit:
-            session_id = self.current_session_id
-            logger.info(f"Reusing existing Jules session: {session_id}")
-            try:
-                self.send_message(session_id, prompt)
-            except Exception as e:
-                logger.warning(f"Failed to reuse session {session_id}, starting new one: {e}")
-                session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
-                self.current_session_id = session_id
+             session_id = self.current_session_id
+             logger.info(f"Reusing existing Jules session: {session_id}")
+             try:
+                 self.send_message(session_id, prompt)
+             except Exception as e:
+                 logger.warning(f"Failed to reuse session {session_id}, starting new one: {e}")
+                 session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
+                 self.current_session_id = session_id
         else:
-            session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
-            self.current_session_id = session_id
+             session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
+             self.current_session_id = session_id
 
         # Initialize GitHub client for PR checks
         from .github_client import GitHubClient
-
         try:
             github_client = GitHubClient.get_instance()
         except ValueError:
             logger.warning("GitHubClient not initialized, PR status checks may be limited")
             github_client = None
+
 
         try:
             # Polling loop
@@ -530,7 +507,7 @@ class JulesClient(LLMClientBase):
 
                 except Exception as e:
                     logger.error(f"Error during polling session {session_id}: {e}")
-                    time.sleep(10)  # Wait a bit before retrying
+                    time.sleep(10) # Wait a bit before retrying
 
                 # If auto-merge is enabled, check if we are done (PR merged)
                 if merge_pr and github_client:
@@ -545,16 +522,14 @@ class JulesClient(LLMClientBase):
                                     logger.info(f"PR #{pr_number} merged. Returning control to caller.")
                                     return f"PR #{pr_number} merged. Session kept open for further interactions."
                     except Exception as e:
-                        # Log but continue polling if check failed
-                        logger.debug(f"Error checking PR status for exit condition: {e}")
+                         # Log but continue polling if check failed
+                         logger.debug(f"Error checking PR status for exit condition: {e}")
+
 
         finally:
             # We don't simple-end the session here because it might be long-running/async
             # and handled by the polling loop/process_session_status.
             pass
-
-        # Fallback return if loop exits
-        return f"Session {session_id} polling completed."
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a single Jules session by ID.
@@ -703,8 +678,8 @@ class JulesClient(LLMClientBase):
                     if pr.state == "closed":
                         # If merge_pr is True (continuous mode), we do NOT archive the session
                         if merge_pr:
-                            logger.info(f"PR #{pr_number} is closed/merged. Keeping session {session_id} active for continuous mode.")
-                            # Do NOT archive
+                             logger.info(f"PR #{pr_number} is closed/merged. Keeping session {session_id} active for continuous mode.")
+                             # Do NOT archive
                         else:
                             action = "merged" if pr.merged else "closed"
                             logger.info(f"PR #{pr_number} is {action}. Archiving Jules session: {session_id}")

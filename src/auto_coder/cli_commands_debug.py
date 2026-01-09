@@ -1,14 +1,11 @@
-import os
 import re
 import sys
-
+import os
 import click
-
 from .auth_utils import get_github_token
 from .github_client import GitHubClient
-from .logger_config import setup_logger
 from .util.github_action import _get_playwright_artifact_logs
-
+from .logger_config import setup_logger
 
 @click.command()
 @click.option("--github-action-log-summary", help="GitHub Action Run URL to summarize", required=False)
@@ -41,11 +38,11 @@ def debug(github_action_log_summary: str) -> None:
         click.echo(f"Fetching logs for Run ID: {run_id} in {repo_name}...", err=True)
 
         try:
+            from .util.github_action import _get_github_actions_logs, _create_github_action_log_summary
             from .automation_config import AutomationConfig
-            from .util.github_action import _create_github_action_log_summary, _get_github_actions_logs
 
             # Create a dummy config and failed_checks to pass to _get_github_actions_logs
-            config = AutomationConfig()  # Default config
+            config = AutomationConfig() # Default config
             failed_checks = [{"details_url": url}]
 
             logs, artifacts = _create_github_action_log_summary(repo_name, config, failed_checks)

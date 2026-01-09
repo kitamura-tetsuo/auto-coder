@@ -6,7 +6,6 @@ import math
 import os
 import re
 import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,16 +13,17 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
 from .git_utils import (
-    check_unpushed_commits,
     extract_number_from_branch,
     get_commit_log,
     get_current_branch,
-    get_current_commit_sha,
     get_current_repo_name,
     git_commit_with_retry,
     git_push,
     save_commit_failure_history,
+    get_current_commit_sha,
+    check_unpushed_commits,
 )
+import time
 from .github_client import GitHubClient
 from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
@@ -39,8 +39,8 @@ from .test_log_utils import (
 )
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
-from .util.github_action import _create_github_action_log_summary, _get_github_actions_logs, generate_merged_playwright_report, parse_playwright_json_report
 from .utils import CommandExecutor, change_fraction, log_action
+from .util.github_action import _get_github_actions_logs, _create_github_action_log_summary, parse_playwright_json_report, generate_merged_playwright_report
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -50,31 +50,6 @@ cmd = CommandExecutor()
 
 # Test Watcher MCP integration flag
 USE_TEST_WATCHER_MCP = os.environ.get("USE_TEST_WATCHER_MCP", "true").lower() == "true"
-
-# Pre-computed lowercased keywords for error extraction
-ERROR_KEYWORDS = [
-    # error detection
-    "error",
-    # failed detection
-    "failed",
-    # exceptions and traces
-    "exception",
-    "traceback",
-    # assertions and common python errors
-    "assertion",
-    "syntax error",
-    "syntaxerror",
-    "import error",
-    "importerror",
-    "module not found",
-    "modulenotfounderror",
-    "test failed",
-    # e2e / Playwright related
-    "e2e/",
-    ".spec.ts",
-    "playwright",
-]
-ERROR_KEYWORDS_LOWER = [k.lower() for k in ERROR_KEYWORDS]
 
 
 @dataclass
@@ -463,6 +438,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
+
 @log_calls
 def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str, Any]:
     """Run tests via GitHub Action by committing and pushing.
@@ -494,7 +470,7 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
 
     if should_push:
         try:
-            git_push()  # Should we force? safer not to, assuming we are on a synced branch
+            git_push() # Should we force? safer not to, assuming we are on a synced branch
         except Exception as e:
             logger.error(f"Failed to push changes: {e}")
             return {
@@ -511,16 +487,6 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
 
     # 3. Get current SHA
     sha = get_current_commit_sha()
-    if not sha:
-        return {
-            "success": False,
-            "output": "",
-            "errors": "Could not determine current commit SHA",
-            "return_code": -1,
-            "command": "git push",
-            "test_file": None,
-            "stability_issue": False,
-        }
     logger.info(f"Target commit {sha}. Waiting for checks...")
 
     # 4. Wait for checks
@@ -528,7 +494,7 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
     gh_client = GitHubClient.get_instance()
     repo_name = get_current_repo_name()
     if not repo_name:
-        return {
+         return {
             "success": False,
             "output": "",
             "errors": "Could not determine repository name",
@@ -562,15 +528,15 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
         # Filter for relevant checks? For now convert all to a result.
         # If no checks found yet, wait.
         if not check_runs:
-            if not should_push:
-                # If we didn't push, and there are no checks, maybe we shouldn't wait forever?
-                # But maybe checks are lagging?
-                # Let's wait a bit shorter time? Or just warn?
-                # User said "adopt the result ... that has already been executed".
-                # If none executed, that's a problem.
-                # Let's retry a few times then fail?
-                if time.time() - start_time > 30:  # Wait at most 30 seconds for existing checks
-                    return {
+             if not should_push:
+                 # If we didn't push, and there are no checks, maybe we shouldn't wait forever?
+                 # But maybe checks are lagging?
+                 # Let's wait a bit shorter time? Or just warn?
+                 # User said "adopt the result ... that has already been executed".
+                 # If none executed, that's a problem.
+                 # Let's retry a few times then fail?
+                 if time.time() - start_time > 30: # Wait at most 30 seconds for existing checks
+                      return {
                         "success": False,
                         "output": "",
                         "errors": "No GitHub Action checks found for the current commit.",
@@ -580,9 +546,9 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
                         "stability_issue": False,
                     }
 
-            logger.info("No check runs found yet. Waiting...")
-            time.sleep(10)
-            continue
+             logger.info("No check runs found yet. Waiting...")
+             time.sleep(10)
+             continue
 
         # Check statuses
         # We look for "completed" status.
@@ -598,22 +564,22 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
 
             json_artifacts = None
             if not success:
-                # Use shared routine to get logs
-                # failed_runs struct matches expectation (has details_url)
-                try:
-                    logs_list, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
-                    logs, _ = _create_github_action_log_summary(repo_name, config, failed_runs)
-                    output_lines.append(logs)
-                except Exception as e:
-                    logger.error(f"Failed to get GitHub Action logs: {e}")
-                    output_lines.append(f"Failed to retrieve detailed logs: {e}")
+               # Use shared routine to get logs
+               # failed_runs struct matches expectation (has details_url)
+               try:
+                   logs_list, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
+                   logs, _ = _create_github_action_log_summary(repo_name, config, failed_runs)
+                   output_lines.append(logs)
+               except Exception as e:
+                   logger.error(f"Failed to get GitHub Action logs: {e}")
+                   output_lines.append(f"Failed to retrieve detailed logs: {e}")
 
             for run in check_runs:
                 # Brief summary for each run
                 status_str = f"Check: {run['name']} - {run['conclusion']}"
-                if run["conclusion"] != "success":
-                    error_lines.append(status_str)
-                    if run.get("output") and run["output"].get("title"):
+                if run['conclusion'] != "success":
+                   error_lines.append(status_str)
+                   if run.get('output') and run['output'].get('title'):
                         error_lines.append(f"  Title: {run['output']['title']}")
 
             return {
@@ -799,8 +765,8 @@ def apply_workspace_test_fix(
         if tr.command == "github_action_checks":
             error_summary = tr.output or ""
             if tr.stability_issue:
-                prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
-                error_summary = prefix + error_summary
+                 prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                 error_summary = prefix + error_summary
         else:
             error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=exclude_playwright)
         if not error_summary:
@@ -977,8 +943,8 @@ def fix_to_pass_tests(
         if tr.command == "github_action_checks":
             full_error_summary = tr.output or ""
             if tr.stability_issue:
-                prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
-                full_error_summary = prefix + full_error_summary
+                 prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                 full_error_summary = prefix + full_error_summary
         else:
             full_error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=False)
 
@@ -991,7 +957,7 @@ def fix_to_pass_tests(
         is_lint_or_unit = bool(pytest_candidates or vitest_candidates)
         # If no explicit test candidates but failed, assume lint/setup error (unless it's purely playwright)
         if not is_lint_or_unit and not playwright_candidates and test_result.get("return_code") != 0:
-            is_lint_or_unit = True
+             is_lint_or_unit = True
 
         exclude_playwright = False
         force_local_run = False
@@ -1002,7 +968,7 @@ def fix_to_pass_tests(
             # Build string for simple check
             is_mixed = bool(playwright_candidates)
             if is_mixed:
-                logger.info("Mixed failure types detected. E2E errors will be excluded from LLM context.")
+                 logger.info("Mixed failure types detected. E2E errors will be excluded from LLM context.")
             # Clear focus to ensure we fix the root cause (assuming lint affects all)
             # But if we were focusing on a file and it had lint errors, maybe keep focus?
             # For safety, let's reset only if we were focusing on E2E files specifically.
@@ -1345,7 +1311,7 @@ def extract_important_errors_from_local_tests(test_result: TestResult, exclude_p
     # and contain all failure types (unit tests, lint, E2E).
     # If so, use the complete output instead of just the Playwright report.
     # Also check if the command indicates a GitHub Action run, which provides curated summaries.
-    is_github_action = test_result.command == "github_action_checks"
+    is_github_action = (test_result.command == "github_action_checks")
     has_comprehensive_logs = is_github_action or (output and ("=== " in output or "--- Playwright Test Summary ---" in output))
 
     # Only return early with Playwright-only report if we don't have comprehensive logs
@@ -1474,16 +1440,51 @@ def extract_important_errors_from_local_tests(test_result: TestResult, exclude_p
 
     # 2) Keyword-based fallback extraction
     important_lines = []
-    # Keywords are pre-defined at module level as ERROR_KEYWORDS_LOWER
+    # Keywords that indicate important error information
+    error_keywords = [
+        # error detection
+        "error:",
+        "Error:",
+        "ERROR:",
+        "error",
+        # failed detection
+        "failed:",
+        "Failed:",
+        "FAILED:",
+        "failed",
+        # exceptions and traces
+        "exception:",
+        "Exception:",
+        "EXCEPTION:",
+        "traceback:",
+        "Traceback:",
+        "TRACEBACK:",
+        # assertions and common python errors
+        "assertion",
+        "Assertion",
+        "ASSERTION",
+        "syntax error",
+        "SyntaxError",
+        "import error",
+        "ImportError",
+        "module not found",
+        "ModuleNotFoundError",
+        "test failed",
+        "Test failed",
+        "TEST FAILED",
+        # e2e / Playwright related
+        "e2e/",
+        ".spec.ts",
+        "playwright",
+    ]
 
     # Filter out keywords if exclude_playwright is True
-    keywords_to_use = ERROR_KEYWORDS_LOWER
     if exclude_playwright:
-        keywords_to_use = [k for k in ERROR_KEYWORDS_LOWER if k not in ["e2e/", ".spec.ts", "playwright"]]
+        error_keywords = [k for k in error_keywords if k not in ["e2e/", ".spec.ts", "playwright"]]
 
     for i, line in enumerate(lines):
         line_lower = line.lower()
-        if any(keyword in line_lower for keyword in keywords_to_use):
+        if any(keyword.lower() in line_lower for keyword in error_keywords):
             # Extract a slightly broader context
             start = max(0, i - 5)
             end = min(len(lines), i + 8)

@@ -103,7 +103,7 @@
                 "process-issues",
                 "--disable-graphrag",
                 // "--only",
-                // "https://github.com/kitamura-tetsuo/outliner/pull/1336"
+                // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
             ],
             "python": "${workspaceFolder}/.venv/bin/python",

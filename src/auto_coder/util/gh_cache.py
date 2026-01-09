@@ -41,7 +41,7 @@ def get_ghapi_client(token: str, **kwargs) -> GhApi:
             content=data,
             params=params,
             # Force cache usage for GET requests
-            extensions={"force_cache": True} if verb.upper() == "GET" else {},
+            extensions={"force_cache": True} if verb.upper() == "GET" else {}
         )
 
         self.last_headers = dict(resp.headers)

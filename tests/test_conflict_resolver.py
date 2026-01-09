@@ -180,7 +180,13 @@ def test_perform_base_merge_skips_on_quota_error():
         mock_client.get_repository.return_value = mock_repo
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
-        mock_client.get_pr_details.return_value = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "head_branch": "jules-branch"}
+        mock_client.get_pr_details.return_value = {
+            "number": 1253,
+            "title": "Fix something",
+            "body": "Session ID: xyz",
+            "author": {"login": "google-labs-jules"},
+            "head_branch": "jules-branch"
+        }
 
         mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
@@ -198,7 +204,13 @@ def test_perform_base_merge_skips_on_quota_error():
 
         mock_scan.return_value = ["file1.py"]
 
-        pr_data = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "baseRefName": "main"}
+        pr_data = {
+            "number": 1253,
+            "title": "Fix something",
+            "body": "Session ID: xyz",
+            "author": {"login": "google-labs-jules"},
+            "baseRefName": "main"
+        }
 
         ok = _perform_base_branch_merge_and_conflict_resolution(
             pr_number=1253,

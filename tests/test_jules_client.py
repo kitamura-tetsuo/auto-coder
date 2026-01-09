@@ -162,7 +162,11 @@ class TestJulesClient:
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_repository.return_value = mock_repo
 
-        session = {"name": "projects/p/locations/l/sessions/s1", "state": "COMPLETED", "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}}
+        session = {
+            "name": "projects/p/locations/l/sessions/s1",
+            "state": "COMPLETED",
+            "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}
+        }
         retry_state = {"s1": 1}
 
         changed = client.process_session_status(session, retry_state, mock_github_client)
@@ -192,7 +196,11 @@ class TestJulesClient:
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_repository.return_value = mock_repo
 
-        session = {"name": "projects/p/locations/l/sessions/s1", "state": "COMPLETED", "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}}
+        session = {
+            "name": "projects/p/locations/l/sessions/s1",
+            "state": "COMPLETED",
+            "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}
+        }
         retry_state = {}
 
         # Call with merge_pr=True
@@ -202,6 +210,7 @@ class TestJulesClient:
         mock_pr.merge.assert_called_once()
         # In continuous mode (merge_pr=True), we do NOT archive the session automatically
         client.archive_session.assert_not_called()
+
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     def test_process_session_status_no_auto_merge(self, mock_get_config):
@@ -221,7 +230,11 @@ class TestJulesClient:
         mock_pr.state = "open"
         mock_pr.merged = False
 
-        session = {"name": "projects/p/locations/l/sessions/s1", "state": "COMPLETED", "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}}
+        session = {
+            "name": "projects/p/locations/l/sessions/s1",
+            "state": "COMPLETED",
+            "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}
+        }
         retry_state = {}
 
         # Call with merge_pr=False (default)
@@ -232,6 +245,7 @@ class TestJulesClient:
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("src.auto_coder.jules_client.time.sleep")
     def test_run_llm_cli_polling(self, mock_sleep, mock_get_config):
+
         """Test _run_llm_cli with polling loop."""
         mock_config = Mock()
         mock_config.get_backend_config.return_value = Mock(options=[], options_for_noedit=[], api_key=None, base_url=None)
@@ -246,7 +260,7 @@ class TestJulesClient:
         # Sequence of polling: RUNNING -> COMPLETED (archive called) -> ARCHIVED
         client.get_session.side_effect = [
             {"name": "session1", "state": "RUNNING"},
-            {"name": "session1", "state": "COMPLETED"},  # process_session_status might archive it here
+            {"name": "session1", "state": "COMPLETED"}, # process_session_status might archive it here
             {"name": "session1", "state": "ARCHIVED"},
         ]
 
@@ -255,7 +269,8 @@ class TestJulesClient:
         # If state is ARCHIVED, it returns.
 
         with patch("src.auto_coder.github_client.GitHubClient") as mock_gh_cls:
-            response = client._run_llm_cli("prompt")
+             response = client._run_llm_cli("prompt")
+
 
         assert response == "Session session1 completed and archived."
         assert client.get_session.call_count == 3
@@ -271,7 +286,7 @@ class TestJulesClient:
         client = JulesClient()
         client.start_session = Mock(return_value="new_session")
         client.send_message = Mock()
-        client.get_session = Mock(return_value={"state": "ARCHIVED"})  # Immediate exit for loop
+        client.get_session = Mock(return_value={"state": "ARCHIVED"}) # Immediate exit for loop
 
         # First call: starts new session
         client._run_llm_cli("prompt1")
@@ -323,7 +338,7 @@ class TestJulesClient:
         client.start_session = Mock(return_value="session1")
         # Ensure we are not on main branch to trigger merge_pr=True
         with patch("src.auto_coder.jules_client.get_current_branch", return_value="feature-branch"):
-            with patch("src.auto_coder.github_client.GitHubClient") as mock_gh_cls:
+             with patch("src.auto_coder.github_client.GitHubClient") as mock_gh_cls:
                 mock_gh = Mock()
                 mock_gh_cls.get_instance.return_value = mock_gh
 
@@ -338,14 +353,16 @@ class TestJulesClient:
                 # 1. RUNNING
                 # 2. COMPLETED with PR (triggers check and exit)
                 # 3. ARCHIVED (Safety fallback to break loop if exit condition not met)
-                client.get_session = Mock(
-                    side_effect=[
-                        {"name": "session1", "state": "RUNNING"},
-                        {"name": "session1", "state": "COMPLETED", "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}},
-                        {"name": "session1", "state": "ARCHIVED"},
-                        {"name": "session1", "state": "ARCHIVED"},
-                    ]
-                )
+                client.get_session = Mock(side_effect=[
+                    {"name": "session1", "state": "RUNNING"},
+                    {
+                        "name": "session1",
+                        "state": "COMPLETED",
+                        "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}}
+                    },
+                    {"name": "session1", "state": "ARCHIVED"},
+                    {"name": "session1", "state": "ARCHIVED"},
+                ])
 
                 # Mock process_session_status to do nothing (or verify we don't need it to do much)
                 client.process_session_status = Mock(return_value=False)
