@@ -74,11 +74,13 @@ class TestAutomationEngine:
 
     # Note: Dependabot filtering tests and PR processing tests moved to test_pr_processor.py
 
+    @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.automation_engine.get_current_branch")
-    def test_merge_pr_with_conflict_resolution_success(self, mock_get_current_branch, mock_github_client, mock_gemini_client):
+    def test_merge_pr_with_conflict_resolution_success(self, mock_get_current_branch, mock_label_manager, mock_github_client, mock_gemini_client):
         """Test that the engine correctly handles PR processing."""
         # Setup
         mock_get_current_branch.return_value = "main"  # Return main branch to avoid closed branch check
+        mock_label_manager.return_value.__enter__.return_value = True
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
@@ -117,11 +119,13 @@ class TestAutomationEngine:
             assert len(result["errors"]) == 0
             mock_take_actions.assert_called_once()
 
+    @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.automation_engine.get_current_branch")
-    def test_merge_pr_with_conflict_resolution_failure(self, mock_get_current_branch, mock_github_client, mock_gemini_client):
+    def test_merge_pr_with_conflict_resolution_failure(self, mock_get_current_branch, mock_label_manager, mock_github_client, mock_gemini_client):
         """Test that the engine correctly handles PR processing failure."""
         # Setup
         mock_get_current_branch.return_value = "main"  # Return main branch to avoid closed branch check
+        mock_label_manager.return_value.__enter__.return_value = True
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
@@ -160,11 +164,13 @@ class TestAutomationEngine:
             assert "Processing failed" in result["errors"][0]
             mock_take_actions.assert_called_once()
 
+    @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.automation_engine.get_current_branch")
-    def test_resolve_pr_merge_conflicts_git_cleanup(self, mock_get_current_branch, mock_github_client, mock_gemini_client):
+    def test_resolve_pr_merge_conflicts_git_cleanup(self, mock_get_current_branch, mock_label_manager, mock_github_client, mock_gemini_client):
         """Test that PR processing handles conflicts correctly."""
         # Setup - this test verifies that process_single handles PR with conflicts
         mock_get_current_branch.return_value = "main"  # Return main branch to avoid closed branch check
+        mock_label_manager.return_value.__enter__.return_value = True
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
@@ -3097,9 +3103,10 @@ class TestElderSiblingDependencyLogic:
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""
 
+    @patch("auto_coder.issue_processor.LabelManager")
     @patch("auto_coder.gh_logger.subprocess.run")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_propagates_urgent_label(self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client):
+    def test_create_pr_for_issue_propagates_urgent_label(self, mock_get_current_branch, mock_cmd, mock_label_manager, mock_github_client, mock_gemini_client):
         """Test that urgent label is propagated from issue to PR."""
         # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
@@ -3113,6 +3120,7 @@ class TestUrgentLabelPropagation:
 
         # Mock get_current_branch to avoid git operations
         mock_get_current_branch.return_value = "issue-123"
+        mock_label_manager.return_value.__enter__.return_value = True
 
         # Mock gh pr create to return PR URL
         gh_results = [
@@ -3164,9 +3172,10 @@ class TestUrgentLabelPropagation:
         # Verify GitHub client was called to add labels
         mock_github_client.add_labels.assert_called_once_with("test/repo", 456, ["urgent"], item_type="pr")
 
+    @patch("auto_coder.issue_processor.LabelManager")
     @patch("auto_coder.gh_logger.subprocess.run")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_without_urgent_label(self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client):
+    def test_create_pr_for_issue_without_urgent_label(self, mock_get_current_branch, mock_cmd, mock_label_manager, mock_github_client, mock_gemini_client):
         """Test that no urgent label is propagated when issue doesn't have it."""
         # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
@@ -3180,6 +3189,7 @@ class TestUrgentLabelPropagation:
 
         # Mock get_current_branch to avoid git operations
         mock_get_current_branch.return_value = "issue-123"
+        mock_label_manager.return_value.__enter__.return_value = True
 
         # Mock gh pr create to return PR URL
         def side_effect(cmd, **kwargs):
@@ -3625,12 +3635,14 @@ class TestCheckAndHandleClosedBranch:
         # In the fixed version, has_label is not called (check_labels=False is respected)
         assert "issues_processed" in result
 
+    @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_dependabot_pr_if_processed_recently(
         self,
         mock_extract_issues,
         mock_check_actions,
+        mock_label_manager,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -3639,6 +3651,7 @@ class TestCheckAndHandleClosedBranch:
         """Test that _get_candidates skips Dependabot PRs if one was processed recently."""
         # Setup
         engine = AutomationEngine(mock_github_client)
+        mock_label_manager.return_value.__enter__.return_value = True
 
         # Create a timestamp file indicating a recent Dependabot PR processing
         timestamp_file = tmpdir.join("dependabot_timestamp.txt")

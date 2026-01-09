@@ -2384,7 +2384,6 @@ def _apply_github_actions_fix(
             logger.info(f"Starting Jules session for GitHub Actions fix for PR #{pr_number}")
 
             # Import JulesClient here to avoid circular imports
-            from .issue_processor import _notify_jules_session_start
             from .jules_client import JulesClient
 
             session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], is_noedit=False, title=f"Fix for PR #{pr_number} {pr_data['title']}")
