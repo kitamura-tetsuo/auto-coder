@@ -991,10 +991,10 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
                                     # Collect job-wide summary candidates (maintain order)
-                                    for ln in content.split("\n"):
-                                        ll = ln.lower()
-                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
-                                            job_summary_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        line_lower = line.lower()
+                                        if ((" failed" in line_lower) or (" passed" in line_lower) or (" skipped" in line_lower) or (" did not run" in line_lower)) and any(ch.isdigit() for ch in line):
+                                            job_summary_lines.append(line)
                                     step_name = step_file_label
                                     # Extract important error-related information
                                     snippet = _extract_error_context(content)
@@ -1065,9 +1065,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                                 if len(parts) >= 3:
                                                     step_field = parts[1].strip().lower()
                                                     if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                                        ll = ln.lower()
+                                                        line_lower = ln.lower()
                                                         if (
-                                                            (" failed" in ll)
+                                                            (" failed" in line_lower)
                                                             or (" passed" in ll)
                                                             or (" skipped" in ll)
                                                             or (" did not run" in ll)
@@ -1233,8 +1233,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 # Supplement Playwright summary (few lines) at end (full scan, maintain order)
                 summary_lines = []
                 for ln in text_output.split("\n"):
-                    ll = ln.lower()
-                    if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
+                    line_lower = ln.lower()
+                    if (" failed" in line_lower) or (" passed" in line_lower) or (" skipped" in line_lower) or (" did not run" in line_lower) or ("notice:" in line_lower) or ("error was not a part of any test" in line_lower) or ("command failed with exit code" in line_lower) or ("process completed with exit code" in line_lower):
                         summary_lines.append(ln)
                 if summary_lines:
                     # Supplement Playwright summary (few lines) at end (only failed step lines, exclude lines in body)
@@ -1244,8 +1244,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         if len(parts) >= 3:
                             step_field = parts[1].strip().lower()
                             if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                ll = ln.lower()
-                                if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
+                                line_lower = ln.lower()
+                                if (" failed" in line_lower) or (" passed" in line_lower) or (" skipped" in line_lower) or (" did not run" in line_lower) or ("notice:" in line_lower) or ("error was not a part of any test" in line_lower) or ("command failed with exit code" in line_lower) or ("process completed with exit code" in line_lower):
                                     summary_lines.append(ln)
                     if summary_lines:
                         body_now = important
