@@ -22,7 +22,6 @@ __all__ = [
     "get_current_repo_name",
     "is_git_repository",
     "parse_github_repo_from_url",
-    "get_current_commit_sha",
 ]
 
 logger = get_logger(__name__)
@@ -156,9 +155,7 @@ def is_git_repository(path: Optional[str] = None) -> bool:
         return False
 
 
-def get_commit_log(
-    cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50, current_branch: Optional[str] = None
-) -> str:
+def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50, current_branch: Optional[str] = None) -> str:
     """
     Get commit messages since the current branch diverged from the base branch.
 
@@ -277,20 +274,3 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
         return True
 
     return False
-
-
-def get_current_commit_sha(cwd: Optional[str] = None) -> Optional[str]:
-    """
-    Get the current commit SHA (HEAD).
-
-    Args:
-        cwd: Optional working directory for git command
-
-    Returns:
-        Full SHA of the current commit or None if failed
-    """
-    cmd = CommandExecutor()
-    result = cmd.run_command(["git", "rev-parse", "HEAD"], cwd=cwd)
-    if result.success:
-        return result.stdout.strip()
-    return None

@@ -103,7 +103,7 @@
                 "process-issues",
                 "--disable-graphrag",
                 // "--only",
-                // "https://github.com/kitamura-tetsuo/outliner/pull/1336"
+                // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
@@ -137,27 +137,8 @@
             "cwd": "/workspace",
             "args": [
                 "fix-to-pass-tests",
-                "--enable-github-action",
-                "--disable-graphrag",
                 "--max-attempts",
                 "100000"
-            ],
-            "python": "${workspaceFolder}/.venv/bin/python",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            }
-        },
-        {
-            "name": "Debug GitHub Action Log Summary",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "auto_coder.cli",
-            "console": "integratedTerminal",
-            "cwd": "/workspace",
-            "args": [
-                "debug",
-                "--github-action-log-summary",
-                "https://github.com/kitamura-tetsuo/outliner/actions/runs/20703209336",
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
@@ -205,6 +186,6 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
-        },
+        }
     ]
 }
