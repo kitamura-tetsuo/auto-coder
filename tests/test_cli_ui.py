@@ -2,7 +2,7 @@
 
 import sys
 import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
 
 from src.auto_coder import cli_ui
 
@@ -24,12 +24,7 @@ def test_sleep_with_countdown_execution(mock_sleep, mock_time):
     # 3. current_time = time.time() (Loop 2 check) -> returns start_time + 1.1 (1.1s elapsed)
     # 4. current_time = time.time() (Loop 3 check) -> returns start_time + 2.1 (2.1s elapsed, break)
 
-    mock_time.side_effect = [
-        start_time,           # init
-        start_time,           # loop 1
-        start_time + 1.1,     # loop 2
-        start_time + 2.1      # loop 3 (exit)
-    ]
+    mock_time.side_effect = [start_time, start_time, start_time + 1.1, start_time + 2.1]  # init  # loop 1  # loop 2  # loop 3 (exit)
 
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 

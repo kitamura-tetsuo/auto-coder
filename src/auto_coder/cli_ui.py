@@ -128,10 +128,10 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
         # Clear the line after done
         # We need to clear enough space for the longest message
-        stream.write("\r" + " " * 80 + "\r")
+        stream.write("\r" + " " * 100 + "\r")
         stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        stream.write("\r" + " " * 80 + "\r")
+        stream.write("\r" + " " * 100 + "\r")
         stream.flush()
         raise
