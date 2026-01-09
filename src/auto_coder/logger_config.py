@@ -54,6 +54,7 @@ except ImportError:
     pass  # Record will be used as a forward reference
 
 from .config import settings
+from .security_utils import redact_string
 
 # Determine the base directory that should be removed from log paths.  When the
 # package is installed this resolves to ``.../site-packages``.  When running
@@ -230,6 +231,8 @@ def _format_args(func: Callable, args: tuple, kwargs: dict, max_len: int = 120) 
     bound = signature(func).bind_partial(*args, **kwargs)
     bound.apply_defaults()
     s = ", ".join(f"{k}={bound.arguments[k]!r}" for k in bound.arguments)
+    # Redact sensitive information
+    s = redact_string(s)
     if len(s) > max_len:
         s = s[:max_len] + "…"
     return s
