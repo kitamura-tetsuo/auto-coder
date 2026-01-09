@@ -169,7 +169,7 @@ def _write_test_log_json(
     timestamp: datetime,
 ) -> Path:
     """Save test execution details to a JSON log file.
-    
+
     Path format: ~/.auto-coder/{repo_name}/test_log/{timestamp}_{test_file}_attempt_{attempt}.json
     """
     home_dir = Path.home()
@@ -178,7 +178,7 @@ def _write_test_log_json(
     # The requirement says: /home/node/.auto-coder/kitamura-tetsuo/outliner/test_log
     # So we should use repo_name as is but rely on it not starting with / to avoid absolute path issues?
     # Usually repo_name is "owner/repo".
-    
+
     log_dir = home_dir / ".auto-coder" / repo_name / "test_log"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -277,7 +277,7 @@ def _process_cmd_result(result: Any, command: str, test_file: Optional[str] = No
     # Default use captured stdout/stderr
     stdout = result.stdout
     stderr = result.stderr
-    
+
     # Try to find JSON log path
     # Pattern matching "Test log saved to: /path/to/log.json"
     match = re.search(r"Test log saved to:\s+(.+)$", stdout, re.MULTILINE)
@@ -293,7 +293,7 @@ def _process_cmd_result(result: Any, command: str, test_file: Optional[str] = No
                 logger.debug(f"Loaded structured test logs from {log_path}")
             except Exception as e:
                 logger.warning(f"Failed to read/parse test log JSON from {log_path}: {e}")
-    
+
     return {
         "success": result.success,
         "output": stdout,
@@ -381,28 +381,28 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         cmd_list = ["bash", config.TEST_SCRIPT_PATH]
         logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
-        
+
         processed_result = _process_cmd_result(result, " ".join(cmd_list), None)
         logger.info(f"Finished local tests. {'Passed' if processed_result['success'] else 'Failed'}")
 
         # If the test run failed and isolate_single_test_on_failure is enabled in config.toml,
         # try to extract the first failed test file and run it via the script
-        if not processed_result['success'] and get_isolate_single_test_on_failure_from_config():
+        if not processed_result["success"] and get_isolate_single_test_on_failure_from_config():
             # Extract the first failed test file from the output
-            first_failed_test = extract_first_failed_test(processed_result['output'], processed_result['errors'])
+            first_failed_test = extract_first_failed_test(processed_result["output"], processed_result["errors"])
             if first_failed_test:
                 logger.info(f"Detected failing test file {first_failed_test}; rerunning targeted script")
-                
+
                 # Run the isolated test
                 isolated_cmd_list = ["bash", config.TEST_SCRIPT_PATH, first_failed_test]
                 isolated_result_raw = cmd.run_command(isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 isolated_result = _process_cmd_result(isolated_result_raw, " ".join(isolated_cmd_list), first_failed_test)
 
                 # Check for stability issue: failed in full suite but passed in isolation
-                if isolated_result['success']:
+                if isolated_result["success"]:
                     logger.warning(f"Test stability issue detected: {first_failed_test} failed in full suite but passed in isolation")
-                    isolated_result['stability_issue'] = True
-                    isolated_result['full_suite_result'] = processed_result
+                    isolated_result["stability_issue"] = True
+                    isolated_result["full_suite_result"] = processed_result
                     return isolated_result
                 else:
                     return isolated_result
@@ -483,7 +483,7 @@ def apply_test_stability_fix(
 def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClient) -> Optional[str]:
     """
     Resolve the relevant issue or PR body for a given branch.
-    
+
     Logic:
     1. Extract number from branch.
     2. If number found:
@@ -495,27 +495,27 @@ def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClien
     3. If no number found in branch (or extraction failed):
        - Search for open PR where head branch matches `branch_name`.
        - If matching PR found, recurse logic as if it was a PR number.
-       
+
     Returns:
         The body text of the most relevant Issue or PR, or None if not found.
     """
     try:
         # 1. Try to extract number from branch
         item_number = extract_number_from_branch(branch_name)
-        
+
         if item_number:
             repo = gh_client.get_repository(repo_name)
-            
+
             # Check if it is a PR
             try:
                 # Note: PyGithub get_pull raises UnknownObjectException if number is not a PR (even if it's an Issue)
                 # But get_issue works for both (mostly).
                 # We want to treat it as PR if possible to check for linked issues.
                 pr = repo.get_pull(item_number)
-                
+
                 # It is a PR
                 logger.info(f"Branch '{branch_name}' corresponds to PR #{item_number}")
-                
+
                 # Check for closing issues
                 closing_issue_ids = gh_client.get_pr_closing_issues(repo_name, item_number)
                 if closing_issue_ids:
@@ -527,19 +527,19 @@ def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClien
                 else:
                     logger.info(f"PR #{item_number} has no linked closing issues. Using PR body.")
                     return pr.body
-                    
+
             except Exception:
                 # Not a PR, or get_pull failed. Treat as Issue.
                 logger.info(f"Branch '{branch_name}' number #{item_number} treated as Issue")
                 issue = repo.get_issue(item_number)
                 return issue.body
-                
+
         else:
             # 2. No number in branch name (e.g. feature-branch)
             # Find PR by branch name
             logger.info(f"No number in branch '{branch_name}'. Searching for PRs with this head branch.")
             pr_data = gh_client.find_pr_by_head_branch(repo_name, branch_name)
-            
+
             if pr_data:
                 pr_number = pr_data.get("number")
                 if pr_number:
@@ -547,10 +547,10 @@ def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClien
                     # Recurse or duplicate logic? Duplicate slightly to avoid infinite recursion risk if simple
                     # Reuse the same logic by calling with mocked branch name or just jumping to PR logic
                     return _resolve_issue_body(repo_name, f"pr-{pr_number}", gh_client)
-            
+
             logger.info(f"No context found for branch '{branch_name}'")
             return None
-            
+
     except Exception as e:
         logger.warning(f"Error resolving issue body for branch '{branch_name}': {e}")
         return None
