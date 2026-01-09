@@ -122,9 +122,7 @@ def test_github_actions_enhanced_integration_passes_structured_context():
     ):
         mock_jules_instance = mock_jules_client.return_value
         mock_jules_instance.start_session.return_value = "mock_session_id"
-        actions = _apply_github_actions_fix(
-            "owner/repo", pr_data, config, github_logs, test_result=tr, github_client=Mock()
-        )
+        actions = _apply_github_actions_fix("owner/repo", pr_data, config, github_logs, test_result=tr, github_client=Mock())
 
     # Verify prompt was rendered with structured data
     assert captured.get("key") == "pr.github_actions_fix"
