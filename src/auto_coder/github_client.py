@@ -5,7 +5,6 @@ GitHub API client for Auto-Coder.
 import json
 import subprocess
 import threading
-import time
 import types
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -107,18 +106,7 @@ class GitHubClient:
             if headers:
                 final_headers.update(headers)
 
-            # Retry logic for RemoteProtocolError
-            max_retries = 3
-            response = None
-            for attempt in range(max_retries):
-                try:
-                    response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
-                    break
-                except httpx.RemoteProtocolError:
-                    if attempt == max_retries - 1:
-                        raise
-                    logger.warning(f"RemoteProtocolError encountered. Retrying {attempt + 1}/{max_retries}...")
-                    time.sleep(1 * (attempt + 1))
+            response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
             try:
                 # We cannot use `response.raise_for_status()` for two reasons:
                 # 1. It raises an error on 304 Not Modified, which is a success condition for caching.
@@ -470,12 +458,7 @@ class GitHubClient:
                         ],
                         "latest_commits": [
                             {
-                                "author_login": c.get("commit", {})
-                                .get("author", {})
-                                .get("user", {})
-                                .get("login")
-                                if c.get("commit", {}).get("author", {}).get("user")
-                                else None,
+                                "author_login": c.get("commit", {}).get("author", {}).get("user", {}).get("login") if c.get("commit", {}).get("author", {}).get("user") else None,
                                 "committed_date": c.get("commit", {}).get("author", {}).get("date"),
                             }
                             for c in pr_node.get("commits", {}).get("nodes", [])
@@ -545,11 +528,10 @@ class GitHubClient:
                       totalCount
                     }
                     # Sub-issues (open only, as checking for open sub-issues)
-                    subIssues(first: 10) {
+                    subIssues(first: 10, states: OPEN) {
                       totalCount
                       nodes {
                         number
-                        state
                       }
                     }
                     # Parent issue
@@ -608,7 +590,7 @@ class GitHubClient:
 
                     # Extract open sub-issues
                     sub_issues_nodes = node.get("subIssues", {}).get("nodes", [])
-                    open_sub_issue_numbers = [n["number"] for n in sub_issues_nodes if n and n.get("state") == "OPEN"]
+                    open_sub_issue_numbers = [n["number"] for n in sub_issues_nodes if n]
 
                     parent_node = node.get("parent")
                     parent_number = parent_node.get("number") if parent_node else None
@@ -1768,51 +1750,3 @@ class GitHubClient:
                 unresolved.append(issue_num)
 
         return unresolved
-
-    def get_check_runs(self, repo_name: str, ref: str) -> List[Dict[str, Any]]:
-        """Get check runs for a specific ref (SHA, branch, tag).
-
-        Args:
-            repo_name: Repository name in format 'owner/repo'
-            ref: SHA, branch name, or tag name
-
-        Returns:
-            List of check runs as dictionaries
-        """
-        try:
-            repo = self.get_repository(repo_name)
-            # We can use get_commit to get a commit object, then get_check_runs
-            # But ref might be a branch name. get_commit works with branch names too.
-            commit = repo.get_commit(ref)
-            check_runs = commit.get_check_runs()
-
-            results = []
-            for run in check_runs:
-                results.append(
-                    {
-                        "id": run.id,
-                        "name": run.name,
-                        "head_sha": run.head_sha,
-                        "status": run.status,
-                        "conclusion": run.conclusion,
-                        "started_at": run.started_at.isoformat() if run.started_at else None,
-                        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                        "output": (
-                            {
-                                "title": run.output.title,
-                                "summary": run.output.summary,
-                                "text": run.output.text,
-                            }
-                            if run.output
-                            else None
-                        ),
-                        "html_url": run.html_url,
-                        "details_url": run.details_url,
-                    }
-                )
-
-            logger.info(f"Retrieved {len(results)} check runs for {ref}")
-            return results
-        except GithubException as e:
-            logger.error(f"Failed to get check runs for {ref}: {e}")
-            return []

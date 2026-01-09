@@ -28,7 +28,6 @@ except ImportError:
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_config import config_group
-from .cli_commands_debug import debug
 from .cli_commands_graphrag import graphrag_group
 from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
@@ -143,7 +142,6 @@ main.add_command(get_actions_logs)
 main.add_command(auth_status)
 main.add_command(migrate_branches)
 main.add_command(unlock)
-main.add_command(debug)
 
 
 if __name__ == "__main__":
