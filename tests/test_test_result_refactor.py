@@ -38,7 +38,7 @@ def test_enhanced_error_extraction_playwright_block():
 
           Error: expect(received).toContain(expected) // indexOf
 
-          Expected substring: "<a href=\"https://example.com\"\n            target=\"_blank\"\n            class=\"internal\">Example</a>"
+          Expected substring: "<a href="https://example.com"\n            target="_blank"\n            class="internal">Example</a>"
           Received string:    "<div>Example</div>"
         """
     )
