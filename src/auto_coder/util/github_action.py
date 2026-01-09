@@ -991,41 +991,41 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
                                     # Collect job-wide summary candidates (maintain order)
-                                    for ln in content.split("\n"):
-                                        ll = ln.lower()
-                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
-                                            job_summary_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        lower_line = line.lower()
+                                        if ((" failed" in lower_line) or (" passed" in lower_line) or (" skipped" in lower_line) or (" did not run" in lower_line)) and any(ch.isdigit() for ch in line):
+                                            job_summary_lines.append(line)
                                     step_name = step_file_label
                                     # Extract important error-related information
                                     snippet = _extract_error_context(content)
                                     # Enhance with expected/received original lines (for strict matching)
                                     exp_lines = []
-                                    for ln in content.split("\n"):
-                                        if ("Expected substring:" in ln) or ("Received string:" in ln):
-                                            exp_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        if ("Expected substring:" in line) or ("Received string:" in line):
+                                            exp_lines.append(line)
                                     if exp_lines:
                                         # Also add normalized lines with backslash escapes removed
-                                        norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
+                                        norm_lines = [line.replace('\\"', '"') for line in exp_lines]
                                         if "--- Expectation Details ---" not in snippet:
                                             snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
                                             snippet = snippet + "\n" + "\n".join(norm_lines)
                                     # Don't output steps without errors (stricter)
                                     if snippet and snippet.strip():
-                                        s = snippet
-                                        s_lower = s.lower()
+                                        snippet_text = snippet
+                                        s_lower = snippet_text.lower()
                                         if (
-                                            ".spec.ts" in s
-                                            or "expect(received)" in s
-                                            or "Expected substring:" in s
-                                            or "error was not a part of any test" in s
-                                            or "Command failed with exit code" in s
-                                            or "Process completed with exit code" in s
+                                            ".spec.ts" in snippet_text
+                                            or "expect(received)" in snippet_text
+                                            or "Expected substring:" in snippet_text
+                                            or "error was not a part of any test" in snippet_text
+                                            or "Command failed with exit code" in snippet_text
+                                            or "Process completed with exit code" in snippet_text
                                             or "error" in s_lower
                                             or "failed" in s_lower
-                                            or "##[error]" in s
+                                            or "##[error]" in snippet_text
                                         ):
-                                            step_snippets.append(f"--- Step {step_name} ---\n{s}")
+                                            step_snippets.append(f"--- Step {step_name} ---\n{snippet_text}")
                             if step_snippets:
                                 # Add job-wide summary at the end (up to max lines in order of last appearance)
                                 summary_block = ""
@@ -1034,10 +1034,10 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     # Remove duplicates from back, reproduce latest order
                                     seen = set()
                                     uniq_rev = []
-                                    for ln in reversed(job_summary_lines):
-                                        if ln not in seen:
-                                            seen.add(ln)
-                                            uniq_rev.append(ln)
+                                    for line in reversed(job_summary_lines):
+                                        if line not in seen:
+                                            seen.add(line)
+                                            uniq_rev.append(line)
                                     summary_lines = list(reversed(uniq_rev))
                                 # If can't get from ZIP, supplement summary from text logs
                                 if not summary_lines:
@@ -1060,29 +1060,29 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         )
                                         if job_txt2.returncode == 0 and job_txt2.stdout.strip():
                                             # Extract summary only from lines filtered by failing step name
-                                            for ln in job_txt2.stdout.split("\n"):
-                                                parts = ln.split("\t", 2)
+                                            for line in job_txt2.stdout.split("\n"):
+                                                parts = line.split("\t", 2)
                                                 if len(parts) >= 3:
                                                     step_field = parts[1].strip().lower()
                                                     if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                                        ll = ln.lower()
+                                                        lower_line = line.lower()
                                                         if (
-                                                            (" failed" in ll)
-                                                            or (" passed" in ll)
-                                                            or (" skipped" in ll)
-                                                            or (" did not run" in ll)
-                                                            or ("notice" in ll)
-                                                            or ("error was not a part of any test" in ll)
-                                                            or ("command failed with exit code" in ll)
-                                                            or ("process completed with exit code" in ll)
+                                                            (" failed" in lower_line)
+                                                            or (" passed" in lower_line)
+                                                            or (" skipped" in lower_line)
+                                                            or (" did not run" in lower_line)
+                                                            or ("notice" in lower_line)
+                                                            or ("error was not a part of any test" in lower_line)
+                                                            or ("command failed with exit code" in lower_line)
+                                                            or ("process completed with exit code" in lower_line)
                                                         ):
-                                                            summary_lines.append(ln)
+                                                            summary_lines.append(line)
                                     except Exception:
                                         pass
                                 body_str = "\n\n".join(step_snippets)
                                 if summary_lines:
                                     # Exclude lines contained in body from summary
-                                    filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
+                                    filtered = [line for line in summary_lines[-15:] if line not in body_str]
                                     summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
                                 else:
                                     summary_block = ""
@@ -1157,13 +1157,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     if norm_fail_names:
                         kept = []
                         parsed = 0
-                        for ln in text_output.split("\n"):
-                            parts = ln.split("\t", 2)
+                        for line in text_output.split("\n"):
+                            parts = line.split("\t", 2)
                             if len(parts) >= 3:
                                 parsed += 1
                                 step_field = parts[1].strip().lower()
                                 if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                    kept.append(ln)
+                                    kept.append(line)
                         # Only apply if sufficient lines can be parsed in tab format and filter results obtained
                         if parsed > 10 and kept:
                             text_for_extract = "\n".join(kept)
@@ -1178,12 +1178,12 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 blocks = []
                 if norm_fail_names:
                     step_to_lines: Dict[str, List[str]] = {}
-                    for ln in text_for_extract.split("\n"):
-                        parts = ln.split("\t", 2)
+                    for line in text_for_extract.split("\n"):
+                        parts = line.split("\t", 2)
                         if len(parts) >= 3:
                             step_field = parts[1].strip()
                             step_key = step_field
-                            step_to_lines.setdefault(step_key, []).append(ln)
+                            step_to_lines.setdefault(step_key, []).append(line)
                     if step_to_lines:
                         for step_key in sorted(step_to_lines.keys()):
                             body_lines = step_to_lines[step_key]
@@ -1194,13 +1194,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             if ("Expected substring:" in body_text) or ("Received string:" in body_text) or ("expect(received)" in body_text):
                                 extra = []
                                 src_lines = body_text.split("\n")
-                                for i, ln2 in enumerate(src_lines):
-                                    if ("Expected substring:" in ln2) or ("Received string:" in ln2) or ("expect(received)" in ln2):
-                                        s2 = max(0, i - 2)
-                                        e2 = min(len(src_lines), i + 8)
-                                        extra.extend(src_lines[s2:e2])
+                                for i, line2 in enumerate(src_lines):
+                                    if ("Expected substring:" in line2) or ("Received string:" in line2) or ("expect(received)" in line2):
+                                        start_index2 = max(0, i - 2)
+                                        end_index2 = min(len(src_lines), i + 8)
+                                        extra.extend(src_lines[start_index2:end_index2])
                                 if extra:
-                                    norm_extra = [ln.replace('"', '"') for ln in extra]
+                                    norm_extra = [line.replace('"', '"') for line in extra]
                                     if "--- Expectation Details ---" not in blk_imp:
                                         blk_imp = (blk_imp + ("\n\n--- Expectation Details ---\n" if blk_imp else "")) + "\n".join(norm_extra)
                                     else:
@@ -1216,13 +1216,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 if ("Expected substring:" in text_for_extract) or ("Received string:" in text_for_extract) or ("expect(received)" in text_for_extract):
                     extra = []
                     src_lines = text_for_extract.split("\n")
-                    for i, ln in enumerate(src_lines):
-                        if ("Expected substring:" in ln) or ("Received string:" in ln) or ("expect(received)" in ln):
-                            s = max(0, i - 2)  # type: ignore[assignment]
-                            e = min(len(src_lines), i + 8)  # type: ignore[misc]
-                            extra.extend(src_lines[s:e])  # type: ignore[misc]
+                    for i, line in enumerate(src_lines):
+                        if ("Expected substring:" in line) or ("Received string:" in line) or ("expect(received)" in line):
+                            start_index = max(0, i - 2)  # type: ignore[assignment]
+                            end_index = min(len(src_lines), i + 8)  # type: ignore[misc]
+                            extra.extend(src_lines[start_index:end_index])  # type: ignore[misc]
                     if extra:
-                        norm_extra = [ln.replace('\\"', '"') for ln in extra]
+                        norm_extra = [line.replace('\\"', '"') for line in extra]
                         if "--- Expectation Details ---" not in important:
                             important = (important + ("\n\n--- Expectation Details ---\n" if important else "")) + "\n".join(norm_extra)
                         else:
@@ -1232,24 +1232,42 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     important = slice_relevant_error_window(text_for_extract)
                 # Supplement Playwright summary (few lines) at end (full scan, maintain order)
                 summary_lines = []
-                for ln in text_output.split("\n"):
-                    ll = ln.lower()
-                    if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
-                        summary_lines.append(ln)
+                for line in text_output.split("\n"):
+                    lower_line = line.lower()
+                    if (
+                        (" failed" in lower_line)
+                        or (" passed" in lower_line)
+                        or (" skipped" in lower_line)
+                        or (" did not run" in lower_line)
+                        or ("notice:" in lower_line)
+                        or ("error was not a part of any test" in lower_line)
+                        or ("command failed with exit code" in lower_line)
+                        or ("process completed with exit code" in lower_line)
+                    ):
+                        summary_lines.append(line)
                 if summary_lines:
                     # Supplement Playwright summary (few lines) at end (only failed step lines, exclude lines in body)
                     summary_lines = []
-                    for ln in text_output.split("\n"):
-                        parts = ln.split("\t", 2)
+                    for line in text_output.split("\n"):
+                        parts = line.split("\t", 2)
                         if len(parts) >= 3:
                             step_field = parts[1].strip().lower()
                             if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                ll = ln.lower()
-                                if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
-                                    summary_lines.append(ln)
+                                lower_line = line.lower()
+                                if (
+                                    (" failed" in lower_line)
+                                    or (" passed" in lower_line)
+                                    or (" skipped" in lower_line)
+                                    or (" did not run" in lower_line)
+                                    or ("notice:" in lower_line)
+                                    or ("error was not a part of any test" in lower_line)
+                                    or ("command failed with exit code" in lower_line)
+                                    or ("process completed with exit code" in lower_line)
+                                ):
+                                    summary_lines.append(line)
                     if summary_lines:
                         body_now = important
-                        filtered = [ln for ln in summary_lines[-15:] if ln not in body_now]
+                        filtered = [line for line in summary_lines[-15:] if line not in body_now]
                         if filtered:
                             important = important + ("\n\n--- Summary ---\n" if "--- Summary ---" not in important else "\n") + "\n".join(filtered)
                 # Truncate prelude (final formatting)
@@ -1815,7 +1833,7 @@ def slice_relevant_error_window(text: str) -> str:
     """
     if not text:
         return text
-    lines = [_clean_log_line(ln) for ln in text.split("\n")]
+    lines = [_clean_log_line(line) for line in text.split("\n")]
     # Group by priority from highest to lowest
     priority_groups = [
         ["Expected substring:", "Received string:", "expect(received)"],
@@ -1828,7 +1846,7 @@ def slice_relevant_error_window(text: str) -> str:
     for group in priority_groups:
         for i in range(len(lines)):
             low = lines[i].lower()
-            if any(g.lower() in low for g in group):
+            if any(group_item.lower() in low for group_item in group):
                 start_idx = max(0, i - 30)
                 break
         if start_idx is not None:
