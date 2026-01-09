@@ -358,8 +358,8 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action._search_github_actions_logs_from_history") as mock_search:
             mock_search.return_value = "Historical logs found"
-            result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=True)
-            assert "Historical logs found" in result
+            logs, _ = _get_github_actions_logs("test/repo", config, failed_checks, search_history=True)
+            assert "Historical logs found" in logs
             mock_search.assert_called_once()
 
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -401,9 +401,9 @@ class TestGetGitHubActionsLogs:
 
             with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
                 mock_get_logs.return_value = "Fallback current logs"
-                result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=True)
+                logs, _ = _get_github_actions_logs("test/repo", config, failed_checks, search_history=True)
                 # Should fall back to current behavior
-                assert "Fallback current logs" in result
+                assert "Fallback current logs" in logs
                 mock_search.assert_called_once()
                 mock_get_logs.assert_called()
 
@@ -429,9 +429,9 @@ class TestGetGitHubActionsLogs:
             with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
                 mock_get_logs.return_value = "Logs"
                 # Call without explicit search_history (should use config)
-                result = _get_github_actions_logs("test/repo", config, failed_checks)
+                logs, _ = _get_github_actions_logs("test/repo", config, failed_checks)
                 # Should use config value
-                assert "Logs" in result
+                assert "Logs" in logs
                 mock_search.assert_called_once()
 
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -448,9 +448,9 @@ class TestGetGitHubActionsLogs:
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
         # Call with explicit False (should disable historical search)
-        result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=False)
+        logs, _ = _get_github_actions_logs("test/repo", config, failed_checks, search_history=False)
         # Should use current behavior, not search history
-        assert "No detailed logs available" in result
+        assert "No detailed logs available" in logs
 
     def test_with_details_url_in_failed_checks(self):
         """Test when failed_checks contains details_url."""
@@ -465,8 +465,8 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Logs from URL"
-            result = _get_github_actions_logs("test/repo", config, failed_checks)
-            assert "Logs from URL" in result
+            logs, _ = _get_github_actions_logs("test/repo", config, failed_checks)
+            assert "Logs from URL" in logs
             mock_get_logs.assert_called_once()
 
     def test_with_multiple_failed_checks(self):
@@ -487,9 +487,9 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.side_effect = ["Logs from job 200", "Logs from job 300"]
-            result = _get_github_actions_logs("test/repo", config, failed_checks)
-            assert "Logs from job 200" in result
-            assert "Logs from job 300" in result
+            logs, _ = _get_github_actions_logs("test/repo", config, failed_checks)
+            assert "Logs from job 200" in logs
+            assert "Logs from job 300" in logs
             assert mock_get_logs.call_count == 2
 
     def test_error_handling_with_invalid_failed_checks(self):
@@ -497,8 +497,8 @@ class TestGetGitHubActionsLogs:
         config = AutomationConfig()
         # Invalid failed_checks (not a list)
         # Should handle gracefully and return appropriate message
-        result = _get_github_actions_logs("test/repo", config, "invalid")
-        assert "No detailed logs available" in result
+        logs, _ = _get_github_actions_logs("test/repo", config, "invalid")
+        assert "No detailed logs available" in logs
 
     @patch("auto_coder.util.github_action.GitHubClient")
     @patch("auto_coder.util.github_action.get_ghapi_client")
@@ -512,17 +512,17 @@ class TestGetGitHubActionsLogs:
         mock_get_ghapi_client.return_value = mock_api
         mock_api.actions.list_workflow_runs_for_repo.side_effect = Exception("Simulated error")
 
-        result = _get_github_actions_logs("test/repo", config, failed_checks)
+        logs, _ = _get_github_actions_logs("test/repo", config, failed_checks)
         # Should handle exception gracefully and return fallback
-        assert "No detailed logs available" in result
+        assert "No detailed logs available" in logs
 
     def test_empty_failed_checks_handling(self):
         """Test handling of empty failed_checks list."""
         config = AutomationConfig()
         failed_checks = []
-        result = _get_github_actions_logs("test/repo", config, failed_checks)
+        logs, _ = _get_github_actions_logs("test/repo", config, failed_checks)
         # Should handle empty list gracefully
-        assert "No detailed logs available" in result
+        assert "No detailed logs available" in logs
 
     @patch("auto_coder.util.github_action.GitHubClient")
     @patch("auto_coder.util.github_action.get_ghapi_client")
@@ -565,9 +565,9 @@ class TestGetGitHubActionsLogs:
 
         with patch("auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
             mock_get_logs.return_value = "Failed test logs"
-            result = _get_github_actions_logs("test/repo", config, failed_checks)
+            logs, _ = _get_github_actions_logs("test/repo", config, failed_checks)
             # Should only get logs from failed jobs
-            assert "Failed test logs" in result
+            assert "Failed test logs" in logs
 
     @patch("auto_coder.util.github_action.GitHubClient")
     @patch("auto_coder.util.github_action.get_ghapi_client")
