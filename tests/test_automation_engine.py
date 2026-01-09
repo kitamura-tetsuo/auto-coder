@@ -309,7 +309,7 @@ class TestAutomationEngine:
 
         mock_github_client.get_repository.return_value = mock_repo
         mock_github_client.get_open_issues_json.return_value = []
-        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.get_open_prs_json.return_value = []
         mock_github_client.get_issue_details.return_value = {}
         mock_github_client.get_pr_details.return_value = {}
 
