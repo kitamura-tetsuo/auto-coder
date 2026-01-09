@@ -515,7 +515,6 @@ def create_feature_issues(
 
 
 @click.command(name="fix-to-pass-tests")
-@click.option("--github-token", envvar="GITHUB_TOKEN", help="GitHub API token")
 @click.option(
     "--disable-labels/--no-disable-labels",
     default=False,
@@ -546,14 +545,7 @@ def create_feature_issues(
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
-@click.option(
-    "--enable-github-action",
-    is_flag=True,
-    default=False,
-    help="Run tests via GitHub Action instead of locally (commits and pushes changes)",
-)
 def fix_to_pass_tests_command(
-    github_token: Optional[str],
     disable_labels: Optional[bool],
     max_attempts: Optional[int],
     enable_graphrag: bool,
@@ -561,7 +553,6 @@ def fix_to_pass_tests_command(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
-    enable_github_action: bool,
 ) -> None:
     """Run local tests and repeatedly request LLM fixes until tests pass.
 
@@ -588,8 +579,7 @@ def fix_to_pass_tests_command(
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
 
-    # Check prerequisites
-    github_token_final = get_github_token_or_fail(github_token)
+    # Check backend CLI availability
     check_backend_prerequisites(selected_backends)
     check_github_sub_issue_or_setup()
 
@@ -613,8 +603,17 @@ def fix_to_pass_tests_command(
     if enable_graphrag:
         initialize_graphrag(force_reindex=force_reindex)
 
-    # Initialize clients
-    github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
+    # Initialize minimal clients (GitHub not used here, but engine expects a client)
+    try:
+        from .github_client import GitHubClient as _GH
+
+        github_client = _GH("", disable_labels=bool(disable_labels))
+    except Exception:
+        # Fallback to a minimal stand-in (never used)
+        class _Dummy:
+            token = ""
+
+        github_client = _Dummy()  # type: ignore
 
     manager = build_backend_manager_from_config(
         enable_graphrag=enable_graphrag,
@@ -653,7 +652,6 @@ def fix_to_pass_tests_command(
             llm_backend_manager=manager,
             max_attempts=max_attempts,
             message_backend_manager=message_manager,
-            enable_github_action=enable_github_action,
         )
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")

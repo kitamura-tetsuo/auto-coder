@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from auto_coder.progress_decorators import progress_stage
 
@@ -276,42 +276,6 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         return []
 
 
-def get_pr_head_sha(pr_data: Dict[str, Any], repo_name: str) -> str:
-    """Get the current HEAD SHA of a PR, fetching from API if missing in local data.
-
-    Args:
-        pr_data: PR data dictionary
-        repo_name: Repository name (owner/repo)
-
-    Returns:
-        HEAD SHA string or None if not found
-    """
-    pr_number = pr_data.get("number")
-    current_head_sha = pr_data.get("head", {}).get("sha")
-
-    if current_head_sha:
-        return current_head_sha
-
-    # If SHA is missing, try to fetch it from API
-    logger.info(f"HEAD SHA missing in pr_data for PR #{pr_number}, fetching from API...")
-    try:
-        token = GitHubClient.get_instance().token
-        api = get_ghapi_client(token)
-        owner, repo = repo_name.split("/")
-        # API: api.pulls.get(owner, repo, pull_number)
-        pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
-        if pr_details and pr_details.get("head", {}).get("sha"):
-            current_head_sha = pr_details.get("head", {}).get("sha")
-            # Update pr_data with fresh details to ensure subsequent calls have data
-            pr_data.update(pr_details)
-            logger.info(f"Refreshed HEAD SHA from API: {current_head_sha[:8]}")
-            return current_head_sha
-    except Exception as e:
-        logger.warning(f"Failed to fetch PR details for #{pr_number}: {e}")
-
-    raise Exception(f"Failed to fetch PR details for #{pr_number}")
-
-
 @progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
     """Check GitHub Actions status for a PR.
@@ -321,10 +285,13 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     """
     pr_number = pr_data["number"]
     # Get the current HEAD SHA of the PR
-    current_head_sha = get_pr_head_sha(pr_data, repo_name)
+    current_head_sha = pr_data.get("head", {}).get("sha")
 
     try:
         logger.debug(f"pr_data={pr_data}, head_sha={current_head_sha}")
+        if not current_head_sha:
+            logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
+            return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Check cache first
         cache = get_github_cache()
@@ -872,84 +839,6 @@ def get_detailed_checks_from_history(
         )
 
 
-def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token: str) -> list:
-    """Sort jobs based on the order defined in the workflow file."""
-    try:
-        import yaml
-
-        api = get_ghapi_client(token)
-
-        # Get run details to find workflow file path
-        run = api.actions.get_workflow_run(owner, repo, run_id)
-        workflow_path = run.get("path")  # e.g. .github/workflows/ci.yml
-
-        if not workflow_path:
-            return jobs
-
-        # Check if file exists locally
-        # We assume the user is running this in the repo
-        # (or at least has access to the workflow file we care about)
-        if not os.path.exists(workflow_path):
-            # Try absolute path from workspace root if implied
-            possible_path = os.path.join(os.getcwd(), workflow_path)
-            if os.path.exists(possible_path):
-                workflow_path = possible_path
-            else:
-                # Check if path starts with .github, maybe we are in root
-                if workflow_path.startswith(".github"):
-                    if os.path.exists(workflow_path):
-                        pass
-                    else:
-                        return jobs
-                else:
-                    return jobs
-
-        with open(workflow_path, "r") as f:
-            workflow_data = yaml.safe_load(f)
-
-        if not workflow_data or "jobs" not in workflow_data:
-            return jobs
-
-        # Create map of job name/key to index
-        job_order = {}
-        for idx, (job_key, job_def) in enumerate(workflow_data["jobs"].items()):
-            # Map key
-            job_order[job_key] = idx
-            # Map name if present
-            if isinstance(job_def, dict) and "name" in job_def:
-                job_order[job_def["name"]] = idx
-
-        # Sort jobs
-        def get_sort_index(job):
-            name = job.get("name")
-            # Try exact match
-            if name in job_order:
-                return job_order[name]
-
-            # Try clean match (sometimes API returns "Job / Key" or similar?)
-            # Usually API 'name' is the 'name' property or key.
-            # But for matrix, it might be "test (3.11)".
-            # Let's try to match start of string if not exact?
-            # Or splitting by parentheses.
-
-            # Check against keys
-            for key, idx in job_order.items():
-                if name == key:
-                    return idx
-                # Basic fuzzy match: if key is word-bounded in name?
-                # e.g. "e2e-test" in "e2e-test / chrome"
-                if key in name:
-                    return idx
-
-            return 9999
-
-        return sorted(jobs, key=get_sort_index)
-
-    except Exception as e:
-        logger.warning(f"Warning: Failed to sort jobs by workflow: {e}")
-        return jobs
-
-
 def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> bool:
     """Trigger a GitHub Actions workflow via workflow_dispatch.
 
@@ -999,60 +888,15 @@ def get_github_actions_logs_from_url(url: str) -> str:
     https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
     """
     try:
-        # 1) Try to match Job URL first (specific job)
         m = re.match(
             r"https://github\.com/([^/]+)/([^/]+)/actions/runs/([0-9]+)/job/([0-9]+)",
             url,
         )
-        if m:
-            owner, repo, run_id, job_id = m.groups()
-            owner_repo = f"{owner}/{repo}"
-        else:
-            # 2) Try to match Run URL (entire run) -> find failed jobs and recurse
-            m_run = re.match(
-                r"https://github\.com/([^/]+)/([^/]+)/actions/runs/([0-9]+)",
-                url,
-            )
-            if m_run:
-                owner, repo, run_id = m_run.groups()
-                owner_repo = f"{owner}/{repo}"
-
-                # Fetch jobs to find failed ones
-                try:
-                    gh_logger = get_gh_logger()
-                    jobs_res = gh_logger.execute_with_logging(
-                        ["gh", "run", "view", run_id, "-R", owner_repo, "--json", "jobs"],
-                        repo=owner_repo,
-                        timeout=60,
-                        capture_output=True,
-                    )
-                    if jobs_res.returncode == 0 and jobs_res.stdout.strip():
-                        jobs_json = json.loads(jobs_res.stdout)
-                        failed_jobs = [j for j in jobs_json.get("jobs", []) if j.get("conclusion") == "failure"]
-
-                        if failed_jobs:
-                            logs_list = []
-                            for job in failed_jobs:
-                                # extracting job_id
-                                # Note: 'databaseId' is consistent with how we use it later, but 'id' might be used loosely
-                                j_id = job.get("databaseId") or job.get("id")
-                                if j_id:
-                                    # specific job url
-                                    j_url = f"https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{j_id}"
-                                    logs_list.append(get_github_actions_logs_from_url(j_url))
-
-                            if logs_list:
-                                return "\n\n".join(logs_list)
-
-                        # If no failed jobs found or no logs
-                        return f"No failed jobs found in run {run_id}"
-                except Exception as e:
-                    logger.warning(f"Error expanding run URL {url}: {e}")
-                    pass
-
-                return "Invalid GitHub Actions job URL (Run expansion failed)"
-
+        if not m:
             return "Invalid GitHub Actions job URL"
+
+        owner, repo, run_id, job_id = m.groups()
+        owner_repo = f"{owner}/{repo}"
 
         # 1) Get job name if possible
         job_name = f"job-{job_id}"
@@ -1100,8 +944,6 @@ def get_github_actions_logs_from_url(url: str) -> str:
             return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
         norm_fail_names = {_norm(n) for n in failing_step_names}
-        logger.debug(f"Failing step names: {failing_step_names}")
-        logger.debug(f"Normalized fail names: {norm_fail_names}")
 
         def _file_matches_fail(step_file_label: str, content: str) -> bool:
             if not norm_fail_names:
@@ -1126,171 +968,129 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 capture_output=True,
                 timeout=120,
             ) as result:
-                # Fallback content if zip fails
-                fallback_content = None
-
                 if result.returncode == 0 and result.stdout:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         zip_path = os.path.join(tmpdir, "job_logs.zip")
                         with open(zip_path, "wb") as f:
                             f.write(result.stdout)
-
-                        try:
-                            # Try to open as ZIP
-                            with zipfile.ZipFile(zip_path, "r") as zf:
-                                step_snippets = []
-                                job_summary_lines = []
-                                for name in zf.namelist():
-                                    if name.lower().endswith(".txt"):
-                                        with zf.open(name, "r") as fp:
-                                            try:
-                                                content = fp.read().decode("utf-8", errors="ignore")
-                                            except Exception:
-                                                content = ""
-                                        if not content:
-                                            continue
-                                        step_file_label = os.path.splitext(os.path.basename(name))[0]
-
-                                        # Step filter: target only files from failing steps
-                                        if not _file_matches_fail(step_file_label, content):
-                                            continue
-
-                                        # Collect job-wide summary candidates (maintain order)
-                                        for ln in content.split("\n"):
-                                            ll = ln.lower()
-                                            if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
-                                                job_summary_lines.append(ln)
-                                        step_name = step_file_label
-                                        # Extract important error-related information
-                                        if "eslint" in job_name.lower() or "lint" in job_name.lower():
-                                            snippet = _filter_eslint_log(content)
-                                        else:
-                                            snippet = _extract_error_context(content)
-                                        # Enhance with expected/received original lines (for strict matching)
-                                        exp_lines = []
-                                        for ln in content.split("\n"):
-                                            if ("Expected substring:" in ln) or ("Received string:" in ln):
-                                                exp_lines.append(ln)
-                                        if exp_lines:
-                                            # Also add normalized lines with backslash escapes removed
-                                            norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
-                                            if "--- Expectation Details ---" not in snippet:
-                                                snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
-                                            else:
-                                                snippet = snippet + "\n" + "\n".join(norm_lines)
-                                        # Don't output steps without errors (stricter)
-                                        if snippet and snippet.strip():
-                                            s = snippet
-                                            s_lower = s.lower()
-                                            if (
-                                                ".spec.ts" in s
-                                                or "expect(received)" in s
-                                                or "Expected substring:" in s
-                                                or "error was not a part of any test" in s
-                                                or "Command failed with exit code" in s
-                                                or "Process completed with exit code" in s
-                                                or "error" in s_lower
-                                                or "failed" in s_lower
-                                                or "##[error]" in s
-                                            ):
-                                                step_snippets.append(f"--- Step {step_name} ---\n{s}")
-                                if step_snippets:
-                                    # Add job-wide summary at the end (up to max lines in order of last appearance)
-                                    summary_block = ""
-                                    summary_lines = []
-                                    if job_summary_lines:
-                                        # Remove duplicates from back, reproduce latest order
-                                        seen = set()
-                                        uniq_rev = []
-                                        for ln in reversed(job_summary_lines):
-                                            if ln not in seen:
-                                                seen.add(ln)
-                                                uniq_rev.append(ln)
-                                        summary_lines = list(reversed(uniq_rev))
-                                    # If can't get from ZIP, supplement summary from text logs
-                                    if not summary_lines:
-                                        try:
-                                            gh_logger = get_gh_logger()
-                                            job_txt2 = gh_logger.execute_with_logging(
-                                                [
-                                                    "gh",
-                                                    "run",
-                                                    "view",
-                                                    run_id,
-                                                    "-R",
-                                                    owner_repo,
-                                                    "--job",
-                                                    str(job_id),
-                                                    "--log",
-                                                ],
-                                                repo=owner_repo,
-                                                timeout=120,
-                                            )
-                                            if job_txt2.returncode == 0 and job_txt2.stdout.strip():
-                                                # Extract summary only from lines filtered by failing step name
-                                                for ln in job_txt2.stdout.split("\n"):
-                                                    parts = ln.split("\t", 2)
-                                                    if len(parts) >= 3:
-                                                        step_field = parts[1].strip().lower()
-                                                        if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
-                                                            ll = ln.lower()
-                                                            if (
-                                                                (" failed" in ll)
-                                                                or (" passed" in ll)
-                                                                or (" skipped" in ll)
-                                                                or (" did not run" in ll)
-                                                                or ("notice" in ll)
-                                                                or ("error was not a part of any test" in ll)
-                                                                or ("command failed with exit code" in ll)
-                                                                or ("process completed with exit code" in ll)
-                                                            ):
-                                                                summary_lines.append(ln)
-                                        except Exception:
-                                            pass
-                                    body_str = "\n\n".join(step_snippets)
-                                    if summary_lines:
-                                        # Exclude lines contained in body from summary
-                                        filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
-                                        summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
-                                    else:
-                                        summary_block = ""
-                                    body = body_str + summary_block
-                                    # Only apply slice_relevant_error_window for non-ESLint jobs
-                                    if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
-                                        body = slice_relevant_error_window(body)
-                                    body = slice_relevant_error_window(body)
-                                    return f"=== Job: {job_name} ===\n" + body
-                        except zipfile.BadZipFile:
-                            # Not a zip file, it might be raw text log
-                            try:
-                                fallback_content = result.stdout.decode("utf-8", errors="ignore")
-                            except Exception:
-                                pass
-                        except Exception as e:
-                            logger.warning(f"Error processing job zip for {job_id}: {e}")
-
-                # Use fallback content (single text file) if zip failed or wasn't a zip
-                if fallback_content:
-                    # Treat as one big log (similar to step snippets failing)
-                    # Apply ESLint filtering if this is a lint job
-                    if "eslint" in job_name.lower() or "lint" in job_name.lower():
-                        important = _filter_eslint_log(fallback_content)
-                    else:
-                        important = _extract_error_context(fallback_content)
-                    if important and important.strip():
-                        return f"=== Job: {job_name} ===\n{important}"
-
-                # If step_snippets is empty but we extracted something from fallback
-
-                # If zip processing gave nothing, try fallback extraction if available
-                # (Though usually if zip opens, we traverse it)
-
-                # Use conventional method if step not found or everything failed
-                all_text = []
-
-                if not fallback_content:
                     try:
                         with zipfile.ZipFile(zip_path, "r") as zf:
+                            step_snippets = []
+                            job_summary_lines = []
+                            for name in zf.namelist():
+                                if name.lower().endswith(".txt"):
+                                    with zf.open(name, "r") as fp:
+                                        try:
+                                            content = fp.read().decode("utf-8", errors="ignore")
+                                        except Exception:
+                                            content = ""
+                                    if not content:
+                                        continue
+                                    step_file_label = os.path.splitext(os.path.basename(name))[0]
+                                    # Step filter: target only files from failing steps
+                                    if not _file_matches_fail(step_file_label, content):
+                                        continue
+                                    # Collect job-wide summary candidates (maintain order)
+                                    for ln in content.split("\n"):
+                                        ll = ln.lower()
+                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
+                                            job_summary_lines.append(ln)
+                                    step_name = step_file_label
+                                    # Extract important error-related information
+                                    snippet = _extract_error_context(content)
+                                    # Enhance with expected/received original lines (for strict matching)
+                                    exp_lines = []
+                                    for ln in content.split("\n"):
+                                        if ("Expected substring:" in ln) or ("Received string:" in ln):
+                                            exp_lines.append(ln)
+                                    if exp_lines:
+                                        # Also add normalized lines with backslash escapes removed
+                                        norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
+                                        if "--- Expectation Details ---" not in snippet:
+                                            snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
+                                        else:
+                                            snippet = snippet + "\n" + "\n".join(norm_lines)
+                                    # Don't output steps without errors (stricter)
+                                    if snippet and snippet.strip():
+                                        s = snippet
+                                        s_lower = s.lower()
+                                        if (
+                                            ".spec.ts" in s
+                                            or "expect(received)" in s
+                                            or "Expected substring:" in s
+                                            or "error was not a part of any test" in s
+                                            or "Command failed with exit code" in s
+                                            or "Process completed with exit code" in s
+                                            or "error" in s_lower
+                                            or "failed" in s_lower
+                                            or "##[error]" in s
+                                        ):
+                                            step_snippets.append(f"--- Step {step_name} ---\n{s}")
+                            if step_snippets:
+                                # Add job-wide summary at the end (up to max lines in order of last appearance)
+                                summary_block = ""
+                                summary_lines = []
+                                if job_summary_lines:
+                                    # Remove duplicates from back, reproduce latest order
+                                    seen = set()
+                                    uniq_rev = []
+                                    for ln in reversed(job_summary_lines):
+                                        if ln not in seen:
+                                            seen.add(ln)
+                                            uniq_rev.append(ln)
+                                    summary_lines = list(reversed(uniq_rev))
+                                # If can't get from ZIP, supplement summary from text logs
+                                if not summary_lines:
+                                    try:
+                                        gh_logger = get_gh_logger()
+                                        job_txt2 = gh_logger.execute_with_logging(
+                                            [
+                                                "gh",
+                                                "run",
+                                                "view",
+                                                run_id,
+                                                "-R",
+                                                owner_repo,
+                                                "--job",
+                                                str(job_id),
+                                                "--log",
+                                            ],
+                                            repo=owner_repo,
+                                            timeout=120,
+                                        )
+                                        if job_txt2.returncode == 0 and job_txt2.stdout.strip():
+                                            # Extract summary only from lines filtered by failing step name
+                                            for ln in job_txt2.stdout.split("\n"):
+                                                parts = ln.split("\t", 2)
+                                                if len(parts) >= 3:
+                                                    step_field = parts[1].strip().lower()
+                                                    if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
+                                                        ll = ln.lower()
+                                                        if (
+                                                            (" failed" in ll)
+                                                            or (" passed" in ll)
+                                                            or (" skipped" in ll)
+                                                            or (" did not run" in ll)
+                                                            or ("notice" in ll)
+                                                            or ("error was not a part of any test" in ll)
+                                                            or ("command failed with exit code" in ll)
+                                                            or ("process completed with exit code" in ll)
+                                                        ):
+                                                            summary_lines.append(ln)
+                                    except Exception:
+                                        pass
+                                body_str = "\n\n".join(step_snippets)
+                                if summary_lines:
+                                    # Exclude lines contained in body from summary
+                                    filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
+                                    summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
+                                else:
+                                    summary_block = ""
+                                body = body_str + summary_block
+                                body = slice_relevant_error_window(body)
+                                return f"=== Job {job_name} ({job_id}) ===\n" + body
+                            # If step_snippets is empty, extract error context from all
+                            all_text = []
                             for name in zf.namelist():
                                 if name.lower().endswith(".txt"):
                                     with zf.open(name, "r") as fp:
@@ -1299,27 +1099,35 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         except Exception:
                                             content = ""
                                         all_text.append(content)
-                    except Exception:
-                        pass
-                else:
-                    all_text.append(fallback_content)
-
-                combined = "\n".join(all_text)
-                # Extract error context - apply ESLint filtering if applicable
-                if "eslint" in job_name.lower() or "lint" in job_name.lower():
-                    important = _filter_eslint_log(combined)
-                else:
-                    important = _extract_error_context(combined)
-                if not important or not important.strip():
-                    # If error context not found, return first 1000 characters
-                    important = combined[:1000]
-                # Only apply slice_relevant_error_window for non-ESLint jobs
-                # ESLint logs are already carefully filtered and this would undo that work
-                if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
-                    important = slice_relevant_error_window(important)
-                return f"=== Job: {job_name} ===\n{important}"
-        except Exception as e:
-            logger.warning(f"Error processing job zip for {job_id}: {e}")
+                            combined = "\n".join(all_text)
+                            # Extract error context
+                            important = _extract_error_context(combined)
+                            if not important or not important.strip():
+                                # If error context not found, return first 1000 characters
+                                important = combined[:1000]
+                            important = slice_relevant_error_window(important)
+                            return f"=== Job {job_name} ({job_id}) ===\n{important}"
+                    except zipfile.BadZipFile:
+                        # If ZIP file not returned, but raw text log returned
+                        try:
+                            content = result.stdout.decode("utf-8", errors="ignore")
+                            if content and content.strip():
+                                # Extract only logs from failed steps
+                                snippet = _extract_failed_step_logs(content, list(failing_step_names))
+                                if snippet and snippet.strip():
+                                    return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
+                                else:
+                                    # Use conventional method if failed step not found
+                                    snippet = _extract_error_context(content)
+                                    if snippet and snippet.strip():
+                                        snippet = slice_relevant_error_window(snippet)
+                                        return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
+                                    else:
+                                        # Return entire content even if error context not found
+                                        snippet = slice_relevant_error_window(content)
+                                        return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
+                        except Exception as e:
+                            logger.warning(f"Failed to process raw text log: {e}")
         except Exception:
             pass
 
@@ -1446,7 +1254,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             important = important + ("\n\n--- Summary ---\n" if "--- Summary ---" not in important else "\n") + "\n".join(filtered)
                 # Truncate prelude (final formatting)
                 important = slice_relevant_error_window(important)
-                return f"=== Job: {job_name} ===\n{important}"
+                return f"=== Job {job_name} ({job_id}) ===\n{important}"
         except Exception:
             pass
 
@@ -1462,7 +1270,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
             if run_failed.returncode == 0 and run_failed.stdout.strip():
                 # important = _extract_important_errors({'success': False, 'output': run_failed.stdout, 'errors': ''})
                 important = run_failed.stdout[:1000]  # Simplified for now
-                return f"=== Job: {job_name} ===\n{important}"
+                return f"=== Job {job_name} ({job_id}) ===\n{important}"
         except Exception:
             pass
 
@@ -1495,11 +1303,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         # imp = _extract_important_errors({'success': False, 'output': '\n'.join(texts), 'errors': ''})
                         imp = "\n".join(texts)[:1000]  # Simplified for now
                         imp = slice_relevant_error_window(imp)
-                        return f"=== Job: {job_name} ===\n{url}\n{imp}"
+                        return f"=== Job {job_name} ({job_id}) ===\n{url}\n{imp}"
         except Exception:
             pass
 
-        return f"=== Job: {job_name} ===\n{url}\nNo detailed logs available"
+        return f"=== Job {job_name} ({job_id}) ===\n{url}\nNo detailed logs available"
 
     except Exception as e:
         logger.error(f"Error fetching GitHub Actions logs from URL: {e}")
@@ -1511,7 +1319,7 @@ def _search_github_actions_logs_from_history(
     config: AutomationConfig,
     failed_checks: List[Dict[str, Any]],
     pr_data: Optional[Dict[str, Any]] = None,
-    max_runs: int = 1,
+    max_runs: int = 10,
 ) -> Optional[str]:
     """Search for GitHub Actions logs from recent runs.
 
@@ -1524,7 +1332,7 @@ def _search_github_actions_logs_from_history(
         config: AutomationConfig instance
         failed_checks: List of failed check dictionaries with details_url
         pr_data: Optional PR data dictionary for commit-specific filtering
-        max_runs: Maximum number of recent runs to search (default: 1)
+        max_runs: Maximum number of recent runs to search (default: 10)
 
     Returns:
         String containing the first successful logs found from historical runs,
@@ -1638,9 +1446,9 @@ def _search_github_actions_logs_from_history(
                         run_url = run.get("url")
 
                     if run_url:
-                        logs = get_github_actions_logs_from_url(run_url)
+                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
 
-                        if logs and "No detailed logs available" not in logs and "Invalid GitHub Actions job URL" not in logs:
+                        if logs and "No detailed logs available" not in logs:
                             # Prepend some metadata about where these logs came from
                             run_date = run.get("created_at", "unknown date")
                             run_branch = run.get("head_branch", "unknown branch")
@@ -1659,560 +1467,13 @@ def _search_github_actions_logs_from_history(
     return None
 
 
-def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
-    """Download and parse Playwright JSON logs from GitHub Artifacts using direct API calls.
-    aggregating results from all matching 'e2e-artifacts-*'.
-
-    Args:
-        repo_name: Repository name (owner/repo)
-        run_id: GitHub Action run ID
-
-    Returns:
-        Tuple containing:
-        - Formatted log string if successful, None otherwise.
-        - List of raw JSON artifact contents (dicts) if successful, None otherwise.
-        Raises specific exceptions if download fails which should stop the process.
-    """
-    logger.info(f"Attempting to download Playwright artifacts for run {run_id}")
-
-    try:
-        # Use GitHubClient to get token and headers
-        client = GitHubClient.get_instance()
-        token = client.token
-
-        # Use httpx for direct API calls
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-
-        api_base = "https://api.github.com"
-
-        # 1. List artifacts
-        list_url = f"{api_base}/repos/{repo_name}/actions/runs/{run_id}/artifacts"
-
-        try:
-            import httpx
-
-            with httpx.Client() as h_client:
-                response = h_client.get(list_url, headers=headers, timeout=30)
-                if response.status_code != 200:
-                    logger.warning(f"Failed to list artifacts: {response.status_code} {response.text}")
-                    return None, None
-                data = response.json()
-        except ImportError:
-            logger.error("httpx module required but not found (unexpected).")
-            return None, None
-        except Exception as e:
-            logger.warning(f"Exception listing artifacts: {e}")
-            return None, None
-
-        artifacts = data.get("artifacts", [])
-
-        # Filter for e2e-artifacts-*
-        target_artifacts = []
-        for artifact in artifacts:
-            name = artifact.get("name", "")
-            if name.startswith("e2e-artifacts-") and not artifact.get("expired", False):
-                target_artifacts.append(artifact)
-
-        if not target_artifacts:
-            logger.info("No active e2e-artifacts-* found for this run.")
-            return None, None
-
-        logger.info(f"Found {len(target_artifacts)} artifact(s) matching e2e-artifacts-*")
-
-        all_raw_artifacts = []
-
-        # 2. Download and extract all artifacts
-        import httpx
-
-        # We'll use a single temp directory for all downloads/extractions
-        with tempfile.TemporaryDirectory() as tmp_dir:
-
-            with httpx.Client(follow_redirects=True) as h_client:
-
-                for i, artifact in enumerate(target_artifacts):
-                    artifact_id = artifact.get("id")
-                    artifact_name = artifact.get("name")
-                    details_str = f"{artifact_name} ({artifact_id})"
-
-                    download_url = f"{api_base}/repos/{repo_name}/actions/artifacts/{artifact_id}/zip"
-                    zip_path = os.path.join(tmp_dir, f"logs_{i}.zip")
-
-                    try:
-                        dl_response = h_client.get(download_url, headers=headers, timeout=300)
-
-                        if dl_response.status_code != 200:
-                            logger.error(f"Failed to download artifact {details_str}: {dl_response.status_code}")
-                            continue
-
-                        with open(zip_path, "wb") as f:
-                            for chunk in dl_response.iter_bytes():
-                                f.write(chunk)
-
-                    except Exception as e:
-                        if "USER_STOP_REQUEST" in str(e):
-                            raise e
-                        logger.warning(f"Error downloading artifact {details_str}: {e}")
-                        continue
-
-                    # Extract
-                    extract_subdir = os.path.join(tmp_dir, f"extracted_{i}")
-                    os.makedirs(extract_subdir, exist_ok=True)
-
-                    try:
-                        with zipfile.ZipFile(zip_path, "r") as zf:
-                            zf.extractall(extract_subdir)
-                    except zipfile.BadZipFile:
-                        logger.warning(f"Invalid zip file for artifact {details_str}")
-                        continue
-
-                    # Search for JSON logs
-                    json_files = []
-                    # Standard Playwright location relative to artifact root?
-                    # Or just search recursively
-                    for root, _, files in os.walk(extract_subdir):
-                        for file in files:
-                            if file.endswith(".json"):
-                                json_path = os.path.join(root, file)
-                                json_files.append(json_path)
-
-                    # Sort for determinism per artifact
-                    json_files.sort()
-
-                    for jf in json_files:
-                        try:
-                            with open(jf, "r", encoding="utf-8") as f:
-                                content = json.load(f)
-                            # Verify simple heuristic that it's a playwright report
-                            if "suites" in content and "errors" in content:
-                                all_raw_artifacts.append(content)
-                        except Exception as e:
-                            logger.warning(f"Failed to parse JSON {jf}: {e}")
-
-            if not all_raw_artifacts:
-                logger.info("No valid Playwright JSON reports found in downloaded artifacts.")
-                return None, None
-
-            # 3. Generate Merged Report
-            summary_text = generate_merged_playwright_report(all_raw_artifacts)
-
-            return f"=== Job: Playwright Report ===\n{summary_text}", all_raw_artifacts
-
-    except Exception as e:
-        if "USER_STOP_REQUEST" in str(e):
-            raise e
-        logger.warning(f"Error handling Playwright artifacts: {e}")
-        return None, None
-
-
-def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
-    """Merge, summarize, and format multiple Playwright JSON reports.
-
-    Includes deduplication of error logs based on location and optionally includes
-    stdout/stderr logs if available.
-    Also counts skipped, passed, flaky, and interrupted tests.
-    """
-
-    total_failures = 0
-    total_passed = 0
-    total_skipped = 0
-    total_flaky = 0
-    total_interrupted = 0
-
-    # Map: file_path -> List of failure descriptions
-    failed_specs: Dict[str, List[str]] = {}
-    detailed_output = []
-
-    # Track unique error locations to avoid duplicates in detailed output
-    visited_locations: set = set()
-
-    has_unknown_location = False
-
-    # Helper to traverse
-    def _recurse_suites(suites: List[Dict[str, Any]]):
-        nonlocal total_failures, total_passed, total_skipped, total_flaky, total_interrupted, has_unknown_location
-        for suite in suites:
-            if "suites" in suite:
-                _recurse_suites(suite["suites"])
-
-            # Try to determine file context
-            suite_file = suite.get("file")
-
-            for spec in suite.get("specs", []):
-                title = spec.get("title", "Unknown Test")
-                spec_file = spec.get("file", suite_file or "Unknown File")
-
-                # Check for flaky at spec level if available or verify via results
-                # Playwright JSON often marks specs as flaky if retries occurred and eventually passed
-                # But we'll count via results or check standard properties
-
-                for test in spec.get("tests", []):
-                    # Expected status
-                    expected = test.get("expectedStatus", "passed")
-
-                    # Check outcome of the test
-                    # "outcome": "unexpected", "flaky", "expected", "skipped"
-                    outcome = test.get("outcome")
-
-                    if outcome == "skipped":
-                        total_skipped += 1
-                        continue
-                    elif outcome == "flaky":
-                        total_flaky += 1
-                        # Flaky usually means it eventually passed, so we might not want to treat as failure
-                        # But we want to count it.
-                        continue
-                    elif outcome == "expected" and expected == "passed":
-                        total_passed += 1
-                        continue
-
-                    # If we are here, likely failure or unexpected
-                    # But let's rely on individual results for precise error extraction
-
-                    # Logic: one test can have multiple results (retries)
-                    # If ANY result is failed, we might want to log it, unless it's flaky (handled above).
-                    # If outcome is unexpected, it's a failure.
-
-                    if outcome == "unexpected":
-                        # Iterate results to find the failures
-                        for result in test.get("results", []):
-                            status = result.get("status")
-                            if status in ["failed", "timedOut", "interrupted"]:
-                                if status == "interrupted":
-                                    total_interrupted += 1
-
-                                # It is a failure
-                                # We count it towards total failures IF it's the final result?
-                                # Or counts per result?
-                                # Usually "unexpected" implies the Test Unit failed.
-                                # Let's count it once per Test if possible, but extracting errors from all results is ok.
-                                # Let's increment total_failures per Error Block we generate to be consistent with previous logic,
-                                # OR we should increment per Test.
-                                # Let's increment per Test for the stats, but list all errors.
-                                pass  # We will increment in the error loop below if distinct?
-                                # Actually, simpler:
-                                # total_failures refers to number of Failing Tests or number of Errors?
-                                # User asks for "counts". Usually "X tests failed".
-                                pass
-
-                    # Re-iterate for exact error extraction logic (similar to before)
-                    # We use the previous logic to find failed results and extract errors.
-
-                    # Extract stdout/stderr once per test
-                    std_out = []
-                    if "stdout" in test:
-                        std_out = [f"STDOUT: {entry.get('text', '')}" for entry in test.get("stdout", []) if entry.get("text")]
-                    if "stderr" in test:
-                        std_out.extend([f"STDERR: {entry.get('text', '')}" for entry in test.get("stderr", []) if entry.get("text")])
-
-                    test_failed = False
-
-                    for result in test.get("results", []):
-                        if result.get("status") in ["failed", "timedOut", "interrupted"]:
-                            test_failed = True
-
-                            errors = result.get("errors", [])
-                            if not errors and result.get("status") == "timedOut":
-                                errors = [{"message": f"Test timed out ({result.get('duration', '?')}ms)"}]
-
-                            current_failure_block = []
-
-                            for error in errors:
-                                msg = error.get("message", "")
-                                stack = error.get("stack", "")
-
-                                # Location
-                                location = error.get("location", {})
-                                loc_file = location.get("file", spec_file)
-                                loc_file = _normalize_gh_path(loc_file)
-                                loc_line = location.get("line", "?")
-                                loc_col = location.get("column", "?")
-
-                                if loc_line == "?" or loc_col == "?":
-                                    has_unknown_location = True
-
-                                loc_str = f"{loc_file}:{loc_line}:{loc_col}"
-
-                                # Determine if this location has been reported
-                                is_duplicate = loc_str in visited_locations
-
-                                if not is_duplicate:
-                                    visited_locations.add(loc_str)
-
-                                # Update failed_specs for summary (always count for stats)
-                                # We use spec_file (the test file) rather than loc_file (where error happened)
-                                # because we want to know which TEST file failed.
-                                clean_spec_file = _normalize_gh_path(spec_file)
-                                if clean_spec_file not in failed_specs:
-                                    failed_specs[clean_spec_file] = []
-                                failed_specs[clean_spec_file].append(title)
-
-                                # Only add details if not duplicate
-                                if not is_duplicate:
-                                    clean_msg = _clean_log_line(msg)
-
-                                    # Use spec location for the File: field as requested
-                                    spec_line = spec.get("line", "")
-                                    spec_col = spec.get("column", "")
-                                    if spec_line and spec_col:
-                                        display_loc = f"{_normalize_gh_path(spec_file)}:{spec_line}:{spec_col}"
-                                    else:
-                                        display_loc = _normalize_gh_path(spec_file)
-
-                                    current_failure_block.append(f"FAILED: {title}")
-                                    current_failure_block.append(f"File: {display_loc}")
-                                    current_failure_block.append(f"Error: {clean_msg}")
-
-                                    if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
-                                        current_failure_block.append(f"Stack:\n{clean_stack}")
-
-                                    if std_out:
-                                        log_text = "\n".join(std_out)
-                                        if len(log_text) > 1000:
-                                            log_text = log_text[:1000] + "... (truncated)"
-
-                                        current_failure_block.append("Logs:")
-                                        current_failure_block.append(log_text)
-
-                                    current_failure_block.append("-")
-
-                            if current_failure_block:
-                                detailed_output.extend(current_failure_block)
-
-                    if test_failed:
-                        total_failures += 1
-
-    for report in reports:
-        _recurse_suites(report.get("suites", []))
-
-    if total_failures == 0 and total_flaky == 0 and total_interrupted == 0 and total_passed > 0 and total_skipped == 0:
-        return f"All {total_passed} Playwright tests passed."
-
-    # Build Summary
-    summary_lines = []
-    summary_lines.append(f"Total Playwright Failures: {total_failures}")
-    if total_passed > 0:
-        summary_lines.append(f"Passed: {total_passed}")
-    if total_skipped > 0:
-        summary_lines.append(f"Skipped: {total_skipped}")
-    if total_flaky > 0:
-        summary_lines.append(f"Flaky: {total_flaky}")
-    if total_interrupted > 0:
-        summary_lines.append(f"Interrupted: {total_interrupted}")
-
-    if failed_specs:
-        summary_lines.append("Failed Files:")
-        sorted_files = sorted(failed_specs.keys())
-        for f in sorted_files:
-            titles = failed_specs[f]
-            count = len(titles)
-            summary_lines.append(f"- {f} ({count} failures)")
-
-    summary_lines.append("\n--- Details ---")
-
-    output_str = "\n".join(summary_lines) + "\n" + "\n".join(detailed_output)
-
-    if has_unknown_location:
-        output_str += "\n\nNote: Failures without specific location are likely the same as other failures in the same context."
-
-    return output_str
-
-
-def parse_playwright_json_report(report: Dict[str, Any]) -> str:
-    """Wrapper for backward compatibility.
-    Parse a single Playwright JSON report to extract failures.
-    """
-    return generate_merged_playwright_report([report])
-
-
-def _extract_failed_tests_from_playwright_reports(reports: List[Dict[str, Any]]) -> List[str]:
-    """Extract list of failed test files from Playwright JSON reports."""
-    failed_tests = set()
-
-    def _recurse(suites):
-        for suite in suites:
-            if "suites" in suite:
-                _recurse(suite["suites"])
-
-            suite_file = suite.get("file")
-
-            for spec in suite.get("specs", []):
-                spec_file = spec.get("file", suite_file)
-
-                # Check tests
-                for test in spec.get("tests", []):
-                    # Check if failed
-                    outcome = test.get("outcome")  # unexpected, flaky, expected, skipped
-                    # If outcome is unexpected, it failed.
-                    if outcome == "unexpected":
-                        if spec_file:
-                            failed_tests.add(spec_file)
-
-    for report in reports:
-        _recurse(report.get("suites", []))
-
-    return sorted(list(failed_tests))
-
-
-def _create_github_action_log_summary(
-    repo_name: str,
-    config: AutomationConfig,
-    *args: Any,
-    search_history: Optional[bool] = None,
-    **kwargs: Any,
-) -> Tuple[str, Optional[List[str]]]:
-    """Create a formatted summary string from a list of log chunks."""
-    # Extract failed_checks and optional pr_data from args
-    failed_checks: List[Dict[str, Any]] = []
-    pr_data: Optional[Dict[str, Any]] = None
-    if len(args) >= 1 and isinstance(args[0], list):
-        failed_checks = args[0]
-    if len(args) >= 2 and isinstance(args[1], dict):
-        pr_data = args[1]
-
-    logs: List[str] = []
-    artifacts_list: List[Dict[str, Any]] = []
-
-    try:
-        # Resolve owner/repo
-        owner, repo = repo_name.split("/")
-        token = GitHubClient.get_instance().token
-        api = get_ghapi_client(token)
-
-        # 1. Inspect failed_checks to verify if we have enough info
-        # If no failed_checks, use fallback historical search if not already done?
-        # But here assuming we have failed_checks from caller if not searching history.
-
-        # If failed_checks are present but missing Run ID, we might need to find it?
-        # But usually they come from _check_github_actions_status or similar which has details_url.
-
-        # Group checks by Run ID
-        run_checks_map: Dict[int, List[Dict[str, Any]]] = {}
-        ungrouped_checks: List[Dict[str, Any]] = []
-
-        for check in failed_checks:
-            details_url = check.get("details_url", "")
-            run_id = None
-            if details_url:
-                match = re.search(r"/actions/runs/(\d+)", details_url)
-                if match:
-                    run_id = int(match.group(1))
-
-            if run_id:
-                if run_id not in run_checks_map:
-                    run_checks_map[run_id] = []
-                run_checks_map[run_id].append(check)
-            else:
-                ungrouped_checks.append(check)
-
-        # If no run IDs found, but we have PR data, try to find the latest failed run for this PR
-        if not run_checks_map and not ungrouped_checks and pr_data:
-            logger.info("No Run IDs in failed_checks, attempting to find failed run for PR")
-            # Similar logic to _search_github_actions_logs_from_history but specifically for current state
-            # Check logic:
-            # run_list = api.actions.list_workflow_runs_for_repo(...)
-            # ...
-            # For now, let's rely on fallback logic below (lines 2033+) if map is empty.
-            pass
-
-        # 2. Process each Run
-        if run_checks_map:
-            for run_id, checks in run_checks_map.items():
-                logger.info(f"Processing logs for Run {run_id}")
-
-                # A. Get Playwright Artifacts
-                playwright_summary, raw_artifacts = _get_playwright_artifact_logs(repo_name, run_id)
-                if raw_artifacts:
-                    artifacts_list.extend(raw_artifacts)
-
-                # B. Get all jobs for this run (to get names, ids, order)
-                try:
-                    jobs_data = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
-                    jobs = jobs_data.get("jobs", [])
-
-                    # C. Sort jobs by workflow
-                    jobs = _sort_jobs_by_workflow(jobs, owner, repo, run_id, token)
-
-                    playwright_summary_printed = False
-
-                    for job in jobs:
-                        # Only process if failed
-                        if job.get("conclusion") == "failure":
-                            job_name = job.get("name", "").lower()
-                            html_url = job.get("html_url")
-
-                            is_playwright = "playwright" in job_name or "e2e" in job_name
-
-                            if is_playwright:
-                                if playwright_summary:
-                                    if not playwright_summary_printed:
-                                        logs.append(playwright_summary)
-                                        playwright_summary_printed = True
-                                    continue
-                                # If no summary, proceed to fetch logs normally
-
-                            # Fetch logs for this job
-                            if html_url:
-                                logger.info(f"Fetching logs for failed job: {job.get('name')}")
-                                job_log = get_github_actions_logs_from_url(html_url)
-                                if job_log:
-                                    logs.append(job_log)
-
-                    # Fallback: if summary exists but wasn't printed (e.g. e2e job not found in failed list?), print it at end
-                    if playwright_summary and not playwright_summary_printed:
-                        logs.append(playwright_summary)
-
-                except Exception as e:
-                    logger.warning(f"Error processing jobs for run {run_id}: {e}")
-                    # Fallback to appending check logs without sorting if run processing fails?
-                    # For now, rely on ungrouped fallback/error logging?
-                    pass
-
-        # 3. Process Ungrouped Checks (Fallback for checks with non-standard URLs)
-        if ungrouped_checks:
-            logger.info(f"Processing {len(ungrouped_checks)} ungrouped check(s)")
-            for check in ungrouped_checks:
-                check_name = check.get("name", "Unknown")
-                details_url = check.get("details_url", "")
-
-                if details_url:
-                    logger.info(f"Fetching logs for ungrouped check: {check_name}")
-                    job_log = get_github_actions_logs_from_url(details_url)
-                    if job_log:
-                        logs.append(job_log)
-                    else:
-                        logs.append(f"=== {check_name} ===\nFailed to fetch logs from {details_url}")
-                else:
-                    logs.append(f"=== {check_name} ===\nNo details URL available.")
-
-        # 4. Fallback / Legacy Logic (if nothing processed)
-        if not logs and not run_checks_map and not ungrouped_checks:
-            # Try old logic of iterating failed_checks directly or finding run via API
-            # ... (Keep existing fallback logic if needed or simplify?)
-            pass
-
-    except Exception as e:
-        logger.error(f"Error getting GitHub Actions logs: {e}")
-        logs.append(f"Error getting logs: {e}")
-
-    failed_test_files = []
-    if artifacts_list:
-        failed_test_files = _extract_failed_tests_from_playwright_reports(artifacts_list)
-
-    return "\n\n".join(logs) if logs else "No detailed logs available", failed_test_files if failed_test_files else None
-
-
 def _get_github_actions_logs(
     repo_name: str,
     config: AutomationConfig,
     *args: Any,
     search_history: Optional[bool] = None,
     **kwargs: Any,
-) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+) -> str:
     """Get GitHub Actions failed job logs via gh api and return extracted error locations.
 
     Args:
@@ -2226,9 +1487,7 @@ def _get_github_actions_logs(
         **kwargs: Additional keyword arguments (for future use)
 
     Returns:
-        Tuple containing:
-        - String containing GitHub Actions logs
-        - Optional list of raw JSON artifacts
+        String containing GitHub Actions logs
 
     Call compatibility:
     - _get_github_actions_logs(repo, config, failed_checks)
@@ -2252,14 +1511,14 @@ def _get_github_actions_logs(
 
         if not failed_checks:
             # No failed_checks provided
-            return "No detailed logs available", None
+            return "No detailed logs available"
 
         # Try historical search first
-        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=1)
+        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=10)
 
         if historical_logs:
             logger.info("Historical search succeeded: Found logs from commit history")
-            return historical_logs, None
+            return historical_logs
 
         logger.info("Historical search failed or found no logs, falling back to current behavior")
 
@@ -2276,45 +1535,13 @@ def _get_github_actions_logs(
         pr_data = args[1]
     if not failed_checks:
         # Unknown call
-        return "No detailed logs available", None
+        return "No detailed logs available"
 
     logs: List[str] = []
-    artifacts_list: List[Dict[str, Any]] = []
 
     try:
-        # 1) Try to get Playwright artifact logs first if we can identify a run ID
-        # We need a run ID. failed_checks items usually have 'details_url' which contains run_id.
-        # details_url structure: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
-        run_ids = set()
-        for check in failed_checks:
-            details_url = check.get("details_url", "")
-            match = re.search(r"/actions/runs/(\d+)", details_url)
-            if match:
-                run_ids.add(match.group(1))
-
-        # If we found run IDs, try artifacts
-        for run_id in run_ids:
-            try:
-                artifact_logs, raw_artifacts_data = _get_playwright_artifact_logs(repo_name, int(run_id))
-                if artifact_logs:
-                    logs.append(artifact_logs)
-                if raw_artifacts_data:
-                    artifacts_list.extend(raw_artifacts_data)
-            except Exception as e:
-                if "USER_STOP_REQUEST" in str(e):
-                    # Propagate this specific error up
-                    return f"STOP: {str(e)}", None
-                # Otherwise, continue to other methods
-                logger.warning(f"Could not get artifact logs: {e}")
-
-        # If we successfully got artifact logs, we might rely entirely on them for Playwright tests?
-        # But we might have other failures too. So let's APPEND existing log methods if we didn't fill everything?
-        # Or maybe priority?
-        # If we got clean artifact logs, they are usually much better.
-
-        # NOTE: If we found enough info, maybe return? But safer to combine with textual logs just in case.
-
-        # 2) First extract run_id and job_id directly from failed_checks details_url (Existing method)        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        # 1) First extract run_id and job_id directly from failed_checks details_url
+        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
         # or https://github.com/<owner>/<repo>/runs/<job_id>
         url_to_fetch: List[str] = []
         for check in failed_checks:
@@ -2405,62 +1632,7 @@ def _get_github_actions_logs(
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
 
-    return "\n\n".join(logs) if logs else "No detailed logs available", artifacts_list if artifacts_list else None
-
-
-def _filter_eslint_log(content: str) -> str:
-    """Filter ESLint logs to reduce noise, keeping only file paths, error lines, and summaries."""
-    filtered_lines = []
-    lines = content.split("\n")
-
-    # Track whether we should include the current file path
-    pending_file_path = None
-
-    for line in lines:
-        # Clean the line for pattern matching (removes timestamps, ANSI codes)
-        cleaned = _clean_log_line(line)
-        line_strip = cleaned.strip()
-
-        # Keep error lines (##[error] format)
-        # But exclude the "Process completed" line which is not an ESLint error
-        if "##[error]" in line_strip and "process completed" not in line_strip.lower():
-            # If we have a pending file path, add it first
-            if pending_file_path is not None:
-                filtered_lines.append(pending_file_path)
-                pending_file_path = None
-            filtered_lines.append(line)
-            continue
-
-        # Keep summary lines (e.g. "✖ 2 problems (2 errors, 0 warnings)")
-        if line_strip.startswith("✖") and "problems" in line_strip:
-            filtered_lines.append(line)
-            continue
-
-        # Detect file paths:
-        # 1. Lines starting with "/" (absolute paths)
-        # 2. OR lines that look like relative paths (valid extension, no invalid prefixes)
-        # Only keep if followed by error lines
-        is_path = False
-        if line_strip.startswith("/"):
-            is_path = True
-        elif any(line_strip.endswith(ext) for ext in [".ts", ".js", ".tsx", ".jsx", ".vue", ".svelte", ".py", ".html", ".css", ".json", ".md"]):
-            # Check for invalid prefixes for relative paths too
-            if not line_strip.startswith(("> ", "Compiling", "[command]", "##")) and " " not in line_strip:
-                is_path = True
-
-        if is_path and not line_strip.startswith(("> ", "Compiling", "[command]", "##")):
-            # Store as pending - only add if we see an error next
-            # If we already had a pending one, we overwrite it (assuming previous one had no errors)
-            pending_file_path = line
-            continue
-
-        # We DO NOT reset pending_file_path aggressively anymore.
-        # We assume that noise lines might appear between file path and error.
-        # We only overwrite pending_file_path when we see a new file path (above).
-
-    if filtered_lines:
-        return "\n".join([_clean_log_line(line) for line in filtered_lines])
-    return ""
+    return "\n\n".join(logs) if logs else "No detailed logs available"
 
 
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
@@ -2529,21 +1701,8 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
                     break
 
         if step_lines:
-            # Custom filtering for ESLint/Lint steps to reduce noise
-            is_eslint = any(k in ["eslint", "npm run lint"] for k in keywords) or "lint" in step_name_lower
-
-            if is_eslint:
-                step_content = "\n".join(step_lines)
-                filtered = _filter_eslint_log(step_content)
-                if filtered:
-                    cleaned_lines = filtered.split("\n")
-                else:
-                    # Fallback to standard cleaning if our strict filter missed everything
-                    cleaned_lines = [_clean_log_line(line) for line in step_lines]
-            else:
-                # Remove ANSI escape sequences and timestamps
-                cleaned_lines = [_clean_log_line(line) for line in step_lines]
-
+            # Remove ANSI escape sequences and timestamps
+            cleaned_lines = [_clean_log_line(line) for line in step_lines]
             section = f"=== Step: {step_name} ===\n" + "\n".join(cleaned_lines)
             result_sections.append(section)
 
@@ -2552,117 +1711,6 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
     else:
         # Use conventional method if step not found
         return _extract_error_context(log_content)
-
-
-def _extract_vitest_failures(content: str) -> Optional[str]:
-    """Extract and format Vitest failures from log content.
-
-    Captures:
-    - "Failed Tests" header
-    - "FAIL" lines and subsequent checks
-    - Error messages
-    - Stack traces (❯ ...)
-    - Code snippets (lines with line numbers and pointers)
-    - Separators between failures
-    - Final summary statistics
-    """
-    lines = content.split("\n")
-    cleaned_lines = [_clean_log_line(line) for line in lines]
-    cleaned_content = "\n".join(cleaned_lines)
-
-    # Check if this is likely a Vitest log
-    if "Failed Tests" not in cleaned_content and "FAIL " not in cleaned_content:
-        return None
-
-    output_lines = []
-
-    # State tracking
-    in_failure_block = False
-
-    # Regex patterns
-    header_re = re.compile(r"^\s*⎯+\s+Failed Tests\s+\d+\s+⎯+\s*$")
-    fail_line_re = re.compile(r"^\s*FAIL\s+")
-    separator_re = re.compile(r"^\s*⎯+\[\d+/\d+\]⎯\s*$")
-    summary_re = re.compile(r"^\s*(Test Files|Tests)\s+\d+\s+failed")
-
-    # We want to capture:
-    # 1. The header "Failed Tests"
-    # 2. Everything within failure blocks (FAIL ... to next separator or end)
-    # 3. Use separators to keep structure
-    # 4. Summary at the end
-
-    i = 0
-    while i < len(cleaned_lines):
-        line = cleaned_lines[i]
-
-        # 1. Header
-        if header_re.search(line):
-            output_lines.append(line)
-            output_lines.append("")  # Spacer
-            in_failure_block = True
-            i += 1
-            continue
-
-        # 2. Separators
-        if separator_re.search(line):
-            if output_lines and output_lines[-1] != "":
-                output_lines.append("")
-            output_lines.append(line)
-            output_lines.append("")
-            in_failure_block = True
-            i += 1
-            continue
-
-        # 3. Summary
-        if summary_re.search(line):
-            # Capture summary block (Test Files, Tests, Time, etc.)
-            # Usually ~3-4 lines
-            if output_lines and output_lines[-1] != "":
-                output_lines.append("")
-            output_lines.append(line)
-            # Capture subsequent summary lines until empty or unrelated
-            j = i + 1
-            while j < len(cleaned_lines):
-                next_line = cleaned_lines[j]
-                if not next_line.strip() or "passed" in next_line or "failed" in next_line or "Time" in next_line or "Start at" in next_line:
-                    output_lines.append(next_line)
-                    j += 1
-                else:
-                    break
-            i = j
-            in_failure_block = False  # End of failures
-            continue
-
-        # 4. Failure Content (heuristically)
-        if in_failure_block:
-            # We want to keep:
-            # - FAIL lines
-            # - Error: ...
-            # - ❯ ... (stack)
-            # - Code snippets (contain | or ^)
-
-            is_fail_line = bool(fail_line_re.search(line))
-            is_error = "Error:" in line or "error:" in line
-            is_stack = "❯" in line or ">" in line
-            is_snippet = "|" in line or line.strip().startswith("^")
-
-            # Also keep lines that look like file paths in stack traces
-            # e.g. " src/tests/..."
-            is_path = "/" in line and (".ts" in line or ".js" in line)
-
-            if is_fail_line or is_error or is_stack or is_snippet or is_path:
-                output_lines.append(line)
-            # If line is part of an error message continuation (indented text)
-            elif output_lines and is_error and line.startswith(" "):
-                output_lines.append(line)
-
-        i += 1
-
-    if not output_lines:
-        return None
-
-    # Post-processing to ensure reasonable output
-    return "\n".join(output_lines)
 
 
 def _extract_error_context(content: str, max_lines: int = 500) -> str:
@@ -2677,11 +1725,6 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
     """
     if not content:
         return ""
-
-    # Try specialized Vitest extraction first
-    vitest_extracted = _extract_vitest_failures(content)
-    if vitest_extracted:
-        return vitest_extracted
 
     lines = content.split("\n")
 
@@ -2800,26 +1843,6 @@ def slice_relevant_error_window(text: str) -> str:
     return "\n".join(sliced)
 
 
-def _normalize_gh_path(line: str) -> str:
-    """Normalize GitHub Actions absolute paths to relative paths.
-
-    Converts:
-    - /__w/repo/repo/file -> file
-    - /home/runner/work/repo/repo/file -> file
-    """
-    import re
-
-    if "/__w/" in line:
-        line = re.sub(r"^/__w/[^/]+/[^/]+/", "", line)
-        line = re.sub(r"/__w/[^/]+/[^/]+/", "", line)
-
-    if "/home/runner/work/" in line:
-        line = re.sub(r"^/home/runner/work/[^/]+/[^/]+/", "", line)
-        line = re.sub(r"/home/runner/work/[^/]+/[^/]+/", "", line)
-
-    return line
-
-
 def _clean_log_line(line: str) -> str:
     """Remove ANSI escape sequences and timestamps from a log line.
 
@@ -2829,7 +1852,6 @@ def _clean_log_line(line: str) -> str:
     Returns:
         Cleaned log line
     """
-    line = _normalize_gh_path(line)
     import re
 
     # Remove ANSI escape sequences
@@ -2855,7 +1877,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
     # Collect head SHAs to look for
     sha_to_pr = {}
     for pr in prs:
-        sha = get_pr_head_sha(pr, repo_name)
+        sha = pr.get("head", {}).get("sha")
         number = pr.get("number")
         if sha and number:
             sha_to_pr[sha] = number
@@ -2892,7 +1914,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
             return
 
         # Group runs by SHA
-        runs_by_sha: dict[str, list[dict[str, Any]]] = {}
+        runs_by_sha = {}
         for run in runs:
             head_sha = run.get("headSha")
             if head_sha in sha_to_pr:
