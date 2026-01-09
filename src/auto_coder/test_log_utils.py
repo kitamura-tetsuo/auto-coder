@@ -191,7 +191,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
 
     # Filter out path suffixes if a longer version exists
     # e.g. "utils/foo.spec.ts" should be removed if "e2e/utils/foo.spec.ts" exists
-    final_candidates = []
+    final_candidates: list[str] = []
     # Process longer paths first to identify parents
     unique_candidates = []
     seen = set()
@@ -199,9 +199,9 @@ def _collect_playwright_candidates(text: str) -> List[str]:
         if c not in seen:
             seen.add(c)
             unique_candidates.append(c)
-            
+
     sorted_candidates = sorted(unique_candidates, key=len, reverse=True)
-    
+
     for cand in sorted_candidates:
         is_suffix = False
         for kept in final_candidates:
@@ -211,10 +211,10 @@ def _collect_playwright_candidates(text: str) -> List[str]:
                 if kept.endswith("/" + cand):
                     is_suffix = True
                     break
-        
+
         if not is_suffix:
             final_candidates.append(cand)
-    
+
     return final_candidates
 
 
@@ -317,5 +317,5 @@ def extract_playwright_passed_count(text: str) -> int:
             return int(matches[-1])
         except ValueError:
             pass
-            
+
     return 0

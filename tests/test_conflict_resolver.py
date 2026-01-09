@@ -24,7 +24,7 @@ def test_perform_base_merge_uses_fq_remote_ref():
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
         mock_client.get_pr_details.return_value = {"number": 123, "head_branch": "pr-branch", "author": {"login": "someone"}}
-        
+
         mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
         # Sequence: reset, clean, abort, fetch pr (Step 1), fetch origin base (Step 2), rev-parse (Step 3), merge (Step 3)
@@ -75,7 +75,7 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
         mock_client.get_pr_details.return_value = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "head_branch": "jules-branch"}
-        
+
         mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
         # Sequence: reset, clean, abort, fetch pr, fetch base, rev-parse, merge (fails)
@@ -127,7 +127,7 @@ def test_perform_base_merge_enriches_pr_data_when_missing_fields():
         mock_repo.get_pull.return_value = mock_pr
 
         mock_client.get_pr_details.return_value = {"number": 1253, "author": {"login": "google-labs-jules"}, "body": "Fixes #123", "baseRefName": "main", "head_branch": "jules-fix"}
-        
+
         mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
         mock_cmd.run_command.side_effect = [
@@ -170,7 +170,7 @@ def test_perform_base_merge_skips_on_quota_error():
     ):
         # Setup mocks
         mock_create_backend.return_value = None
-        
+
         # Mock LLM to raise AutoCoderUsageLimitError
         mock_llm.side_effect = AutoCoderUsageLimitError("Quota exceeded")
 
@@ -180,14 +180,8 @@ def test_perform_base_merge_skips_on_quota_error():
         mock_client.get_repository.return_value = mock_repo
         mock_pr = MagicMock()
         mock_repo.get_pull.return_value = mock_pr
-        mock_client.get_pr_details.return_value = {
-            "number": 1253, 
-            "title": "Fix something", 
-            "body": "Session ID: xyz", 
-            "author": {"login": "google-labs-jules"}, 
-            "head_branch": "jules-branch"
-        }
-        
+        mock_client.get_pr_details.return_value = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "head_branch": "jules-branch"}
+
         mock_checkout.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
 
         # Sequence simulation
@@ -204,13 +198,7 @@ def test_perform_base_merge_skips_on_quota_error():
 
         mock_scan.return_value = ["file1.py"]
 
-        pr_data = {
-            "number": 1253, 
-            "title": "Fix something", 
-            "body": "Session ID: xyz", 
-            "author": {"login": "google-labs-jules"}, 
-            "baseRefName": "main"
-        }
+        pr_data = {"number": 1253, "title": "Fix something", "body": "Session ID: xyz", "author": {"login": "google-labs-jules"}, "baseRefName": "main"}
 
         ok = _perform_base_branch_merge_and_conflict_resolution(
             pr_number=1253,
