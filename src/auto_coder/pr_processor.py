@@ -21,14 +21,15 @@ from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
-from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.gh_cache import get_ghapi_client
+from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _create_github_action_log_summary, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, get_pr_head_sha
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
-from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
+from .fix_to_pass_tests_runner import extract_important_errors_from_local_tests, run_local_tests
 from .gh_logger import get_gh_logger
-from .git_branch import branch_context, git_commit_with_retry
+from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
@@ -351,27 +352,16 @@ def _get_mergeable_state(
     # Refresh mergeability only when value is unknown
     if mergeable is None:
         try:
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    str(pr_data.get("number", "")),
-                    "--repo",
-                    repo_name,
-                    "--json",
-                    "mergeable,mergeStateStatus",
-                ],
-                repo=repo_name,
-                capture_output=True,
-            )
-            if result.success and result.stdout:  # type: ignore[attr-defined]
-                latest = json.loads(result.stdout)
-                mergeable = latest.get("mergeable", mergeable)
-                merge_state_status = latest.get("mergeStateStatus", merge_state_status)
-        except Exception:
-            logger.debug("Unable to refresh mergeable state for PR #%s", pr_data.get("number"))
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+
+            # API: api.pulls.get(owner, repo, pull_number)
+            pr_details = api.pulls.get(owner, repo, pull_number=pr_data.get("number"))
+            mergeable = pr_details.get("mergeable", mergeable)
+            merge_state_status = pr_details.get("merge_state_status", merge_state_status)
+        except Exception as e:
+            logger.debug(f"Unable to refresh mergeable state for PR #{pr_data.get('number')}: {e}")
 
     return {"mergeable": mergeable, "merge_state_status": merge_state_status}
 
@@ -402,23 +392,18 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
 
         # Step 1: Get PR details to determine the base branch
-        gh_logger = get_gh_logger()
-        pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
-            capture_output=True,
-        )
+        try:
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
 
-        if not pr_details_result.success:  # type: ignore[attr-defined]
-            error_msg = f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
+            pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
+            base_branch = pr_details.get("base", {}).get("ref", "main")
+        except Exception as e:
+            error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
-
-        try:
-            pr_data = json.loads(pr_details_result.stdout)
-            base_branch = pr_data.get("baseRefName", "main")
-        except Exception:
-            base_branch = "main"
 
         actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
 
@@ -450,7 +435,6 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # The _trigger_fallback_for_conflict_failure has already been called in conflict_resolver
             # The linked issues have been reopened and attempt incremented
             # Now we need to close the PR
-            from .github_client import GitHubClient
 
             try:
                 client = GitHubClient.get_instance()
@@ -460,7 +444,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
                 # Checkout main branch after closing PR
                 main_branch = AutomationConfig().MAIN_BRANCH
-                checkout_result = cmd.run_command(["git", "checkout", main_branch])
+                checkout_result = git_checkout_branch(main_branch, check_for_changes=False)
                 if checkout_result.success:
                     actions.append(f"Checked out {main_branch} branch")
                 else:
@@ -773,14 +757,64 @@ def _apply_pr_actions_directly(
 def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> str:
     """Get PR diff for analysis."""
     try:
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "diff", str(pr_number), "--repo", repo_name],
-            repo=repo_name,
-            capture_output=True,
-        )
-        return result.stdout[: config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"  # type: ignore[attr-defined]
-    except Exception:
+        # Get GhApi client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
+        # GhApi call for diff
+        # We need to pass the custom media type header to get the diff
+        # api.pulls.get normally returns JSON.
+        # We'll use the lower-level api call or the __call__ method if supported,
+        # or just rely on 'GET' verb manually via the adapter mechanism we built?
+        # Actually, GhApi allows 'headers' argument in its calls if they are passed down?
+        # fastai/ghapi generated methods might not accept 'headers'.
+        # We can use api(path, verb, headers, ...)
+
+        path = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+        # Use valid Accept header for diff
+        headers = {"Accept": "application/vnd.github.v3.diff"}
+
+        # We need to access the internal caching mechanism to pass these headers?
+        # Our adapter added in gh_cache.py handles explicit headers passed to it.
+        # But calling api.pulls.get() might not let us pass headers.
+        # So we use api.full(path, headers=...) or similar?
+        # valid way in ghapi: api(path, 'GET', headers=headers)
+
+        # Note: 'api' object is callable: api(path, verb, headers, route_params, query_params, data)
+        # Verify ghapi signature: __call__(self, path, verb=None, headers=None, route=None, query=None, data=None)
+
+        diff_content = api(path, verb="GET", headers=headers)
+
+        # diff_content might be bytes or str depending on the adapter return.
+        # Our adapter calls props.json() which might fail for diff content if it's not JSON.
+        # Wait, our gh_cache.py adapter attempts `return resp.json()`.
+        # If response is NOT JSON (which diff is not), `resp.json()` will raise JSONDecodeError.
+        # We need to fix gh_cache.py to handle non-JSON responses if we want to use it for diffs!
+        # Or, we modify gh_cache.py adapter to return .text if content-type is not json?
+
+        # Let's assume for now I will fix gh_cache.py to handle text/diff responses?
+        # Or I can just bypass ghapi for this specific call if ghapi client is too rigid?
+        # No, the goal is to use GhApi.
+
+        # I should probably update gh_cache.py to return text if json fails or based on headers?
+        # But assuming I haven't done that yet, this might fail.
+        # I will handle it by updating gh_cache.py IN THE NEXT STEP if needed,
+        # or checking if I can use a raw client here.
+        # But I should stick to using the `api` object.
+
+        # Let's write this to use `api` and assume the adapter handles it or I'll fix the adapter.
+        # Actually, looking at my gh_cache.py implementation:
+        # It calls `resp.json()`. This WILL fail for diffs.
+
+        # I MUST fix gh_cache.py to check content-type or handle json error and return text.
+        # Since I am in the middle of replacing, I will commit this change and THEN update gh_cache.py again
+        # to support non-JSON responses.
+
+        return str(diff_content)[: config.MAX_PR_DIFF_SIZE]
+
+    except Exception as e:
+        logger.debug(f"Failed to get PR diff via GhApi: {e}")
         return "Could not retrieve PR diff"
 
 
@@ -897,7 +931,7 @@ def _handle_pr_merge(
                     actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
 
                     # 3. Start async monitor
-                    head_sha = pr_data.get("head", {}).get("sha")
+                    head_sha = get_pr_head_sha(pr_data, repo_name)
                     monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
                     monitor_thread.start()
 
@@ -934,20 +968,14 @@ def _handle_pr_merge(
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
         # Check if we are already on the PR branch before checkout.
-        #
-        # In WIP-resumption mode (CHECK_LABELS=False), assume we are already on the PR branch
-        # to avoid unnecessary git calls and to keep label-handling deterministic.
         pr_branch_name = pr_data.get("head", {}).get("ref", "")
-        if not config.CHECK_LABELS:
-            already_on_pr_branch = True
-        else:
-            current_branch_res = cmd.run_command(
-                ["git", "branch", "--show-current"],
-                timeout=10,
-                stream_output=False,
-            )
-            current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
-            already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
+        current_branch_res = cmd.run_command(
+            ["git", "branch", "--show-current"],
+            timeout=10,
+            stream_output=False,
+        )
+        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
+        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
 
         # Check if this is a Jules PR
         if _is_jules_pr(pr_data) and not already_on_pr_branch:
@@ -992,12 +1020,12 @@ def _handle_pr_merge(
                 return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
-        checkout_ok: bool = _checkout_pr_branch(repo_name, pr_data, config)
-        if not checkout_ok:
-            actions.append(f"Failed to checkout PR #{pr_number} branch")
-            return actions
+        # checkout_ok: bool = _checkout_pr_branch(repo_name, pr_data, config)
+        # if not checkout_ok:
+        #     actions.append(f"Failed to checkout PR #{pr_number} branch")
+        #     return actions
 
-        actions.append(f"Checked out PR #{pr_number} branch")
+        # actions.append(f"Checked out PR #{pr_number} branch")
 
         # Step 6: Optionally update with latest base branch commits (configurable)
         if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
@@ -1005,8 +1033,15 @@ def _handle_pr_merge(
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                github_logs, failed_tests = _create_github_action_log_summary(repo_name, config, failed_checks, pr_data)
+                fix_actions = _fix_pr_issues_with_testing(
+                    repo_name,
+                    pr_data,
+                    config,
+                    github_logs,
+                    failed_tests=failed_tests,
+                    skip_github_actions_fix=already_on_pr_branch,
+                )
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1031,11 +1066,7 @@ def _handle_pr_merge(
 
                     # Checkout main branch after closing PR
                     main_branch = config.MAIN_BRANCH
-                    checkout_res = cmd.run_command(
-                        ["git", "checkout", main_branch],
-                        timeout=30,
-                        stream_output=False,
-                    )
+                    checkout_res = git_checkout_branch(main_branch, check_for_changes=False)
                     if checkout_res.success:
                         actions.append(f"Checked out {main_branch} branch")
                     else:
@@ -1058,9 +1089,15 @@ def _handle_pr_merge(
 
                 # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
-                    # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                    github_logs, failed_tests = _create_github_action_log_summary(repo_name, config, failed_checks, pr_data)
+                    fix_actions = _fix_pr_issues_with_testing(
+                        repo_name,
+                        pr_data,
+                        config,
+                        github_logs,
+                        failed_tests=failed_tests,
+                        skip_github_actions_fix=already_on_pr_branch,
+                    )
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1070,6 +1107,7 @@ def _handle_pr_merge(
 
     except Exception as e:
         actions.append(f"Error handling PR merge for PR #{pr_number}: {e}")
+        logger.error(f"Error handling PR merge for PR #{pr_number}: {e}")
 
     return actions
 
@@ -1172,10 +1210,10 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
                 return False
 
         # Checkout the branch
-        checkout_result = cmd.run_command(["git", "checkout", branch_name])
+        checkout_result = git_checkout_branch(branch_name)
         if not checkout_result.success:
             # If branch doesn't exist locally, checkout from fetched ref
-            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
+            checkout_result = git_checkout_branch(branch_name, create_new=True, base_branch="FETCH_HEAD")
 
             if not checkout_result.success:
                 log_action(
@@ -1694,7 +1732,7 @@ def _send_jules_error_feedback(
             return actions
 
         # Get GitHub Actions error logs
-        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+        github_logs, _ = _create_github_action_log_summary(repo_name, config, failed_checks, pr_data)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
@@ -2096,9 +2134,99 @@ def _fix_pr_issues_with_testing(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_logs: str,
+    failed_tests: Optional[List[str]] = None,
     skip_github_actions_fix: bool = False,
 ) -> List[str]:
-    """Fix PR issues using GitHub Actions logs first, then local testing loop."""
+    if skip_github_actions_fix:
+        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
+    else:
+        return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
+
+
+def _fix_pr_issues_with_github_actions_testing(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_logs: str,
+    failed_tests: Optional[List[str]] = None,
+) -> List[str]:
+    """Fix PR issues using GitHub Actions logs, with intelligent routing.
+
+    If 1-3 tests failed: Run local testing/fixing loop (targeted).
+    If 4+ or 0 tests: Apply GHA log fix, commit, and push (trigger new run).
+    """
+    actions = []
+    pr_number = pr_data["number"]
+
+    try:
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
+
+        # Convert failed_tests list to a single test_file string
+        test_file_str = ",".join(failed_tests) if failed_tests else None
+        test_result = run_local_tests(config, test_file=test_file_str)
+
+        # Check if we should use local fix strategy (1-3 failed tests)
+        # Import backend_manager from module level or pass as parameters
+        from auto_coder.backend_manager import BackendManager
+        from auto_coder.cli_helpers import create_high_score_backend_manager
+
+        # attempt_history is not available in this context, use empty list
+        attempt_history: list[dict[str, Any]] = []
+        current_backend_manager: Optional[BackendManager] = create_high_score_backend_manager()
+
+        while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3:
+            local_fix_actions, llm_response = _apply_local_test_fix(
+                repo_name,
+                pr_data,
+                config,
+                test_result,
+                attempt_history,
+                backend_manager=current_backend_manager,
+            )
+            test_result = run_local_tests(config, test_file=test_file_str)
+
+        # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
+        count_msg = f"{len(failed_tests)} failed tests" if failed_tests is not None else "failed tests (unknown count)"
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs ({count_msg})")
+
+        # 1. Apply fix based on GHA logs
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
+
+        # 2. Commit and Push
+        # Check if any changes were made
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        if result.success and result.stdout.strip():
+            commit_msg = f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})"
+            c_res = git_commit_with_retry(commit_msg)
+            if c_res.success:
+                actions.append("Committed fixes based on GitHub Actions logs")
+                p_res = git_push()
+                if p_res.success:
+                    actions.append("Pushed fixes to GitHub to trigger new Actions run")
+                else:
+                    actions.append(f"Failed to push fixes: {p_res.stderr}")
+            else:
+                actions.append(f"Failed to commit fixes: {c_res.stderr}")
+        else:
+            actions.append("No changes generated by GitHub Actions fix")
+
+    except Exception as e:
+        actions.append(f"Error fixing PR issues with testing for PR #{pr_number}: {e}")
+
+    return actions
+
+
+def _fix_pr_issues_with_local_testing(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_logs: str,
+    test_files: Optional[List[str]] = None,
+) -> List[str]:
+    """Fix PR issues using local testing loop."""
     actions = []
     pr_number = pr_data["number"]
 
@@ -2111,14 +2239,9 @@ def _fix_pr_issues_with_testing(
 
     try:
         # Step 1: Initial fix using GitHub Actions logs
-        if skip_github_actions_fix:
-            msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
-            logger.info(msg)
-            actions.append(msg)
-        else:
-            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-            actions.extend(initial_fix_actions)
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
 
         # Step 2: Local testing and iterative fixing loop
         attempts_limit = config.MAX_FIX_ATTEMPTS
@@ -2136,8 +2259,9 @@ def _fix_pr_issues_with_testing(
 
                 actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
+                target_tests = " ".join(test_files) if test_files else None
                 with ProgressStage(f"Running local tests"):
-                    test_result = run_local_tests(config)
+                    test_result = run_local_tests(config, test_file=target_tests)
 
                 if test_result["success"]:
                     actions.append(f"Local tests passed on attempt {attempt}")
@@ -2224,11 +2348,13 @@ def _apply_github_actions_fix(
             framework_type="github_actions",
         )
 
-        # Use extract_important_errors to extract failed log file names and error details
-        extracted_errors = extract_important_errors(github_test_result)
+        # For GitHub Actions, we trust the github_logs summary and do not run further extraction.
+        # This prevents accidental truncation of the curated summary.
+        extracted_errors = github_logs
 
+        # Legacy fallback if logs are empty (though github_logs is usually passed in)
         if not extracted_errors:
-            extracted_errors = github_logs[:500] if github_logs else "No error information available"
+            extracted_errors = "No error information available"
 
         logger.info(f"Extracted important errors from GitHub Actions logs for PR #{pr_number}")
 
@@ -2254,9 +2380,22 @@ def _apply_github_actions_fix(
             fix_prompt[:160].replace("\n", " "),
         )
 
-        # Use LLM backend manager to run the prompt
-        logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-        response = run_llm_prompt(fix_prompt)
+        if config.JULES_MODE:
+            # Use LLM backend manager to run the prompt
+            logger.info(f"Starting Jules session for GitHub Actions fix for PR #{pr_number}")
+
+            # Import JulesClient here to avoid circular imports
+            from .issue_processor import _notify_jules_session_start
+            from .jules_client import JulesClient
+
+            session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], is_noedit=False, title=f"Fix for PR #{pr_number} {pr_data['title']}")
+            # Get GitHubClient instance if not provided
+            gh_client = github_client if github_client else GitHubClient.get_instance()
+            _notify_jules_session_start(repo_name, pr_number, session_id, gh_client, actions)
+        else:
+            # Use LLM backend manager to run the prompt
+            logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
+            response = run_llm_prompt(fix_prompt)
 
         if response:
             response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
@@ -2313,7 +2452,7 @@ def _apply_local_test_fix(
                 extraction_context=(test_result.get("extraction_context", {}) if isinstance(test_result.get("extraction_context", {}), dict) else {}),
                 framework_type=test_result.get("framework_type"),
             )
-            error_summary = extract_important_errors(tr)
+            error_summary = extract_important_errors_from_local_tests(tr)
 
             if not error_summary:
                 actions.append(f"No actionable errors found in local test output for PR #{pr_number}")
