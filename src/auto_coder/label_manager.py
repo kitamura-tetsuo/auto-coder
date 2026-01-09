@@ -405,18 +405,14 @@ class LabelManager:
         # Normalize known_labels to a list of strings
         self.known_labels: Optional[List[str]] = None
         if known_labels is not None:
-            # Optimization: If known_labels is a non-empty list of strings, copy it directly
-            if known_labels and isinstance(known_labels[0], str):
-                self.known_labels = list(known_labels)
-            else:
-                self.known_labels = []
-                for label in known_labels:
-                    if isinstance(label, str):
-                        self.known_labels.append(label)
-                    elif isinstance(label, dict) and "name" in label:
-                        self.known_labels.append(label["name"])
-                    elif hasattr(label, "name"):
-                        self.known_labels.append(label.name)
+            self.known_labels = []
+            for label in known_labels:
+                if isinstance(label, str):
+                    self.known_labels.append(label)
+                elif isinstance(label, dict) and "name" in label:
+                    self.known_labels.append(label["name"])
+                elif hasattr(label, "name"):
+                    self.known_labels.append(label.name)
 
         self._lock = threading.Lock()
         self._label_added = False

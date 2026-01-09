@@ -42,7 +42,6 @@ from .git_info import (
     check_unpushed_commits,
     get_commit_log,
     get_current_branch,
-    get_current_commit_sha,
     get_current_repo_name,
     is_git_repository,
     parse_github_repo_from_url,
@@ -62,7 +61,6 @@ __all__ = [
     "get_current_repo_name",
     "is_git_repository",
     "parse_github_repo_from_url",
-    "get_current_commit_sha",
     # From git_branch.py
     "branch_context",
     "branch_exists",
