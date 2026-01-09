@@ -992,8 +992,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         continue
                                     # Collect job-wide summary candidates (maintain order)
                                     for ln in content.split("\n"):
-                                        ll = ln.lower()
-                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
+                                        lower_line = ln.lower()
+                                        if ((" failed" in lower_line) or (" passed" in lower_line) or (" skipped" in lower_line) or (" did not run" in lower_line)) and any(ch.isdigit() for ch in ln):
                                             job_summary_lines.append(ln)
                                     step_name = step_file_label
                                     # Extract important error-related information
