@@ -1815,7 +1815,7 @@ def slice_relevant_error_window(text: str) -> str:
     """
     if not text:
         return text
-    lines = [_clean_log_line(ln) for ln in text.split("\n")]
+    lines = [_clean_log_line(line) for line in text.split("\n")]
     # Group by priority from highest to lowest
     priority_groups = [
         ["Expected substring:", "Received string:", "expect(received)"],
@@ -1826,8 +1826,8 @@ def slice_relevant_error_window(text: str) -> str:
     start_idx = None
     # Search for the earliest priority trigger (from front)
     for group in priority_groups:
-        for i in range(len(lines)):
-            low = lines[i].lower()
+        for i, line in enumerate(lines):
+            low = line.lower()
             if any(g.lower() in low for g in group):
                 start_idx = max(0, i - 30)
                 break
