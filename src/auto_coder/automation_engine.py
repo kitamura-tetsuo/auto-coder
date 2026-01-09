@@ -327,6 +327,10 @@ class AutomationEngine:
                                         if commit_author == "jules":
                                             jules_responded = True
                                             break
+                                        else:
+                                            # Found a newer commit by someone else (not Jules)
+                                            # This means Jules has NOT responded to the latest state
+                                            break
                                     else:
                                         # Commit is older than interaction, so no newer commits exist
                                         break
@@ -339,9 +343,9 @@ class AutomationEngine:
                         # This avoids UnboundLocalError/NameError if we fall through
                         if repo is None:
                             repo = self.github.get_repository(repo_name)
-                        # We don't strictly need 'pr' here as we use 'pr_data' for most logic,
-                        # but some legacy paths might expect it if we were to refactor further.
-                        # For now, ensuring repo is sufficient as pr_data is populated.
+                        # Instantiate PR object as downstream logic (e.g. merge handling) often relies on it
+                        # This restores the variable that was removed by the optimization
+                        pr = repo.get_pull(pr_number)
 
                     except Exception as e:
                         logger.warning(f"Failed to check Jules PR status for #{pr_number}: {e}")
