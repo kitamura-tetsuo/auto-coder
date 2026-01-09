@@ -309,8 +309,45 @@ class CodexClient(LLMClientBase):
             config["mcpServers"][server_name] = {"command": command, "args": args}
 
             # Write config
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+            # Use os.open to ensure file is created with 600 permissions
+            try:
+                fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            except OSError:
+                # Fallback to standard open if os.open fails (e.g. some file systems)
+                with open(config_path, "w", encoding="utf-8") as f:
+                    try:
+                        os.chmod(config_path, 0o600)
+                    except OSError:
+                        pass  # Ignore permission errors on systems that don't support it
+                    json.dump(config, f, indent=2)
+
+                logger.info(f"Added MCP server '{server_name}' to {config_path}")
+                return True
+
+            # File opened successfully with os.open
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    # Ensure permissions are correct even if file already existed
+                    try:
+                        os.chmod(config_path, 0o600)
+                    except OSError:
+                        pass  # Ignore permission errors on systems that don't support it
+                    json.dump(config, f, indent=2)
+            except Exception:
+                # If fdopen fails, we need to close the file descriptor
+                # But if it succeeded, the context manager closes it
+                # We can't easily check if it was closed, so we rely on the context manager
+                # or the fact that fdopen takes ownership.
+                # However, if fdopen RAISES, it might NOT take ownership.
+                # Standard practice with os.fdopen is that if it succeeds, it closes fd on close.
+                # If it fails, fd remains open.
+                # But we are in a try block. If os.fdopen raises, we are here.
+                # We should try to close fd if it's valid.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
 
             logger.info(f"Added MCP server '{server_name}' to {config_path}")
             return True
