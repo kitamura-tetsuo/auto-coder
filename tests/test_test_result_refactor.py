@@ -5,7 +5,9 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.fix_to_pass_tests_runner import extract_important_errors
+from src.auto_coder.fix_to_pass_tests_runner import (
+    extract_important_errors_from_local_tests,
+)
 from src.auto_coder.pr_processor import _apply_github_actions_fix
 from src.auto_coder.test_result import TestResult
 
@@ -49,7 +51,7 @@ def test_enhanced_error_extraction_playwright_block():
         return_code=1,
         framework_type="playwright",
     )
-    errors = extract_important_errors(tr)
+    errors = extract_important_errors_from_local_tests(tr)
     assert "Expected substring:" in errors
     assert "Received string:" in errors
     assert ".spec.ts" in errors
@@ -66,7 +68,7 @@ def test_enhanced_error_extraction_pytest_keywords():
         """
     )
     tr = TestResult(success=False, output=stdout, errors="", return_code=1, framework_type="pytest")
-    errors = extract_important_errors(tr)
+    errors = extract_important_errors_from_local_tests(tr)
     assert "AssertionError" in errors
     assert "tests/test_bar.py" in errors
 
@@ -89,7 +91,11 @@ def test_engine_extract_important_errors_accepts_testresult(mock_github_client, 
 def test_github_actions_enhanced_integration_passes_structured_context():
     """_apply_github_actions_fix should include structured context when TestResult is provided."""
     config = AutomationConfig()
-    pr_data = {"number": 123, "title": "Fix CI"}
+    pr_data = {
+        "number": 123,
+        "title": "Fix CI",
+        "head": {"ref": "fix-ci-branch", "sha": "mocksha123"},
+    }
     github_logs = "Simulated GitHub Actions logs"
 
     # Provide structured context in TestResult
@@ -112,11 +118,14 @@ def test_github_actions_enhanced_integration_passes_structured_context():
         captured.update(kwargs)
         return "PROMPT"
 
+    config.JULES_MODE = False
     with (
         patch("src.auto_coder.pr_processor.render_prompt", side_effect=fake_render_prompt) as mock_render,
         patch("src.auto_coder.pr_processor.run_llm_prompt", return_value="OK") as mock_llm,
         patch("src.auto_coder.pr_processor.get_commit_log", return_value="commit log") as _,
     ):
+        # Ensure that skip_github_actions_fix is False to enter the correct code path
+        config.SKIP_GITHUB_ACTIONS_FIX = False
         actions = _apply_github_actions_fix("owner/repo", pr_data, config, github_logs, test_result=tr)
 
     # Verify prompt was rendered with structured data
