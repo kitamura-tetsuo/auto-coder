@@ -387,6 +387,22 @@ class AutomationEngine:
                 # Build map for fast lookup of open issues
                 issue_map = {i["number"]: i for i in all_issues}
 
+                # Build map of issues linked by open PRs via text reference (body/title)
+                # This covers cases where the GitHub API doesn't report a ConnectedEvent
+                # (e.g. cross-references or recent links)
+                linked_issues_from_prs = set()
+                for pr_data in pr_data_list:
+                    # Extract from body
+                    body = pr_data.get("body", "")
+                    # Reuse extract_linked_issues_from_pr_body to find "fixes #123" patterns
+                    linked = extract_linked_issues_from_pr_body(body)
+                    linked_issues_from_prs.update(linked)
+
+                    # Extract from title
+                    title = pr_data.get("title", "")
+                    linked_title = extract_linked_issues_from_pr_body(title)
+                    linked_issues_from_prs.update(linked_title)
+
                 for issue_data in all_issues:
                     labels = issue_data.get("labels", []) or []
 
@@ -458,8 +474,9 @@ class AutomationEngine:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    # Use pre-fetched data
-                    if issue_data.get("has_linked_prs"):
+                    # Use pre-fetched data and manual text scan
+                    if issue_data.get("has_linked_prs") or number in linked_issues_from_prs:
+                        logger.info(f"Skipping issue #{number} - has linked PRs (API: {issue_data.get('has_linked_prs')}, Text Scan: {number in linked_issues_from_prs})")
                         continue
 
                     # Calculate priority

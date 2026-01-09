@@ -428,6 +428,29 @@ class JulesClient(LLMClientBase):
         return repo_name, pr_number
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        """Run Jules HTTP API with the given prompt and no return response.
+        
+        Orchestrates the entire session lifecycle:
+        1. Starts a session (or reuses existing one)
+
+        Args:
+            prompt: The prompt to send
+            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
+
+        Returns:
+            Fixed message that means to start session.
+        """
+        # Try to detect repo context from current environment
+        repo_name = get_current_repo_name() or "unknown/repo"
+        base_branch = get_current_branch() or "main"
+        
+        logger.info(f"_run_llm_cli called for JulesClient. Using inferred context: repo={repo_name}, branch={base_branch}")
+
+        session_id = self.start_session(prompt, repo_name, base_branch, is_noedit)
+
+        return session_id
+
+    def _run_llm_cli_with_polling(self, prompt: str, is_noedit: bool = False) -> str:
         """Run Jules HTTP API with the given prompt and return response.
         
         Orchestrates the entire session lifecycle:

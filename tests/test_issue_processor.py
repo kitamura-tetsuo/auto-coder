@@ -262,6 +262,7 @@ class TestPRMessageGeneration:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Simple JSON response
@@ -305,6 +306,7 @@ class TestPRMessageGeneration:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Conversation history with prompt and system messages, followed by final JSON
@@ -353,6 +355,7 @@ class TestPRMessageGeneration:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Response with text before JSON
@@ -421,6 +424,7 @@ class TestPRLabelCopying:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
@@ -480,6 +484,7 @@ class TestPRLabelCopying:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
@@ -539,6 +544,7 @@ class TestPRLabelCopying:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
@@ -597,6 +603,7 @@ class TestPRLabelCopying:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
@@ -652,6 +659,7 @@ class TestPRLabelCopying:
 
         # Mock GitHub client
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
@@ -707,6 +715,7 @@ class TestPRLabelCopying:
 
         # Mock GitHub client that raises error on label operations
         github_client = Mock()
+        github_client.find_pr_by_head_branch.return_value = None
         github_client.get_pr_closing_issues.return_value = [issue_number]
         github_client.add_labels.side_effect = Exception("GitHub API error")
 

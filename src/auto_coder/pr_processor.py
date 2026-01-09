@@ -444,7 +444,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
                 # Checkout main branch after closing PR
                 main_branch = AutomationConfig().MAIN_BRANCH
-                checkout_result = git_checkout_branch(main_branch)
+                checkout_result = git_checkout_branch(main_branch, check_for_changes=False)
                 if checkout_result.success:
                     actions.append(f"Checked out {main_branch} branch")
                 else:
@@ -968,20 +968,14 @@ def _handle_pr_merge(
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
         # Check if we are already on the PR branch before checkout.
-        #
-        # In WIP-resumption mode (CHECK_LABELS=False), assume we are already on the PR branch
-        # to avoid unnecessary git calls and to keep label-handling deterministic.
         pr_branch_name = pr_data.get("head", {}).get("ref", "")
-        if not config.CHECK_LABELS:
-            already_on_pr_branch = True
-        else:
-            current_branch_res = cmd.run_command(
-                ["git", "branch", "--show-current"],
-                timeout=10,
-                stream_output=False,
-            )
-            current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
-            already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
+        current_branch_res = cmd.run_command(
+            ["git", "branch", "--show-current"],
+            timeout=10,
+            stream_output=False,
+        )
+        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
+        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
 
         # Check if this is a Jules PR
         if _is_jules_pr(pr_data) and not already_on_pr_branch:
@@ -1026,12 +1020,12 @@ def _handle_pr_merge(
                 return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
-        checkout_ok: bool = _checkout_pr_branch(repo_name, pr_data, config)
-        if not checkout_ok:
-            actions.append(f"Failed to checkout PR #{pr_number} branch")
-            return actions
+        # checkout_ok: bool = _checkout_pr_branch(repo_name, pr_data, config)
+        # if not checkout_ok:
+        #     actions.append(f"Failed to checkout PR #{pr_number} branch")
+        #     return actions
 
-        actions.append(f"Checked out PR #{pr_number} branch")
+        # actions.append(f"Checked out PR #{pr_number} branch")
 
         # Step 6: Optionally update with latest base branch commits (configurable)
         if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
@@ -1039,9 +1033,15 @@ def _handle_pr_merge(
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                logs_list, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                github_logs = _create_github_action_log_summary(logs_list)
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                github_logs, failed_tests = _create_github_action_log_summary(repo_name, config, failed_checks, pr_data)
+                fix_actions = _fix_pr_issues_with_testing(
+                    repo_name,
+                    pr_data,
+                    config,
+                    github_logs,
+                    failed_tests=failed_tests,
+                    skip_github_actions_fix=already_on_pr_branch,
+                )
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1066,7 +1066,7 @@ def _handle_pr_merge(
 
                     # Checkout main branch after closing PR
                     main_branch = config.MAIN_BRANCH
-                    checkout_res = git_checkout_branch(main_branch)
+                    checkout_res = git_checkout_branch(main_branch, check_for_changes=False)
                     if checkout_res.success:
                         actions.append(f"Checked out {main_branch} branch")
                     else:
@@ -1089,10 +1089,15 @@ def _handle_pr_merge(
 
                 # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
-                    # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                    logs_list, _ = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                    github_logs = _create_github_action_log_summary(logs_list)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                    github_logs, failed_tests = _create_github_action_log_summary(repo_name, config, failed_checks, pr_data)
+                    fix_actions = _fix_pr_issues_with_testing(
+                        repo_name,
+                        pr_data,
+                        config,
+                        github_logs,
+                        failed_tests=failed_tests,
+                        skip_github_actions_fix=already_on_pr_branch,
+                    )
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1102,6 +1107,7 @@ def _handle_pr_merge(
 
     except Exception as e:
         actions.append(f"Error handling PR merge for PR #{pr_number}: {e}")
+        logger.error(f"Error handling PR merge for PR #{pr_number}: {e}")
 
     return actions
 
@@ -2122,15 +2128,93 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
         logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
         return False
 
-
 def _fix_pr_issues_with_testing(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_logs: str,
+    failed_tests: Optional[List[str]] = None,
     skip_github_actions_fix: bool = False,
 ) -> List[str]:
-    """Fix PR issues using GitHub Actions logs first, then local testing loop."""
+    if skip_github_actions_fix:
+        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
+    else:
+        return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
+
+def _fix_pr_issues_with_github_actions_testing(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_logs: str,
+    failed_tests: Optional[List[str]] = None,
+) -> List[str]:
+    """Fix PR issues using GitHub Actions logs, with intelligent routing.
+    
+    If 1-3 tests failed: Run local testing/fixing loop (targeted).
+    If 4+ or 0 tests: Apply GHA log fix, commit, and push (trigger new run).
+    """
+    actions = []
+    pr_number = pr_data["number"]
+
+    try:
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
+
+        test_result = run_local_tests(config, test_file=failed_tests)
+
+        # Check if we should use local fix strategy (1-3 failed tests)
+        while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3:
+            local_fix_actions, llm_response = _apply_local_test_fix(
+                                repo_name,
+                                pr_data,
+                                config,
+                            test_result,
+                            attempt_history,
+                            backend_manager=current_backend_manager,
+                        )
+            test_result = run_local_tests(config, test_file=failed_tests)
+
+        # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
+        count_msg = f"{len(failed_tests)} failed tests" if failed_tests is not None else "failed tests (unknown count)"
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs ({count_msg})")
+        
+        # 1. Apply fix based on GHA logs
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
+        
+        # 2. Commit and Push
+        # Check if any changes were made
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        if result.success and result.stdout.strip():
+            commit_msg = f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})"
+            c_res = git_commit_with_retry(commit_msg)
+            if c_res.success:
+                actions.append("Committed fixes based on GitHub Actions logs")
+                p_res = git_push()
+                if p_res.success:
+                    actions.append("Pushed fixes to GitHub to trigger new Actions run")
+                else:
+                    actions.append(f"Failed to push fixes: {p_res.stderr}")
+            else:
+                actions.append(f"Failed to commit fixes: {c_res.stderr}")
+        else:
+            actions.append("No changes generated by GitHub Actions fix")
+
+    except Exception as e:
+        actions.append(f"Error fixing PR issues with testing for PR #{pr_number}: {e}")
+
+    return actions
+
+
+def _fix_pr_issues_with_local_testing(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_logs: str,
+    test_files: Optional[List[str]] = None,
+) -> List[str]:
+    """Fix PR issues using local testing loop."""
     actions = []
     pr_number = pr_data["number"]
 
@@ -2143,14 +2227,9 @@ def _fix_pr_issues_with_testing(
 
     try:
         # Step 1: Initial fix using GitHub Actions logs
-        if skip_github_actions_fix:
-            msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
-            logger.info(msg)
-            actions.append(msg)
-        else:
-            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-            actions.extend(initial_fix_actions)
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
 
         # Step 2: Local testing and iterative fixing loop
         attempts_limit = config.MAX_FIX_ATTEMPTS
@@ -2168,8 +2247,9 @@ def _fix_pr_issues_with_testing(
 
                 actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
+                target_tests = " ".join(test_files) if test_files else None
                 with ProgressStage(f"Running local tests"):
-                    test_result = run_local_tests(config)
+                    test_result = run_local_tests(config, test_file=target_tests)
 
                 if test_result["success"]:
                     actions.append(f"Local tests passed on attempt {attempt}")
@@ -2286,9 +2366,18 @@ def _apply_github_actions_fix(
             fix_prompt[:160].replace("\n", " "),
         )
 
-        # Use LLM backend manager to run the prompt
-        logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-        response = run_llm_prompt(fix_prompt)
+        if config.JULES_MODE:
+            # Use LLM backend manager to run the prompt
+            logger.info(f"Starting Jules session for GitHub Actions fix for PR #{pr_number}")
+
+            # Import JulesClient here to avoid circular imports
+            from .jules_client import JulesClient
+            session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], f"Fix for PR #{pr_number} {pr_data['title']}")
+            _notify_jules_session_start(repo_name, pr_number, session_id, github_client, actions)
+        else:
+            # Use LLM backend manager to run the prompt
+            logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
+            response = run_llm_prompt(fix_prompt)
 
         if response:
             response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"

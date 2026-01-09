@@ -333,6 +333,11 @@ class AutomationConfig:
         if custom_priorities:
             object.__setattr__(self, "label_priorities", custom_priorities)
 
+        # Initialize Jules mode from configuration
+        # This allows checking Jules mode status via AutomationConfig
+        from .llm_backend_config import is_jules_mode_enabled
+        object.__setattr__(self, "JULES_MODE", is_jules_mode_enabled())
+
         # Apply environment variable overrides if enabled (can override both defaults and custom)
         if env_override:
             self._apply_env_overrides()
@@ -513,6 +518,10 @@ class AutomationConfig:
     # - Process all dependency-bot PRs, attempting to fix failing ones
     # Default: True (auto-merge for ready Dependabot PRs enabled)
     AUTO_MERGE_DEPENDABOT_PRS: bool = True
+
+    # Jules mode configuration
+    # Check if Jules mode is enabled (both backend and config)
+    JULES_MODE: bool = False
 
     # PR label copying configuration
     # Enable or disable copying semantic labels from issues to PRs

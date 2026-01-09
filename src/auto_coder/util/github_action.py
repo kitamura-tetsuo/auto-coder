@@ -2027,6 +2027,36 @@ def parse_playwright_json_report(report: Dict[str, Any]) -> str:
     return generate_merged_playwright_report([report])
 
 
+
+def _extract_failed_tests_from_playwright_reports(reports: List[Dict[str, Any]]) -> List[str]:
+    """Extract list of failed test files from Playwright JSON reports."""
+    failed_tests = set()
+
+    def _recurse(suites):
+        for suite in suites:
+            if "suites" in suite:
+                _recurse(suite["suites"])
+            
+            suite_file = suite.get("file")
+            
+            for spec in suite.get("specs", []):
+                spec_file = spec.get("file", suite_file)
+                
+                # Check tests
+                for test in spec.get("tests", []):
+                    # Check if failed
+                    outcome = test.get("outcome") # unexpected, flaky, expected, skipped
+                    # If outcome is unexpected, it failed.
+                    if outcome == "unexpected":
+                        if spec_file:
+                             failed_tests.add(spec_file)
+                        
+    for report in reports:
+        _recurse(report.get("suites", []))
+        
+    return sorted(list(failed_tests))
+
+
 def _create_github_action_log_summary(
     repo_name: str,
     config: AutomationConfig,
@@ -2168,7 +2198,11 @@ def _create_github_action_log_summary(
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
 
-    return "\n\n".join(logs) if logs else "No detailed logs available", artifacts_list if artifacts_list else None
+    failed_test_files = []
+    if artifacts_list:
+        failed_test_files = _extract_failed_tests_from_playwright_reports(artifacts_list)
+
+    return "\n\n".join(logs) if logs else "No detailed logs available", failed_test_files if failed_test_files else None
 
 
 
