@@ -1,23 +1,45 @@
 """Test execution functionality for Auto-Coder automation engine."""
 
 import csv
+import json
 import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import (
+    check_unpushed_commits,
+    extract_number_from_branch,
+    get_commit_log,
+    get_current_branch,
+    get_current_commit_sha,
+    get_current_repo_name,
+    git_commit_with_retry,
+    git_push,
+    save_commit_failure_history,
+)
+from .github_client import GitHubClient
+from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test
+from .test_log_utils import (
+    _collect_playwright_candidates,
+    _collect_pytest_candidates,
+    _collect_vitest_candidates,
+    _detect_failed_test_library,
+    extract_first_failed_test,
+    extract_playwright_passed_count,
+)
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
+from .util.github_action import _create_github_action_log_summary, _get_github_actions_logs, generate_merged_playwright_report, parse_playwright_json_report
 from .utils import CommandExecutor, change_fraction, log_action
 
 if TYPE_CHECKING:
@@ -73,6 +95,7 @@ def _to_test_result(data: Any) -> TestResult:
         stability_issue=bool(data.get("stability_issue", False)),
         extraction_context=extraction_ctx,
         framework_type=data.get("framework_type"),
+        json_artifact=data.get("json_artifact"),
     )
 
 
@@ -144,6 +167,60 @@ def _write_llm_output_log(
     content = raw_output if raw_output is not None else "LLM produced no response"
     with log_path.open("w", encoding="utf-8") as handle:
         handle.write(content)
+    return log_path
+
+
+def _write_test_log_json(
+    *,
+    repo_name: str,
+    test_file: Optional[str],
+    attempt: int,
+    test_result: Dict[str, Any],
+    fix_result: WorkspaceFixResult,
+    post_test_result: Optional[Dict[str, Any]],
+    timestamp: datetime,
+) -> Path:
+    """Save test execution details to a JSON log file.
+
+    Path format: ~/.auto-coder/{repo_name}/test_log/{timestamp}_{test_file}_attempt_{attempt}.json
+    """
+    home_dir = Path.home()
+    # Handle repo_name being a path or owner/repo string - sanitize just in case
+    # If repo_name contains slashes, we might want to respect that hierarchy or just use the last part.
+    # The requirement says: /home/node/.auto-coder/kitamura-tetsuo/outliner/test_log
+    # So we should use repo_name as is but rely on it not starting with / to avoid absolute path issues?
+    # Usually repo_name is "owner/repo".
+
+    log_dir = home_dir / ".auto-coder" / repo_name / "test_log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = "{time}_{test}_attempt_{attempt}.json".format(
+        time=timestamp.strftime("%Y%m%d_%H%M%S"),
+        test=_sanitize_for_filename(_normalize_test_file(test_file), default="tests"),
+        attempt=attempt,
+    )
+    log_path = log_dir / filename
+
+    data = {
+        "timestamp": timestamp.isoformat(),
+        "repo": repo_name,
+        "test_file": _normalize_test_file(test_file),
+        "attempt": attempt,
+        "backend": fix_result.backend,
+        "provider": fix_result.provider,
+        "model": fix_result.model,
+        "pre_fix_test_result": test_result,
+        "llm_fix_summary": fix_result.summary,
+        "llm_raw_response": fix_result.raw_response,
+        "post_fix_test_result": post_test_result,
+    }
+
+    try:
+        with log_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Failed to write JSON test log to {log_path}: {e}")
+
     return log_path
 
 
@@ -275,7 +352,8 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         if test_file:
             with ProgressStage(f"Running only the specified test file via script: {test_file}"):
                 logger.info(f"Running only the specified test file via script: {test_file}")
-                cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
+                test_files = test_file.split()
+                cmd_list = ["bash", config.TEST_SCRIPT_PATH] + test_files
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 return {
                     "success": result.success,
@@ -293,8 +371,9 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
         logger.info(f"Finished local tests. {'Passed' if result.success else 'Failed'}")
 
-        # If the test run failed, try to extract the first failed test file and run it via the script
-        if not result.success:
+        # If the test run failed and isolate_single_test_on_failure is enabled in config.toml,
+        # try to extract the first failed test file and run it via the script
+        if not result.success and get_isolate_single_test_on_failure_from_config():
             # Extract the first failed test file from the output
             first_failed_test = extract_first_failed_test(result.stdout, result.stderr)
             if first_failed_test:
@@ -359,6 +438,176 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
+@log_calls
+def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str, Any]:
+    """Run tests via GitHub Action by committing and pushing.
+
+    1. Commit current changes (if any).
+    2. Push to current branch.
+    3. Wait for GitHub Action checks to complete.
+    4. Compile results.
+    """
+    logger.info("Preparing to run tests via GitHub Action...")
+
+    # 1. Commit changes
+    committed = False
+    status_result = cmd.run_command(["git", "status", "--porcelain"])
+
+    if status_result.success and status_result.stdout.strip():
+        try:
+            commit_msg = f"Auto-fix: attempting to pass tests (attempt {attempt})"
+            result = git_commit_with_retry(commit_msg)
+            committed = result.success
+        except Exception as e:
+            logger.warning(f"Commit failed: {e}")
+    else:
+        logger.info("No changes to commit (clean workspace)")
+
+    # 2. Push changes
+    # Only push if we committed something OR if there are unpushed commits
+    should_push = committed or check_unpushed_commits()
+
+    if should_push:
+        try:
+            git_push()  # Should we force? safer not to, assuming we are on a synced branch
+        except Exception as e:
+            logger.error(f"Failed to push changes: {e}")
+            return {
+                "success": False,
+                "output": "",
+                "errors": f"Failed to push changes to GitHub: {e}",
+                "return_code": -1,
+                "command": "git push",
+                "test_file": None,
+                "stability_issue": False,
+            }
+    else:
+        logger.info("No new commits and no unpushed changes. Using existing GitHub Action results.")
+
+    # 3. Get current SHA
+    sha = get_current_commit_sha()
+    if not sha:
+        return {
+            "success": False,
+            "output": "",
+            "errors": "Could not determine current commit SHA",
+            "return_code": -1,
+            "command": "git push",
+            "test_file": None,
+            "stability_issue": False,
+        }
+    logger.info(f"Target commit {sha}. Waiting for checks...")
+
+    # 4. Wait for checks
+    # We poll get_check_runs every N seconds
+    gh_client = GitHubClient.get_instance()
+    repo_name = get_current_repo_name()
+    if not repo_name:
+        return {
+            "success": False,
+            "output": "",
+            "errors": "Could not determine repository name",
+            "return_code": -1,
+            "command": "git push",
+            "test_file": None,
+            "stability_issue": False,
+        }
+
+    start_time = time.time()
+    # If we didn't push, we expect results immediately. Don't wait too long if they don't exist.
+    timeout = 60 * 30  # 30 minutes timeout
+
+    # If we didn't push, allow a quick check for existing results without waiting loop if possible
+    # But sticking to the loop is safer, just maybe fail fast if empty?
+
+    while True:
+        if time.time() - start_time > timeout:
+            return {
+                "success": False,
+                "output": "",
+                "errors": "Timed out waiting for GitHub Action checks",
+                "return_code": -1,
+                "command": "wait_for_checks",
+                "test_file": None,
+                "stability_issue": False,
+            }
+
+        check_runs = gh_client.get_check_runs(repo_name, sha)
+
+        # Filter for relevant checks? For now convert all to a result.
+        # If no checks found yet, wait.
+        if not check_runs:
+            if not should_push:
+                # If we didn't push, and there are no checks, maybe we shouldn't wait forever?
+                # But maybe checks are lagging?
+                # Let's wait a bit shorter time? Or just warn?
+                # User said "adopt the result ... that has already been executed".
+                # If none executed, that's a problem.
+                # Let's retry a few times then fail?
+                if time.time() - start_time > 30:  # Wait at most 30 seconds for existing checks
+                    return {
+                        "success": False,
+                        "output": "",
+                        "errors": "No GitHub Action checks found for the current commit.",
+                        "return_code": -1,
+                        "command": "github_action_checks",
+                        "test_file": None,
+                        "stability_issue": False,
+                    }
+
+            logger.info("No check runs found yet. Waiting...")
+            time.sleep(10)
+            continue
+
+        # Check statuses
+        # We look for "completed" status.
+        all_completed = all(run["status"] == "completed" for run in check_runs)
+
+        if all_completed:
+            # Analyze results
+            failed_runs = [run for run in check_runs if run["conclusion"] != "success"]
+            success = len(failed_runs) == 0
+
+            output_lines = []
+            error_lines = []
+
+            json_artifacts: list[dict[str, Any]] | None = None
+            if not success:
+                # Use shared routine to get logs
+                # failed_runs struct matches expectation (has details_url)
+                try:
+                    logs_list: tuple[str, list[dict[str, Any]] | None] = _get_github_actions_logs(repo_name, config, failed_runs)
+                    logs: str = _create_github_action_log_summary(repo_name, config, failed_runs)
+                    output_lines.append(logs)
+                except Exception as e:
+                    logger.error(f"Failed to get GitHub Action logs: {e}")
+                    output_lines.append(f"Failed to retrieve detailed logs: {e}")
+
+            for run in check_runs:
+                # Brief summary for each run
+                status_str = f"Check: {run['name']} - {run['conclusion']}"
+                if run["conclusion"] != "success":
+                    error_lines.append(status_str)
+                    if run.get("output") and run["output"].get("title"):
+                        error_lines.append(f"  Title: {run['output']['title']}")
+
+            return {
+                "success": success,
+                "output": "\n".join(output_lines),
+                "errors": "\n".join(error_lines),
+                "return_code": 0 if success else 1,
+                "command": "github_action_checks",
+                "test_file": None,
+                "stability_issue": False,
+                "json_artifact": json_artifacts,
+            }
+
+        # If not all completed
+        completed_count = sum(1 for run in check_runs if run["status"] == "completed")
+        logger.info(f"Waiting for checks: {completed_count}/{len(check_runs)} completed")
+        time.sleep(15)
+
+
 @log_calls  # type: ignore[misc]
 def apply_test_stability_fix(
     config: AutomationConfig,
@@ -417,6 +666,83 @@ def apply_test_stability_fix(
         )
 
 
+@log_calls
+def _resolve_issue_body(repo_name: str, branch_name: str, gh_client: GitHubClient) -> Optional[str]:
+    """
+    Resolve the relevant issue or PR body for a given branch.
+
+    Logic:
+    1. Extract number from branch.
+    2. If number found:
+       - Check if it's a PR.
+       - If PR: check for linked/closing issues.
+         - If linked issue found: return linked issue body (highest priority context).
+         - Else: return PR body.
+       - If not PR (or is just Issue): return Issue body.
+    3. If no number found in branch (or extraction failed):
+       - Search for open PR where head branch matches `branch_name`.
+       - If matching PR found, recurse logic as if it was a PR number.
+
+    Returns:
+        The body text of the most relevant Issue or PR, or None if not found.
+    """
+    try:
+        # 1. Try to extract number from branch
+        item_number = extract_number_from_branch(branch_name)
+
+        if item_number:
+            repo = gh_client.get_repository(repo_name)
+
+            # Check if it is a PR
+            try:
+                # Note: PyGithub get_pull raises UnknownObjectException if number is not a PR (even if it's an Issue)
+                # But get_issue works for both (mostly).
+                # We want to treat it as PR if possible to check for linked issues.
+                pr = repo.get_pull(item_number)
+
+                # It is a PR
+                logger.info(f"Branch '{branch_name}' corresponds to PR #{item_number}")
+
+                # Check for closing issues
+                closing_issue_ids = gh_client.get_pr_closing_issues(repo_name, item_number)
+                if closing_issue_ids:
+                    # Fetch the first closing issue
+                    closing_issue_id = closing_issue_ids[0]
+                    logger.info(f"PR #{item_number} closes issue #{closing_issue_id}. Using issue body.")
+                    issue = repo.get_issue(closing_issue_id)
+                    return issue.body
+                else:
+                    logger.info(f"PR #{item_number} has no linked closing issues. Using PR body.")
+                    return pr.body
+
+            except Exception:
+                # Not a PR, or get_pull failed. Treat as Issue.
+                logger.info(f"Branch '{branch_name}' number #{item_number} treated as Issue")
+                issue = repo.get_issue(item_number)
+                return issue.body
+
+        else:
+            # 2. No number in branch name (e.g. feature-branch)
+            # Find PR by branch name
+            logger.info(f"No number in branch '{branch_name}'. Searching for PRs with this head branch.")
+            pr_data = gh_client.find_pr_by_head_branch(repo_name, branch_name)
+
+            if pr_data:
+                pr_number = pr_data.get("number")
+                if pr_number:
+                    logger.info(f"Found PR #{pr_number} for branch '{branch_name}'. processing as PR.")
+                    # Recurse or duplicate logic? Duplicate slightly to avoid infinite recursion risk if simple
+                    # Reuse the same logic by calling with mocked branch name or just jumping to PR logic
+                    return _resolve_issue_body(repo_name, f"pr-{pr_number}", gh_client)
+
+            logger.info(f"No context found for branch '{branch_name}'")
+            return None
+
+    except Exception as e:
+        logger.warning(f"Error resolving issue body for branch '{branch_name}': {e}")
+        return None
+
+
 @log_calls  # type: ignore[misc]
 def apply_workspace_test_fix(
     config: AutomationConfig,
@@ -424,6 +750,8 @@ def apply_workspace_test_fix(
     llm_backend_manager: "BackendManager",
     current_test_file: Optional[str] = None,
     attempt_history: Optional[list[Dict[str, Any]]] = None,
+    enable_github_action: bool = False,
+    exclude_playwright: bool = False,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures.
 
@@ -443,7 +771,13 @@ def apply_workspace_test_fix(
     try:
         # Convert legacy dict payloads to TestResult for structured extraction
         tr = _to_test_result(test_result)
-        error_summary = extract_important_errors(tr)
+        if tr.command == "github_action_checks":
+            error_summary = tr.output or ""
+            if tr.stability_issue:
+                prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                error_summary = prefix + error_summary
+        else:
+            error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=exclude_playwright)
         if not error_summary:
             logger.info("Skipping LLM workspace fix because no actionable errors were extracted")
             return WorkspaceFixResult(
@@ -469,11 +803,31 @@ def apply_workspace_test_fix(
                 history_parts.append(f"Attempt {attempt_num}:\n" f"  LLM Output: {llm_output_truncated}\n" f"  Test Result: {test_errors_truncated}")
             history_text = "\n\n".join(history_parts)
 
+        # Try to resolve issue/PR body
+        issue_body = None
+        try:
+            current_branch = get_current_branch()
+            repo_name = get_current_repo_name()
+            if current_branch and repo_name:
+                logger.info(f"Resolving issue/PR context for branch '{current_branch}'")
+                gh_client = GitHubClient.get_instance()
+                issue_body = _resolve_issue_body(repo_name, current_branch, gh_client)
+        except Exception as e:
+            logger.warning(f"Failed to fetch issue context for test fix: {e}")
+
+        test_command = test_result.get("command", "pytest -q --maxfail=1")
+        if test_command == "github_action_checks":
+            test_command = "scripts/test.sh"
+
+        failure_header = "GitHub Action Check Failure Summary" if enable_github_action else "Local Test Failure Summary"
+
         fix_prompt = render_prompt(
             "tests.workspace_fix",
-            error_summary=error_summary[: config.MAX_PROMPT_SIZE],
-            test_command=test_result.get("command", "pytest -q --maxfail=1"),
+            error_summary=error_summary,
+            test_command=test_command,
             attempt_history=history_text,
+            issue_body=issue_body,
+            failure_header=failure_header,
         )
 
         # Use the LLM backend manager to run the prompt
@@ -512,6 +866,7 @@ def fix_to_pass_tests(
     llm_backend_manager: "BackendManager",
     max_attempts: Optional[int] = None,
     message_backend_manager: Optional["BackendManager"] = None,
+    enable_github_action: bool = False,
 ) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
 
@@ -537,6 +892,9 @@ def fix_to_pass_tests(
     # Track history of previous attempts for context
     attempt_history: list[Dict[str, Any]] = []
 
+    # State to force local execution (e.g. for small number of e2e failures)
+    force_local_run = False
+
     # Support infinite attempts (math.inf) by using a while loop
     attempt = 0  # counts actual test executions
     while True:
@@ -558,13 +916,27 @@ def fix_to_pass_tests(
         else:
             attempt += 1
             summary["attempts"] = attempt
-            logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
-            test_result = run_local_tests(config, test_file=current_test_file)
+
+            run_via_ga = enable_github_action and not force_local_run
+            mode_str = "GitHub Action" if run_via_ga else "Local"
+            logger.info(f"Running tests (attempt {attempt}/{attempts_limit}) via {mode_str}")
+
+            if run_via_ga:
+                test_result = run_github_action_tests(config, attempt)
+            else:
+                test_result = run_local_tests(config, test_file=current_test_file)
+
+            # Reset force_local_run after execution, re-evaluated later
+            # (Though if we failed, we might set it again)
+            force_local_run = False
+
             # Update the current test file being fixed
+            # Note: If we ran specific files, this will be set to those files.
+            # If we ran all, it will be None.
             current_test_file = test_result.get("test_file")
         if test_result["success"]:
             if current_test_file is not None:
-                logger.info(f"Targeted test {current_test_file} passed; clearing focus before rerunning full suite")
+                logger.info(f"Targeted test passed; clearing focus before rerunning full suite")
                 current_test_file = None
                 continue
             msg = f"Local tests passed on attempt {attempt}"
@@ -573,6 +945,59 @@ def fix_to_pass_tests(
             summary["success"] = True
             cleanup_llm_task_file()
             return summary
+
+        # Analyze failures to determine priority and execution strategy
+        tr = _to_test_result(test_result)
+        # Get full error summary (including e2e) to analyze failure types
+        if tr.command == "github_action_checks":
+            full_error_summary = tr.output or ""
+            if tr.stability_issue:
+                prefix = f"Test stability issue detected: {tr.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+                full_error_summary = prefix + full_error_summary
+        else:
+            full_error_summary = extract_important_errors_from_local_tests(tr, exclude_playwright=False)
+
+        pytest_candidates = _collect_pytest_candidates(full_error_summary)
+        vitest_candidates = _collect_vitest_candidates(full_error_summary)
+        # Use simple detection for Playwright summary header to avoid double counting if regex behaves differently on summary
+        # But _collect_playwright_candidates should work on the summary text too if it contains file paths and "failed" markers
+        playwright_candidates = _collect_playwright_candidates(full_error_summary)
+
+        is_lint_or_unit = bool(pytest_candidates or vitest_candidates)
+        # If no explicit test candidates but failed, assume lint/setup error (unless it's purely playwright)
+        if not is_lint_or_unit and not playwright_candidates and test_result.get("return_code") != 0:
+            is_lint_or_unit = True
+
+        exclude_playwright = False
+        force_local_run = False
+
+        if is_lint_or_unit:
+            logger.info("Detected Lint/Unit/Integration failures. Prioritizing these over E2E.")
+            exclude_playwright = True
+            # Build string for simple check
+            is_mixed = bool(playwright_candidates)
+            if is_mixed:
+                logger.info("Mixed failure types detected. E2E errors will be excluded from LLM context.")
+            # Clear focus to ensure we fix the root cause (assuming lint affects all)
+            # But if we were focusing on a file and it had lint errors, maybe keep focus?
+            # For safety, let's reset only if we were focusing on E2E files specifically.
+            # If current_test_file was set manually, we might want to keep it?
+            # User requirement implies "fix these first".
+            # Cleanest approach: Reset focus to run full suite's lint/unit next time
+            current_test_file = None
+
+        elif playwright_candidates:
+            # Only E2E failures found
+            count = len(playwright_candidates)
+            logger.info(f"Detected {count} E2E failures.")
+            if count <= 10:
+                logger.info("E2E failure count <= 10. Forcing local execution for these files.")
+                current_test_file = " ".join(playwright_candidates)
+                force_local_run = True
+            else:
+                logger.info("E2E failure count > 10. Using standard execution mode (GA if enabled).")
+                current_test_file = None
+                force_local_run = False
 
         # Check for test stability issue (failed in full suite but passed in isolation)
         if test_result.get("stability_issue", False):
@@ -598,6 +1023,8 @@ def fix_to_pass_tests(
                 llm_backend_manager,
                 current_test_file=current_test_file,
                 attempt_history=attempt_history,
+                enable_github_action=enable_github_action,
+                exclude_playwright=exclude_playwright,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
@@ -614,13 +1041,23 @@ def fix_to_pass_tests(
 
         # Baseline (pre-fix) outputs for comparison
         baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
-        baseline_error_summary = extract_important_errors(_to_test_result(test_result))
+        tr_base = _to_test_result(test_result)
+        if tr_base.command == "github_action_checks":
+            baseline_error_summary = tr_base.output or ""
+        else:
+            baseline_error_summary = extract_important_errors_from_local_tests(tr_base)
 
         # Re-run tests AFTER LLM edits to measure change and decide commit
         attempt += 1
         summary["attempts"] = attempt
-        logger.info(f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})")
-        post_result = run_local_tests(config, test_file=current_test_file)
+        # Re-run tests AFTER LLM edits to measure change and decide commit
+        attempt += 1
+        summary["attempts"] = attempt
+        logger.info(f"Re-running tests after LLM fix (attempt {attempt}/{attempts_limit})")
+        if enable_github_action and not force_local_run:
+            post_result = run_github_action_tests(config, attempt)
+        else:
+            post_result = run_local_tests(config, test_file=current_test_file)
 
         log_timestamp = datetime.now()
         backend_for_log = fix_response.backend
@@ -642,8 +1079,26 @@ def fix_to_pass_tests(
         except Exception:
             logger.warning("Failed to write LLM output log for fix-to-pass-tests", exc_info=True)
 
+        try:
+            repo_name_for_log = get_current_repo_name() or "unknown_repo"
+            _write_test_log_json(
+                repo_name=repo_name_for_log,
+                test_file=current_test_file,
+                attempt=attempt,
+                test_result=test_result,
+                fix_result=fix_response,
+                post_test_result=post_result,
+                timestamp=log_timestamp,
+            )
+        except Exception:
+            logger.warning("Failed to write JSON test log", exc_info=True)
+
         post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
-        post_error_summary = extract_important_errors(_to_test_result(post_result))
+        tr_post = _to_test_result(post_result)
+        if tr_post.command == "github_action_checks":
+            post_error_summary = tr_post.output or ""
+        else:
+            post_error_summary = extract_important_errors_from_local_tests(tr_post)
 
         # Update previous context for next loop start
         cleanup_pending = False
@@ -688,12 +1143,23 @@ def fix_to_pass_tests(
             cleanup_llm_task_file()
 
         # Stage and commit; detect 'no changes' as an immediate error per requirement
-        add_res = cmd.run_command(["git", "add", "."])
+        # Stage and commit; detect 'no changes' as an immediate error per requirement
+        # Use -A to ensure all changes (including deletions) are staged
+        add_res = cmd.run_command(["git", "add", "-A"])
         if not add_res.success:
             errmsg = f"Failed to stage changes: {add_res.stderr}"
             logger.error(errmsg)
             summary["messages"].append(errmsg)
             break
+
+        # Verify that changes were actually staged
+        # git diff --cached --quiet returns 0 if NO changes are staged, 1 if changes EXIST
+        diff_res = cmd.run_command(["git", "diff", "--cached", "--quiet"])
+        if diff_res.returncode == 0:
+            warnmsg = "No changes staged for commit despite significant test output change being detected."
+            logger.warning(warnmsg)
+            summary["messages"].append(warnmsg)
+            continue
 
         llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
@@ -836,8 +1302,8 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
 
 
 @log_calls  # type: ignore[misc]
-def extract_important_errors(test_result: TestResult) -> str:
-    """Extract important error information from test output.
+def extract_important_errors_from_local_tests(test_result: TestResult, exclude_playwright: bool = False) -> str:
+    """Extract important error information from test output (primarily for local tests).
 
     Preserves multi-framework detection (pytest, Playwright, Vitest),
     Unicode markers (×, ›), and ANSI-friendly parsing.
@@ -847,6 +1313,21 @@ def extract_important_errors(test_result: TestResult) -> str:
 
     errors = test_result.errors or ""
     output = test_result.output or ""
+
+    # When we have json_artifact (Playwright results from GitHub Actions),
+    # check if output also contains comprehensive logs from _get_github_actions_logs.
+    # The comprehensive logs include job headers like "=== job-name / step-name ==="
+    # and contain all failure types (unit tests, lint, E2E).
+    # If so, use the complete output instead of just the Playwright report.
+    # Also check if the command indicates a GitHub Action run, which provides curated summaries.
+    is_github_action = test_result.command == "github_action_checks"
+    has_comprehensive_logs = is_github_action or (output and ("=== " in output or "--- Playwright Test Summary ---" in output))
+
+    # Only return early with Playwright-only report if we don't have comprehensive logs
+    if test_result.json_artifact and isinstance(test_result.json_artifact, list) and not has_comprehensive_logs:
+        artifacts = [a for a in test_result.json_artifact if isinstance(a, dict)]
+        if artifacts:
+            return generate_merged_playwright_report(artifacts)
 
     # Combine stderr and stdout
     full_output = f"{errors}\n{output}".strip()
@@ -861,6 +1342,29 @@ def extract_important_errors(test_result: TestResult) -> str:
     prefix = ""
     if test_result.stability_issue:
         prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+
+    # If we have comprehensive logs (GitHub Actions summary), return it as is.
+    # The summary is already curated by _get_github_actions_logs and contains all relevant info.
+    # Further processing by extract_important_errors often truncates useful parts (e.g. unit/lint errors)
+    # when it aggressively matches "Expected substring" blocks.
+    if has_comprehensive_logs:
+        return prefix + full_output
+
+    # Detect Playwright and prepend summary
+    if not exclude_playwright and _detect_failed_test_library(full_output) == "playwright":
+        passed_count = extract_playwright_passed_count(full_output)
+        failed_tests = _collect_playwright_candidates(full_output)
+
+        summary_lines = ["Playwright Test Summary:"]
+        summary_lines.append(f"Passed: {passed_count}")
+        summary_lines.append(f"Failed: {len(failed_tests)}")
+        if failed_tests:
+            summary_lines.append("Failed Tests:")
+            for t in failed_tests:
+                summary_lines.append(f"- {t}")
+        summary_lines.append("\n")
+
+        prefix += "\n".join(summary_lines)
 
     if not full_output:
         return prefix + "Tests failed but no error output available"
@@ -905,7 +1409,7 @@ def extract_important_errors(test_result: TestResult) -> str:
             re.UNICODE,
         )
         for idx, ln in enumerate(lines):
-            if header_regex.search(ln):
+            if not exclude_playwright and header_regex.search(ln):
                 header_indices.append(idx)
         # Typical expected/received patterns
         expect_regex = re.compile(r"expect\(received\).*|Expected substring:|Received string:")
@@ -982,6 +1486,10 @@ def extract_important_errors(test_result: TestResult) -> str:
         ".spec.ts",
         "playwright",
     ]
+
+    # Filter out keywords if exclude_playwright is True
+    if exclude_playwright:
+        error_keywords = [k for k in error_keywords if k not in ["e2e/", ".spec.ts", "playwright"]]
 
     for i, line in enumerate(lines):
         line_lower = line.lower()

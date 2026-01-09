@@ -913,3 +913,59 @@ def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] =
                 continue
 
     return default_sleep_time
+
+
+def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = None) -> bool:
+    """Get isolate_single_test_on_failure setting from [test] section in config.toml.
+
+    When enabled, if multiple tests fail, the system will extract and re-run only
+    the first failed test in isolation. This can help identify flaky or unstable tests.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        True if isolation is enabled, False otherwise (default: False)
+    """
+    import os
+
+    default_value = False
+
+    # If explicit path provided, check only that file
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+
+                test_config = data.get("test", {})
+                if "isolate_single_test_on_failure" in test_config:
+                    return bool(test_config["isolate_single_test_on_failure"])
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+
+        return default_value
+
+    # Try to find config.toml in standard locations
+    config_paths = [
+        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
+        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
+    ]
+
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+
+                test_config = data.get("test", {})
+                if "isolate_single_test_on_failure" in test_config:
+                    return bool(test_config["isolate_single_test_on_failure"])
+
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+                continue
+
+    return default_value

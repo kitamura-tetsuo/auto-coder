@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Optional
+from typing import Dict, Optional
 
 import click
 
@@ -155,23 +155,23 @@ def process_issues(
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
     logger.info(f"Base branch update before fixes when PR checks fail: {policy_str}")
 
-    summary = {
+    summary: Dict[str, str] = {
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude") and primary_model:
         summary["Model"] = primary_model
     summary.update(
         {
-            "Disable labels": disable_labels,
-            "Check labels": check_labels,
+            "Disable labels": str(disable_labels) if disable_labels is not None else "None",
+            "Check labels": str(check_labels) if check_labels is not None else "None",
             "Main update before fixes": policy_str,
-            "Ignore Dependabot PRs": ignore_dependabot_prs,
-            "Auto-merge": auto_merge,
-            "Auto-merge Dependabot PRs": auto_merge_dependabot_prs,
-            "Force clean before checkout": force_clean_before_checkout,
-            "Force reindex": force_reindex,
-            "Verbose logging": verbose,
+            "Ignore Dependabot PRs": str(ignore_dependabot_prs),
+            "Auto-merge": str(auto_merge),
+            "Auto-merge Dependabot PRs": str(auto_merge_dependabot_prs),
+            "Force clean before checkout": str(force_clean_before_checkout),
+            "Force reindex": str(force_reindex),
+            "Verbose logging": str(verbose),
         }
     )
     print_configuration_summary("Processing Configuration", summary)
@@ -452,17 +452,17 @@ def create_feature_issues(
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Disable labels: {disable_labels}")
 
-    summary = {
+    summary: Dict[str, str] = {
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude") and primary_model:
         summary["Model"] = primary_model
     summary.update(
         {
-            "Disable labels": disable_labels,
-            "Force reindex": force_reindex,
-            "Verbose logging": verbose,
+            "Disable labels": str(disable_labels) if disable_labels is not None else "None",
+            "Force reindex": str(force_reindex),
+            "Verbose logging": str(verbose),
         }
     )
     print_configuration_summary("Feature Analysis Configuration", summary)
@@ -515,6 +515,7 @@ def create_feature_issues(
 
 
 @click.command(name="fix-to-pass-tests", short_help="Run local tests and repeatedly request LLM fixes.")
+@click.option("--github-token", envvar="GITHUB_TOKEN", help="GitHub API token")
 @click.option(
     "--disable-labels/--no-disable-labels",
     default=False,
@@ -545,7 +546,14 @@ def create_feature_issues(
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option(
+    "--enable-github-action",
+    is_flag=True,
+    default=False,
+    help="Run tests via GitHub Action instead of locally (commits and pushes changes)",
+)
 def fix_to_pass_tests_command(
+    github_token: Optional[str],
     disable_labels: Optional[bool],
     max_attempts: Optional[int],
     enable_graphrag: bool,
@@ -553,6 +561,7 @@ def fix_to_pass_tests_command(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
+    enable_github_action: bool,
 ) -> None:
     """Run local tests and repeatedly request LLM fixes until tests pass.
 
@@ -579,22 +588,23 @@ def fix_to_pass_tests_command(
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
 
-    # Check backend CLI availability
+    # Check prerequisites
+    github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
     check_github_sub_issue_or_setup()
 
     backend_list_str = ", ".join(selected_backends)
 
-    summary = {
+    summary: Dict[str, str] = {
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude") and primary_model:
         summary["Model"] = primary_model
     summary.update(
         {
-            "Disable labels": disable_labels,
-            "Force reindex": force_reindex,
-            "Verbose logging": verbose,
+            "Disable labels": str(disable_labels) if disable_labels is not None else "None",
+            "Force reindex": str(force_reindex),
+            "Verbose logging": str(verbose),
         }
     )
     print_configuration_summary("Fix Tests Configuration", summary)
@@ -603,17 +613,8 @@ def fix_to_pass_tests_command(
     if enable_graphrag:
         initialize_graphrag(force_reindex=force_reindex)
 
-    # Initialize minimal clients (GitHub not used here, but engine expects a client)
-    try:
-        from .github_client import GitHubClient as _GH
-
-        github_client = _GH("", disable_labels=bool(disable_labels))
-    except Exception:
-        # Fallback to a minimal stand-in (never used)
-        class _Dummy:
-            token = ""
-
-        github_client = _Dummy()  # type: ignore
+    # Initialize clients
+    github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
 
     manager = build_backend_manager_from_config(
         enable_graphrag=enable_graphrag,
@@ -652,6 +653,7 @@ def fix_to_pass_tests_command(
             llm_backend_manager=manager,
             max_attempts=max_attempts,
             message_backend_manager=message_manager,
+            enable_github_action=enable_github_action,
         )
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")

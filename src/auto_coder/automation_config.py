@@ -139,7 +139,7 @@ class AutomationConfig:
         object.__setattr__(self, "REPORTS_DIR", "reports")
         object.__setattr__(self, "TEST_SCRIPT_PATH", "scripts/test.sh")
         object.__setattr__(self, "MAX_PR_DIFF_SIZE", 2000)
-        object.__setattr__(self, "MAX_PROMPT_SIZE", 1000)
+        object.__setattr__(self, "MAX_PROMPT_SIZE", 2000)
         object.__setattr__(self, "MAX_RESPONSE_SIZE", 200)
         object.__setattr__(self, "max_issues_per_run", -1)
         object.__setattr__(self, "max_prs_per_run", -1)
@@ -154,6 +154,7 @@ class AutomationConfig:
         object.__setattr__(self, "CHECK_DEPENDENCIES", True)
         object.__setattr__(self, "SEARCH_GITHUB_ACTIONS_HISTORY", True)
         object.__setattr__(self, "ENABLE_ACTIONS_HISTORY_FALLBACK", True)
+        object.__setattr__(self, "ISOLATE_SINGLE_TEST_ON_FAILURE", False)
         object.__setattr__(self, "MERGE_METHOD", "--squash")
         object.__setattr__(self, "MERGE_AUTO", True)
         object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
@@ -332,6 +333,12 @@ class AutomationConfig:
         if custom_priorities:
             object.__setattr__(self, "label_priorities", custom_priorities)
 
+        # Initialize Jules mode from configuration
+        # This allows checking Jules mode status via AutomationConfig
+        from .llm_backend_config import is_jules_mode_enabled
+
+        object.__setattr__(self, "JULES_MODE", is_jules_mode_enabled())
+
         # Apply environment variable overrides if enabled (can override both defaults and custom)
         if env_override:
             self._apply_env_overrides()
@@ -438,7 +445,7 @@ class AutomationConfig:
 
     # Limits
     MAX_PR_DIFF_SIZE: int = 2000
-    MAX_PROMPT_SIZE: int = 1000
+    MAX_PROMPT_SIZE: int = 2000
     MAX_RESPONSE_SIZE: int = 200
     max_issues_per_run: int = -1
     max_prs_per_run: int = -1
@@ -490,6 +497,11 @@ class AutomationConfig:
     # Default: True (fallback enabled)
     ENABLE_ACTIONS_HISTORY_FALLBACK: bool = True
 
+    # Isolate single test on failure
+    # When multiple tests fail, extract and re-run only the first failed test in isolation
+    # Default: False (run full test suite without isolation)
+    ISOLATE_SINGLE_TEST_ON_FAILURE: bool = False
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
@@ -507,6 +519,10 @@ class AutomationConfig:
     # - Process all dependency-bot PRs, attempting to fix failing ones
     # Default: True (auto-merge for ready Dependabot PRs enabled)
     AUTO_MERGE_DEPENDABOT_PRS: bool = True
+
+    # Jules mode configuration
+    # Check if Jules mode is enabled (both backend and config)
+    JULES_MODE: bool = False
 
     # PR label copying configuration
     # Enable or disable copying semantic labels from issues to PRs
