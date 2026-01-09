@@ -40,5 +40,3 @@ class TestResult:
     # Error extraction metadata
     extraction_context: Dict[str, Any] = field(default_factory=dict)
     framework_type: Optional[str] = None
-    # Raw JSON artifact data (e.g. from Playwright JSON report)
-    json_artifact: Optional[Any] = None
