@@ -276,7 +276,7 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         return []
 
 
-def get_pr_head_sha(pr_data: Dict[str, Any], repo_name: str) -> Optional[str]:
+def get_pr_head_sha(pr_data: Dict[str, Any], repo_name: str) -> str:
     """Get the current HEAD SHA of a PR, fetching from API if missing in local data.
 
     Args:
@@ -2064,7 +2064,7 @@ def _create_github_action_log_summary(
     *args: Any,
     search_history: Optional[bool] = None,
     **kwargs: Any,
-) -> str:
+) -> Tuple[str, Optional[List[str]]]:
     """Create a formatted summary string from a list of log chunks."""
     # Extract failed_checks and optional pr_data from args
     failed_checks: List[Dict[str, Any]] = []

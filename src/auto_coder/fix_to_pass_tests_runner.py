@@ -51,6 +51,31 @@ cmd = CommandExecutor()
 # Test Watcher MCP integration flag
 USE_TEST_WATCHER_MCP = os.environ.get("USE_TEST_WATCHER_MCP", "true").lower() == "true"
 
+# Pre-computed lowercased keywords for error extraction
+ERROR_KEYWORDS = [
+    # error detection
+    "error",
+    # failed detection
+    "failed",
+    # exceptions and traces
+    "exception",
+    "traceback",
+    # assertions and common python errors
+    "assertion",
+    "syntax error",
+    "syntaxerror",
+    "import error",
+    "importerror",
+    "module not found",
+    "modulenotfounderror",
+    "test failed",
+    # e2e / Playwright related
+    "e2e/",
+    ".spec.ts",
+    "playwright",
+]
+ERROR_KEYWORDS_LOWER = [k.lower() for k in ERROR_KEYWORDS]
+
 
 @dataclass
 class WorkspaceFixResult:
@@ -571,13 +596,13 @@ def run_github_action_tests(config: AutomationConfig, attempt: int) -> Dict[str,
             output_lines = []
             error_lines = []
 
-            json_artifacts: list[dict[str, Any]] | None = None
+            json_artifacts = None
             if not success:
                 # Use shared routine to get logs
                 # failed_runs struct matches expectation (has details_url)
                 try:
-                    logs_list: tuple[str, list[dict[str, Any]] | None] = _get_github_actions_logs(repo_name, config, failed_runs)
-                    logs: str = _create_github_action_log_summary(repo_name, config, failed_runs)
+                    logs_list, json_artifacts = _get_github_actions_logs(repo_name, config, failed_runs)
+                    logs, _ = _create_github_action_log_summary(repo_name, config, failed_runs)
                     output_lines.append(logs)
                 except Exception as e:
                     logger.error(f"Failed to get GitHub Action logs: {e}")
@@ -1449,51 +1474,16 @@ def extract_important_errors_from_local_tests(test_result: TestResult, exclude_p
 
     # 2) Keyword-based fallback extraction
     important_lines = []
-    # Keywords that indicate important error information
-    error_keywords = [
-        # error detection
-        "error:",
-        "Error:",
-        "ERROR:",
-        "error",
-        # failed detection
-        "failed:",
-        "Failed:",
-        "FAILED:",
-        "failed",
-        # exceptions and traces
-        "exception:",
-        "Exception:",
-        "EXCEPTION:",
-        "traceback:",
-        "Traceback:",
-        "TRACEBACK:",
-        # assertions and common python errors
-        "assertion",
-        "Assertion",
-        "ASSERTION",
-        "syntax error",
-        "SyntaxError",
-        "import error",
-        "ImportError",
-        "module not found",
-        "ModuleNotFoundError",
-        "test failed",
-        "Test failed",
-        "TEST FAILED",
-        # e2e / Playwright related
-        "e2e/",
-        ".spec.ts",
-        "playwright",
-    ]
+    # Keywords are pre-defined at module level as ERROR_KEYWORDS_LOWER
 
     # Filter out keywords if exclude_playwright is True
+    keywords_to_use = ERROR_KEYWORDS_LOWER
     if exclude_playwright:
-        error_keywords = [k for k in error_keywords if k not in ["e2e/", ".spec.ts", "playwright"]]
+        keywords_to_use = [k for k in ERROR_KEYWORDS_LOWER if k not in ["e2e/", ".spec.ts", "playwright"]]
 
     for i, line in enumerate(lines):
         line_lower = line.lower()
-        if any(keyword.lower() in line_lower for keyword in error_keywords):
+        if any(keyword in line_lower for keyword in keywords_to_use):
             # Extract a slightly broader context
             start = max(0, i - 5)
             end = min(len(lines), i + 8)

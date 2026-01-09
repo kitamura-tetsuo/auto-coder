@@ -48,8 +48,7 @@ def debug(github_action_log_summary: str) -> None:
             config = AutomationConfig()  # Default config
             failed_checks = [{"details_url": url}]
 
-            log_summary_result = _create_github_action_log_summary(repo_name, config, failed_checks)
-            logs: str = log_summary_result[0] if log_summary_result else ""
+            logs, artifacts = _create_github_action_log_summary(repo_name, config, failed_checks)
 
             if logs and logs != "No detailed logs available":
                 click.echo("--- LLM Summary Start ---")

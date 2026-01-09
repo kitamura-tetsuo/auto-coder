@@ -2164,20 +2164,29 @@ def _fix_pr_issues_with_github_actions_testing(
         initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
         actions.extend(initial_fix_actions)
 
-        # Convert failed_tests list to single test_file if available
-        test_file: Optional[str] = failed_tests[0] if failed_tests and len(failed_tests) == 1 else (failed_tests[0] if failed_tests else None)
-        test_result = run_local_tests(config, test_file=test_file)
+        # Convert failed_tests list to a single test_file string
+        test_file_str = ",".join(failed_tests) if failed_tests else None
+        test_result = run_local_tests(config, test_file=test_file_str)
 
         # Check if we should use local fix strategy (1-3 failed tests)
-        # Note: attempt_history and current_backend_manager are not defined in this function
-        # This code path appears to be incomplete - disabled for now
-        # Cast to TestResult for proper type checking if needed later
-        _test_result_cast = cast(TestResult, test_result) if isinstance(test_result, dict) else test_result
-        # Local fix strategy is disabled because attempt_history and current_backend_manager are not defined
-        # If re-enabled, uncomment below and add the missing variables:
-        # while _test_result_cast.failed_tests and 1 <= len(_test_result_cast.failed_tests) <= 3:
-        #     local_fix_actions, llm_response = _apply_local_test_fix(...)
-        #     test_result = run_local_tests(config, test_file=test_file)
+        # Import backend_manager from module level or pass as parameters
+        from auto_coder.backend_manager import BackendManager
+        from auto_coder.cli_helpers import create_high_score_backend_manager
+
+        # attempt_history is not available in this context, use empty list
+        attempt_history: list[dict[str, Any]] = []
+        current_backend_manager: Optional[BackendManager] = create_high_score_backend_manager()
+
+        while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3:
+            local_fix_actions, llm_response = _apply_local_test_fix(
+                repo_name,
+                pr_data,
+                config,
+                test_result,
+                attempt_history,
+                backend_manager=current_backend_manager,
+            )
+            test_result = run_local_tests(config, test_file=test_file_str)
 
         # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
         count_msg = f"{len(failed_tests)} failed tests" if failed_tests is not None else "failed tests (unknown count)"
@@ -2375,11 +2384,13 @@ def _apply_github_actions_fix(
             logger.info(f"Starting Jules session for GitHub Actions fix for PR #{pr_number}")
 
             # Import JulesClient here to avoid circular imports
+            from .issue_processor import _notify_jules_session_start
             from .jules_client import JulesClient
 
             session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], is_noedit=False, title=f"Fix for PR #{pr_number} {pr_data['title']}")
-            if github_client is not None:
-                _notify_jules_session_start(repo_name, pr_number, session_id, cast(GitHubClient, github_client), actions)
+            # Get GitHubClient instance if not provided
+            gh_client = github_client if github_client else GitHubClient.get_instance()
+            _notify_jules_session_start(repo_name, pr_number, session_id, gh_client, actions)
         else:
             # Use LLM backend manager to run the prompt
             logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
