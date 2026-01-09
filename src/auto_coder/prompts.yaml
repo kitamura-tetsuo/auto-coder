@@ -880,39 +880,40 @@ tests:
   workspace_fix: |-
     You are operating directly in this repository workspace with write access.
 
-    Goal: Apply targeted edits to the issue to pass local tests.
+    Goal: 
+    - Apply targeted edits to the issue to pass local tests.
 
-    Task Memory File: ./llm_task.md
-    - If the file exists, review the "Logging Protocol" section before making changes.
-    - After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
+    Task Memory Directory: .auto-coder/llm_task/
+    - If the directory exists, review the files before making changes.
+    - After completing your attempt, add a new file with the name YYYY-MM-DD_HH-MM.md to the directory with the following format:
     ```
-    ### YYYY-MM-DD HH:MM (local)
+    YYYY-MM-DD HH-MM (local)
     - Change Summary:
     - Expected Outcome:
     - Tests Run: `bash scripts/test.sh ...`
     - Actual Outcome:
     - Variance Analysis:
     - Follow-ups / Notes:
+    - E2E Test Failed files list before fix:
     ```
-    - Keep earlier log entries intact and maintain the newest entry first ordering.
 
     STRICT RULES:
     - Do NOT run git commit/push; the system will handle that.
     - Prefer the smart, reasonable and logically beautiful change that resolves failures and preserves intent.
+    - Now apply the fix directly in the repository.
+    - You can edit any file in the repository.
+    - Apply the fix and re-run only the failed test until you are sure the fix has resolved the problem.
 
-    Local Test Failure Summary (truncated):
+    $failure_header (truncated):
     $error_summary
+
+    Local test command used:
+    - $test_command
 
     $if(issue_body)
     Issue Description:
     $issue_body
     $endif
-
-     Local test command used:
-     $test_command
-
-    Now apply the fix directly in the repository.
-    Apply the fix and re-run the test until you are sure the fix has resolved the problem.
 
   test_stability_fix: |-
     You are operating directly in this repository workspace with write access.
@@ -936,19 +937,19 @@ tests:
     Isolated Test Output (PASSED):
     $isolated_test_output
 
-    Task Memory File: ./llm_task.md
-    - If the file exists, review the "Logging Protocol" section before making changes.
-    - After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
+    Task Memory Directory: .auto-coder/llm_task/
+    - If the directory exists, review the files before making changes.
+    - After completing your attempt, add a new file with the name YYYY-MM-DD_HH-MM.md to the directory with the following format:
     ```
-    ### YYYY-MM-DD HH:MM (local)
+    YYYY-MM-DD HH-MM (local)
     - Change Summary:
     - Expected Outcome:
     - Tests Run: `bash scripts/test.sh ...`
     - Actual Outcome:
     - Variance Analysis:
     - Follow-ups / Notes:
+    - E2E Test Failed files list before fix:
     ```
-    - Keep earlier log entries intact and maintain the newest entry first ordering.
 
     STRICT RULES:
     - Do NOT run git commit/push; the system will handle that.
