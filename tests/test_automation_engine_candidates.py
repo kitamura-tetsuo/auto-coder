@@ -38,7 +38,6 @@ class TestAutomationEngineCandidates:
             patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress") as mock_check_actions,
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_status,
             patch("auto_coder.pr_processor._should_skip_waiting_for_jules") as mock_skip_jules,
-            patch("auto_coder.util.github_action.preload_github_actions_status"),
         ):
 
             mock_label_manager.return_value.__enter__.return_value = True
@@ -90,7 +89,6 @@ class TestAutomationEngineCandidates:
             patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress") as mock_check_actions,
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_status,
             patch("auto_coder.pr_processor._should_skip_waiting_for_jules") as mock_skip_jules,
-            patch("auto_coder.util.github_action.preload_github_actions_status"),
         ):
 
             mock_label_manager.return_value.__enter__.return_value = True
@@ -136,7 +134,6 @@ class TestAutomationEngineCandidates:
             patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress") as mock_check_actions,
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_status,
             patch("auto_coder.pr_processor._should_skip_waiting_for_jules") as mock_skip_jules,
-            patch("auto_coder.util.github_action.preload_github_actions_status"),
         ):
 
             mock_label_manager.return_value.__enter__.return_value = True

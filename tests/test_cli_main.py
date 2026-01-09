@@ -76,13 +76,3 @@ class TestCLIMain:
         assert "--model-qwen" not in result.output
         assert "--model-auggie" not in result.output
         assert "--verbose" in result.output
-
-    def test_fix_to_pass_tests_help(self):
-        """Test fix-to-pass-tests command help."""
-        from src.auto_coder.cli_commands_main import fix_to_pass_tests_command
-
-        runner = CliRunner()
-        result = runner.invoke(fix_to_pass_tests_command, ["--help"])
-
-        assert result.exit_code == 0
-        assert "--github-token" in result.output
