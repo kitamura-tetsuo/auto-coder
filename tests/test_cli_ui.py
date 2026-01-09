@@ -1,7 +1,7 @@
 """Tests for CLI UI helpers."""
 
 import sys
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
 
 from src.auto_coder import cli_ui
 
@@ -17,12 +17,7 @@ def test_sleep_with_countdown_execution(mock_sleep, mock_time):
     # Setup time.time to simulate passage of time
     # Start at 0, then increment by 0.1 for a few steps, then jump to end
     start_time = 1000.0
-    mock_time.side_effect = [
-        start_time,          # init start_time
-        start_time + 0.0,    # first loop check
-        start_time + 0.1,    # second loop check
-        start_time + 2.1     # end loop check (past 2 seconds)
-    ]
+    mock_time.side_effect = [start_time, start_time + 0.0, start_time + 0.1, start_time + 2.1]  # init start_time  # first loop check  # second loop check  # end loop check (past 2 seconds)
 
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 
