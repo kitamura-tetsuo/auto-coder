@@ -541,25 +541,8 @@ def export(config_file: Optional[str], output: Optional[str]) -> None:
 
     if output:
         try:
-            # Use os.open to ensure file is created with 600 permissions
-            # because the configuration contains sensitive API keys
-            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-
-            try:
-                f = os.fdopen(fd, "w")
-            except Exception:
-                os.close(fd)
-                raise
-
-            with f:
-                # Ensure permissions are correct even if file already existed
-                try:
-                    os.chmod(output, 0o600)
-                except OSError:
-                    pass  # Ignore permission errors on systems that don't support it
-
+            with open(output, "w") as f:
                 json.dump(config_dict, f, indent=2)
-
             click.echo(f"✅ Configuration exported to: {output}")
         except Exception as e:
             click.echo(f"❌ Error exporting configuration: {e}")

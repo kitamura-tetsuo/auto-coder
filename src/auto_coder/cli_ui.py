@@ -85,8 +85,6 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
-    total_seconds = seconds
-    bar_length = 20
 
     try:
         for remaining in range(seconds, 0, -1):
@@ -101,25 +99,11 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            # Calculate progress bar
-            percent = (total_seconds - remaining) / total_seconds
-            filled_length = int(bar_length * percent)
+            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
-                # Unicode block characters
-                bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-                # Components
-                prefix = click.style("💤 Sleeping... ", fg="bright_black")
-                bar_display = click.style(f"[{bar}]", fg="blue")
-                time_display = click.style(time_str, fg="cyan", bold=True)
-                suffix = click.style(" remaining (Ctrl+C to interrupt)", fg="bright_black")
-
-                message = f"{prefix}{bar_display} {time_display}{suffix}"
-            else:
-                # ASCII fallback
-                bar = "=" * filled_length + "." * (bar_length - filled_length)
-                message = f"Sleeping... [{bar}] {time_str} remaining (Ctrl+C to interrupt)"
+                # Dim the text (bright_black is usually dark gray)
+                message = click.style(message, fg="bright_black")
 
             stream.write(f"\r{message}")
             stream.flush()
@@ -127,10 +111,10 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
         # Clear the line after done
         # We need to clear enough space for the longest message
-        stream.write("\r" + " " * 100 + "\r")
+        stream.write("\r" + " " * 80 + "\r")
         stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        stream.write("\r" + " " * 100 + "\r")
+        stream.write("\r" + " " * 80 + "\r")
         stream.flush()
         raise

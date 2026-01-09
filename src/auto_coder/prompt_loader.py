@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from string import Template
 from typing import Any, Dict, List, Optional
@@ -346,36 +345,7 @@ def render_prompt(
 
     # Fall back to original key-based rendering
     template_str = get_prompt_template(key, path=path)
-
-    # Process $if(var)...$endif blocks
-    def _replacement(match):
-        var_name = match.group(1)
-        content = match.group(2)
-        # Check if variable exists and is truthy in data or kwargs
-        val = None
-        if data and var_name in data:
-            val = data[var_name]
-        elif var_name in kwargs:
-            val = kwargs[var_name]
-        elif var_name == "parent_issue_body" and parent_issue_body:
-            val = parent_issue_body
-
-        return content if val else ""
-
-    # Support nested ifs? No, regex is simple. Nested ifs might fail with this simple regex.
-    # But existing prompts don't seem to nest deeply.
-    # regex matches minimal content (non-greedy) but including newlines
-    pattern = re.compile(r"\$if\(\s*(\w+)\s*\)(.*?)\$endif", re.DOTALL)
-
-    # Apply repeatedly to handle multiple blocks (nested ones might need loop, but let's stick to single level for now or loop until no change)
-    processed_str = template_str
-    while True:
-        new_str = pattern.sub(_replacement, processed_str)
-        if new_str == processed_str:
-            break
-        processed_str = new_str
-
-    template = Template(processed_str)
+    template = Template(template_str)
 
     params: Dict[str, Any] = {}
     if data:
