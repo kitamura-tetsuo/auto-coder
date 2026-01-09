@@ -991,10 +991,10 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
                                     # Collect job-wide summary candidates (maintain order)
-                                    for ln in content.split("\n"):
-                                        ll = ln.lower()
-                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
-                                            job_summary_lines.append(ln)
+                                    for line in content.split("\n"):
+                                        line_lower = line.lower()
+                                        if ((" failed" in line_lower) or (" passed" in line_lower) or (" skipped" in line_lower) or (" did not run" in line_lower)) and any(ch.isdigit() for ch in line):
+                                            job_summary_lines.append(line)
                                     step_name = step_file_label
                                     # Extract important error-related information
                                     snippet = _extract_error_context(content)
