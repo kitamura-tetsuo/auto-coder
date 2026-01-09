@@ -1,7 +1,7 @@
 """Tests for CLI UI helpers."""
 
 import sys
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
 
 from src.auto_coder import cli_ui
 
