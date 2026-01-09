@@ -84,6 +84,8 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    total_seconds = seconds
+    bar_length = 20
 
     # Spinner frames
     if no_color:
@@ -122,10 +124,10 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
         # Clear the line after done
         # We need to clear enough space for the longest message
-        stream.write("\r" + " " * 80 + "\r")
+        stream.write("\r" + " " * 100 + "\r")
         stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        stream.write("\r" + " " * 80 + "\r")
+        stream.write("\r" + " " * 100 + "\r")
         stream.flush()
         raise
