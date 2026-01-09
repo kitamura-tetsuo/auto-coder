@@ -93,7 +93,6 @@ class TestCheckBackendPrerequisites:
                 patch("src.auto_coder.cli_helpers.check_qwen_cli_or_fail") as mock_qwen,
                 patch("src.auto_coder.cli_helpers.check_auggie_cli_or_fail") as mock_auggie,
                 patch("src.auto_coder.cli_helpers.check_claude_cli_or_fail") as mock_claude,
-                patch("src.auto_coder.cli_helpers.check_jules_cli_or_fail") as mock_jules,
             ):
 
                 # Test codex
@@ -121,10 +120,6 @@ class TestCheckBackendPrerequisites:
                 # Test claude
                 check_backend_prerequisites(["claude"])
                 assert mock_claude.call_count == 1
-
-                # Test jules
-                check_backend_prerequisites(["jules"])
-                assert mock_jules.call_count == 1
 
     def test_check_backend_prerequisites_mixed_backends(self):
         """Test that mixing known and custom backends works."""

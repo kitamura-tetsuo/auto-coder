@@ -1228,20 +1228,12 @@ class TestAutomationEngineExtended:
 class TestGetCandidates:
     """Test cases for _get_candidates method with priority-based selection."""
 
-    @pytest.fixture(autouse=True)
-    def setup_preload_patch(self):
-        """Patch preload_github_actions_status for all tests in this class to avoid network calls."""
-        with patch("auto_coder.util.github_action.preload_github_actions_status") as mock:
-            yield mock
-
-    @patch("auto_coder.util.github_action.preload_github_actions_status")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_urgent_issue_highest_priority(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_preload_actions,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1314,14 +1306,12 @@ class TestGetCandidates:
 
         mock_extract_issues.assert_not_called()  # No PRs
 
-    @patch("auto_coder.util.github_action.preload_github_actions_status")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_priority_order_prs_and_issues(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_preload_actions,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1448,14 +1438,12 @@ class TestGetCandidates:
         assert candidates[4].priority == 0
         assert candidates[4].data["number"] == 10  # Regular issue
 
-    @patch("auto_coder.util.github_action.preload_github_actions_status")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_unmergeable_prs_higher_priority_than_failing_mergeable_prs(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_preload_actions,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1542,14 +1530,12 @@ class TestGetCandidates:
         assert candidates[2].priority == 1
         assert candidates[2].data["number"] == 2
 
-    @patch("auto_coder.util.github_action.preload_github_actions_status")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_urgent_unmergeable_prs_highest_priority(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_preload_actions,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1650,14 +1636,12 @@ class TestGetCandidates:
         assert candidates[3].priority == 2
         assert candidates[3].data["number"] == 4  # Regular mergeable PR with passing checks
 
-    @patch("auto_coder.util.github_action.preload_github_actions_status")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_includes_green_dependency_bot_pr_when_ignored(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_preload_actions,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -2371,7 +2355,7 @@ class TestGetCandidates:
         assert candidates[0].related_issues == [10, 20]
         assert candidates[0].branch_name == "pr-1"
 
-        mock_extract_issues.assert_any_call("This PR fixes #10 and #20")
+        mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
