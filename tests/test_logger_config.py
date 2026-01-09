@@ -1,12 +1,14 @@
-
 import pytest
 from loguru import logger
+
 from src.auto_coder.logger_config import log_calls
 from src.auto_coder.security_utils import redact_string
+
 
 @log_calls
 def sensitive_function(api_key: str):
     return "processed"
+
 
 def test_log_calls_redaction(caplog):
     """Test that @log_calls decorator redacts sensitive arguments."""
@@ -15,6 +17,7 @@ def test_log_calls_redaction(caplog):
 
     # We need to capture loguru logs. Loguru bypasses standard logging, so we need a sink.
     messages = []
+
     def sink(message):
         messages.append(message.record["message"])
 
