@@ -449,10 +449,7 @@ class GitHubClient:
         """
         with self._open_issues_cache_lock:
             # Only update if cache is valid and for the same repo
-            if (
-                self._open_issues_cache is not None
-                and self._open_issues_cache_repo == repo_name
-            ):
+            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name:
                 # Find the issue
                 for i, issue in enumerate(self._open_issues_cache):
                     if issue.get("number") == issue_number:
@@ -484,12 +481,7 @@ class GitHubClient:
         """
         # Check memory cache
         with self._open_issues_cache_lock:
-            if (
-                self._open_issues_cache is not None
-                and self._open_issues_cache_repo == repo_name
-                and self._open_issues_cache_time
-                and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5)
-            ):
+            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
                 logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
                 # Return a deep copy? No, shallow copy of list is enough if we don't modify dicts outside
                 # But AutomationEngine treats them as read-only mostly.
