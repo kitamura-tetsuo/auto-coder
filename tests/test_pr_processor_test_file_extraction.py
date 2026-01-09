@@ -7,7 +7,9 @@ from auto_coder.pr_processor import _apply_local_test_fix
 
 class TestPRProcessorTestFileExtraction(unittest.TestCase):
     @patch("auto_coder.pr_processor.get_llm_backend_manager")
-    @patch("auto_coder.pr_processor.extract_important_errors")
+    @patch(
+        "auto_coder.pr_processor.extract_important_errors_from_local_tests"
+    )
     @patch("auto_coder.pr_processor.get_commit_log")
     @patch("auto_coder.pr_processor.render_prompt")
     @patch("auto_coder.pr_processor.extract_first_failed_test")
@@ -16,14 +18,14 @@ class TestPRProcessorTestFileExtraction(unittest.TestCase):
         mock_extract_first_failed_test,
         mock_render_prompt,
         mock_get_commit_log,
-        mock_extract_important_errors,
+        mock_extract_important_errors_from_local_tests,
         mock_get_llm_backend_manager,
     ):
         # Arrange
         mock_llm_backend_manager = MagicMock()
         mock_get_llm_backend_manager.return_value = mock_llm_backend_manager
 
-        mock_extract_important_errors.return_value = "Some error summary"
+        mock_extract_important_errors_from_local_tests.return_value = "Some error summary"
         mock_get_commit_log.return_value = "Some commit log"
         mock_render_prompt.return_value = "Some prompt"
         mock_extract_first_failed_test.return_value = "tests/test_failure.py"
@@ -47,7 +49,9 @@ class TestPRProcessorTestFileExtraction(unittest.TestCase):
         mock_llm_backend_manager.run_test_fix_prompt.assert_called_once_with("Some prompt", current_test_file="tests/test_failure.py")
 
     @patch("auto_coder.pr_processor.get_llm_backend_manager")
-    @patch("auto_coder.pr_processor.extract_important_errors")
+    @patch(
+        "auto_coder.pr_processor.extract_important_errors_from_local_tests"
+    )
     @patch("auto_coder.pr_processor.get_commit_log")
     @patch("auto_coder.pr_processor.render_prompt")
     @patch("auto_coder.pr_processor.extract_first_failed_test")
@@ -56,14 +60,14 @@ class TestPRProcessorTestFileExtraction(unittest.TestCase):
         mock_extract_first_failed_test,
         mock_render_prompt,
         mock_get_commit_log,
-        mock_extract_important_errors,
+        mock_extract_important_errors_from_local_tests,
         mock_get_llm_backend_manager,
     ):
         # Arrange
         mock_llm_backend_manager = MagicMock()
         mock_get_llm_backend_manager.return_value = mock_llm_backend_manager
 
-        mock_extract_important_errors.return_value = "Some error summary"
+        mock_extract_important_errors_from_local_tests.return_value = "Some error summary"
         mock_get_commit_log.return_value = "Some commit log"
         mock_render_prompt.return_value = "Some prompt"
 
