@@ -1844,8 +1844,8 @@ def slice_relevant_error_window(text: str) -> str:
     start_idx = None
     # Search for the earliest priority trigger (from front)
     for group in priority_groups:
-        for i in range(len(lines)):
-            low = lines[i].lower()
+        for i, l in enumerate(lines):
+            low = l.lower()
             if any(group_item.lower() in low for group_item in group):
                 start_idx = max(0, i - 30)
                 break
