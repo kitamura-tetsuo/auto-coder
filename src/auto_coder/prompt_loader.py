@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
-import yaml
 from pathlib import Path
 from string import Template
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 from .logger_config import get_logger, log_calls
 
