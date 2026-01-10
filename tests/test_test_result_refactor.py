@@ -5,7 +5,9 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.fix_to_pass_tests_runner import extract_important_errors
+from src.auto_coder.fix_to_pass_tests_runner import (
+    extract_important_errors_from_local_tests as extract_important_errors,
+)
 from src.auto_coder.pr_processor import _apply_github_actions_fix
 from src.auto_coder.test_result import TestResult
 
@@ -89,7 +91,8 @@ def test_engine_extract_important_errors_accepts_testresult(mock_github_client, 
 def test_github_actions_enhanced_integration_passes_structured_context():
     """_apply_github_actions_fix should include structured context when TestResult is provided."""
     config = AutomationConfig()
-    pr_data = {"number": 123, "title": "Fix CI"}
+    config.JULES_MODE = False  # Disable Jules mode for this test
+    pr_data = {"number": 123, "title": "Fix CI", "head": {"ref": "test-branch"}}
     github_logs = "Simulated GitHub Actions logs"
 
     # Provide structured context in TestResult
