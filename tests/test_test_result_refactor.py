@@ -5,9 +5,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.fix_to_pass_tests_runner import (
-    extract_important_errors_from_local_tests as extract_important_errors,
-)
+from src.auto_coder.fix_to_pass_tests_runner import extract_important_errors_from_local_tests as extract_important_errors
 from src.auto_coder.pr_processor import _apply_github_actions_fix
 from src.auto_coder.test_result import TestResult
 
