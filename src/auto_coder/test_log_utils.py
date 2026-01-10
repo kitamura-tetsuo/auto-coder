@@ -152,70 +152,26 @@ def _collect_playwright_candidates(text: str) -> List[str]:
                     if norm not in flaky_candidates:
                         flaky_candidates.append(norm)
 
-    # Prioritize failed candidates, then flaky
-    # Filter out duplicates while preserving order
+    # Prioritize failed tests over flaky tests
+    if failed_candidates:
+        return failed_candidates
+
+    if flaky_candidates:
+        return flaky_candidates
+
+    # Fallback for older formats if no sections were found
+    fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+    fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+
     all_candidates = []
-    for c in failed_candidates:
-        if c not in all_candidates:
-            all_candidates.append(c)
-    for c in flaky_candidates:
-        if c not in all_candidates:
-            all_candidates.append(c)
-
-    # Fallback: if nothing found in explicit sections, use the original regexes
-    if not all_candidates:
-        fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
-        fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
-
-        for ln in lines:
-            m = fail_bullet_re.search(ln)
-            if m:
-                norm = _normalize_spec(m.group(1))
-                if norm not in all_candidates:
-                    all_candidates.append(norm)
-
-        for ln in lines:
-            m = fail_heading_re.search(ln)
-            if m:
-                norm = _normalize_spec(m.group(1))
-                if norm not in all_candidates:
-                    all_candidates.append(norm)
-
-    # Final Fallback: Search for lines containing .spec.ts (broad search)
-    # Only if absolutely nothing else was found
-    if not all_candidates:
-        for spec_path in re.findall(r"([^\s:]+\.spec\.ts)", text):
-            norm = _normalize_spec(spec_path)
+    for ln in lines:
+        m = fail_bullet_re.search(ln) or fail_heading_re.search(ln)
+        if m:
+            norm = _normalize_spec(m.group(1))
             if norm not in all_candidates:
                 all_candidates.append(norm)
 
-    # Filter out path suffixes if a longer version exists
-    # e.g. "utils/foo.spec.ts" should be removed if "e2e/utils/foo.spec.ts" exists
-    final_candidates: list[str] = []
-    # Process longer paths first to identify parents
-    unique_candidates = []
-    seen = set()
-    for c in all_candidates:
-        if c not in seen:
-            seen.add(c)
-            unique_candidates.append(c)
-
-    sorted_candidates = sorted(unique_candidates, key=len, reverse=True)
-
-    for cand in sorted_candidates:
-        is_suffix = False
-        for kept in final_candidates:
-            # Check if cand is a suffix of kept (e.g. "utils/foo.ts" in "e2e/utils/foo.ts")
-            # We enforce a path separator boundary to avoid matching "foo.ts" against "bar_foo.ts"
-            if kept.endswith(cand) and kept != cand:
-                if kept.endswith("/" + cand):
-                    is_suffix = True
-                    break
-
-        if not is_suffix:
-            final_candidates.append(cand)
-
-    return final_candidates
+    return all_candidates
 
 
 def _collect_vitest_candidates(text: str) -> List[str]:

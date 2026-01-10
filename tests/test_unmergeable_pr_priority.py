@@ -38,7 +38,7 @@ class TestUnmergeablePRPriority:
                 "number": 1,
                 "title": "Unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "sha1"},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -47,7 +47,7 @@ class TestUnmergeablePRPriority:
                 "number": 2,
                 "title": "Mergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "sha2"},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -57,8 +57,9 @@ class TestUnmergeablePRPriority:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+        def get_pr_details_side_effect(pr_data_dict):
+            # The 'pr' object is now a dictionary, not a mock object
+            return pr_data[pr_data_dict["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
@@ -122,7 +123,7 @@ class TestUnmergeablePRPriority:
                 "number": 1,
                 "title": "Urgent unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "sha1"},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -131,7 +132,7 @@ class TestUnmergeablePRPriority:
                 "number": 2,
                 "title": "Urgent mergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "sha2"},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -140,7 +141,7 @@ class TestUnmergeablePRPriority:
                 "number": 3,
                 "title": "Regular unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "sha3"},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-03T00:00:00Z",
@@ -150,8 +151,8 @@ class TestUnmergeablePRPriority:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+        def get_pr_details_side_effect(pr_data_dict):
+            return pr_data[pr_data_dict["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
@@ -239,7 +240,7 @@ class TestUnmergeablePRPriority:
                 "number": 1,
                 "title": "Urgent unmergeable",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "sha1"},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -248,7 +249,7 @@ class TestUnmergeablePRPriority:
                 "number": 2,
                 "title": "Urgent mergeable",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "sha2"},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -257,7 +258,7 @@ class TestUnmergeablePRPriority:
                 "number": 3,
                 "title": "Regular unmergeable",
                 "body": "",
-                "head": {"ref": "pr-3"},
+                "head": {"ref": "pr-3", "sha": "sha3"},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-03T00:00:00Z",
@@ -267,8 +268,8 @@ class TestUnmergeablePRPriority:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+        def get_pr_details_side_effect(pr_data_dict):
+            return pr_data[pr_data_dict["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
@@ -351,7 +352,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 1,
                 "title": "Urgent PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "sha1"},
                 "labels": ["urgent"],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -360,7 +361,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 2,
                 "title": "Unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "sha2"},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -370,8 +371,8 @@ class TestPriorityBackwardCompatibility:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+        def get_pr_details_side_effect(pr_data_dict):
+            return pr_data[pr_data_dict["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
@@ -428,7 +429,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 1,
                 "title": "Breaking change PR",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "sha1"},
                 "labels": ["breaking-change"],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -437,7 +438,7 @@ class TestPriorityBackwardCompatibility:
                 "number": 2,
                 "title": "Urgent unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "sha2"},
                 "labels": ["urgent"],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -447,8 +448,8 @@ class TestPriorityBackwardCompatibility:
         # Mock get_open_prs_json to return the list of PR data
         mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
-        def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+        def get_pr_details_side_effect(pr_data_dict):
+            return pr_data[pr_data_dict["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
@@ -506,7 +507,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Unmergeable PR",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "sha1"},
             "labels": [],
             "mergeable": False,
             "created_at": "2024-01-01T00:00:00Z",
@@ -557,7 +558,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Unmergeable PR with failures",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "sha1"},
             "labels": [],
             "mergeable": False,
             "created_at": "2024-01-01T00:00:00Z",
@@ -608,7 +609,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Mergeable PR with failures",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "sha1"},
             "labels": [],
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
@@ -659,7 +660,7 @@ class TestPriorityEdgeCases:
             "number": 1,
             "title": "Ready PR",
             "body": "",
-            "head": {"ref": "pr-1"},
+            "head": {"ref": "pr-1", "sha": "sha1"},
             "labels": [],
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
@@ -720,7 +721,7 @@ class TestPriorityIntegration:
                 "number": 1,
                 "title": "Failing mergeable",
                 "body": "",
-                "head": {"ref": "pr-1"},
+                "head": {"ref": "pr-1", "sha": "sha1"},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
@@ -729,7 +730,7 @@ class TestPriorityIntegration:
                 "number": 2,
                 "title": "Unmergeable PR",
                 "body": "",
-                "head": {"ref": "pr-2"},
+                "head": {"ref": "pr-2", "sha": "sha2"},
                 "labels": [],
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
@@ -806,7 +807,7 @@ class TestPriorityIntegration:
                 "number": i,
                 "title": f"PR {i}",
                 "body": "",
-                "head": {"ref": f"pr-{i}"},
+                "head": {"ref": f"pr-{i}", "sha": f"sha{i}"},
                 "labels": [],
                 "mergeable": i % 2 == 0,  # Half unmergeable
                 "created_at": "2024-01-01T00:00:00Z",
