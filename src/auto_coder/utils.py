@@ -590,8 +590,14 @@ def change_fraction(old: str, new: str) -> float:
         def tail_window(s: str) -> str:
             if not s:
                 return ""
+            # Optimization: avoid splitlines() on full string
+            # Use a buffer large enough to safely cover 20 lines (unless they are huge)
+            # 4000 chars should be plenty for typical log lines.
+            buffer_size = 4000
+            suffix = s[-buffer_size:] if len(s) > buffer_size else s
+
             # Trailing 20 lines
-            lines = s.splitlines()
+            lines = suffix.splitlines()
             tail_by_lines = "\n".join(lines[-20:])
             # Trailing 1000 characters
             tail_by_chars = s[-1000:]
