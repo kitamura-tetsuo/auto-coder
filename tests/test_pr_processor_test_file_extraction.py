@@ -7,7 +7,9 @@ from auto_coder.pr_processor import _apply_local_test_fix
 
 class TestPRProcessorTestFileExtraction(unittest.TestCase):
     @patch("auto_coder.pr_processor.get_llm_backend_manager")
-    @patch("auto_coder.pr_processor.extract_important_errors")
+    @patch(
+        "auto_coder.fix_to_pass_tests_runner.extract_important_errors_from_local_tests"
+    )
     @patch("auto_coder.pr_processor.get_commit_log")
     @patch("auto_coder.pr_processor.render_prompt")
     @patch("auto_coder.pr_processor.extract_first_failed_test")
@@ -47,7 +49,9 @@ class TestPRProcessorTestFileExtraction(unittest.TestCase):
         mock_llm_backend_manager.run_test_fix_prompt.assert_called_once_with("Some prompt", current_test_file="tests/test_failure.py")
 
     @patch("auto_coder.pr_processor.get_llm_backend_manager")
-    @patch("auto_coder.pr_processor.extract_important_errors")
+    @patch(
+        "auto_coder.fix_to_pass_tests_runner.extract_important_errors_from_local_tests"
+    )
     @patch("auto_coder.pr_processor.get_commit_log")
     @patch("auto_coder.pr_processor.render_prompt")
     @patch("auto_coder.pr_processor.extract_first_failed_test")

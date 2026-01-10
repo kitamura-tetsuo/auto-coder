@@ -12,6 +12,7 @@ from auto_coder.util.dependabot_timestamp import (
 )
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandExecutor
+from unittest.mock import MagicMock
 
 """Tests for automation engine functionality."""
 
@@ -87,7 +88,7 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "abcdef123"},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
@@ -97,6 +98,7 @@ class TestAutomationEngine:
         mock_github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_pr_details.return_value = mock_pr_data
+        mock_github_client.get_open_prs_json.return_value = [mock_pr_data]
         mock_github_client.try_add_labels.return_value = True
 
         # Mock successful processing - simulate that the PR was processed without errors
@@ -130,7 +132,7 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "abcdef123"},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
@@ -140,6 +142,7 @@ class TestAutomationEngine:
         mock_github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_pr_details.return_value = mock_pr_data
+        mock_github_client.get_open_prs_json.return_value = [mock_pr_data]
         mock_github_client.try_add_labels.return_value = True
 
         # Mock failed processing
@@ -173,7 +176,7 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR with conflicts",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "abcdef123"},
             "base": {"ref": "main"},
             "mergeable": False,  # Simulate merge conflicts
             "draft": False,
@@ -183,6 +186,7 @@ class TestAutomationEngine:
         mock_github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_pr_details.return_value = mock_pr_data
+        mock_github_client.get_open_prs_json.return_value = [mock_pr_data]
         mock_github_client.try_add_labels.return_value = True
 
         # Mock that GitHub Actions are failing due to conflicts
@@ -3097,11 +3101,12 @@ class TestElderSiblingDependencyLogic:
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""
 
-    @patch("auto_coder.gh_logger.subprocess.run")
+    @patch("auto_coder.issue_processor.get_ghapi_client")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_propagates_urgent_label(self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client):
+    def test_create_pr_for_issue_propagates_urgent_label(
+        self, mock_get_current_branch, mock_get_ghapi_client, mock_github_client, mock_gemini_client
+    ):
         """Test that urgent label is propagated from issue to PR."""
-        # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
 
         issue_data = {
@@ -3111,27 +3116,15 @@ class TestUrgentLabelPropagation:
             "labels": ["urgent", "bug"],
         }
 
-        # Mock get_current_branch to avoid git operations
         mock_get_current_branch.return_value = "issue-123"
 
-        # Mock gh pr create to return PR URL
-        gh_results = [
-            Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0),  # gh pr create
-            Mock(success=True, stdout="", stderr="", returncode=0),  # gh pr edit
-        ]
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_api.pulls.create.return_value = {"number": 456}
 
-        def side_effect(cmd, **kwargs):
-            if cmd[0] == "gh":
-                return gh_results.pop(0)
-            # For any other commands, return success
-            return Mock(success=True, stdout="", stderr="", returncode=0)
-
-        mock_cmd.side_effect = side_effect
-
-        # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
 
-        # Execute
         config = AutomationConfig()
         result = _create_pr_for_issue(
             repo_name="test/repo",
@@ -3143,32 +3136,16 @@ class TestUrgentLabelPropagation:
             config=config,
         )
 
-        # Assert
         assert "Successfully created PR for issue #123" in result
-
-        # Verify gh pr create was called (filter out git commands)
-        gh_calls = [call for call in mock_cmd.call_args_list if call[0][0][0] == "gh"]
-        assert len(gh_calls) >= 2
-        create_call = gh_calls[0][0][0]
-        assert create_call[0] == "gh"
-        assert create_call[1] == "pr"
-        assert create_call[2] == "create"
-
-        # Verify urgent label was added to PR
-        add_label_call = gh_calls[1][0][0]
-        assert add_label_call[0] == "gh"
-        assert add_label_call[1] == "pr"
-        assert add_label_call[2] == "edit"
-        assert str(456) in add_label_call  # PR number
-
-        # Verify GitHub client was called to add labels
+        mock_api.pulls.create.assert_called_once()
         mock_github_client.add_labels.assert_called_once_with("test/repo", 456, ["urgent"], item_type="pr")
 
-    @patch("auto_coder.gh_logger.subprocess.run")
+    @patch("auto_coder.issue_processor.get_ghapi_client")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_without_urgent_label(self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client):
+    def test_create_pr_for_issue_without_urgent_label(
+        self, mock_get_current_branch, mock_get_ghapi_client, mock_github_client, mock_gemini_client
+    ):
         """Test that no urgent label is propagated when issue doesn't have it."""
-        # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
 
         issue_data = {
@@ -3178,22 +3155,14 @@ class TestUrgentLabelPropagation:
             "labels": ["bug"],
         }
 
-        # Mock get_current_branch to avoid git operations
         mock_get_current_branch.return_value = "issue-123"
 
-        # Mock gh pr create to return PR URL
-        def side_effect(cmd, **kwargs):
-            if cmd[0] == "gh":
-                return Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0)
-            # For any other commands, return success
-            return Mock(success=True, stdout="", stderr="", returncode=0)
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_api.pulls.create.return_value = {"number": 456}
 
-        mock_cmd.side_effect = side_effect
-
-        # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
 
-        # Execute
         config = AutomationConfig()
         result = _create_pr_for_issue(
             repo_name="test/repo",
@@ -3205,17 +3174,8 @@ class TestUrgentLabelPropagation:
             config=config,
         )
 
-        # Assert
         assert "Successfully created PR for issue #123" in result
-        # gh pr create should be called but NOT gh pr edit for urgent note
-        gh_calls = [call for call in mock_cmd.call_args_list if call[0][0][0] == "gh"]
-        assert len(gh_calls) == 1
-        create_call = gh_calls[0][0][0]
-        assert create_call[0] == "gh"
-        assert create_call[1] == "pr"
-        assert create_call[2] == "create"
-
-        # Verify urgent label was NOT added
+        mock_api.pulls.create.assert_called_once()
         mock_github_client.add_labels.assert_not_called()
 
 
@@ -3654,7 +3614,7 @@ class TestCheckAndHandleClosedBranch:
                 "number": 1,
                 "title": "Dependabot PR",
                 "body": "",
-                "head": {"ref": "dependabot-pr-1"},
+                "head": {"ref": "dependabot-pr-1", "sha": "abcdef123456"},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",

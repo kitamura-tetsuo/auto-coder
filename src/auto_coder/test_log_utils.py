@@ -104,28 +104,21 @@ def _collect_pytest_candidates(text: str) -> List[str]:
     return found
 
 
-def _collect_playwright_candidates(text: str) -> List[str]:
-    """Extract Playwright failed test files.
+def _collect_playwright_candidates(text: str) -> tuple[List[str], List[str]]:
+    """Extract Playwright failed and flaky test files.
 
     Args:
         text: The test output text to analyze
 
     Returns:
-        List of candidate paths for failed Playwright test files
+        A tuple containing two lists: (failed_candidates, flaky_candidates)
     """
     text = _strip_ansi(text)
     if not text:
-        return []
+        return [], []
 
-    found: List[str] = []
     lines = text.split("\n")
-
-    # Regex to identify section headers like "  1 failed", "  2 flaky", etc.
     section_header_re = re.compile(r"^\s*\d+\s+(failed|flaky|passed|skipped|did not run)")
-
-    # Regex to extract spec files from lines
-    # Matches: [project] › path/to/file.spec.ts:7:5 › ...
-    # Also matches lines that just contain the spec path
     spec_file_re = re.compile(r"([^\s:]+\.spec\.ts)")
 
     current_section = None
@@ -133,18 +126,15 @@ def _collect_playwright_candidates(text: str) -> List[str]:
     flaky_candidates: List[str] = []
 
     for ln in lines:
-        # Check for section header
         m_header = section_header_re.search(ln)
         if m_header:
             current_section = m_header.group(1)
             continue
 
-        # Extract spec files from the line
         if current_section in ["failed", "flaky"]:
             specs = spec_file_re.findall(ln)
             for spec in specs:
                 norm = _normalize_spec(spec)
-
                 if current_section == "failed":
                     if norm not in failed_candidates:
                         failed_candidates.append(norm)
@@ -152,70 +142,37 @@ def _collect_playwright_candidates(text: str) -> List[str]:
                     if norm not in flaky_candidates:
                         flaky_candidates.append(norm)
 
-    # Prioritize failed candidates, then flaky
-    # Filter out duplicates while preserving order
-    all_candidates = []
-    for c in failed_candidates:
-        if c not in all_candidates:
-            all_candidates.append(c)
-    for c in flaky_candidates:
-        if c not in all_candidates:
-            all_candidates.append(c)
-
-    # Fallback: if nothing found in explicit sections, use the original regexes
-    if not all_candidates:
+    # Fallback searches if sections are not found
+    if not failed_candidates and not flaky_candidates:
         fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
         fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
 
         for ln in lines:
-            m = fail_bullet_re.search(ln)
+            m = fail_bullet_re.search(ln) or fail_heading_re.search(ln)
             if m:
                 norm = _normalize_spec(m.group(1))
-                if norm not in all_candidates:
-                    all_candidates.append(norm)
+                if norm not in failed_candidates:
+                    failed_candidates.append(norm)
 
-        for ln in lines:
-            m = fail_heading_re.search(ln)
-            if m:
-                norm = _normalize_spec(m.group(1))
-                if norm not in all_candidates:
-                    all_candidates.append(norm)
-
-    # Final Fallback: Search for lines containing .spec.ts (broad search)
-    # Only if absolutely nothing else was found
-    if not all_candidates:
+    # Final Fallback
+    if not failed_candidates and not flaky_candidates:
         for spec_path in re.findall(r"([^\s:]+\.spec\.ts)", text):
             norm = _normalize_spec(spec_path)
-            if norm not in all_candidates:
-                all_candidates.append(norm)
+            if norm not in failed_candidates:
+                failed_candidates.append(norm)
 
-    # Filter out path suffixes if a longer version exists
-    # e.g. "utils/foo.spec.ts" should be removed if "e2e/utils/foo.spec.ts" exists
-    final_candidates: list[str] = []
-    # Process longer paths first to identify parents
-    unique_candidates = []
-    seen = set()
-    for c in all_candidates:
-        if c not in seen:
-            seen.add(c)
-            unique_candidates.append(c)
+    # Deduplicate and filter suffixes
+    def deduplicate_and_filter(candidates: List[str]) -> List[str]:
+        final = []
+        unique = sorted(list(set(candidates)), key=len, reverse=True)
+        for cand in unique:
+            if not any(k.endswith(f"/{cand}") for k in final):
+                final.append(cand)
+        return final
 
-    sorted_candidates = sorted(unique_candidates, key=len, reverse=True)
-
-    for cand in sorted_candidates:
-        is_suffix = False
-        for kept in final_candidates:
-            # Check if cand is a suffix of kept (e.g. "utils/foo.ts" in "e2e/utils/foo.ts")
-            # We enforce a path separator boundary to avoid matching "foo.ts" against "bar_foo.ts"
-            if kept.endswith(cand) and kept != cand:
-                if kept.endswith("/" + cand):
-                    is_suffix = True
-                    break
-
-        if not is_suffix:
-            final_candidates.append(cand)
-
-    return final_candidates
+    return deduplicate_and_filter(failed_candidates), deduplicate_and_filter(
+        flaky_candidates
+    )
 
 
 def _collect_vitest_candidates(text: str) -> List[str]:
@@ -269,30 +226,37 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
     """
     # Analyze stderr first, then stdout, if neither found, analyze combined output as before
     ordered_outputs = [stderr, stdout, f"{stdout}\n{stderr}"]
-    candidates: List[str] = []
+    failed_candidates: List[str] = []
+    flaky_candidates: List[str] = []
 
     for output in ordered_outputs:
-        # Step 1: Determine which test library failed
         failed_library = _detect_failed_test_library(output)
 
         if failed_library == "pytest":
-            candidates = _collect_pytest_candidates(output)
+            failed_candidates = _collect_pytest_candidates(output)
         elif failed_library == "playwright":
-            candidates = _collect_playwright_candidates(output)
+            failed, flaky = _collect_playwright_candidates(output)
+            failed_candidates.extend(fc for fc in failed if fc not in failed_candidates)
+            flaky_candidates.extend(fc for fc in flaky if fc not in flaky_candidates)
         elif failed_library == "vitest":
-            candidates = _collect_vitest_candidates(output)
+            failed_candidates = _collect_vitest_candidates(output)
 
-        if candidates:
+        if failed_candidates:
             break
 
-    # Prefer to return existing files
-    for path in candidates:
+    # Prioritize failed tests over flaky tests
+    for path in failed_candidates:
+        if os.path.exists(path):
+            return path
+    for path in flaky_candidates:
         if os.path.exists(path):
             return path
 
-    # If candidates exist, return the first candidate even if it doesn't exist
-    if candidates:
-        return candidates[0]
+    # Fallback to the first candidate if no files exist
+    if failed_candidates:
+        return failed_candidates[0]
+    if flaky_candidates:
+        return flaky_candidates[0]
 
     return None
 
