@@ -10,7 +10,7 @@ import tempfile
 import time
 from importlib import resources
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .logger_config import get_logger
 from .utils import CommandExecutor, CommandResult, is_running_in_container
@@ -160,12 +160,18 @@ class GraphRAGDockerManager:
 
         return result
 
-    def start(self, wait_for_health: bool = True, timeout: int = 120) -> bool:
+    def start(
+        self,
+        wait_for_health: bool = True,
+        timeout: int = 120,
+        progress_callback: Optional[Callable] = None,
+    ) -> bool:
         """Start Neo4j and Qdrant containers.
 
         Args:
             wait_for_health: Wait for containers to be healthy
             timeout: Maximum time to wait for containers to be healthy
+            progress_callback: Optional callback to be called during wait
 
         Returns:
             True if containers started successfully, False otherwise
@@ -188,7 +194,7 @@ class GraphRAGDockerManager:
 
         if wait_for_health:
             logger.info("Waiting for containers to be healthy...")
-            if not self.wait_for_health(timeout=timeout):
+            if not self.wait_for_health(timeout=timeout, progress_callback=progress_callback):
                 logger.error("Containers failed to become healthy")
                 return False
             logger.info("All containers are healthy")
@@ -247,12 +253,18 @@ class GraphRAGDockerManager:
         # We expect 2 containers (neo4j and qdrant)
         return len(running_containers) == 2
 
-    def wait_for_health(self, timeout: int = 120, check_interval: int = 5) -> bool:
+    def wait_for_health(
+        self,
+        timeout: int = 120,
+        check_interval: int = 5,
+        progress_callback: Optional[Callable] = None,
+    ) -> bool:
         """Wait for containers to be healthy.
 
         Args:
             timeout: Maximum time to wait in seconds
             check_interval: Time between health checks in seconds
+            progress_callback: Optional callback to be called during wait
 
         Returns:
             True if containers are healthy, False if timeout reached
@@ -270,6 +282,10 @@ class GraphRAGDockerManager:
                 return True
 
             logger.debug(f"Waiting for containers to be healthy... " f"(Neo4j: {neo4j_healthy}, Qdrant: {qdrant_healthy})")
+
+            if progress_callback:
+                progress_callback()
+
             time.sleep(check_interval)
 
         return False

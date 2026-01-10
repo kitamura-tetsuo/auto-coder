@@ -527,6 +527,7 @@ def graphrag_group() -> None:
 def graphrag_start(wait: bool, timeout: int) -> None:
     """Start Neo4j and Qdrant Docker containers."""
     from .graphrag_docker_manager import GraphRAGDockerManager
+    from .progress_footer import ProgressContext, get_progress_footer
 
     setup_logger()
 
@@ -540,7 +541,14 @@ def graphrag_start(wait: bool, timeout: int) -> None:
         raise click.ClickException("Docker Compose is not available")
 
     try:
-        success = manager.start(wait_for_health=wait, timeout=timeout)
+        # Use ProgressContext for visual feedback during wait
+        with ProgressContext("GraphRAG", 0, "Starting containers..."):
+            success = manager.start(
+                wait_for_health=wait,
+                timeout=timeout,
+                progress_callback=lambda: get_progress_footer().tick(),
+            )
+
         if success:
             click.echo("✅ GraphRAG containers started successfully")
             if wait:
