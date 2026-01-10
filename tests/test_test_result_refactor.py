@@ -91,7 +91,7 @@ def test_engine_extract_important_errors_accepts_testresult(mock_github_client, 
 def test_github_actions_enhanced_integration_passes_structured_context():
     """_apply_github_actions_fix should include structured context when TestResult is provided."""
     config = AutomationConfig()
-    pr_data = {"number": 123, "title": "Fix CI"}
+    pr_data = {"number": 123, "title": "Fix CI", "head": {"ref": "test-branch"}}
     github_logs = "Simulated GitHub Actions logs"
 
     # Provide structured context in TestResult
