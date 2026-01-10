@@ -1967,9 +1967,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join(
-                                            [_clean_log_line(line) for line in stack.split("\n")][:10]
-                                        )
+                                        clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:
