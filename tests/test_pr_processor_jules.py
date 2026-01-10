@@ -642,7 +642,7 @@ class TestSendJulesErrorFeedback:
         assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionABC123' for PR #123" in actions[0]
         assert "Posted comment on PR #123 stating that a fix has been requested from Jules" in actions[1]
-        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
+        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data, search_history=False)
         mock_jules_client.send_message.assert_called_once()
 
         # Check the message sent to Jules
@@ -743,7 +743,7 @@ class TestSendJulesErrorFeedback:
         assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionXYZ789' for PR #456" in actions[0]
         assert "Posted comment on PR #456 stating that a fix has been requested from Jules" in actions[1]
-        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
+        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data, search_history=False)
         mock_jules_client.send_message.assert_called_once()
 
         # Check the message includes empty logs

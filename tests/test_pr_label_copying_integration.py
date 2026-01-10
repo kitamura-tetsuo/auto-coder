@@ -57,7 +57,7 @@ class TestPRLabelCopyingIntegration:
 
     def test_semantic_label_copying_from_issues_to_prs(self, config_with_pr_label_copying, mock_github_client_for_pr):
         """Test that semantic labels are correctly copied from issues to PRs."""
-        issue_labels = ["bug", "urgent", "enhancement"]
+        issue_labels = [{"name": "bug"}, {"name": "urgent"}, {"name": "enhancement"}]
         issue_data = {
             "number": 123,
             "title": "Test Issue",
@@ -75,7 +75,7 @@ class TestPRLabelCopyingIntegration:
 
     def test_priority_based_label_selection_for_prs(self, config_with_pr_label_copying):
         """Test that PR labels are selected based on priority when multiple labels exist."""
-        issue_labels = ["bug", "urgent", "enhancement", "documentation"]
+        issue_labels = [{"name": "bug"}, {"name": "urgent"}, {"name": "enhancement"}, {"name": "documentation"}]
         issue_data = {
             "number": 123,
             "title": "Test Issue",
@@ -204,7 +204,7 @@ class TestPRLabelCopyingIntegration:
             "number": issue_number,
             "title": "Test Issue",
             "body": "Test body",
-            "labels": ["bug", "urgent"],
+            "labels": [{"name": "bug"}, {"name": "urgent"}],
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
@@ -252,7 +252,7 @@ class TestPRLabelCopyingIntegration:
             "number": issue_number,
             "title": "Test Issue",
             "body": "Test body",
-            "labels": ["bug", "urgent"],
+            "labels": [{"name": "bug"}, {"name": "urgent"}],
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
@@ -308,7 +308,7 @@ class TestPRLabelCopyingIntegration:
             "number": issue_number,
             "title": "Test Issue",
             "body": "Test body",
-            "labels": ["random-label", "custom-label"],  # No semantic labels
+            "labels": [{"name": "random-label"}, {"name": "custom-label"}],  # No semantic labels
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
@@ -346,7 +346,7 @@ class TestPRLabelCopyingIntegration:
             "number": issue_number,
             "title": "Test Issue",
             "body": "Test body",
-            "labels": ["bug"],
+            "labels": [{"name": "bug"}],
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
@@ -456,7 +456,12 @@ class TestPRLabelCopyingIntegration:
             "number": issue_number,
             "title": "Comprehensive Test Issue",
             "body": "This issue has multiple labels for testing",
-            "labels": ["bugfix", "critical", "documentation", "random-label"],
+            "labels": [
+                {"name": "bugfix"},
+                {"name": "critical"},
+                {"name": "documentation"},
+                {"name": "random-label"},
+            ],
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"

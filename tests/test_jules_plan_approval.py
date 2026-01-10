@@ -35,7 +35,7 @@ class TestJulesPlanApproval(unittest.TestCase):
         # Verify correct API call was made
         mock_post.assert_called_once()
         call_args = mock_post.call_args
-        assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions/session-123:approvePlan"
+        assert call_args[0][0] == f"{mock_backend_config.base_url}/sessions/session-123:approvePlan"
         assert call_args[1]["json"] == {}
 
     @patch("src.auto_coder.jules_client.get_llm_config")
@@ -71,14 +71,13 @@ class TestJulesPlanApproval(unittest.TestCase):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
         mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s1", "state": "AWAITING_PLAN_APPROVAL"}]
-        mock_jules_client.approve_plan.return_value = True
         mock_load_state.return_value = {}
 
         # Execute
         check_and_resume_or_archive_sessions()
 
         # Verify
-        mock_jules_client.approve_plan.assert_called_once_with("s1")
+        mock_jules_client.process_session_status.assert_called_once()
         # Should not save state as we didn't modify retry_state, but state_changed is True because we approved plan?
         # Let's check the code.
         # In the implementation:
@@ -97,13 +96,12 @@ class TestJulesPlanApproval(unittest.TestCase):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
         mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s1", "state": "AWAITING_PLAN_APPROVAL"}]
-        mock_jules_client.approve_plan.return_value = False
         mock_load_state.return_value = {}
 
         # Execute
         check_and_resume_or_archive_sessions()
 
         # Verify
-        mock_jules_client.approve_plan.assert_called_once_with("s1")
+        mock_jules_client.process_session_status.assert_called_once()
         # state_changed should be False
         mock_save_state.assert_not_called()

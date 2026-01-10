@@ -178,7 +178,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
             jobs_obj = {
                 "jobs": [
                     {
-                        "databaseId": 53715705095,
+                            "id": 53715705095,
                         "name": "CI / e2e tests",
                         "conclusion": "failure",
                     }

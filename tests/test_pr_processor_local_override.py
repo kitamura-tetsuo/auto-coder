@@ -43,6 +43,7 @@ class TestPRProcessorLocalOverride:
             "number": 123,
             "head": {"ref": pr_branch},
             "base": {"ref": "main"},
+            "head_branch": pr_branch,
         }
         config = AutomationConfig()
         config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True  # Simplify flow

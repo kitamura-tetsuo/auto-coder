@@ -87,7 +87,7 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "mock_sha"},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
@@ -130,7 +130,7 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "mock_sha"},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
@@ -173,7 +173,7 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR with conflicts",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "mock_sha"},
             "base": {"ref": "main"},
             "mergeable": False,  # Simulate merge conflicts
             "draft": False,
@@ -3108,7 +3108,7 @@ class TestUrgentLabelPropagation:
             "number": 123,
             "title": "Urgent issue",
             "body": "This is an urgent issue",
-            "labels": ["urgent", "bug"],
+            "labels": [{"name": "urgent"}, {"name": "bug"}],
         }
 
         # Mock get_current_branch to avoid git operations
@@ -3175,7 +3175,7 @@ class TestUrgentLabelPropagation:
             "number": 123,
             "title": "Regular issue",
             "body": "This is a regular issue",
-            "labels": ["bug"],
+            "labels": [{"name": "bug"}],
         }
 
         # Mock get_current_branch to avoid git operations
@@ -3667,7 +3667,10 @@ class TestCheckAndHandleClosedBranch:
             mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
 
             # Execute
-            candidates = engine._get_candidates(test_repo_name, max_items=10)
+            with patch("src.auto_coder.util.github_action.GitHubClient") as mock_gh_client_cls:
+                mock_gh_client_cls.get_instance.return_value = mock_github_client
+                mock_github_client.token = "dummy_token"
+                candidates = engine._get_candidates(test_repo_name, max_items=10)
 
             # Assert
             assert len(candidates) == 0

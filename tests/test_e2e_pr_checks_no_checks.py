@@ -44,7 +44,7 @@ class TestPRChecksNoChecks:
         pr_data = {
             "number": 515,
             "head_branch": "test-branch",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "dummy_sha"},
         }
         # Mock _check_github_actions_status_from_history to verify it's called
         with patch("src.auto_coder.util.github_action._check_github_actions_status_from_history") as mock_history:

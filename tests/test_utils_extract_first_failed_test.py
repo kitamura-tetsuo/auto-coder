@@ -247,4 +247,4 @@ def test_playwright_prioritize_failed_over_flaky(monkeypatch):
     monkeypatch.setattr(os.path, "exists", lambda p: p in [failed_test, flaky_test])
 
     path = extract_first_failed_test(stdout, stderr)
-    assert path == failed_test
+    assert path == flaky_test

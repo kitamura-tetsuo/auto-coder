@@ -42,9 +42,10 @@ class TestGitCommitWithRetry:
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is True
-            mock_cmd.run_command.assert_called_once()
-            call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ["git", "commit", "-m", "Test commit message"]
+            assert mock_cmd.run_command.call_count == 2
+            calls = mock_cmd.run_command.call_args_list
+            assert calls[0][0][0] == ["git", "add", "-A"]
+            assert calls[1][0][0] == ["git", "commit", "-m", "Test commit message"]
 
     def test_commit_with_dprint_error_and_retry(self):
         """Test commit with dprint formatting error triggers retry."""
@@ -57,6 +58,7 @@ class TestGitCommitWithRetry:
             # Third call: git add succeeds
             # Fourth call: commit succeeds
             mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=False,
                     stdout="",
@@ -71,13 +73,15 @@ class TestGitCommitWithRetry:
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 4
+            assert mock_cmd.run_command.call_count == 5
 
             # Check that dprint fmt was called
             calls = mock_cmd.run_command.call_args_list
-            assert calls[1][0][0] == ["npx", "dprint", "fmt"]
-            assert calls[2][0][0] == ["git", "add", "-u"]
-            assert calls[3][0][0] == ["git", "commit", "-m", "Test commit message"]
+            assert calls[0][0][0] == ["git", "add", "-A"]
+            assert calls[1][0][0] == ["git", "commit", "-m", "Test commit message"]
+            assert calls[2][0][0] == ["npx", "dprint", "fmt"]
+            assert calls[3][0][0] == ["git", "add", "-u"]
+            assert calls[4][0][0] == ["git", "commit", "-m", "Test commit message"]
 
     def test_commit_with_dprint_error_fmt_fails(self):
         """Test commit with dprint error but formatter fails."""
@@ -89,6 +93,7 @@ class TestGitCommitWithRetry:
             # Second call: dprint fmt fails
             # Third call: commit fails again (attempt 1, max_retries reached)
             mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=False,
                     stdout="",
@@ -121,6 +126,7 @@ class TestGitCommitWithRetry:
             mock_executor.return_value = mock_cmd
             mock_llm.return_value = True
             mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=False,
                     stdout="",
@@ -150,6 +156,7 @@ class TestGitCommitWithRetry:
             mock_executor.return_value = mock_cmd
             mock_llm.return_value = True
             mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(success=False, stdout="", stderr="some unknown error", returncode=1),
                 CommandResult(
                     success=False,
@@ -797,6 +804,7 @@ class TestGitCheckoutBranch:
                 # Second call: git add -A (from git_checkout_branch)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Third call: git commit (from git_commit_with_retry)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=True,
                     stdout="WIP: Auto-commit before branch checkout\n",
@@ -1301,6 +1309,7 @@ class TestGitCheckoutBranch:
                 # Second call: git add -A
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Third call: git commit (from git_commit_with_retry)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=True,
                     stdout="[main abc123] WIP: Auto-commit before branch checkout\n",
@@ -1350,6 +1359,7 @@ class TestGitCheckoutBranch:
                 # Third call: git add -A
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Fourth call: git commit (from git_commit_with_retry)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=True,
                     stdout="[main abc123] WIP: Auto-commit before branch checkout (retry)\n",
@@ -1405,6 +1415,7 @@ class TestGitCheckoutBranch:
                 # Third call: git add -A
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Fourth call: git commit fails
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=False,
                     stdout="",

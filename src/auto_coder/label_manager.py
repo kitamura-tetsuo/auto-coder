@@ -158,14 +158,14 @@ def _is_fuzzy_match(candidate: str, target: str, max_distance: int = 1) -> bool:
 
 
 def get_semantic_labels_from_issue(
-    issue_labels: List[str],
+    issue_labels: List[Union[str, Dict[str, Any]]],
     label_mappings: Dict[str, List[str]],
     use_fuzzy_matching: bool = True,
 ) -> List[str]:
     """Extract semantic labels from issue labels with alias support and fuzzy matching.
 
     Args:
-        issue_labels: List of labels from the issue
+        issue_labels: List of labels from the issue (can be strings or dicts)
         label_mappings: Dictionary mapping primary labels to their aliases
         use_fuzzy_matching: Whether to use fuzzy matching for label detection
 
@@ -174,15 +174,23 @@ def get_semantic_labels_from_issue(
     """
     detected_labels = []
 
+    # Normalize issue_labels to a list of strings
+    label_names = []
+    for label in issue_labels:
+        if isinstance(label, dict):
+            label_names.append(label.get("name", ""))
+        elif isinstance(label, str):
+            label_names.append(label)
+
     # Pre-normalize all issue labels once for efficiency
     if use_fuzzy_matching:
-        normalized_issue_labels = [_normalize_label(label) for label in issue_labels]
+        normalized_issue_labels = [_normalize_label(label) for label in label_names]
         # Create a set for O(1) lookups
         normalized_issue_set = set(normalized_issue_labels)
         # Also create a set of starting characters for quick filtering
         issue_start_chars = set(nl[0] for nl in normalized_issue_labels if nl)
     else:
-        normalized_issue_labels = [label.lower() for label in issue_labels]
+        normalized_issue_labels = [label.lower() for label in label_names]
         normalized_issue_set = set(normalized_issue_labels)
         issue_start_chars = set(nl[0] for nl in normalized_issue_labels if nl)
 

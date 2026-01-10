@@ -54,7 +54,7 @@ class TestJulesClientPagination:
 
         # Check first call args
         call_args1 = mock_get.call_args_list[0]
-        assert call_args1[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
+        assert call_args1[0][0] == f"{mock_backend_config.base_url}/sessions"
         assert call_args1[1]["params"]["pageSize"] == 10
         # Ensure filter param is NOT present
         assert "filter" not in call_args1[1]["params"]

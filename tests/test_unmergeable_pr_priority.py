@@ -22,6 +22,7 @@ class TestUnmergeablePRPriority:
     ):
         """Test that unmergeable PRs get priority 2, higher than passing mergeable PRs (which would be merged)."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs
@@ -105,6 +106,7 @@ class TestUnmergeablePRPriority:
     ):
         """Test that urgent unmergeable PRs get priority 4, higher than urgent mergeable PRs (3)."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs
@@ -197,6 +199,7 @@ class TestUnmergeablePRPriority:
     ):
         """Test full hierarchy sorting of mixed candidates."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs
@@ -335,6 +338,7 @@ class TestPriorityBackwardCompatibility:
     ):
         """Test that 'urgent' label still takes precedence even with unmergeable PRs."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs
@@ -412,6 +416,7 @@ class TestPriorityBackwardCompatibility:
     ):
         """Test that 'breaking-change' label has absolute highest priority."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs
@@ -493,6 +498,7 @@ class TestPriorityEdgeCases:
     ):
         """Test priority for unmergeable PRs with passing CI checks."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client
@@ -544,6 +550,7 @@ class TestPriorityEdgeCases:
     ):
         """Test priority for unmergeable PRs with failing CI checks."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client
@@ -595,6 +602,7 @@ class TestPriorityEdgeCases:
     ):
         """Test priority for mergeable PRs with failing CI checks."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client
@@ -646,6 +654,7 @@ class TestPriorityEdgeCases:
     ):
         """Test priority for mergeable PRs with passing CI checks."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client
@@ -703,6 +712,7 @@ class TestPriorityIntegration:
     ):
         """Test that unmergeable PR is processed before a PR needing fixes."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs
@@ -795,6 +805,7 @@ class TestPriorityIntegration:
     ):
         """Test candidate collection performance with many PRs."""
         # Setup
+        mock_github_client.token = "dummy_token"
         engine = AutomationEngine(mock_github_client)
 
         # Generate 50 PRs

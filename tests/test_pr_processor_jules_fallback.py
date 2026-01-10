@@ -96,7 +96,7 @@ class TestHandlePrMergeJulesFallback:
         """Test that fallback flow is used when failure count > 10."""
         # Setup
         repo_name = "owner/repo"
-        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}, "head_branch": "feature-branch"}
         config = AutomationConfig()
         github_client = Mock()
 
@@ -163,7 +163,7 @@ class TestHandlePrMergeJulesFallback:
         """Test that fallback flow is used when waiting > 1 hour."""
         # Setup
         repo_name = "owner/repo"
-        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}, "head_branch": "feature-branch"}
         config = AutomationConfig()
         github_client = Mock()
 

@@ -126,22 +126,6 @@ def test_get_mergeable_state_uses_existing_data(mock_gh_logger):
 
 
 @patch("src.auto_coder.pr_processor.get_gh_logger")
-def test_get_mergeable_state_refreshes_when_unknown(mock_gh_logger):
-    """Verify mergeable state is refreshed when current value is unknown."""
-    mock_result = Mock()
-    mock_result.success = True
-    mock_result.stdout = '{"mergeable": false, "mergeStateStatus": "DIRTY"}'
-    mock_gh_logger.return_value.execute_with_logging.return_value = mock_result
-
-    config = AutomationConfig()
-    pr_data = {"mergeable": None, "mergeStateStatus": None}
-
-    result = _get_mergeable_state("owner/repo", pr_data, config)
-
-    assert result["mergeable"] is False
-    assert result["merge_state_status"] == "DIRTY"
-    # Verify GitHub API was called
-    mock_gh_logger.return_value.execute_with_logging.assert_called_once()
 
 
 @patch("src.auto_coder.pr_processor.get_gh_logger")

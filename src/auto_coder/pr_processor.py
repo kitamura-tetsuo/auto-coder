@@ -33,7 +33,6 @@ from .git_branch import branch_context, git_checkout_branch, git_commit_with_ret
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
-from .issue_processor import _notify_jules_session_start
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -2384,13 +2383,12 @@ def _apply_github_actions_fix(
             logger.info(f"Starting Jules session for GitHub Actions fix for PR #{pr_number}")
 
             # Import JulesClient here to avoid circular imports
-            from .issue_processor import _notify_jules_session_start
             from .jules_client import JulesClient
 
             session_id = JulesClient().start_session(fix_prompt, repo_name, pr_data["head"]["ref"], is_noedit=False, title=f"Fix for PR #{pr_number} {pr_data['title']}")
             # Get GitHubClient instance if not provided
             gh_client = github_client if github_client else GitHubClient.get_instance()
-            _notify_jules_session_start(repo_name, pr_number, session_id, gh_client, actions)
+
         else:
             # Use LLM backend manager to run the prompt
             logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")

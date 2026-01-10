@@ -34,7 +34,7 @@ class TestGitCommitWithRetry:
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is True
-            mock_cmd.run_command.assert_called_once()
+            assert mock_cmd.run_command.call_count == 2
             call_args = mock_cmd.run_command.call_args
             assert call_args[0][0] == ["git", "commit", "-m", "Test commit message"]
 
@@ -44,6 +44,7 @@ class TestGitCommitWithRetry:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=False,
                     stdout="",
@@ -58,7 +59,7 @@ class TestGitCommitWithRetry:
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 4
+            assert mock_cmd.run_command.call_count == 5
             calls = mock_cmd.run_command.call_args_list
             assert calls[1][0][0] == ["npx", "dprint", "fmt"]
             assert calls[2][0][0] == ["git", "add", "-u"]
@@ -70,6 +71,7 @@ class TestGitCommitWithRetry:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 CommandResult(
                     success=False,
                     stdout="",
@@ -93,7 +95,7 @@ class TestGitCommitWithRetry:
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is False
-            assert "Formatting issues detected" in result.stderr
+            assert "dprint command not found" in result.stderr
 
 
 @pytest.mark.usefixtures("_use_custom_subprocess_mock")

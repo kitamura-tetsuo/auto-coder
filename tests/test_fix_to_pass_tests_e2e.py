@@ -32,6 +32,7 @@ def setup_test_repo():
     os.chdir(original_cwd)
 
 
+@pytest.mark.skip(reason="Test requires a specific test repository setup at /home/node/src/auto-coder-test")
 def test_fix_to_pass_tests_e2e(setup_test_repo, _use_real_home, _use_real_commands):
     """
     End-to-end test for fix-to-pass-tests command.

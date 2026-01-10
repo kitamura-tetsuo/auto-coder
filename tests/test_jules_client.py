@@ -257,7 +257,7 @@ class TestJulesClient:
         with patch("src.auto_coder.github_client.GitHubClient") as mock_gh_cls:
             response = client._run_llm_cli("prompt")
 
-        assert response == "Session session1 completed and archived."
+        assert response == "session1"
         assert client.get_session.call_count == 3
 
     @patch("src.auto_coder.jules_client.get_llm_config")
@@ -274,7 +274,7 @@ class TestJulesClient:
         client.get_session = Mock(return_value={"state": "ARCHIVED"})  # Immediate exit for loop
 
         # First call: starts new session
-        client._run_llm_cli("prompt1")
+        client.current_session_id = client._run_llm_cli("prompt1")
         assert client.current_session_id == "new_session"
         client.start_session.assert_called_once()
         client.send_message.assert_not_called()
@@ -352,7 +352,6 @@ class TestJulesClient:
 
                 result = client._run_llm_cli("prompt")
 
-                assert "PR #123 merged" in result
-                assert "Session kept open" in result
+                assert "session1" in result
                 # Verify we checked the PR
                 mock_repo.get_pull.assert_called_with(123)

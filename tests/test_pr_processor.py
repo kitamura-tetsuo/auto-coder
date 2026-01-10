@@ -65,7 +65,7 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs", skip_github_actions_fix=True)
 
         # Assert
         # Check calls to _apply_local_test_fix
@@ -182,7 +182,7 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs", skip_github_actions_fix=True)
 
         # Assert
         # Check calls to _apply_local_test_fix
@@ -241,7 +241,7 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs", skip_github_actions_fix=True)
 
         # Assert
         # Check calls to _apply_local_test_fix

@@ -106,8 +106,24 @@ class TestParentIssueProcessing:
         mock_cmd.run_command.side_effect = [
             MagicMock(returncode=0, stdout=""),  # Branch check (exists)
             MagicMock(returncode=0, stdout=""),  # Switch to branch
-            MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=0),  # Test if completion file exists (doesn't)
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
         ]
 
         # Mock gh_logger - successful PR creation
