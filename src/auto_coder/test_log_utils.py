@@ -128,27 +128,37 @@ def _collect_playwright_candidates(text: str) -> List[str]:
     # Also matches lines that just contain the spec path
     spec_file_re = re.compile(r"([^\s:]+\.spec\.ts)")
 
-    current_section = None
     failed_candidates: List[str] = []
     flaky_candidates: List[str] = []
 
+    # Prioritize 'failed' section first
+    in_failed_section = False
     for ln in lines:
-        # Check for section header
         m_header = section_header_re.search(ln)
         if m_header:
-            current_section = m_header.group(1)
+            in_failed_section = m_header.group(1) == "failed"
             continue
 
-        # Extract spec files from the line
-        if current_section in ["failed", "flaky"]:
+        if in_failed_section:
             specs = spec_file_re.findall(ln)
             for spec in specs:
                 norm = _normalize_spec(spec)
+                if norm not in failed_candidates:
+                    failed_candidates.append(norm)
 
-                if current_section == "failed":
-                    if norm not in failed_candidates:
-                        failed_candidates.append(norm)
-                elif current_section == "flaky":
+    # Then process 'flaky' section if no failed tests were found
+    if not failed_candidates:
+        in_flaky_section = False
+        for ln in lines:
+            m_header = section_header_re.search(ln)
+            if m_header:
+                in_flaky_section = m_header.group(1) == "flaky"
+                continue
+
+            if in_flaky_section:
+                specs = spec_file_re.findall(ln)
+                for spec in specs:
+                    norm = _normalize_spec(spec)
                     if norm not in flaky_candidates:
                         flaky_candidates.append(norm)
 

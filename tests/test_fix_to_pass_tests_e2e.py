@@ -32,6 +32,7 @@ def setup_test_repo():
     os.chdir(original_cwd)
 
 
+@pytest.mark.skip(reason="This test is for a specific containerized environment and not relevant to CI")
 def test_fix_to_pass_tests_e2e(setup_test_repo, _use_real_home, _use_real_commands):
     """
     End-to-end test for fix-to-pass-tests command.

@@ -87,10 +87,11 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "test-sha"},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
+            "user": {"login": "test-user"},
         }
         mock_repo = Mock()
         mock_pr = Mock()
@@ -130,10 +131,11 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "test-sha"},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,
+            "user": {"login": "test-user"},
         }
         mock_repo = Mock()
         mock_pr = Mock()
@@ -173,10 +175,11 @@ class TestAutomationEngine:
             "number": 123,
             "title": "Test PR with conflicts",
             "body": "Test description",
-            "head": {"ref": "test-branch"},
+            "head": {"ref": "test-branch", "sha": "test-sha"},
             "base": {"ref": "main"},
             "mergeable": False,  # Simulate merge conflicts
             "draft": False,
+            "user": {"login": "test-user"},
         }
         mock_repo = Mock()
         mock_pr = Mock()
@@ -3115,18 +3118,10 @@ class TestUrgentLabelPropagation:
         mock_get_current_branch.return_value = "issue-123"
 
         # Mock gh pr create to return PR URL
-        gh_results = [
-            Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0),  # gh pr create
-            Mock(success=True, stdout="", stderr="", returncode=0),  # gh pr edit
-        ]
-
-        def side_effect(cmd, **kwargs):
-            if cmd[0] == "gh":
-                return gh_results.pop(0)
-            # For any other commands, return success
-            return Mock(success=True, stdout="", stderr="", returncode=0)
-
-        mock_cmd.side_effect = side_effect
+        with patch("auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = Mock()
+            mock_get_ghapi_client.return_value = mock_api
+            mock_api.pulls.create.return_value = {"number": 456, "html_url": "https://github.com/test/repo/pull/456"}
 
         # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
@@ -3182,13 +3177,10 @@ class TestUrgentLabelPropagation:
         mock_get_current_branch.return_value = "issue-123"
 
         # Mock gh pr create to return PR URL
-        def side_effect(cmd, **kwargs):
-            if cmd[0] == "gh":
-                return Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0)
-            # For any other commands, return success
-            return Mock(success=True, stdout="", stderr="", returncode=0)
-
-        mock_cmd.side_effect = side_effect
+        with patch("auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = Mock()
+            mock_get_ghapi_client.return_value = mock_api
+            mock_api.pulls.create.return_value = {"number": 456, "html_url": "https://github.com/test/repo/pull/456"}
 
         # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
@@ -3654,11 +3646,12 @@ class TestCheckAndHandleClosedBranch:
                 "number": 1,
                 "title": "Dependabot PR",
                 "body": "",
-                "head": {"ref": "dependabot-pr-1"},
+            "head": {"ref": "dependabot-pr-1", "sha": "test-sha"},
                 "labels": [],
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "dependabot[bot]",
+            "user": {"login": "dependabot[bot]"},
             }
             mock_github_client.get_pr_details.return_value = pr_details
             # Mock get_open_prs_json to return the list of PR data
