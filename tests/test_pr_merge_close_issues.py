@@ -97,231 +97,179 @@ class TestExtractLinkedIssues:
 class TestCloseLinkedIssues:
     """Test closing of linked issues."""
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_close_single_issue(self, mock_get_gh_logger):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_close_single_issue(self, mock_github_client, mock_get_ghapi_client):
         """Test closing a single linked issue."""
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        # Mock API
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
         # Mock PR body retrieval
-        mock_gh_logger.execute_with_logging.side_effect = [
-            Mock(
-                success=True,
-                stdout='{"body": "Closes #123"}',
-                stderr="",
-                returncode=0,
-            ),
-            Mock(success=True, stdout="", stderr="", returncode=0),  # issue close
-        ]
+        mock_api.pulls.get.return_value = {"body": "Closes #123"}
 
         _close_linked_issues("test/repo", 456)
 
-        # Verify gh pr view was called
-        assert mock_gh_logger.execute_with_logging.call_count == 2
-        pr_view_call = mock_gh_logger.execute_with_logging.call_args_list[0][0][0]
-        assert pr_view_call == [
-            "gh",
-            "pr",
-            "view",
-            "456",
-            "--repo",
-            "test/repo",
-            "--json",
-            "body",
-        ]
+        # Verify PR view
+        mock_api.pulls.get.assert_called_once_with("test", "repo", 456)
 
-        # Verify gh issue close was called
-        issue_close_call = mock_gh_logger.execute_with_logging.call_args_list[1][0][0]
-        assert issue_close_call == [
-            "gh",
-            "issue",
-            "close",
-            "123",
-            "--repo",
-            "test/repo",
-            "--comment",
-            "Closed by PR #456",
-        ]
+        # Verify issue comment and close
+        mock_api.issues.create_comment.assert_called_once_with(
+            "test", "repo", 123, body="Closed by PR #456"
+        )
+        mock_api.issues.update.assert_called_once_with(
+            "test", "repo", 123, state="closed"
+        )
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_close_multiple_issues(self, mock_get_gh_logger):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_close_multiple_issues(self, mock_github_client, mock_get_ghapi_client):
         """Test closing multiple linked issues."""
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock PR body retrieval
-        mock_gh_logger.execute_with_logging.side_effect = [
-            Mock(
-                success=True,
-                stdout='{"body": "Closes #123 and fixes #456"}',
-                stderr="",
-                returncode=0,
-            ),
-            Mock(success=True, stdout="", stderr="", returncode=0),  # close #123
-            Mock(success=True, stdout="", stderr="", returncode=0),  # close #456
-        ]
+        # Mock PR body
+        mock_api.pulls.get.return_value = {"body": "Closes #123 and fixes #456"}
 
         _close_linked_issues("test/repo", 789)
 
-        # Verify both issues were closed
-        assert mock_gh_logger.execute_with_logging.call_count == 3
-        issue_close_calls = [
-            mock_gh_logger.execute_with_logging.call_args_list[1][0][0],
-            mock_gh_logger.execute_with_logging.call_args_list[2][0][0],
-        ]
-        assert [
-            "gh",
-            "issue",
-            "close",
-            "123",
-            "--repo",
-            "test/repo",
-            "--comment",
-            "Closed by PR #789",
-        ] in issue_close_calls
-        assert [
-            "gh",
-            "issue",
-            "close",
-            "456",
-            "--repo",
-            "test/repo",
-            "--comment",
-            "Closed by PR #789",
-        ] in issue_close_calls
+        # Verify both issues were processed
+        assert mock_api.issues.create_comment.call_count == 2
+        assert mock_api.issues.update.call_count == 2
+        
+        # Verify calls for #123
+        mock_api.issues.create_comment.assert_any_call("test", "repo", 123, body="Closed by PR #789")
+        mock_api.issues.update.assert_any_call("test", "repo", 123, state="closed")
+        
+        # Verify calls for #456
+        mock_api.issues.create_comment.assert_any_call("test", "repo", 456, body="Closed by PR #789")
+        mock_api.issues.update.assert_any_call("test", "repo", 456, state="closed")
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_no_linked_issues(self, mock_get_gh_logger):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_no_linked_issues(self, mock_github_client, mock_get_ghapi_client):
         """Test when PR has no linked issues."""
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock PR body retrieval
-        mock_gh_logger.execute_with_logging.return_value = Mock(
-            success=True,
-            stdout='{"body": "Regular PR description"}',
-            stderr="",
-            returncode=0,
-        )
+        mock_api.pulls.get.return_value = {"body": "Regular PR description"}
 
         _close_linked_issues("test/repo", 456)
 
-        # Verify only PR view was called, no issue close
-        assert mock_gh_logger.execute_with_logging.call_count == 1
+        mock_api.issues.create_comment.assert_not_called()
+        mock_api.issues.update.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_pr_view_failure(self, mock_get_gh_logger):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_pr_view_failure(self, mock_github_client, mock_get_ghapi_client):
         """Test when PR view fails."""
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock PR body retrieval failure
-        mock_gh_logger.execute_with_logging.return_value = Mock(
-            success=False,
-            stdout="",
-            stderr="PR not found",
-            returncode=1,
-        )
+        mock_api.pulls.get.side_effect = Exception("PR not found")
 
         # Should not raise exception
         _close_linked_issues("test/repo", 456)
 
-        # Verify only PR view was called
-        assert mock_gh_logger.execute_with_logging.call_count == 1
+        mock_api.issues.create_comment.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_issue_close_failure(self, mock_get_gh_logger):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_issue_close_failure(self, mock_github_client, mock_get_ghapi_client):
         """Test when issue close fails."""
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock PR body retrieval success, issue close failure
-        mock_gh_logger.execute_with_logging.side_effect = [
-            Mock(
-                success=True,
-                stdout='{"body": "Closes #123"}',
-                stderr="",
-                returncode=0,
-            ),
-            Mock(
-                success=False,
-                stdout="",
-                stderr="Issue not found",
-                returncode=1,
-            ),
-        ]
+        mock_api.pulls.get.return_value = {"body": "Closes #123"}
+        
+        # Mock comment failure (should continue to try close)
+        mock_api.issues.create_comment.side_effect = Exception("Comment failed")
+        # Mock close failure
+        mock_api.issues.update.side_effect = Exception("Close failed")
 
         # Should not raise exception
         _close_linked_issues("test/repo", 456)
 
-        # Verify both calls were made
-        assert mock_gh_logger.execute_with_logging.call_count == 2
+        mock_api.issues.create_comment.assert_called_once()
+        mock_api.issues.update.assert_called_once()
 
 
 class TestMergePRWithIssueClosing:
     """Test that _merge_pr closes linked issues after successful merge."""
 
+    @patch("src.auto_coder.pr_processor._archive_jules_session")
     @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_merge_pr_closes_issues_on_success(self, mock_get_gh_logger, mock_close_issues):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_merge_pr_closes_issues_on_success(self, mock_github_client, mock_get_ghapi_client, mock_close_issues, mock_archive_session):
         """Test that successful merge triggers issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
         # Mock successful merge
-        mock_gh_logger.execute_with_logging.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
+        mock_api.pulls.merge.return_value = {"merged": True}
 
         result = _merge_pr("test/repo", 123, {}, config)
 
         assert result is True
         mock_close_issues.assert_called_once_with("test/repo", 123)
+        mock_archive_session.assert_called_once_with("test/repo", 123)
 
+    @patch("src.auto_coder.pr_processor._archive_jules_session")
     @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_merge_pr_does_not_close_issues_on_failure(self, mock_get_gh_logger, mock_close_issues):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_merge_pr_does_not_close_issues_on_failure(self, mock_github_client, mock_get_ghapi_client, mock_close_issues, mock_archive_session):
         """Test that failed merge does not trigger issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock failed merge
-        mock_gh_logger.execute_with_logging.return_value = Mock(success=False, stdout="", stderr="Merge failed", returncode=1)
+        # Mock failed merge (API failure)
+        mock_api.pulls.merge.side_effect = Exception("Merge failed")
+        
+        # Mock conflict check (not conflict)
+        mock_api.pulls.get.return_value = {"mergeable": True}
 
         result = _merge_pr("test/repo", 123, {}, config)
 
         assert result is False
         mock_close_issues.assert_not_called()
+        mock_archive_session.assert_not_called()
 
+    @patch("src.auto_coder.pr_processor._archive_jules_session")
     @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_merge_pr_auto_merge_closes_issues(self, mock_get_gh_logger, mock_close_issues):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    def test_merge_pr_auto_merge_closes_issues(self, mock_github_client, mock_get_ghapi_client, mock_close_issues, mock_archive_session):
         """Test that auto-merge success triggers issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = True
         config.MERGE_METHOD = "--squash"
 
-        # Mock the gh_logger instance
-        mock_gh_logger = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock successful auto-merge
-        mock_gh_logger.execute_with_logging.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
+        # Mock successful merge (API handles it same as direct now)
+        mock_api.pulls.merge.return_value = {"merged": True}
 
         result = _merge_pr("test/repo", 123, {}, config)
 
         assert result is True
         mock_close_issues.assert_called_once_with("test/repo", 123)
+        mock_archive_session.assert_called_once_with("test/repo", 123)

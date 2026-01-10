@@ -1,9 +1,12 @@
 import threading
+import logging
 
 import httpx
 from ghapi.all import GhApi
 from hishel import SyncSqliteStorage
 from hishel.httpx import SyncCacheClient
+
+logger = logging.getLogger(__name__)
 
 _storage_instance = None
 _storage_lock = threading.Lock()
@@ -25,74 +28,101 @@ def get_ghapi_client(token: str) -> GhApi:
     """
     Returns a GhApi instance configured with hishel caching for GET requests.
     """
+    
+    class CachedGhApi(GhApi):
+        def __call__(self, path: str, verb: str = None, headers: dict = None, route: dict = None, query: dict = None, data = None, timeout = None, decode = True):
+            # Use the shared caching client
+            client = get_caching_client()
 
-    # Adapter implementation for automatic ETag handling
-    def httpx_adapter(self, path, verb, headers, route, query, data):
-        # Use the shared caching client to benefit from shared storage
-        # logic but we need a fresh client or re-use existing one?
-        # The user example creates a new CacheClient every time which is inefficient.
-        # We should stick to the user's proposed adapter logic but maybe optimize it
-        # or use our existing get_caching_client() if possible.
-        # However, fastai/ghapi expects a specific signature.
+            if verb is None: 
+                verb = 'POST' if data else 'GET'
 
-        # Re-using the logic from the user proposal but pointing to our cache location
-        # and using our shared client if possible, OR just following the pattern.
-        # The user proposal:
-        # cache_client = hishel.CacheClient(storage=hishel.FileStorage(base_path='.cache/gh'))
-        #
-        # Our get_caching_client() returns a SyncCacheClient with SqliteStorage.
-        # Let's use that.
+            # Build URL
+            # GhApi uses .gh_host but we must be careful if path is absolute
+            if path.startswith("http"):
+                url = path
+            else:
+                url = f"{self.gh_host}{path}"
 
-        client = get_caching_client()
+            # Merge headers
+            headers = {**self.headers, **(headers or {})}
 
-        # GhApi constructs the full URL itself? No, self.endpoint is base.
-        # implementation details of GhApi:
-        # url = f'{self.endpoint}{path}'
-        # But GhApi._call might pass path as full url sometimes?
-        # Let's follow the user's snippet which does: url = f'{self.endpoint}{path}'
+            # Handle route params in path (GhApi does this but we might need to do it if we are replacing logic)
+            # Actually GhApi.__call__ does:
+            # if route: for k,v in route.items(): route[k] = quote(str(route[k]), safe='')
+            # But we are passing `route` to `httpx`? No, `httpx` doesn't take `route`.
+            # We need to format the path?
+            # GhApi passes `route` to `urlsend`.
+            # `urlsend` likely formats the URL using route params?
+            # Let's check `urlsend` signature if possible.
+            # But usually `route` params are for template strings in path.
+            # If `path` has `{owner}`, then `route` has `{'owner': ...}`.
+            
+            if route:
+                import urllib.parse
+                for k, v in route.items():
+                    # value quoting
+                    v_str = urllib.parse.quote(str(v), safe='')
+                    path = path.replace(f"{{{k}}}", v_str)
+                # Re-evaluate URL after path interpolation
+                if not path.startswith("http"):
+                    url = f"{self.gh_host}{path}"
+                else:
+                    url = path
 
-        url = f"{self.endpoint}{path}"
+            # Handle data arg for httpx (json vs content)
+            json_data = None
+            content_data = None
+            if data is not None:
+                 if isinstance(data, dict):
+                     json_data = data
+                 else:
+                     content_data = data
 
-        # ghapi passes headers, data, etc.
-        # We need to map 'verb' to request method.
-        # verb is like 'GET', 'POST', etc.
+            # Use params=query for GET params
+            # httpx handles redirects and strips Authorization on cross-origin
+            
+            resp = client.request(
+                method=verb,
+                url=url,
+                headers=headers,
+                content=content_data,
+                json=json_data,
+                params=query, 
+                follow_redirects=True, 
+                timeout=timeout
+            )
+            
+            # Attach history
+            # resp.history is automatically populated by httpx
 
-        # IMPORTANT: Only cache GET requests (hishel handles this check internally usually,
-        # but good to be explicit or let hishel do it).
-        # user snippet:
-        # resp = cache_client.request(method=verb, url=url, headers=headers, content=data)
+            # Update last headers
+            try:
+                self.recv_hdrs = dict(resp.headers)
+            except:
+                pass
 
-        # We need to handle query params too.
-        # ghapi passes 'query' (dict). httpx takes 'params'.
+            # ghapi expects parsed JSON or None
+            if resp.status_code == 204 or (not resp.text and not resp.content):
+                return None
+            
+            # Handle return_json behavior based on headers or decode arg?
+            # GhApi __call__: return_json = ('json' in headers['Accept']) and (decode is True)
+            # Default Accept is usually json?
+            
+            # Use GhApi-like return logic
+            content_type = resp.headers.get("content-type", "")
+            
+            if decode:
+                if "application/zip" in content_type or "application/octet-stream" in content_type:
+                     return resp.content
+                
+                try:
+                    return resp.json()
+                except Exception:
+                    pass
+                return resp.text
+                
+            return resp
 
-        # The user snippet ignored 'query'. We must include it.
-
-        resp = client.request(
-            method=verb,
-            url=url,
-            headers=headers,
-            content=data,
-            params=query,
-        )
-
-        # Update last headers
-        self.last_headers = dict(resp.headers)
-
-        # ghapi expects parsed JSON or None
-        if resp.status_code == 204 or not resp.text:
-            return None
-
-        # Handle errors (raise if not successful?)
-        # GhApi usually expects raw response or json.
-        # If we return json, GhApi is happy.
-        # But we should probably raise for status if it's an error,
-        # because GhApi does that in its own requests integration.
-        if resp.is_error:
-            resp.raise_for_status()
-
-        return resp.json()
-
-    api = GhApi(token=token)
-    # Monkey patch the _call method as requested
-    api._call = httpx_adapter.__get__(api, GhApi)
-    return api
+    return CachedGhApi(token=token)

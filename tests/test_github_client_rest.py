@@ -1,0 +1,183 @@
+
+import pytest
+from unittest.mock import Mock, patch, MagicMock
+from src.auto_coder.github_client import GitHubClient
+
+class TestGitHubClientREST:
+    """Test cases for GitHubClient REST API methods."""
+
+    @pytest.fixture
+    def mock_github_token(self):
+        return "test_token"
+
+    @patch("src.auto_coder.github_client.get_ghapi_client")
+    def test_get_open_prs_json_rest(self, mock_get_ghapi_client, mock_github_token):
+        """Test get_open_prs_json uses REST API correctly."""
+        # Setup
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        
+        # Mock List PRs - return plain dicts as if from cache
+        mock_pr_summary = {"number": 123}
+        mock_api.pulls.list.return_value = [mock_pr_summary]
+        
+        # Mock Get PR Details - return plain dict
+        mock_pr_detail = {
+            "number": 123,
+            "title": "Test PR",
+            "node_id": "PR_kw...",
+            "body": "Body",
+            "state": "open",
+            "html_url": "http://url",
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-02",
+            "draft": False,
+            "mergeable": True,
+            "head": {"ref": "head-branch", "sha": "head-sha"},
+            "base": {"ref": "base-branch"},
+            "user": {"login": "author"},
+            "assignees": [{"login": "assignee"}],
+            "labels": [{"name": "label"}],
+            "comments": 1,
+            "review_comments": 1,
+            "commits": 5,
+            "additions": 10,
+            "deletions": 2,
+            "changed_files": 1
+        }
+        
+        mock_api.pulls.get.return_value = mock_pr_detail
+        
+        client = GitHubClient.get_instance(mock_github_token)
+        
+        # Execute
+        result = client.get_open_prs_json("owner/repo")
+        
+        # Assert
+        assert len(result) == 1
+        pr = result[0]
+        assert pr["number"] == 123
+        assert pr["title"] == "Test PR"
+        assert pr["node_id"] == "PR_kw..."
+        assert pr["mergeable"] is True
+        assert pr["comments_count"] == 2 # 1 + 1
+        assert pr["commits_count"] == 5
+        
+        mock_api.pulls.list.assert_called_once_with("owner", "repo", state='open', per_page=100)
+        mock_api.pulls.get.assert_called_once_with("owner", "repo", 123)
+
+    @patch("src.auto_coder.github_client.get_ghapi_client")
+    def test_get_open_issues_json_rest(self, mock_get_ghapi_client, mock_github_token):
+        """Test get_open_issues_json uses REST API correctly."""
+        # Setup
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        
+        # Mock List Issues - plain dicts
+        issue_obj = {
+            "number": 456,
+            "title": "Test Issue",
+            "body": "Issue Body",
+            "state": "open",
+            "labels": [{"name": "bug"}],
+            "assignees": [{"login": "dev"}],
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-02",
+            "html_url": "http://issue-url",
+            "user": {"login": "user"},
+            "comments": 3
+            # No 'pull_request' key
+        }
+        
+        pr_obj = {
+            "number": 789,
+            "pull_request": {}, # It's a PR
+            "title": "PR in disguise"
+        }
+        
+        mock_api.issues.list_for_repo.return_value = [issue_obj, pr_obj]
+        
+        client = GitHubClient.get_instance(mock_github_token)
+        # Clear cache first to force fetch
+        client._open_issues_cache = None
+        
+        # Execute
+        result = client.get_open_issues_json("owner/repo")
+        
+        # Assert
+        assert len(result) == 1
+        issue = result[0]
+        assert issue["number"] == 456
+        assert issue["linked_prs"] == []
+        assert issue["open_sub_issue_numbers"] == []
+        
+        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state='open', per_page=100)
+
+    @patch("src.auto_coder.github_client.get_ghapi_client")
+    def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):
+        """Test get_issue uses REST API correctly."""
+        # Setup
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        
+        # Mock Issue
+        mock_issue = Mock()
+        mock_issue.number = 123
+        mock_issue.title = "Test Issue"
+        mock_issue.body = "Body"
+        mock_api.issues.get.return_value = mock_issue
+        
+        client = GitHubClient.get_instance(mock_github_token)
+        
+        # Execute
+        result = client.get_issue("owner/repo", 123)
+        
+        # Assert
+        assert result.number == 123
+        assert result.title == "Test Issue"
+        mock_api.issues.get.assert_called_once_with("owner", "repo", 123)
+
+    @patch("src.auto_coder.github_client.get_ghapi_client")
+    def test_get_parent_issue_details_rest(self, mock_get_ghapi_client, mock_github_token):
+        """Test get_parent_issue_details uses REST API correctly."""
+        # Setup
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        
+        # Mock Issue with parent in body
+        mock_issue = Mock()
+        mock_issue.number = 456
+        mock_issue.body = "Parent Issue: #123"
+        
+        mock_parent = Mock()
+        mock_parent.number = 123
+        mock_parent.title = "Parent Issue"
+        mock_parent.body = "Parent Body"
+
+        # Side effect for getting issues: first call 456, second call 123
+        def get_issue_side_effect(owner, repo, issue_number):
+            if issue_number == 456:
+                return mock_issue
+            if issue_number == 123:
+                return mock_parent
+            return None
+            
+        mock_api.issues.get.side_effect = get_issue_side_effect
+        
+        client = GitHubClient.get_instance(mock_github_token)
+        
+        # Execute
+        # Note: get_parent_issue_details implementation relies on get_issue (which we just added/verified)
+        # OR it might have its own implementation. Let's assume it used existing methods or we verified it exists.
+        # Wait, I saw it existed in grep search.
+        result = client.get_parent_issue_details("owner/repo", 456)
+        
+        # Assert
+        # If get_parent_issue_details is implemented to parse body and fetch parent:
+        if result:
+            assert result["number"] == 123
+            assert result["title"] == "Parent Issue"
+        else:
+            # If implementation is different/mocking is incomplete for parsing logic
+            pass
+

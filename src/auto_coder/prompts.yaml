@@ -54,13 +54,12 @@ pr:
     $commit_log
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
-
     Please resolve these merge conflicts by:
     1. Examining the conflicted files
     2. When conflicts occur, prefer the newer code (the changes from the PR branch) over the older code (from the base branch). Choose the resolution that maintains the most recent implementation.
-    3. Editing files to fully remove all conflict markers
-    4. Do NOT run git add/commit/push; the system will handle committing.
+    3. You can recreate package manager lock files like package-lock.json or yarn.lock files if needed.
+    4. Editing files to fully remove all conflict markers
+    5. Do NOT run git add/commit/push; the system will handle committing.
 
     After resolving the conflicts, respond with a single-line summary of what you resolved.
 

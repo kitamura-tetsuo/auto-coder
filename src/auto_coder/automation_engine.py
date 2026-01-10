@@ -11,7 +11,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
-from .gh_logger import get_gh_logger
+
 from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
 from .git_info import get_current_branch
@@ -29,6 +29,7 @@ from .prompt_loader import render_prompt
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
+from .util.gh_cache import get_ghapi_client
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
@@ -189,18 +190,43 @@ class AutomationEngine:
                 # This must be done BEFORE checking GitHub Actions status, as some actions only run on ready PRs
                 if _is_jules_pr(pr_data) and pr_data.get("draft"):
                     logger.info(f"Jules PR #{pr_number} is a draft, marking as ready for review")
-                    gh_logger = get_gh_logger()
-                    ready_result = gh_logger.execute_with_logging(
-                        ["gh", "pr", "ready", str(pr_number), "--repo", repo_name],
-                        repo=repo_name,
-                        capture_output=True,
-                    )
-                    if ready_result.success:
-                        logger.info(f"Successfully marked Jules PR #{pr_number} as ready for review")
-                        # Update local data to reflect change
-                        pr_data["draft"] = False
-                    else:
-                        logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {ready_result.stderr}")
+                    try:
+                        token = self.github.token
+                        api = get_ghapi_client(token)
+                        node_id = pr_data.get("node_id")
+                        
+                        if not node_id:
+                            logger.info(f"Node ID missing for PR #{pr_number}, fetching details...")
+                            try:
+                                # Fallback: Fetch PR details to get node_id
+                                owner, repo = repo_name.split("/")
+                                pr_details = api.pulls.get(owner, repo, pr_number)
+                                node_id = pr_details.get("node_id")
+                                if node_id:
+                                    # Update local data
+                                    pr_data["node_id"] = node_id
+                            except Exception as e:
+                                logger.warning(f"Failed to fetch details for PR #{pr_number}: {e}")
+
+                        if node_id:
+                            # GraphQL mutation to mark as ready
+                            mutation = """
+                            mutation($id: ID!) {
+                              markPullRequestReadyForReview(input: {pullRequestId: $id}) {
+                                pullRequest {
+                                  isDraft
+                                }
+                              }
+                            }
+                            """
+                            self.github.graphql_query(query=mutation, variables={"id": node_id})
+                            logger.info(f"Successfully marked Jules PR #{pr_number} as ready for review (via GraphQL)")
+                            # Update local data
+                            pr_data["draft"] = False
+                        else:
+                            logger.warning(f"Could not mark Jules PR #{pr_number} as ready: missing node_id after fetch attempt")
+                    except Exception as e:
+                        logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {e}")
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
                 with LabelManager(
@@ -735,7 +761,6 @@ class AutomationEngine:
                         total_processed += 1
 
                         logger.info(f"Successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
-                        break
 
                     except Exception as e:
                         error_msg = f"Failed to process candidate: {e}"
@@ -1092,12 +1117,12 @@ class AutomationEngine:
             self.cmd.run_command(["git", "merge", "--abort"])
 
             # Checkout the PR branch
-            gh_logger = get_gh_logger()
-            gh_logger.execute_with_logging(
-                ["gh", "pr", "checkout", str(pr_number)],
-                repo=repo_name,
-                capture_output=True,
-            )
+            # Checkout the PR branch
+            # Use direct git commands instead of gh pr checkout
+            # Fetch the PR head to a local branch named pr-<number>
+            fetch_ref = f"pull/{pr_number}/head:pr-{pr_number}"
+            self.cmd.run_command(["git", "fetch", "origin", fetch_ref])
+            self.cmd.run_command(["git", "checkout", f"pr-{pr_number}"])
 
             # If base branch is not main, fetch and merge it
             if base_branch != "main":
@@ -1439,61 +1464,43 @@ class AutomationEngine:
                     continue
 
                 # Check if this commit has associated GitHub Actions runs
-                # Use gh CLI to list workflow runs for this commit
                 try:
-                    gh_logger = get_gh_logger()
-                    run_result = gh_logger.execute_with_logging(
-                        ["gh", "run", "list", "--commit", commit_hash, "--limit", "1"],
-                        repo=repo_name,
-                        timeout=10,
+                    # Use GhApi to list workflow runs for this commit
+                    token = self.github.token
+                    api = get_ghapi_client(token)
+                    owner, repo = repo_name.split("/")
+                    
+                    runs_resp = api.actions.list_workflow_runs_for_repo(
+                        owner, repo, head_sha=commit_hash, per_page=1
                     )
+                    runs = runs_resp.get("workflow_runs", [])
 
-                    # If no runs found for this commit, skip it
-                    if run_result.returncode != 0 or "no runs found" in run_result.stdout.lower():
+                    if not runs:
                         logger.debug(f"Commit {commit_hash[:8]}: No GitHub Actions runs found")
                         continue
 
                     # Check if there are any runs (success or failure)
-                    # Parse the output to check for completed runs
-                    run_lines = run_result.stdout.strip().split("\n")
-
                     actions_status = None
                     actions_url = ""
 
-                    for run_line in run_lines:
-                        if not run_line.strip() or run_line.startswith("STATUS") or run_line.startswith("WORKFLOW"):
-                            continue
-
-                        # Parse tab-separated format
-                        if "\t" in run_line:
-                            parts = run_line.split("\t")
-                            if len(parts) >= 3:
-                                status = parts[1].strip().lower()
-                                url = parts[3] if len(parts) > 3 else ""
-
-                                # Only include commits with completed runs (success or failure)
-                                # Skip queued or in-progress runs
-                                if status in [
-                                    "success",
-                                    "completed",
-                                    "failure",
-                                    "failed",
-                                    "cancelled",
-                                    "pass",
-                                ]:
-                                    actions_status = status
-                                    actions_url = url
-                                    break
+                    for run in runs:
+                        status = (run.get("conclusion") or run.get("status") or "").lower()
+                        # Only include relevant statuses
+                        if status in [
+                            "success",
+                            "completed",
+                            "failure",
+                            "failed",
+                            "cancelled",
+                            "pass",
+                            "timed_out",
+                        ]:
+                            actions_status = status
+                            actions_url = run.get("html_url", "")
+                            break
 
                     # Only add commits that have completed Action runs
-                    if actions_status and actions_status in [
-                        "success",
-                        "completed",
-                        "failure",
-                        "failed",
-                        "cancelled",
-                        "pass",
-                    ]:
+                    if actions_status:
                         commits_with_actions.append(
                             {
                                 "commit_hash": commit_hash,
@@ -1504,8 +1511,8 @@ class AutomationEngine:
                         )
                         logger.info(f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'")
 
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"Timeout checking Actions for commit {commit_hash[:8]}")
+                except Exception as e:
+                    logger.warning(f"Error checking Actions for commit {commit_hash[:8]}: {e}")
                     continue
 
             logger.info(f"Found {len(commits_with_actions)} commits with GitHub Actions")

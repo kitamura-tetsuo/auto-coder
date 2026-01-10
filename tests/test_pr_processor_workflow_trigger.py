@@ -34,10 +34,10 @@ class TestWorkflowTrigger(unittest.TestCase):
         actions = _handle_pr_merge(self.github_client, self.repo_name, self.pr_data, self.config, {})
 
         # Verify
-        mock_trigger.assert_called_once_with(self.repo_name, "pr-tests.yml", "feature-branch")
+        mock_trigger.assert_called_once_with(self.repo_name, "ci.yml", "feature-branch")
         mock_thread.assert_called_once()  # Thread started
         mock_lm_instance.keep_label.assert_called_once()  # Label kept
-        self.assertIn("Triggered pr-tests.yml for PR #123", actions)
+        self.assertIn("Triggered ci.yml for PR #123", actions)
 
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
@@ -60,7 +60,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         # Verify
         mock_trigger.assert_called_once()
         mock_lm_instance.keep_label.assert_not_called()  # Label NOT kept (removed by exit)
-        self.assertIn("Failed to trigger pr-tests.yml for PR #123", actions)
+        self.assertIn("Failed to trigger ci.yml for PR #123", actions)
 
 
 class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
@@ -71,7 +71,7 @@ class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
         repo_name = "owner/repo"
         pr_number = 123
         head_sha = "sha123"
-        workflow_id = "pr-tests.yml"
+        workflow_id = "ci.yml"
 
         mock_gh_client = MagicMock()
         mock_gh_client_cls.get_instance.return_value = mock_gh_client
@@ -97,7 +97,7 @@ class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(mock_check_status.call_count >= 3)
 
         # 2. Commit status updated
-        mock_gh_client.create_commit_status.assert_called_once_with(repo_name=repo_name, sha=head_sha, state="success", target_url="https://github.com/owner/repo/actions/runs/999", description="Workflow pr-tests.yml success", context="auto-coder/pr-tests.yml")
+        mock_gh_client.create_commit_status.assert_called_once_with(repo_name=repo_name, sha=head_sha, state="success", target_url="https://github.com/owner/repo/actions/runs/999", description="Workflow ci.yml success", context="auto-coder/ci.yml")
 
         # 3. Label removed
         mock_label_manager.return_value.__enter__.return_value.remove_label.assert_called_once()
@@ -109,7 +109,7 @@ class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
         repo_name = "owner/repo"
         pr_number = 123
         head_sha = "sha123"
-        workflow_id = "pr-tests.yml"
+        workflow_id = "ci.yml"
 
         mock_gh_client = MagicMock()
         mock_gh_client_cls.get_instance.return_value = mock_gh_client

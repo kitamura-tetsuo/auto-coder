@@ -10,21 +10,21 @@ class TestGithubActionPreload(unittest.TestCase):
     def setUp(self):
         get_github_cache().clear()
 
-    @patch("src.auto_coder.util.github_action.get_gh_logger")
-    def test_preload_github_actions_status(self, mock_get_gh_logger):
-        # Setup mock logger
-        mock_logger = MagicMock()
-        mock_get_gh_logger.return_value = mock_logger
+    @patch("src.auto_coder.util.github_action.GitHubClient")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_preload_github_actions_status(self, mock_get_ghapi_client, mock_github_client):
+        # Setup mock API
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock gh run list response
-        mock_run_result = MagicMock()
-        mock_run_result.returncode = 0
-        mock_run_result.success = True
-
-        # Sample runs
-        runs_data = [{"databaseId": 12345, "headSha": "sha12345", "status": "completed", "conclusion": "success"}, {"databaseId": 67890, "headSha": "sha67890", "status": "completed", "conclusion": "failure"}]
-        mock_run_result.stdout = json.dumps(runs_data)
-        mock_logger.execute_with_logging.return_value = mock_run_result
+        # Mock list_workflow_runs_for_repo response
+        # Using snake_case keys as typical for GhApi/GitHub REST API
+        runs_data = [
+            {"id": 12345, "head_sha": "sha12345", "status": "completed", "conclusion": "success"},
+            {"id": 67890, "head_sha": "sha67890", "status": "completed", "conclusion": "failure"},
+        ]
+        mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": runs_data}
 
         # Input PRs
         prs = [{"number": 1, "head": {"sha": "sha12345"}}, {"number": 2, "head": {"sha": "sha67890"}}, {"number": 3, "head": {"sha": "sha_missing"}}]
@@ -32,12 +32,8 @@ class TestGithubActionPreload(unittest.TestCase):
         # Execute
         preload_github_actions_status("owner/repo", prs)
 
-        # Verify execute_with_logging called once
-        mock_logger.execute_with_logging.assert_called_once()
-        args, _ = mock_logger.execute_with_logging.call_args
-        self.assertIn("gh", args[0])
-        self.assertIn("run", args[0])
-        self.assertIn("list", args[0])
+        # Verify API called once
+        mock_api.actions.list_workflow_runs_for_repo.assert_called_once_with("owner", "repo", per_page=100)
 
         # Verify cache population
         cache = get_github_cache()

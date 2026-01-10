@@ -115,7 +115,9 @@ def _trigger_fallback_for_conflict_failure(
             return
 
         # Increment attempt and reopen each linked issue
-        from .github_client import GitHubClient
+        # Increment attempt and reopen each linked issue
+        # GitHubClient is already imported globally
+
 
         client = GitHubClient.get_instance()
 

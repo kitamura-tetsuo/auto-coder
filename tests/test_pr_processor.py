@@ -52,10 +52,16 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock the test results - fail first, pass on third
+        # Mock the test results - fail first, pass on third
+        # We need objects (TestResult), not dicts, because the code accesses .failed_tests
+        fail_result_1 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed", errors="Error details")
+        fail_result_2 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed again", errors="More errors")
+        pass_result = Mock(failed_tests=[], success=True, output="All tests passed", errors="")
+        
         mock_run_tests.side_effect = [
-            {"success": False, "output": "Test failed", "errors": "Error details"},  # attempt 1
-            {"success": False, "output": "Test failed again", "errors": "More errors"},  # attempt 2
-            {"success": True, "output": "All tests passed", "errors": ""},  # attempt 3
+            fail_result_1,  # attempt 1
+            fail_result_2,  # attempt 2
+            pass_result,    # attempt 3
         ]
 
         # Mock local fix to return empty actions and no response
@@ -65,7 +71,7 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
 
         # Assert
         # Check calls to _apply_local_test_fix
@@ -116,7 +122,7 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test to pass on first attempt
-        mock_run_tests.return_value = {"success": True, "output": "Tests passed", "errors": ""}
+        mock_run_tests.return_value = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
 
         # Mock local fix to return empty actions and no response
         mock_apply_local_fix.return_value = ([], "")
@@ -125,7 +131,7 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
 
         # Assert
         # Should NOT have called _apply_local_test_fix since test passed
@@ -168,11 +174,17 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - fail multiple times
+        # Mock test results - fail multiple times
+        fail_1 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 1")
+        fail_2 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 2")
+        fail_3 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 3")
+        pass_res = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
+
         mock_run_tests.side_effect = [
-            {"success": False, "output": "Test failed", "errors": "Error 1"},  # attempt 1
-            {"success": False, "output": "Test failed", "errors": "Error 2"},  # attempt 2 (switch here)
-            {"success": False, "output": "Test failed", "errors": "Error 3"},  # attempt 3 (switch here too)
-            {"success": True, "output": "Tests passed", "errors": ""},  # attempt 4 (switch here too)
+            fail_1,  # attempt 1
+            fail_2,  # attempt 2 (switch here)
+            fail_3,  # attempt 3 (switch here too)
+            pass_res,  # attempt 4 (switch here too)
         ]
 
         # Mock local fix to return empty actions and no response
@@ -182,7 +194,7 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
 
         # Assert
         # Check calls to _apply_local_test_fix
@@ -232,7 +244,7 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - always fail
-        mock_run_tests.return_value = {"success": False, "output": "Test failed", "errors": "Errors"}
+        mock_run_tests.return_value = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Errors")
 
         # Mock local fix to return empty actions and no response
         mock_apply_local_fix.return_value = ([], "")
@@ -241,16 +253,19 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
 
         # Assert
         # Check calls to _apply_local_test_fix
-        assert mock_apply_local_fix.call_count == 2
+        # Should run 3 times because limit is 3 and it fails everytime
+        assert mock_apply_local_fix.call_count == 3
 
         # Attempt 1: default manager
         assert mock_apply_local_fix.call_args_list[0].kwargs["backend_manager"] == default_manager
         # Attempt 2: high_score manager
         assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == high_score_manager
+        # Attempt 3: high_score manager
+        assert mock_apply_local_fix.call_args_list[2].kwargs["backend_manager"] == high_score_manager
 
 
 class TestKeepLabelOnPRMerge:

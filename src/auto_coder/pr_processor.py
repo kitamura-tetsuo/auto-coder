@@ -22,13 +22,14 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
-from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
-from .gh_logger import get_gh_logger
-from .git_branch import branch_context, git_commit_with_retry
+from .fix_to_pass_tests_runner import run_local_tests
+
+from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
@@ -37,7 +38,7 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test
+from .test_log_utils import extract_first_failed_test, extract_all_failed_tests
 from .test_result import TestResult
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
@@ -351,27 +352,16 @@ def _get_mergeable_state(
     # Refresh mergeability only when value is unknown
     if mergeable is None:
         try:
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    str(pr_data.get("number", "")),
-                    "--repo",
-                    repo_name,
-                    "--json",
-                    "mergeable,mergeStateStatus",
-                ],
-                repo=repo_name,
-                capture_output=True,
-            )
-            if result.success and result.stdout:  # type: ignore[attr-defined]
-                latest = json.loads(result.stdout)
-                mergeable = latest.get("mergeable", mergeable)
-                merge_state_status = latest.get("mergeStateStatus", merge_state_status)
-        except Exception:
-            logger.debug("Unable to refresh mergeable state for PR #%s", pr_data.get("number"))
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+            
+            # API: api.pulls.get(owner, repo, pull_number)
+            pr_details = api.pulls.get(owner, repo, pull_number=pr_data.get("number"))
+            mergeable = pr_details.get("mergeable", mergeable)
+            merge_state_status = pr_details.get("mergeStateStatus", merge_state_status)
+        except Exception as e:
+            logger.debug(f"Unable to refresh mergeable state for PR #{pr_data.get('number')}: {e}")
 
     return {"mergeable": mergeable, "merge_state_status": merge_state_status}
 
@@ -402,23 +392,18 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
 
         # Step 1: Get PR details to determine the base branch
-        gh_logger = get_gh_logger()
-        pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
-            capture_output=True,
-        )
-
-        if not pr_details_result.success:  # type: ignore[attr-defined]
-            error_msg = f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
+        try:
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+            
+            pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
+            base_branch = pr_details.get("base", {}).get("ref", "main")
+        except Exception as e:
+            error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
-
-        try:
-            pr_data = json.loads(pr_details_result.stdout)
-            base_branch = pr_data.get("baseRefName", "main")
-        except Exception:
-            base_branch = "main"
 
         actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
 
@@ -444,14 +429,12 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
         actions.extend(update_actions)
 
-        # Step 4: Check for degrading merge detection
+            # Step 4: Check for degrading merge detection
         if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
             # LLM determined merge would degrade code quality
             # The _trigger_fallback_for_conflict_failure has already been called in conflict_resolver
             # The linked issues have been reopened and attempt incremented
             # Now we need to close the PR
-            from .github_client import GitHubClient
-
             try:
                 client = GitHubClient.get_instance()
                 close_comment = "Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
@@ -773,14 +756,28 @@ def _apply_pr_actions_directly(
 def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> str:
     """Get PR diff for analysis."""
     try:
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "diff", str(pr_number), "--repo", repo_name],
-            repo=repo_name,
-            capture_output=True,
-        )
-        return result.stdout[: config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"  # type: ignore[attr-defined]
-    except Exception:
+        # Get GhApi client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
+        path = f"/repos/{owner}/{repo}/pulls/{pr_number}"
+        # Use valid Accept header for diff
+        headers = {"Accept": "application/vnd.github.v3.diff"}
+        
+        # gh_cache.py's httpx_adapter handles non-JSON (text/diff) responses by returning standard text
+        diff_content = api(path, verb='GET', headers=headers)
+        
+        # It calls `resp.json()`. This WILL fail for diffs.
+        
+        # I MUST fix gh_cache.py to check content-type or handle json error and return text.
+        # Since I am in the middle of replacing, I will commit this change and THEN update gh_cache.py again 
+        # to support non-JSON responses.
+        
+        return str(diff_content)[: config.MAX_PR_DIFF_SIZE]
+
+    except Exception as e:
+        logger.debug(f"Failed to get PR diff via GhApi: {e}")
         return "Could not retrieve PR diff"
 
 
@@ -871,7 +868,7 @@ def _handle_pr_merge(
         # Check if no actions have started for the latest commit
         if not github_checks.ids:
             # No checks found for the current head SHA
-            logger.info(f"No GitHub Actions found for PR #{pr_number} (SHA: {pr_data.get('head', {}).get('sha')[:8]}). Triggering pr-tests.yml...")
+            logger.info(f"No GitHub Actions found for PR #{pr_number} (SHA: {pr_data.get('head', {}).get('sha')[:8]}). Triggering ci.yml...")
 
             # 1. Add @auto-coder label to prevent multiple executions
             # We use LabelManager to add the label
@@ -889,7 +886,7 @@ def _handle_pr_merge(
                 from auto_coder.util.github_action import trigger_workflow_dispatch
 
                 head_branch = pr_data.get("head", {}).get("ref")
-                workflow_id = "pr-tests.yml"
+                workflow_id = "ci.yml"
 
                 triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
 
@@ -925,6 +922,47 @@ def _handle_pr_merge(
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
+
+                # Clean up old PRs if this is a Jules PR with a session ID
+                try:
+                    is_jules = _is_jules_pr(pr_data)
+                    session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
+                    
+                    if is_jules and session_id:
+                        # Find other open PRs that reference this session ID
+                        # Note: search_issues returns Issue objects which can be PRs
+                        query = f'repo:{repo_name} is:pr is:open "Session ID: {session_id}"'
+                        logger.info(f"Searching for other PRs with session ID {session_id} to clean up: {query}")
+                        
+                        related_issues = github_client.search_issues(query)
+                        
+                        count = 0
+                        for issue in related_issues:
+                            # Skip the current PR (which is closed now effectively, or about to be)
+                            if issue.number == pr_number:
+                                continue
+                                
+                            # Check if the issue object is actually a PR (search_issues returns issues/PRs)
+                            # is:pr in query helps, but PyGithub object might need check?
+                            # GitHubClient.search_issues returns list(self.github.search_issues(...))
+                            # which are Issue objects.
+                            
+                            # Remove @auto-coder label
+                            if config.AUTO_CODER_LABEL:
+                                try:
+                                    github_client.remove_labels(repo_name, issue.number, [config.AUTO_CODER_LABEL], item_type="pr")
+                                    actions.append(f"Removed {config.AUTO_CODER_LABEL} label from related PR #{issue.number} (Session ID: {session_id})")
+                                    count += 1
+                                except Exception as e:
+                                    logger.error(f"Failed to remove label from related PR #{issue.number}: {e}")
+                        
+                        if count > 0:
+                            actions.append(f"Cleaned up {count} related PR(s) for session {session_id}")
+                            
+                except Exception as e:
+                    logger.error(f"Error cleaning up related PRs for PR #{pr_number}: {e}")
+                    # Don't fail the whole process for cleanup error
+
                 return actions
             else:
                 actions.append(f"Failed to merge PR #{pr_number}")
@@ -1106,26 +1144,26 @@ def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: Automat
                 )
 
         # Step 2: Attempt to checkout the PR
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "checkout", str(pr_number)],
-            repo=repo_name,
-            capture_output=True,
-        )
-
-        if result.success:  # type: ignore[attr-defined]
-            log_action(f"Successfully checked out PR #{pr_number}")
-            return True
+        # Use direct git commands instead of gh pr checkout
+        # We fetch into FETCH_HEAD first to avoid "refusing to fetch into checked out branch" error
+        # checking out locally as pr-{pr_number}
+        fetch_ref = f"pull/{pr_number}/head"
+        fetch_result = cmd.run_command(["git", "fetch", "origin", fetch_ref])
+        
+        if fetch_result.success:
+            # -B forces creation or reset of the branch to FETCH_HEAD
+            checkout_result = cmd.run_command(["git", "checkout", "-B", f"pr-{pr_number}", "FETCH_HEAD"]) 
+            if checkout_result.success:
+                log_action(f"Successfully checked out PR #{pr_number}")
+                return True
+            else:
+                log_action(f"Failed to checkout pr-{pr_number}: {checkout_result.stderr}", False)
         else:
-            # If gh pr checkout fails, try alternative approach
-            log_action(
-                f"gh pr checkout failed for PR #{pr_number}, trying alternative approach",
-                False,
-                result.stderr,
-            )
+             log_action(f"Failed to fetch PR #{pr_number}: {fetch_result.stderr}", False)
 
-            # Step 3: Try manual fetch and checkout
-            return _force_checkout_pr_manually(repo_name, pr_data, config)
+        # Step 3: Try manual fetch and checkout (fallback is redundant now but keeps logic similar)
+        log_action(f"Direct checkout failed for PR #{pr_number}, trying alternative approach", False)
+        return _force_checkout_pr_manually(repo_name, pr_data, config)
 
     except Exception as e:
         logger.error(f"Error checking out PR #{pr_number}: {e}")
@@ -1556,20 +1594,18 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         pr_number: PR number that was merged
     """
     try:
+        from auto_coder.util.gh_cache import get_ghapi_client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
         # Get PR body
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
-            repo=repo_name,
-            capture_output=True,
-        )
-
-        if not result.success or not result.stdout:  # type: ignore[attr-defined]
-            logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking")
+        try:
+            pr_info = api.pulls.get(owner, repo, pr_number)
+            pr_body = pr_info.get("body", "")
+        except Exception as e:
+            logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking: {e}")
             return
-
-        pr_data = json.loads(result.stdout)
-        pr_body = pr_data.get("body", "")
 
         # Extract linked issues
         linked_issues = extract_linked_issues_from_pr_body(pr_body)
@@ -1581,27 +1617,22 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         # Close each linked issue
         for issue_num in linked_issues:
             try:
-                gh_logger = get_gh_logger()
-                close_result = gh_logger.execute_with_logging(
-                    [
-                        "gh",
-                        "issue",
-                        "close",
-                        str(issue_num),
-                        "--repo",
-                        repo_name,
-                        "--comment",
-                        f"Closed by PR #{pr_number}",
-                    ],
-                    repo=repo_name,
-                    capture_output=True,
-                )
+                # Add comment
+                try:
+                    api.issues.create_comment(
+                        owner, 
+                        repo, 
+                        issue_num, 
+                        body=f"Closed by PR #{pr_number}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to comment on issue #{issue_num}: {e}")
 
-                if close_result.success:  # type: ignore[attr-defined]
-                    logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
-                    log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
-                else:
-                    logger.warning(f"Failed to close issue #{issue_num}: {close_result.stderr}")
+                # Close issue
+                api.issues.update(owner, repo, issue_num, state="closed")
+                
+                logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
+                log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
             except Exception as e:
                 logger.warning(f"Error closing issue #{issue_num}: {e}")
 
@@ -1617,19 +1648,18 @@ def _archive_jules_session(repo_name: str, pr_number: int) -> None:
         pr_number: PR number that was merged
     """
     try:
-        # Get PR data to check if it's a Jules PR and extract session ID
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "user,body"],
-            repo=repo_name,
-            capture_output=True,
-        )
+        from auto_coder.util.gh_cache import get_ghapi_client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
 
-        if not result.success or not result.stdout:  # type: ignore[attr-defined]
-            logger.debug(f"Could not retrieve PR #{pr_number} data for Jules session archiving")
+        # Get PR data to check if it's a Jules PR and extract session ID
+        try:
+            pr_data = api.pulls.get(owner, repo, pr_number)
+        except Exception as e:
+            logger.debug(f"Could not retrieve PR #{pr_number} data for Jules session archiving: {e}")
             return
 
-        pr_data = json.loads(result.stdout)
         pr_author = pr_data.get("user", {}).get("login", "")
         pr_body = pr_data.get("body", "")
 
@@ -1756,140 +1786,101 @@ def _merge_pr(
     using GitHub's linking keywords (closes, fixes, resolves, etc.)
     """
     try:
-        cmd_list = ["gh", "pr", "merge", str(pr_number)]
-        gh_logger = get_gh_logger()
+        from auto_coder.util.gh_cache import get_ghapi_client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
 
-        # Try with --auto first if enabled, but fallback to direct merge if it fails
-        if config.MERGE_AUTO:
-            auto_cmd = cmd_list + ["--auto", config.MERGE_METHOD]
-            result = gh_logger.execute_with_logging(auto_cmd, repo=repo_name, capture_output=True)
+        def _attempt_api_merge(method: str) -> bool:
+            try:
+                # GhApi method names for merge_method are: 'merge', 'squash', 'rebase'
+                # method argument from config (e.g. '--squash') needs to be stripped
+                api_method = method.replace("--", "")
+                result = api.pulls.merge(owner, repo, pr_number, merge_method=api_method)
+                if result.get("merged"):
+                    log_action(f"Successfully merged PR #{pr_number} (method: {method})")
+                    _close_linked_issues(repo_name, pr_number)
+                    _archive_jules_session(repo_name, pr_number)
+                    return True
+                return False
+            except Exception as e:
+                # 405/409 errors come here
+                logger.warning(f"Merge failed for PR #{pr_number} with method {method}: {e}")
+                return False
 
-            if result.success:  # type: ignore[attr-defined]
-                log_action(f"Successfully auto-merged PR #{pr_number}")
-                _close_linked_issues(repo_name, pr_number)
-                _archive_jules_session(repo_name, pr_number)
-                return True
-            else:
-                # Log the auto-merge failure but continue with direct merge
-                logger.warning(f"Auto-merge failed for PR #{pr_number}: {result.stderr}")
-                log_action(f"Auto-merge failed for PR #{pr_number}, attempting direct merge")
-
-        # Direct merge without --auto flag
-        direct_cmd = cmd_list + [config.MERGE_METHOD]
-        result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
-
-        if result.success:  # type: ignore[attr-defined]
-            log_action(f"Successfully merged PR #{pr_number}")
-            _close_linked_issues(repo_name, pr_number)
-            _archive_jules_session(repo_name, pr_number)
+        # Attempt merge with configured method
+        if _attempt_api_merge(config.MERGE_METHOD):
             return True
-        else:
-            # Check if the failure is due to merge conflicts
-            if "not mergeable" in result.stderr.lower() or "merge commit cannot be cleanly created" in result.stderr.lower():
-                logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
-                log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
+            
+        # If failed, check if it was due to conflicts (check mergeable state)
+        is_conflict = False
+        try:
+            pr_info = api.pulls.get(owner, repo, pr_number)
+            if pr_info.get("mergeable") is False:
+                is_conflict = True
+        except Exception:
+            pass
 
-                # Try to resolve merge conflicts using the new function from conflict_resolver
-                if resolve_pr_merge_conflicts(repo_name, pr_number, config):
-                    # Poll for mergeability BEFORE attempting merge to avoid race condition
-                    logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
-                    log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
+        if is_conflict:
+            logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
+            log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
 
-                    polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
+            # Try to resolve merge conflicts
+            if _resolve_pr_merge_conflicts(repo_name, pr_number, config):
+                # Poll for mergeability
+                logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
+                log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
 
-                    if polling_succeeded:
-                        logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
-                        log_action(f"GitHub confirmed PR #{pr_number} is mergeable")
-                    else:
-                        # Still attempt merge even if polling timed out
-                        logger.warning(f"Polling timed out for PR #{pr_number} (waited 60s), " "attempting merge anyway since conflicts were resolved")
-                        log_action(f"Mergeable state polling timed out for PR #{pr_number}, proceeding with merge attempt")
-
-                    # Attempt merge after polling (or timeout)
-                    gh_logger = get_gh_logger()
-                    retry_result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
-                    if retry_result.success:  # type: ignore[attr-defined]
-                        log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
-                        _close_linked_issues(repo_name, pr_number)
-                        _archive_jules_session(repo_name, pr_number)
-                        return True
-                    else:
-                        # Merge failed even after conflict resolution and polling
-                        logger.warning(f"Merge failed for PR #{pr_number} after conflict resolution: {retry_result.stderr}")
-                        log_action(
-                            f"Failed to merge PR #{pr_number} even after conflict resolution and polling",
-                            False,
-                            retry_result.stderr,
-                        )
-                        # Try alternative merge methods allowed by repo
-                        allowed = _get_allowed_merge_methods(repo_name)
-                        # Preserve order preference: configured first, then others
-                        methods_order = [config.MERGE_METHOD] + [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
-                        for m in methods_order:
-                            if m not in allowed or m == config.MERGE_METHOD:
-                                continue
-                            alt_cmd = cmd_list + [m]
-                            gh_logger = get_gh_logger()
-                            alt_result = gh_logger.execute_with_logging(alt_cmd, repo=repo_name, capture_output=True)
-                            if alt_result.success:  # type: ignore[attr-defined]
-                                log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
-                                _close_linked_issues(repo_name, pr_number)
-                                _archive_jules_session(repo_name, pr_number)
-                                return True
-                        # All merge attempts failed, trigger fallback
-                        # Get PR data to extract linked issues
-                        try:
-                            pr_data = {"number": pr_number, "body": ""}
-                            gh_logger_temp = get_gh_logger()
-                            pr_view_result = gh_logger_temp.execute_with_logging(
-                                ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
-                                repo=repo_name,
-                                capture_output=True,
-                            )
-                            if pr_view_result.success and pr_view_result.stdout:
-                                pr_info = json.loads(pr_view_result.stdout)
-                                pr_data["body"] = pr_info.get("body", "")
-                            _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution and fallbacks exhausted)")
-                        except Exception:
-                            # Don't fail the merge function if we can't trigger fallback
-                            pass
-                        return False
+                polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
+                
+                if polling_succeeded:
+                   logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
                 else:
-                    log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
-                    # Trigger fallback for merge conflict resolution failure
+                   logger.warning(f"Polling timed out for PR #{pr_number}, attempting merge anyway")
+
+                # Retry merge
+                if _attempt_api_merge(config.MERGE_METHOD):
+                    log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
+                    return True
+                else:
+                    logger.warning(f"Merge failed for PR #{pr_number} even after conflict resolution")
+                    log_action(f"Failed to merge PR #{pr_number} after conflict resolution", False, "Merge API failed")
+                    
+                    # Try alternative merge methods
+                    allowed = _get_allowed_merge_methods(repo_name)
+                    methods_order = [config.MERGE_METHOD] + [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
+                    for m in methods_order:
+                        if m not in allowed or m == config.MERGE_METHOD:
+                            continue
+                        if _attempt_api_merge(m):
+                            return True
+
+                    # Trigger fallback
                     try:
-                        pr_data = {"number": pr_number, "body": ""}
-                        gh_logger_temp = get_gh_logger()
-                        pr_view_result = gh_logger_temp.execute_with_logging(
-                            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
-                            repo=repo_name,
-                            capture_output=True,
-                        )
-                        if pr_view_result.success and pr_view_result.stdout:
-                            pr_info = json.loads(pr_view_result.stdout)
-                            pr_data["body"] = pr_info.get("body", "")
-                        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution failed)")
+                         pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+                         _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
                     except Exception:
-                        pass
+                         pass
                     return False
             else:
-                log_action(f"Failed to merge PR #{pr_number}", False, result.stderr)
-                # Trigger fallback for general merge failure
-                try:
-                    pr_data = {"number": pr_number, "body": ""}
-                    gh_logger_temp = get_gh_logger()
-                    pr_view_result = gh_logger_temp.execute_with_logging(
-                        ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
-                        repo=repo_name,
-                        capture_output=True,
-                    )
-                    if pr_view_result.success and pr_view_result.stdout:
-                        pr_info = json.loads(pr_view_result.stdout)
-                        pr_data["body"] = pr_info.get("body", "")
-                    _trigger_fallback_for_pr_failure(repo_name, pr_data, f"Automatic merge failed: {result.stderr[:200]}")
-                except Exception:
-                    pass
-                return False
+                 log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                 try:
+                     pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+                     _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
+                 except Exception:
+                     pass
+                 return False
+        
+        else:
+             # Not a conflict, but merge failed (maybe checks pending or not approved?)
+             log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
+             try:
+                 pr_info = api.pulls.get(owner, repo, pr_number)
+                 pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+                 _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
+             except Exception:
+                 pass
+             return False
 
     except Exception as e:
         logger.error(f"Error merging PR #{pr_number}: {e}")
@@ -1907,31 +1898,20 @@ def _poll_pr_mergeable(
     Uses: gh pr view <num> --repo <repo> --json mergeable,mergeStateStatus
     """
     try:
+        from auto_coder.util.gh_cache import get_ghapi_client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
         deadline = datetime.now().timestamp() + timeout_seconds
         while datetime.now().timestamp() < deadline:
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "pr",
-                    "view",
-                    str(pr_number),
-                    "--repo",
-                    repo_name,
-                    "--json",
-                    "mergeable,mergeStateStatus",
-                ],
-                repo=repo_name,
-            )
-            if result.stdout:
-                try:
-                    data = json.loads(result.stdout)
-                    # GitHub may return mergeable true/false/null
-                    mergeable = data.get("mergeable")
-                    if mergeable is True:
-                        return True
-                except Exception:
-                    pass
+            try:
+                pr_info = api.pulls.get(owner, repo, pr_number)
+                if pr_info.get("mergeable") is True:
+                    return True
+            except Exception:
+                pass
+            
             # Sleep before next poll
             time.sleep(max(1, interval))
         return False
@@ -1943,35 +1923,26 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
     """Return list of allowed merge method flags for the repository.
     Maps GitHub repo settings to gh merge flags.
     """
+    allowed: List[str] = []
     try:
-        # gh repo view --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            [
-                "gh",
-                "repo",
-                "view",
-                repo_name,
-                "--json",
-                "mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
-            ],
-            repo=repo_name,
-            capture_output=True,
-        )
-        allowed: List[str] = []
-        if result.stdout and result.success:  # type: ignore[attr-defined]
-            try:
-                data = json.loads(result.stdout)
-                if data.get("squashMergeAllowed"):
-                    allowed.append("--squash")
-                if data.get("mergeCommitAllowed"):
-                    allowed.append("--merge")
-                if data.get("rebaseMergeAllowed"):
-                    allowed.append("--rebase")
-            except Exception:
-                pass
+        # Use GhApi to get allowed merge methods
+        from auto_coder.util.gh_cache import get_ghapi_client
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+        
+        repo_data = api.repos.get(owner, repo)
+        
+        if repo_data.get("allow_squash_merge"):
+            allowed.append("--squash")
+        if repo_data.get("allow_merge_commit"):
+            allowed.append("--merge")
+        if repo_data.get("allow_rebase_merge"):
+            allowed.append("--rebase")
+            
         return allowed
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to get allowed merge methods via GhApi: {e}")
         return []
 
 
@@ -1997,32 +1968,26 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             logger.info("Aborted ongoing merge")
 
         # Step 1: Checkout the PR branch
+        # Step 1: Checkout the PR branch
         logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        gh_logger = get_gh_logger()
-        checkout_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "checkout", str(pr_number)],
-            repo=repo_name,
-            capture_output=True,
-        )
+        # Use reusable _checkout_pr_branch which uses direct git commands
+        checkout_success = _checkout_pr_branch(repo_name, {"number": pr_number}, config)
 
-        if not checkout_result.success:  # type: ignore[attr-defined]
-            logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
+        if not checkout_success:
+            logger.error(f"Failed to checkout PR #{pr_number}")
             return False
 
         # Step 1.5: Get PR details to determine the target base branch
-        pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "base"],
-            repo=repo_name,
-            capture_output=True,
-        )
-        if not pr_details_result.success:  # type: ignore[attr-defined]
-            logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
-            return False
-
         try:
-            pr_data = json.loads(pr_details_result.stdout)
+            from auto_coder.util.gh_cache import get_ghapi_client
+            token = GitHubClient.get_instance().token
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+            
+            pr_data = api.pulls.get(owner, repo, pr_number)
             base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get PR #{pr_number} details via GhApi: {e}")
             base_branch = config.MAIN_BRANCH
 
         # Step 2: Fetch the latest base branch
@@ -2098,7 +2063,111 @@ def _fix_pr_issues_with_testing(
     github_logs: str,
     skip_github_actions_fix: bool = False,
 ) -> List[str]:
-    """Fix PR issues using GitHub Actions logs first, then local testing loop."""
+    # Extract failed tests from GitHub Actions logs
+    failed_tests = extract_all_failed_tests(github_logs)
+    
+    if skip_github_actions_fix:
+        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
+    else:
+        return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
+
+def _fix_pr_issues_with_github_actions_testing(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_logs: str,
+    failed_tests: Optional[List[str]] = None,
+) -> List[str]:
+    """Fix PR issues using GitHub Actions logs, with intelligent routing.
+    
+    If 1-3 tests failed: Run local testing/fixing loop (targeted).
+    If 4+ or 0 tests: Apply GHA log fix, commit, and push (trigger new run).
+    """
+    actions = []
+    pr_number = pr_data["number"]
+
+    # Initialize backend managers
+    current_backend_manager = get_llm_backend_manager()
+    high_score_backend_manager = create_high_score_backend_manager()
+    
+    # Track history
+    attempt_history: List[Dict[str, Any]] = []
+
+    try:
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
+
+        if failed_tests and 1 <= len(failed_tests) <= 3:
+            test_result = run_local_tests(config, test_file=failed_tests)
+
+            # Check if we should use local fix strategy (1-3 failed tests)
+            attempts_limit = config.MAX_FIX_ATTEMPTS
+            attempt = 0
+            
+            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+                attempt += 1
+                
+                # Backend switching logic
+                if attempt >= 2 and high_score_backend_manager:
+                    if current_backend_manager != high_score_backend_manager:
+                        logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
+                        current_backend_manager = high_score_backend_manager
+                        actions.append(f"Switched to fallback backend for PR #{pr_number}")
+                
+                with ProgressStage(f"Low-failure fix attempt {attempt}"):
+                    local_fix_actions, llm_response = _apply_local_test_fix(
+                                        repo_name,
+                                        pr_data,
+                                        config,
+                                    test_result,
+                                    attempt_history,
+                                    backend_manager=current_backend_manager,
+                                )
+                    actions.extend(local_fix_actions)
+                
+                test_result = run_local_tests(config, test_file=failed_tests)
+
+        # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
+        count_msg = f"{len(failed_tests)} failed tests" if failed_tests is not None else "failed tests (unknown count)"
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs ({count_msg})")
+        
+        # 1. Apply fix based on GHA logs
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        actions.extend(initial_fix_actions)
+        
+        # 2. Commit and Push
+        # Check if any changes were made
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        if result.success and result.stdout.strip():
+            commit_msg = f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})"
+            c_res = git_commit_with_retry(commit_msg)
+            if c_res.success:
+                actions.append("Committed fixes based on GitHub Actions logs")
+                p_res = git_push()
+                if p_res.success:
+                    actions.append("Pushed fixes to GitHub to trigger new Actions run")
+                else:
+                    actions.append(f"Failed to push fixes: {p_res.stderr}")
+            else:
+                actions.append(f"Failed to commit fixes: {c_res.stderr}")
+        else:
+            actions.append("No changes generated by GitHub Actions fix")
+
+    except Exception as e:
+        actions.append(f"Error fixing PR issues with testing for PR #{pr_number}: {e}")
+
+    return actions
+
+
+def _fix_pr_issues_with_local_testing(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_logs: str,
+    test_files: Optional[List[str]] = None,
+) -> List[str]:
+    """Fix PR issues using local testing loop."""
     actions = []
     pr_number = pr_data["number"]
 

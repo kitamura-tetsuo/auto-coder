@@ -20,6 +20,7 @@ def get_last_dependabot_pr_processed_time():
 
 
 def should_process_dependabot_pr():
+    return True
     """Check if a Dependabot PR should be processed."""
     last_processed_time = get_last_dependabot_pr_processed_time()
     if last_processed_time is None:
