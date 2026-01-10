@@ -449,21 +449,22 @@ class GitHubClient:
                 if "pull_request" in issue:
                     continue
                     
-                # For basic fields, the summary is often enough.
-                # If we really need details (e.g. body if truncated?), we might get it.
-                # But 'list_for_repo' usually returns full body.
-                
-                # Sub-issues and Linked PRs:
-                # These require traversing timeline/events or specific beta endpoints.
-                # To avoid excessive API calls (which even if cached are slow to populate initially),
-                # we provide empty placeholders. If logic critically depends on them, 
-                # we might need a specific on-demand fetch in automation_engine.
-                
                 # Safe access (dict expected)
                 i = issue
+                nb = i['number']
+                
+                # Fetch extended details via REST (N+1 calls, but cached via ETag)
+                # linked_prs via timeline
+                linked_prs_ids = self.get_linked_prs(repo_name, nb)
+                
+                # open_sub_issue_numbers via sub_issues endpoint
+                open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
+                
+                # parent_issue via get_parent_issue
+                parent_issue_id = self.get_parent_issue(repo_name, nb)
                 
                 issue_data: Dict[str, Any] = {
-                    "number": i['number'],
+                    "number": nb,
                     "title": i['title'],
                     "body": i['body'] or "",
                     "state": i['state'],
@@ -474,21 +475,22 @@ class GitHubClient:
                     "url": i['html_url'],
                     "author": i['user']['login'] if i['user'] else None,
                     "comments_count": i['comments'],
-                    # Extended fields
-                    "linked_prs": [], # Not efficiently available via REST list
-                    "open_sub_issue_numbers": [], # Not available via REST list
-                    "parent_number": None # Not available via REST standard
+                    # Extended fields populated via REST
+                    "linked_prs": linked_prs_ids,
+                    "has_linked_prs": bool(linked_prs_ids),
+                    "open_sub_issue_numbers": open_sub_issues_ids,
+                    "has_open_sub_issues": bool(open_sub_issues_ids),
+                    "parent_number": parent_issue_id,
+                    "parent_issue_number": parent_issue_id,
+                    "linked_pr_numbers": linked_prs_ids,
                 }
-                
-                # If we wanted linked PRs, we'd call api.issues.list_events(..., issue_number=issue.number)
-                # and look for 'cross-referenced' events.
                 
                 all_issues.append(issue_data)
                 
                 if len(all_issues) >= limit:
                     break
 
-            logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via REST (cached)")
+            logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via REST (cached) with extended details")
 
             # Update cache
             with self._open_issues_cache_lock:
@@ -1062,25 +1064,17 @@ class GitHubClient:
             logger.error(f"Failed to get commits for PR #{pr_number}: {e}")
             return []
 
-    def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
-        """Get list of all sub-issues for a given issue using GitHub GraphQL API.
-
-        Fetches both open and closed sub-issues.
-
-        Args:
-            repo_name: Repository name in format 'owner/repo'
-            issue_number: Issue number to check for sub-issues
-
-        Returns:
-            List of issue numbers that are linked to the issue (both open and closed).
-        """
     def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of open sub-issues using GitHub REST API.
         
         Uses the sub-issues endpoint: /repos/{owner}/{repo}/issues/{issue_number}/sub_issues
         """
-        all_sub_issues = self.get_all_sub_issues(repo_name, issue_number)
         open_sub_issues = []
+        
+        # Check cache first
+        cache_key = (repo_name, issue_number)
+        if cache_key in self._sub_issue_cache:
+            return self._sub_issue_cache[cache_key]
         
         # We need to check the state of each sub-issue. 
         # The list_sub_issues endpoint might return state, checking...

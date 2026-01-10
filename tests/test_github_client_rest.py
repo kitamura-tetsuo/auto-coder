@@ -101,17 +101,28 @@ class TestGitHubClientREST:
         # Clear cache first to force fetch
         client._open_issues_cache = None
         
-        # Execute
-        result = client.get_open_issues_json("owner/repo")
-        
-        # Assert
-        assert len(result) == 1
-        issue = result[0]
-        assert issue["number"] == 456
-        assert issue["linked_prs"] == []
-        assert issue["open_sub_issue_numbers"] == []
-        
-        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state='open', per_page=100)
+        # Mock the helper methods that are called for each issue
+        with patch.object(client, "get_linked_prs", return_value=[1, 2]) as mock_linked, \
+             patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub, \
+             patch.object(client, "get_parent_issue", return_value=999) as mock_parent:
+             
+            # Execute
+            result = client.get_open_issues_json("owner/repo")
+            
+            # Assert
+            assert len(result) == 1
+            issue = result[0]
+            assert issue["number"] == 456
+            assert issue["linked_prs"] == [1, 2]
+            assert issue["has_linked_prs"] is True
+            assert issue["open_sub_issue_numbers"] == [10, 11]
+            assert issue["has_open_sub_issues"] is True
+            assert issue["parent_issue_number"] == 999
+            
+            mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state='open', per_page=100)
+            mock_linked.assert_called_once_with("owner/repo", 456)
+            mock_sub.assert_called_once_with("owner/repo", 456)
+            mock_parent.assert_called_once_with("owner/repo", 456)
 
     @patch("src.auto_coder.github_client.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):

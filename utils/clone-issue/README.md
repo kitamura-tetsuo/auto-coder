@@ -6,7 +6,7 @@ A utility to clone GitHub issues and their sub-issues recursively.
 
 ```bash
 cd utils/clone-issue
-pip install -e .
+pipx install -e .
 ```
 
 ## Usage
