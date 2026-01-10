@@ -87,11 +87,10 @@ def collect_and_run():
         import threading
 
         def reader(pipe, output_list, out_stream):
-            with pipe:
-                for line in pipe:
-                    out_stream.write(line)
-                    out_stream.flush()  # Ensure it appears immediately
-                    output_list.append(line)
+            for line in iter(pipe.readline, ""):
+                out_stream.write(line)
+                out_stream.flush()  # Ensure it appears immediately
+                output_list.append(line)
 
         t_out = threading.Thread(target=reader, args=(process.stdout, stdout_lines, sys.stdout))
         t_err = threading.Thread(target=reader, args=(process.stderr, stderr_lines, sys.stderr))
