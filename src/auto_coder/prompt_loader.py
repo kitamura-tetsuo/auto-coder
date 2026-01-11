@@ -356,6 +356,10 @@ def render_prompt(
 
     safe_params = {name: "" if value is None else str(value) for name, value in params.items()}
     try:
+        # Process conditional blocks: $if(var_name) ... $endif
+        processed_template = _process_conditionals(template_str, params)
+
+        template = Template(processed_template)
         rendered_prompt = template.safe_substitute(safe_params)
 
         # Load prompts to get header
@@ -370,3 +374,49 @@ def render_prompt(
     except Exception as exc:  # pragma: no cover - Template handles placeholders gracefully
         logger.error(f"Failed to render prompt '{key}': {exc}")
         raise
+
+
+def _process_conditionals(template_str: str, data: Dict[str, Any]) -> str:
+    """Process $if(variable) ... $endif blocks in the template.
+
+    Args:
+        template_str: The raw template string
+        data: The dictionary providing values for variables
+
+    Returns:
+        The template string with conditional blocks processed
+    """
+    import re
+
+    # Pattern to match $if(variable_name) ... $endif
+    # Uses dotall flag so dot matches newlines
+    # Variable name must be a valid identifier
+    pattern = re.compile(r"\$if\s*\(([a-zA-Z_][a-zA-Z0-9_]*)\)(.*?)\$endif", re.DOTALL)
+
+    def replace_func(match: re.Match) -> str:
+        var_name = match.group(1)
+        content = match.group(2)
+
+        # check truthiness of variable in data
+        val = data.get(var_name)
+        if val:
+            # If variable is truthy (not None, not empty string/list/etc), keep content
+            # Recursively process nested conditionals if any (though regex is non-recursive)
+            # For simple nesting we might need loop or recursive approach,
+            # but regex replacement here is one-pass linear.
+            # To support nesting, we would run this until no changes or use a parser.
+            # For now, assuming non-nested usage as per current requirements.
+            return content.strip("\n")  # Strip leading/trailing newline from the block itself to avoid gaps
+        else:
+            # If falsey or missing, remove entire block
+            return ""
+
+    # Apply replacement
+    # We might need to run it multiple times if we supported nested ifs,
+    # but the regex above matches start to end non-greedily?
+    # Actually non-greedy matching `.*?` will stop at first $endif, allowing sequential blocks.
+    # Nesting: $if(a) ... $if(b) ... $endif ... $endif
+    # The inner $endif matches with first $if. This regex does NOT support nesting properly.
+    # Given the requirements (simple conditional inclusion), this is likely sufficient.
+
+    return pattern.sub(replace_func, template_str)

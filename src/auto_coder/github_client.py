@@ -458,10 +458,24 @@ class GitHubClient:
                 linked_prs_ids = self.get_linked_prs(repo_name, nb)
                 
                 # open_sub_issue_numbers via sub_issues endpoint
-                open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
+                # Optimization: Check sub_issues_summary from issue object first
+                sub_issues_summary = i.get('sub_issues_summary')
+                if sub_issues_summary and sub_issues_summary.get('total', 0) == 0:
+                    open_sub_issues_ids = []
+                else:
+                    open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
                 
-                # parent_issue via get_parent_issue
-                parent_issue_id = self.get_parent_issue(repo_name, nb)
+                # parent_issue via parent_issue_url
+                # Optimization: Extract from URL if available
+                parent_issue_id = None
+                parent_issue_url = i.get('parent_issue_url')
+                if parent_issue_url:
+                    try:
+                        parent_issue_id = int(parent_issue_url.split('/')[-1])
+                    except (ValueError, IndexError):
+                        logger.warning(f"Failed to parse parent issue ID from URL: {parent_issue_url}")
+                        # Fallback if parsing fails? Or just leave as None? 
+                        # Original logic would try to fetch. Let's stick to parsing or None to avoid N+1.
                 
                 issue_data: Dict[str, Any] = {
                     "number": nb,
@@ -787,33 +801,64 @@ class GitHubClient:
         """
         try:
             owner, repo = repo_name.split("/")
+            api = get_ghapi_client(self.token)
             
-            if self._caching_client is None:
-                self._caching_client = get_caching_client()
+            # Fetch parent issue using dedicated endpoint via GhApi
+            # Endpoint: GET /repos/{owner}/{repo}/issues/{issue_number}/parent
+            # Note: We use GhApi generic call string method because 'get_parent_issue' might not be in the installed spec.
+            
+            try:
+                # Use raw path call with GhApi
+                parent_issue = api(
+                    f"/repos/{owner}/{repo}/issues/{issue_number}/parent",
+                    verb='GET',
+                    headers={
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "Accept": "application/vnd.github+json"
+                    }
+                )
+                if parent_issue:
+                    # Check if response is wrapped in 'parent' key
+                    if not parent_issue.get('number') and parent_issue.get('parent'):
+                        parent_issue = parent_issue.get('parent')
+
+                    if parent_issue.get('number'):
+                        # Use .get() method to be safe if parent_issue is a dict or AttrDict
+                        logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
+                        return parent_issue
+                    
+                    if parent_issue.get("status") == "404":
+                         logger.warning(f"Dedicated parent endpoint returned 404 for issue #{issue_number}. Attempting fallback.")
+                    else:
+                         logger.warning(f"Parent issue response missing number: {parent_issue}")
+
+            except Exception as e:
+                # Log but continue to fallback
+                logger.warning(f"Dedicated parent endpoint failed: {e}")
+
+            # Fallback: Get issue details directly and check 'parent' field
+            # This matches the previous logic but uses GhApi
+            try:
+                issue_details = api.issues.get(owner, repo, issue_number, headers={
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "Accept": "application/vnd.github+json" 
+                })
                 
-            # Fetch the issue itself with the version header that exposes 'parent'
-            url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
-            headers = {
-                "Authorization": f"bearer {self.token}",
-                "Accept": "application/vnd.github.v3+json",
-                "X-GitHub-Api-Version": "2022-11-28"
-            }
+                parent_issue = issue_details.get("parent")
+                if parent_issue:
+                     logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')} (found via issue details)")
+                     return parent_issue
             
-            response = self._caching_client.get(url, headers=headers)
-            response.raise_for_status()
-            issue_data = response.json()
-            
-            # The 'parent' field should be present if the feature is active and issue has a parent
-            parent_issue = issue_data.get("parent")
-            
-            if parent_issue:
-                logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
-                # Ensure we return a consistent dict, assuming API returns standard issue object subset
-                return parent_issue
-            
+            except Exception as e:
+                 logger.error(f"Fallback parent retrieval failed: {e}")
+                 
             return None
+                    
 
         except Exception as e:
+            # 404 is common for issues without parents if the endpoint returns 404.
+            if "404" in str(e):
+                return None
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
 

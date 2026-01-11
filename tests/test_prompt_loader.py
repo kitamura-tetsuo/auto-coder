@@ -863,3 +863,114 @@ def test_render_prompt_with_breaking_change_label(label_prompt_file):
     )
 
     assert "Breaking change prompt" in result
+
+
+class TestConditionalPrompts:
+
+    def test_render_prompt_with_conditionals_true(self, tmp_path):
+        """Test render_prompt with true conditional variable."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'test:\n  cond: "Start $if(show_it)SHOWN $show_it$endif End"\n',
+            encoding="utf-8",
+        )
+        clear_prompt_cache()
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"show_it": "YES"},
+        )
+        assert result == "Start SHOWN YES End"
+
+    def test_render_prompt_with_conditionals_false(self, tmp_path):
+        """Test render_prompt with false/missing conditional variable."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'test:\n  cond: "Start $if(missing)HIDDEN$endif End"\n',
+            encoding="utf-8",
+        )
+        clear_prompt_cache()
+        # Missing variable
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={},
+        )
+        assert result == "Start  End"
+
+        # Explicit None
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"missing": None},
+        )
+        assert result == "Start  End"
+
+        # Empty string
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"missing": ""},
+        )
+        assert result == "Start  End"
+
+    def test_render_prompt_with_multiline_conditional(self, tmp_path):
+        """Test render_prompt with multiline conditional block."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'test:\n  cond: |-\n    Start\n    $if(ctx)\n    CONTEXT:\n    $ctx\n    $endif\n    End\n',
+            encoding="utf-8",
+        )
+        clear_prompt_cache()
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"ctx": "Info"},
+        )
+        # The strips in the code mean the block content loses leading/trailing newlines
+        # "Start\n" + "CONTEXT:\nInfo" + "\n    End"
+        # Let's check matching content
+        assert "CONTEXT:" in result
+        assert "Info" in result
+        
+        # Check negative case
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={},
+        )
+        assert "CONTEXT:" not in result
+        assert "Start" in result
+        assert "End" in result
+
+    def test_render_prompt_multiple_conditionals(self, tmp_path):
+        """Test multiple independent conditionals."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'test:\n  cond: "$if(a)A$endif $if(b)B$endif"\n',
+            encoding="utf-8",
+        )
+        clear_prompt_cache()
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"a": "1"},
+        )
+        assert "A" in result
+        assert "B" not in result
+
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"b": "1"},
+        )
+        assert "A" not in result
+        assert "B" in result
+
+        result = render_prompt(
+            "test.cond",
+            path=str(prompt_file),
+            data={"a": "1", "b": "1"},
+        )
+        assert "A" in result
+        assert "B" in result

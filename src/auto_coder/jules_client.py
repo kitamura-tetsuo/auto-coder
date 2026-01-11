@@ -88,11 +88,8 @@ class JulesClient(LLMClientBase):
 
             logger.info("Starting Jules session")
             logger.info(f"🤖 POST {url}")
-            logger.info("=" * 60)
 
             response = self.session.post(url, json=payload, timeout=self.timeout)
-
-            logger.info("=" * 60)
 
             # Check if request was successful
             if response.status_code not in [200, 201]:
