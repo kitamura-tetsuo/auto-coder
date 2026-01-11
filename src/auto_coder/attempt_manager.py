@@ -269,27 +269,24 @@ def get_current_attempt(repo_name: str, issue_number: int) -> int:
     Returns:
         The current attempt number (0 if no attempts found)
     """
-    from .github_client import GitHubClient
+    from .util.gh_cache import GitHubClient
 
     try:
         client = GitHubClient.get_instance()
-        repo = client.get_repository(repo_name)
-        issue = repo.get_issue(issue_number)
-
         # Get all comments for the issue
-        comments = issue.get_comments()
+        comments = client.get_issue_comments(repo_name, issue_number)
 
         attempt_numbers: List[int] = []
         comments_data = []
         for comment in comments:
-            body = getattr(comment, "body", "")
+            body = comment.get("body", "")
             attempt_number = extract_attempt_number(body)
             if attempt_number is not None:
                 attempt_numbers.append(attempt_number)
             comments_data.append(
                 {
                     "body": body,
-                    "created_at": getattr(comment, "created_at", None),
+                    "created_at": comment.get("created_at"),
                 }
             )
 
@@ -323,7 +320,7 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
     Returns:
         The new attempt number after incrementing
     """
-    from .github_client import GitHubClient
+    from .util.gh_cache import GitHubClient
 
     try:
         # Get current attempt
@@ -352,11 +349,10 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
             for sub_issue_number in sub_issues:
                 try:
                     # Get the state of the sub-issue to check if it's closed
-                    repo = client.get_repository(repo_name)
-                    sub_issue = repo.get_issue(sub_issue_number)
+                    sub_issue = client.get_issue(repo_name, sub_issue_number)
 
                     # If sub-issue is closed, reopen it
-                    if sub_issue.state == "closed":
+                    if sub_issue.get("state") == "closed":
                         logger.info(f"Reopening closed sub-issue #{sub_issue_number}")
                         reopen_comment = f"Auto-Coder: Reopened due to attempt increment on parent issue #{issue_number}"
                         client.reopen_issue(repo_name, sub_issue_number, reopen_comment)

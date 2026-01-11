@@ -1,10 +1,10 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 class TestGitHubClientSubIssuesREST:
-    @patch("src.auto_coder.github_client.get_caching_client")
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
     def test_get_open_sub_issues_rest(self, mock_get_caching, mock_github_token):
         """Test get_open_sub_issues uses REST endpoint correctly."""
         # Setup
@@ -35,7 +35,7 @@ class TestGitHubClientSubIssuesREST:
         assert "/repos/owner/repo/issues/1/sub_issues" in args[0]
         assert kwargs['headers']['X-GitHub-Api-Version'] == "2022-11-28"
 
-    @patch("src.auto_coder.github_client.get_caching_client")
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
     def test_get_all_sub_issues_rest(self, mock_get_caching, mock_github_token):
         """Test get_all_sub_issues uses REST endpoint correctly."""
         # Setup

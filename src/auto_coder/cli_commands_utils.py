@@ -9,7 +9,7 @@ from .auth_utils import get_auth_status, get_github_token
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .git_utils import get_current_repo_name, is_git_repository, migrate_pr_branches
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .logger_config import setup_logger
 from .util.github_action import get_github_actions_logs_from_url
 

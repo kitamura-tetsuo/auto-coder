@@ -520,7 +520,7 @@ class TestGroupAttemptsByStatus:
 class TestGetCurrentAttempt:
     """Test getting the current attempt count from GitHub issue."""
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     def test_get_current_attempt_with_comments(self, mock_github_client):
         """Test getting current attempt when comments exist."""
         # Mock the GitHub client and repository
@@ -533,49 +533,54 @@ class TestGetCurrentAttempt:
         mock_comment2.body = f"{ATTEMPT_COMMENT_PREFIX}2"
 
         mock_issue.get_comments.return_value = [mock_comment1, mock_comment2]
-        mock_repo.get_issue.return_value = mock_issue
-        mock_github_client.get_instance.return_value = mock_github_client
-        mock_github_client.get_repository.return_value = mock_repo
+        # Update mock for new client usage: client.get_issue_comments
+        mock_client = Mock()
+        # client.get_issue_comments returns list of dicts mostly, but code iterates and does .get() or getattr
+        # The code does: for comment in comments: body = comment.get("body", "")
+        # So get_issue_comments should return list of dicts.
+        
+        # However, the previous code handled PyGithub objects (getattr).
+        # My refactored code uses `.get()` on the items returned by get_issue_comments.
+        # So I should return list of dicts.
+        comments_data = [{"body": f"{ATTEMPT_COMMENT_PREFIX}1"}, {"body": f"{ATTEMPT_COMMENT_PREFIX}2"}]
+        mock_client.get_issue_comments.return_value = comments_data
+        
+        # mock_repo.get_issue.return_value = mock_issue  <-- No longer used
+        mock_github_client.get_instance.return_value = mock_client
+        # mock_github_client.get_repository.return_value = mock_repo
 
         result = get_current_attempt("owner/repo", 123)
 
         assert result == 2
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     def test_get_current_attempt_no_comments(self, mock_github_client):
         """Test getting current attempt when no attempt comments exist."""
         # Mock the GitHub client and repository
-        mock_repo = Mock()
-        mock_issue = Mock()
-        mock_comment = Mock()
-
-        mock_comment.body = "Regular comment"
-        mock_issue.get_comments.return_value = [mock_comment]
-        mock_repo.get_issue.return_value = mock_issue
-        mock_github_client.get_instance.return_value = mock_github_client
-        mock_github_client.get_repository.return_value = mock_repo
+        
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = [{"body": "Regular comment"}]
+        
+        mock_github_client.get_instance.return_value = mock_client
 
         result = get_current_attempt("owner/repo", 123)
 
         assert result == 0
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     def test_get_current_attempt_empty_comments(self, mock_github_client):
         """Test getting current attempt when issue has no comments."""
         # Mock the GitHub client and repository
-        mock_repo = Mock()
-        mock_issue = Mock()
-
-        mock_issue.get_comments.return_value = []
-        mock_repo.get_issue.return_value = mock_issue
-        mock_github_client.get_instance.return_value = mock_github_client
-        mock_github_client.get_repository.return_value = mock_repo
+        msg = "" # dummy
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
 
         result = get_current_attempt("owner/repo", 123)
 
         assert result == 0
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     def test_get_current_attempt_with_mixed_comments(self, mock_github_client):
         """Test getting current attempt with mix of attempt and regular comments."""
         # Mock the GitHub client and repository
@@ -583,48 +588,47 @@ class TestGetCurrentAttempt:
         mock_issue = Mock()
 
         comments = [
-            Mock(body="Regular comment 1"),
-            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}1"),
-            Mock(body="Another regular comment"),
-            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2 | retry after conflicts"),
-            Mock(body="Regular comment 3"),
+            {"body": "Regular comment 1"},
+            {"body": f"{ATTEMPT_COMMENT_PREFIX}1"},
+            {"body": "Another regular comment"},
+            {"body": f"{ATTEMPT_COMMENT_PREFIX}2 | retry after conflicts"},
+            {"body": "Regular comment 3"},
         ]
 
-        mock_issue.get_comments.return_value = comments
-        mock_repo.get_issue.return_value = mock_issue
-        mock_github_client.get_instance.return_value = mock_github_client
-        mock_github_client.get_repository.return_value = mock_repo
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = comments
+        mock_github_client.get_instance.return_value = mock_client
 
         result = get_current_attempt("owner/repo", 123)
 
         assert result == 2
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     def test_get_current_attempt_with_legacy_timestamp_comments(self, mock_github_client):
         """Timestamp-prefixed comments still produce the right attempt number."""
         mock_repo = Mock()
         mock_issue = Mock()
 
         legacy_comments = [
-            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:00:00 | Attempt #1"),
-            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T11:00:00 | Attempt #2"),
+            {"body": f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:00:00 | Attempt #1"},
+            {"body": f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T11:00:00 | Attempt #2"},
         ]
 
-        mock_issue.get_comments.return_value = legacy_comments
-        mock_repo.get_issue.return_value = mock_issue
-        mock_github_client.get_instance.return_value = mock_github_client
-        mock_github_client.get_repository.return_value = mock_repo
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = legacy_comments
+        mock_github_client.get_instance.return_value = mock_client
 
         result = get_current_attempt("owner/repo", 555)
 
         assert result == 2
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     def test_get_current_attempt_error(self, mock_github_client):
         """Test getting current attempt when error occurs."""
         # Mock the GitHub client to raise an exception
-        mock_github_client.get_instance.return_value = mock_github_client
-        mock_github_client.get_repository.side_effect = Exception("API error")
+        mock_client = Mock()
+        mock_client.get_issue_comments.side_effect = Exception("API error")
+        mock_github_client.get_instance.return_value = mock_client
 
         result = get_current_attempt("owner/repo", 123)
 
@@ -634,7 +638,7 @@ class TestGetCurrentAttempt:
 class TestIncrementAttempt:
     """Test incrementing attempt count and propagation."""
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_synchronizes_sub_issue_attempts(self, mock_get_current_attempt, mock_github_client):
         """Test that sub-issues receive the same attempt number as parent, even with different current attempts."""
@@ -649,10 +653,17 @@ class TestIncrementAttempt:
         mock_repo = Mock()
         issues = {123: Mock(state="open"), 456: Mock(state="closed"), 789: Mock(state="closed")}
 
-        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
-        mock_client.get_repository.return_value = mock_repo
         # Parent issue #123 has two sub-issues: #456 and #789
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456, 789] if issue_num == 123 else []
+        # Update mocks for get_issue
+        # get_issue now returns dicts
+        issues_dicts = {
+            123: {"number": 123, "state": "open"},
+            456: {"number": 456, "state": "closed"},
+            789: {"number": 789, "state": "closed"}
+        }
+        mock_client.get_issue.side_effect = lambda repo, num: issues_dicts.get(num, {})
+        
         mock_github_client.get_instance.return_value = mock_client
 
         result = increment_attempt("owner/repo", 123)
@@ -689,18 +700,15 @@ class TestIncrementAttempt:
         assert 456 in reopened_issues
         assert 789 in reopened_issues
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_posts_comment_and_increments(self, mock_get_current_attempt, mock_github_client):
         """Incrementing adds a new attempt comment based on the current count."""
         mock_get_current_attempt.return_value = 1
 
         mock_client = Mock()
-        mock_repo = Mock()
-        mock_issue = Mock(state="open")
-
-        mock_repo.get_issue.return_value = mock_issue
-        mock_client.get_repository.return_value = mock_repo
+        
+        mock_client.get_issue.return_value = {"state": "open"}
         mock_client.get_all_sub_issues.return_value = []
         mock_github_client.get_instance.return_value = mock_client
 
@@ -715,7 +723,7 @@ class TestIncrementAttempt:
         assert ATTEMPT_COMMENT_PREFIX in args[2]
         assert args[2].strip() == f"{ATTEMPT_COMMENT_PREFIX}2"
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_propagates_and_reopens_sub_issues(self, mock_get_current_attempt, mock_github_client):
         """Attempt increment posts comments for sub-issues and reopens closed ones."""
@@ -726,8 +734,12 @@ class TestIncrementAttempt:
         mock_repo = Mock()
         issues = {123: Mock(state="open"), 456: Mock(state="closed")}
 
-        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
-        mock_client.get_repository.return_value = mock_repo
+        # issues = {123: Mock(state="open"), 456: Mock(state="closed")}
+        issues_dicts = {
+            123: {"state": "open"},
+            456: {"state": "closed"}
+        }
+        mock_client.get_issue.side_effect = lambda repo, num: issues_dicts.get(num, {})
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client
 
@@ -746,7 +758,7 @@ class TestIncrementAttempt:
         assert reopen_args[1] == 456
         assert "parent issue #123" in reopen_args[2]
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_does_not_reopen_open_sub_issue(self, mock_get_current_attempt, mock_github_client):
         """Open sub-issues are left open but still receive a new attempt comment."""
@@ -768,7 +780,7 @@ class TestIncrementAttempt:
         assert mock_client.add_comment_to_issue.call_count == 2
         mock_client.reopen_issue.assert_not_called()
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_continues_when_sub_issue_fails(self, mock_get_current_attempt, mock_github_client):
         """Propagating attempts should continue even if one sub-issue errors."""
@@ -784,8 +796,16 @@ class TestIncrementAttempt:
                 raise Exception("failed to load sub-issue")
             return issues.get(issue_num, Mock(state="open"))
 
-        mock_repo.get_issue.side_effect = get_issue_side_effect
-        mock_client.get_repository.return_value = mock_repo
+        # issues = {123: Mock(state="open"), 456: Mock(state="closed")}
+
+        def get_issue_side_effect(repo, issue_num):
+            if issue_num == 789:
+                raise Exception("failed to load sub-issue")
+            if issue_num == 123: return {"state": "open"}
+            if issue_num == 456: return {"state": "closed"}
+            return {"state": "open"}
+
+        mock_client.get_issue.side_effect = get_issue_side_effect
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456, 789] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client
 
@@ -796,7 +816,7 @@ class TestIncrementAttempt:
         assert mock_client.add_comment_to_issue.call_count == 2
         mock_client.reopen_issue.assert_called_once_with("owner/repo", 456, ANY)
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_with_explicit_attempt_number(self, mock_get_current_attempt, mock_github_client):
         """When attempt_number is provided, it should be used instead of incrementing."""
@@ -804,11 +824,7 @@ class TestIncrementAttempt:
         mock_get_current_attempt.return_value = 5
 
         mock_client = Mock()
-        mock_repo = Mock()
-        mock_issue = Mock(state="open")
-
-        mock_repo.get_issue.return_value = mock_issue
-        mock_client.get_repository.return_value = mock_repo
+        mock_client.get_issue.return_value = {"state": "open"} # Mock get_issue directly
         mock_client.get_all_sub_issues.return_value = []
         mock_github_client.get_instance.return_value = mock_client
 
@@ -823,7 +839,7 @@ class TestIncrementAttempt:
         assert args[1] == 321
         assert args[2].strip() == f"{ATTEMPT_COMMENT_PREFIX}10"
 
-    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.util.gh_cache.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_with_explicit_attempt_number_propagates_to_sub_issues(self, mock_get_current_attempt, mock_github_client):
         """Explicit attempt_number should be propagated to sub-issues for synchronized increment."""
@@ -831,11 +847,12 @@ class TestIncrementAttempt:
         mock_get_current_attempt.side_effect = lambda repo, issue_num: attempts.get(issue_num, 0)
 
         mock_client = Mock()
-        mock_repo = Mock()
-        issues = {123: Mock(state="open"), 456: Mock(state="closed")}
-
-        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
-        mock_client.get_repository.return_value = mock_repo
+        # issues = {123: Mock(state="open"), 456: Mock(state="closed")}
+        issues_dicts = {
+            123: {"state": "open"},
+            456: {"state": "closed"}
+        }
+        mock_client.get_issue.side_effect = lambda repo, num: issues_dicts.get(num, {})
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client
 

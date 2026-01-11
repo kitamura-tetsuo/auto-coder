@@ -809,6 +809,62 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     return True
 
 
+def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+    """Get the Jules wait timeout in hours fromconfig.toml.
+
+    Looks for [jules] wait_timeout_hours in config.toml.
+    Default is 2 hours.
+    """
+    import os
+
+    # Default value
+    DEFAULT_TIMEOUT = 2
+
+    # If explicit path provided, check only that file
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+
+                jules_config = data.get("jules", {})
+                if "wait_timeout_hours" in jules_config:
+                    return int(jules_config["wait_timeout_hours"])
+            except Exception as e:
+                # Log warning
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+
+        # If explicit path doesn't exist or has no setting, return default
+        return DEFAULT_TIMEOUT
+
+    # Try to find config.toml in standard locations
+    config_paths = [
+        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
+        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
+    ]
+
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+
+                # Check for [jules] section
+                jules_config = data.get("jules", {})
+                if "wait_timeout_hours" in jules_config:
+                    return int(jules_config["wait_timeout_hours"])
+
+            except Exception as e:
+                # Log warning but continue checking other paths
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+                continue
+
+    # If no config.toml found or no setting, return default
+    return DEFAULT_TIMEOUT
+
+
 def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None) -> int:
     """Get process_issues sleep time from [process_issues].sleep_time in config.toml.
 

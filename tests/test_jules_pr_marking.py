@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from auto_coder.automation_engine import AutomationEngine, AutomationConfig
-from auto_coder.github_client import GitHubClient
+from auto_coder.util.gh_cache import GitHubClient
 
 class TestJulesPRMarking:
     

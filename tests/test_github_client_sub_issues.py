@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 
 @pytest.fixture(autouse=True)
@@ -65,7 +65,7 @@ class TestGitHubClientSubIssues:
         mock_caching_client = Mock()
         mock_caching_client.post.return_value = mock_response
 
-        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+        with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
             result = client.get_open_sub_issues("owner/repo", 1)
             assert result == [100, 200, 300]
@@ -120,7 +120,7 @@ class TestGitHubClientSubIssues:
         mock_caching_client = Mock()
         mock_caching_client.post.return_value = mock_response
 
-        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+        with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
             result = client.get_open_sub_issues("owner/repo", 1)
             assert result == [100, 300]
@@ -163,7 +163,7 @@ class TestGitHubClientSubIssues:
         mock_caching_client = Mock()
         mock_caching_client.post.return_value = mock_response
 
-        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+        with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
             result = client.get_open_sub_issues("owner/repo", 1)
             assert result == []
@@ -191,7 +191,7 @@ class TestGitHubClientSubIssues:
         mock_caching_client = Mock()
         mock_caching_client.post.return_value = mock_response
 
-        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+        with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
             result = client.get_open_sub_issues("owner/repo", 1)
             assert result == []
@@ -208,7 +208,7 @@ class TestGitHubClientSubIssues:
         mock_caching_client = Mock()
         mock_caching_client.post.side_effect = httpx.HTTPStatusError("Server Error", request=Mock(), response=mock_error_response)
 
-        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+        with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
             result = client.get_open_sub_issues("owner/repo", 1)
             # Should return empty list on error

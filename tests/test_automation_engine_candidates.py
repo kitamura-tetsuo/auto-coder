@@ -9,9 +9,8 @@ from auto_coder.automation_engine import AutomationEngine
 class TestAutomationEngineCandidates:
     """Test cases for _get_candidates method in AutomationEngine."""
 
-    @patch("auto_coder.automation_engine.get_gh_logger")
     @patch("auto_coder.pr_processor._is_jules_pr")
-    def test_get_candidates_jules_draft_pr(self, mock_is_jules_pr, mock_get_gh_logger, mock_github_client):
+    def test_get_candidates_jules_draft_pr(self, mock_is_jules_pr, mock_github_client):
         """Test that Jules draft PRs are marked as ready."""
         # Setup
         config = AutomationConfig()
@@ -19,18 +18,13 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}
+        pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z", "node_id": "PR_123"}
 
         # Mock get_open_prs_json to return the PR data
         mock_github_client.get_open_prs_json.return_value = [pr_data]
 
         # Mock _is_jules_pr to return True
         mock_is_jules_pr.return_value = True
-
-        # Mock gh_logger
-        mock_gh_logger_instance = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger_instance
-        mock_gh_logger_instance.execute_with_logging.return_value = Mock(success=True)
 
         # Mock other dependencies to avoid errors
         with (
@@ -49,10 +43,11 @@ class TestAutomationEngineCandidates:
             candidates = engine._get_candidates(repo_name)
 
         # Assert
-        # Verify gh pr ready was called
-        mock_gh_logger_instance.execute_with_logging.assert_called_once()
-        call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
-        assert call_args == ["gh", "pr", "ready", "123", "--repo", repo_name]
+        # Verify graphql_query was called to mark ready
+        mock_github_client.graphql_query.assert_called_once()
+        args = mock_github_client.graphql_query.call_args[1]
+        assert "markPullRequestReadyForReview" in args["query"]
+        assert args["variables"]["id"] == "PR_123"
 
         # Verify pr_data was updated
         assert pr_data["draft"] is False
@@ -61,9 +56,8 @@ class TestAutomationEngineCandidates:
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 123
 
-    @patch("auto_coder.automation_engine.get_gh_logger")
     @patch("auto_coder.pr_processor._is_jules_pr")
-    def test_get_candidates_jules_ready_pr(self, mock_is_jules_pr, mock_get_gh_logger, mock_github_client):
+    def test_get_candidates_jules_ready_pr(self, mock_is_jules_pr, mock_github_client):
         """Test that Jules ready PRs are NOT marked as ready again."""
         # Setup
         config = AutomationConfig()
@@ -79,10 +73,6 @@ class TestAutomationEngineCandidates:
         # Mock _is_jules_pr to return True
         mock_is_jules_pr.return_value = True
 
-        # Mock gh_logger
-        mock_gh_logger_instance = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger_instance
-
         # Mock other dependencies
         with (
             patch("auto_coder.automation_engine.LabelManager") as mock_label_manager,
@@ -101,14 +91,13 @@ class TestAutomationEngineCandidates:
 
         # Assert
         # Verify gh pr ready was NOT called
-        mock_gh_logger_instance.execute_with_logging.assert_not_called()
+        mock_github_client.graphql_query.assert_not_called()
 
         # Verify candidate was created
         assert len(candidates) == 1
 
-    @patch("auto_coder.automation_engine.get_gh_logger")
     @patch("auto_coder.pr_processor._is_jules_pr")
-    def test_get_candidates_non_jules_draft_pr(self, mock_is_jules_pr, mock_get_gh_logger, mock_github_client):
+    def test_get_candidates_non_jules_draft_pr(self, mock_is_jules_pr, mock_github_client):
         """Test that non-Jules draft PRs are NOT marked as ready."""
         # Setup
         config = AutomationConfig()
@@ -124,10 +113,6 @@ class TestAutomationEngineCandidates:
         # Mock _is_jules_pr to return False
         mock_is_jules_pr.return_value = False
 
-        # Mock gh_logger
-        mock_gh_logger_instance = Mock()
-        mock_get_gh_logger.return_value = mock_gh_logger_instance
-
         # Mock other dependencies
         with (
             patch("auto_coder.automation_engine.LabelManager") as mock_label_manager,
@@ -146,7 +131,7 @@ class TestAutomationEngineCandidates:
 
         # Assert
         # Verify gh pr ready was NOT called
-        mock_gh_logger_instance.execute_with_logging.assert_not_called()
+        mock_github_client.graphql_query.assert_not_called()
 
         # Verify pr_data was NOT updated
         assert pr_data["draft"] is True

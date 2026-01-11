@@ -1,7 +1,7 @@
 import json
 from unittest.mock import Mock, patch
 
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 
 class TestGitHubClientComplexityFix:
@@ -45,7 +45,7 @@ class TestGitHubClientComplexityFix:
             }
         }
 
-        with patch("src.auto_coder.github_client.Github"), patch("src.auto_coder.github_client.get_caching_client"):
+        with patch("src.auto_coder.util.gh_cache.Github"), patch("src.auto_coder.util.gh_cache.get_caching_client"):
 
             GitHubClient.reset_singleton()
             client = GitHubClient.get_instance("fake-token")

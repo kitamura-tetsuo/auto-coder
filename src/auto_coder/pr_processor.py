@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.github_client import GitHubClient
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 from auto_coder.util.gh_cache import get_ghapi_client
@@ -756,28 +756,10 @@ def _apply_pr_actions_directly(
 def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> str:
     """Get PR diff for analysis."""
     try:
-        # Get GhApi client
-        token = GitHubClient.get_instance().token
-        api = get_ghapi_client(token)
-        owner, repo = repo_name.split("/")
-
-        path = f"/repos/{owner}/{repo}/pulls/{pr_number}"
-        # Use valid Accept header for diff
-        headers = {"Accept": "application/vnd.github.v3.diff"}
-        
-        # gh_cache.py's httpx_adapter handles non-JSON (text/diff) responses by returning standard text
-        diff_content = api(path, verb='GET', headers=headers)
-        
-        # It calls `resp.json()`. This WILL fail for diffs.
-        
-        # I MUST fix gh_cache.py to check content-type or handle json error and return text.
-        # Since I am in the middle of replacing, I will commit this change and THEN update gh_cache.py again 
-        # to support non-JSON responses.
-        
-        return str(diff_content)[: config.MAX_PR_DIFF_SIZE]
+        return GitHubClient.get_instance().get_pr_diff(repo_name, pr_number)[: config.MAX_PR_DIFF_SIZE]
 
     except Exception as e:
-        logger.debug(f"Failed to get PR diff via GhApi: {e}")
+        logger.error(f"Failed to get PR diff via GhApi: {e}")
         return "Could not retrieve PR diff"
 
 
@@ -1014,8 +996,8 @@ def _handle_pr_merge(
                             last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
                             current_time = datetime.now(timezone.utc)
 
-                            if current_time - last_comment_dt > timedelta(hours=2):
-                                logger.info(f"PR #{pr_number} has been waiting for Jules for > 2 hour (last failure). Switching to local llm_backend.")
+                            if current_time - last_comment_dt > timedelta(hours=config.JULES_WAIT_TIMEOUT_HOURS):
+                                logger.info(f"PR #{pr_number} has been waiting for Jules for > {config.JULES_WAIT_TIMEOUT_HOURS} hour (last failure). Switching to local llm_backend.")
                                 should_fallback = True
 
                 except Exception as e:

@@ -15,7 +15,7 @@ from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
 from .git_info import get_current_branch
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_engine import check_and_resume_or_archive_sessions
@@ -96,12 +96,13 @@ class AutomationEngine:
             logger.info(f"Found {item_type} #{item_number} in branch '{current_branch}', checking if closed...")
 
             # Get current item state from GitHub
-            repo = self.github.get_repository(repo_name)
             if item_type == "issue":
-                issue = repo.get_issue(item_number)
+                # Use GitHubClient directly instead of repo object
+                issue = self.github.get_issue(repo_name, item_number)
                 current_item = self.github.get_issue_details(issue)
             else:
-                pr = repo.get_pull(item_number)
+                # Use GitHubClient directly instead of repo object
+                pr = self.github.get_pull_request(repo_name, item_number)
                 current_item = self.github.get_pr_details(pr)
 
             # Check if item is closed
@@ -305,43 +306,53 @@ class AutomationEngine:
                 # Check if PR is created by Jules and waiting for Jules update
                 if pr_data.get("author") == "jules":
                     try:
-                        # Lazy fetch the PR object only when needed
-                        if repo is None:
-                            repo = self.github.get_repository(repo_name)
-
-                        pr = repo.get_pull(pr_number)
-
+                        # Fetch PR reviews and comments to check for interaction
                         last_interaction_time = None
                         last_interaction_type = None
 
                         # Check reviews
-                        for review in pr.get_reviews():
-                            if review.user and review.user.login != "jules":
-                                if last_interaction_time is None or review.submitted_at > last_interaction_time:
-                                    last_interaction_time = review.submitted_at
-                                    last_interaction_type = review.state
+                        reviews = self.github.get_pr_reviews(repo_name, pr_number)
+                        for review in reviews:
+                            user = review.get('user')
+                            if user and user.get('login') != "jules":
+                                submitted_at = review.get('submitted_at')
+                                if submitted_at:
+                                    dt = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+                                    if last_interaction_time is None or dt > last_interaction_time:
+                                        last_interaction_time = dt
+                                        last_interaction_type = review.get('state')
 
                         # Check comments
-                        for comment in pr.get_issue_comments():
-                            if comment.user and comment.user.login != "jules":
-                                if last_interaction_time is None or comment.created_at > last_interaction_time:
-                                    last_interaction_time = comment.created_at
-                                    last_interaction_type = "COMMENT"
+                        comments = self.github.get_pr_comments(repo_name, pr_number)
+                        for comment in comments:
+                            user = comment.get('user')
+                            if user and user.get('login') != "jules":
+                                created_at = comment.get('created_at')
+                                if created_at:
+                                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                    if last_interaction_time is None or dt > last_interaction_time:
+                                        last_interaction_time = dt
+                                        last_interaction_type = "COMMENT"
 
                         if last_interaction_time and last_interaction_type != "APPROVED":
                             # Check for Jules commits after interaction
-                            commits = list(pr.get_commits())
+                            commits = self.github.get_pr_commits(repo_name, pr_number)
                             jules_responded = False
                             if commits:
-                                for commit in reversed(commits):
+                                for commit_data in reversed(commits):
                                     # Check commit date
-                                    commit_date = commit.commit.author.date
-                                    if commit_date > last_interaction_time:
-                                        if commit.author and commit.author.login == "jules":
-                                            jules_responded = True
+                                    committer = commit_data.get('commit', {}).get('committer', {})
+                                    commit_date_str = committer.get('date')
+                                    if commit_date_str:
+                                        commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
+                                        if commit_date > last_interaction_time:
+                                            author = commit_data.get('author')
+                                            if author and author.get('login') == "jules":
+                                                jules_responded = True
+                                                break
+                                        else:
+                                            # Commits are ordered, so if we hit an older one, we can stop
                                             break
-                                    else:
-                                        break
 
                             if not jules_responded:
                                 logger.info(f"Skipping PR #{pr_number} - Waiting for Jules to update (requested at {last_interaction_time})")
@@ -894,12 +905,12 @@ class AutomationEngine:
                             from .util.github_action import check_and_handle_closed_state
 
                             with ProgressStage("Checking final status"):
-                                repo = self.github.get_repository(repo_name)
+                                # repo = self.github.get_repository(repo_name)
                                 if item_type == "issue":
-                                    issue = repo.get_issue(item_number)
+                                    issue = self.github.get_issue(repo_name, item_number)
                                     current_item = self.github.get_issue_details(issue)
                                 else:
-                                    pr = repo.get_pull(item_number)
+                                    pr = self.github.get_pull_request(repo_name, item_number)
                                     current_item = self.github.get_pr_details(pr)
 
                                 # Check if item is closed and handle state
@@ -1106,8 +1117,9 @@ class AutomationEngine:
         """Resolve merge conflicts for a PR."""
         try:
             # Get PR details to determine the base branch
-            repo = self.github.get_repository(repo_name)
-            pr = repo.get_pull(pr_number)
+            # repo = self.github.get_repository(repo_name)
+            # pr = repo.get_pull(pr_number)
+            pr = self.github.get_pull_request(repo_name, pr_number)
             pr_data = self.github.get_pr_details(pr)
             base_branch = pr_data.get("base_branch", "main")
 
@@ -1540,8 +1552,9 @@ class AutomationEngine:
             if target_type == "auto":
                 # Prefer PR to avoid mislabeling PR issues
                 try:
-                    repo = self.github.get_repository(repo_name)
-                    pr = repo.get_pull(number)
+                    # repo = self.github.get_repository(repo_name)
+                    # pr = repo.get_pull(number)
+                    pr = self.github.get_pull_request(repo_name, number)
                     pr_data = self.github.get_pr_details(pr)
                     target_type = "pr"
                 except Exception:
@@ -1549,8 +1562,9 @@ class AutomationEngine:
 
             if target_type == "pr":
                 # Get PR data
-                repo = self.github.get_repository(repo_name)
-                pr = repo.get_pull(number)
+                # repo = self.github.get_repository(repo_name)
+                # pr = repo.get_pull(number)
+                pr = self.github.get_pull_request(repo_name, number)
                 pr_data = self.github.get_pr_details(pr)
                 branch_name = pr_data.get("head_branch")
                 pr_body = pr_data.get("body", "")
@@ -1567,8 +1581,9 @@ class AutomationEngine:
                 )
             elif target_type == "issue":
                 # Get issue data
-                repo = self.github.get_repository(repo_name)
-                issue = repo.get_issue(number)
+                # repo = self.github.get_repository(repo_name)
+                # issue = repo.get_issue(number)
+                issue = self.github.get_issue(repo_name, number)
                 issue_data = self.github.get_issue_details(issue)
 
                 return Candidate(

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 
 
@@ -435,7 +435,7 @@ class TestLabelManager:
     def test_label_manager_with_check_labels_true_default(self):
         """Test that check_labels=True (default) performs label existence check."""
         # Setup mocks - need to use spec=GitHubClient to trigger isinstance check
-        from src.auto_coder.github_client import GitHubClient
+        from src.auto_coder.util.gh_cache import GitHubClient
 
         mock_github_client = Mock(spec=GitHubClient)
         mock_github_client.disable_labels = False
@@ -1146,7 +1146,7 @@ class TestLabelManagerProcessorIntegration:
 
     def test_pr_processor_calls_keep_label_on_successful_merge(self):
         """Test that pr_processor calls keep_label() when PR is successfully merged."""
-        from src.auto_coder.github_client import GitHubClient
+        from src.auto_coder.util.gh_cache import GitHubClient
         from src.auto_coder.pr_processor import _process_pr_for_merge
 
         # Setup mocks
@@ -1182,7 +1182,7 @@ class TestLabelManagerProcessorIntegration:
 
     def test_pr_processor_does_not_call_keep_label_on_merge_failure(self):
         """Test that pr_processor does not call keep_label() when merge fails."""
-        from src.auto_coder.github_client import GitHubClient
+        from src.auto_coder.util.gh_cache import GitHubClient
         from src.auto_coder.pr_processor import _process_pr_for_merge
 
         # Setup mocks

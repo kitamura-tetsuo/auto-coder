@@ -9,7 +9,7 @@ from typing import Dict
 
 from dateutil import parser
 
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .jules_client import JulesClient
 from .logger_config import get_logger
 
@@ -199,11 +199,10 @@ def check_and_resume_or_archive_sessions() -> None:
 
                     if repo_name and pr_number:
                         # Check PR status
-                        repo = github_client.get_repository(repo_name)
-                        pr = repo.get_pull(pr_number)
+                        pr = github_client.get_pull_request(repo_name, pr_number)
 
-                        if pr.state == "closed":
-                            action = "merged" if pr.merged else "closed"
+                        if pr.get("state") == "closed":
+                            action = "merged" if pr.get("merged") else "closed"
                             logger.info(f"PR #{pr_number} is {action}. Archiving Jules session: {session_id}")
                             if jules_client.archive_session(session_id):
                                 logger.info(f"Successfully archived session {session_id}")

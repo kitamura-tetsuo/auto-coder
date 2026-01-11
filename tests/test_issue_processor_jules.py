@@ -11,7 +11,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.cloud_manager import CloudManager
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.issue_processor import _apply_issue_actions_directly, generate_work_branch_name
 
 

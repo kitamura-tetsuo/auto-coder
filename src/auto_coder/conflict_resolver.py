@@ -13,7 +13,7 @@ from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -98,7 +98,7 @@ def _trigger_fallback_for_conflict_failure(
         # Get PR body to extract linked issues
         if repo_name:
             client = GitHubClient.get_instance()
-            pr_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+            pr_data = client.get_pr_details(client.get_pull_request(repo_name, pr_number))
             pr_body = pr_data.get("body", "")
         else:
             pr_body = ""
@@ -124,10 +124,9 @@ def _trigger_fallback_for_conflict_failure(
         for issue_number in related_issues:
             try:
                 # Check if the issue is closed and reopen it
-                repo = client.get_repository(repo_name)
-                issue = repo.get_issue(issue_number)
+                issue = client.get_issue(repo_name, issue_number)
 
-                if issue.state == "closed":
+                if issue.get("state") == "closed":
                     logger.info(f"Reopening closed issue #{issue_number} due to PR #{pr_number} failure")
                     reopen_comment = f"Auto-Coder: Reopening issue due to PR #{pr_number} failure: {failure_reason}"
                     client.reopen_issue(repo_name, issue_number, reopen_comment)
@@ -456,7 +455,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             try:
                 if repo_name:
                     client = GitHubClient.get_instance()
-                    fresh_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+                    fresh_data = client.get_pr_details(client.get_pull_request(repo_name, pr_number))
                     pr_data = {**pr_data, **fresh_data}
             except Exception as e:
                 logger.warning(f"Failed to enrich pr_data for PR #{pr_number}: {e}")
@@ -483,7 +482,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
         logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
         if repo_name:
             client = GitHubClient.get_instance()
-            pr_data_fresh = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+            pr_data_fresh = client.get_pr_details(client.get_pull_request(repo_name, pr_number))
             head_branch = pr_data_fresh.get("head_branch")
 
             if head_branch:
@@ -622,7 +621,7 @@ def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automatio
         # Get PR details to determine the target base branch
         if repo_name:
             client = GitHubClient.get_instance()
-            pr_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+            pr_data = client.get_pr_details(client.get_pull_request(repo_name, pr_number))
             base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName", config.MAIN_BRANCH)
         else:
             logger.error(f"No repo_name provided for PR #{pr_number}")

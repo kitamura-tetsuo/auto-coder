@@ -5,7 +5,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.util.github_action import GitHubActionsStatusResult, _check_github_actions_status
 from src.auto_coder.utils import CommandResult
 

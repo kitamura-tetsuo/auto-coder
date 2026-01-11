@@ -18,7 +18,7 @@ from .cloud_manager import CloudManager
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .jules_client import JulesClient
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger

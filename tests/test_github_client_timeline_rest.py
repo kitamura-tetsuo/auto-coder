@@ -1,10 +1,10 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 class TestGitHubClientTimelineREST:
-    @patch("src.auto_coder.github_client.get_caching_client")
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
     def test_get_linked_prs_rest(self, mock_get_caching, mock_github_token):
         """Test get_linked_prs uses REST timeline events."""
         # Setup
@@ -57,7 +57,7 @@ class TestGitHubClientTimelineREST:
         assert set(result) == {101, 102}
         assert 55 not in result
 
-    @patch("src.auto_coder.github_client.get_caching_client")
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
     def test_verify_pr_closes_issue_rest(self, mock_get_caching, mock_github_token):
         """Test verify_pr_closes_issue uses REST timeline connected events."""
         # Setup

@@ -65,7 +65,7 @@ class TestJulesEngine(unittest.TestCase):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
         mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}}]
-        mock_load_state.return_value = {"s2": 2}
+        mock_load_state.return_value = {"s2": 5}
 
         # Execute
         check_and_resume_or_archive_sessions()
@@ -85,19 +85,23 @@ class TestJulesEngine(unittest.TestCase):
         mock_load_state.return_value = {"s3": 2}  # Should be cleared
 
         mock_github_client = mock_github_client_cls.get_instance.return_value
-        mock_repo = MagicMock()
-        mock_pr = MagicMock()
-        mock_pr.state = "closed"
-        mock_pr.merged = False
-        mock_repo.get_pull.return_value = mock_pr
-        mock_github_client.get_repository.return_value = mock_repo
+        # mock_repo = MagicMock()
+        # mock_pr = MagicMock()
+        # mock_pr.state = "closed"
+        # mock_pr.merged = False
+        # mock_repo.get_pull.return_value = mock_pr
+        # mock_github_client.get_repository.return_value = mock_repo
+        
+        # New usage: client.get_pull_request(repo, number) -> dict
+        mock_github_client.get_pull_request.return_value = {"state": "closed", "merged": False}
 
         # Execute
         check_and_resume_or_archive_sessions()
 
         # Verify
-        mock_github_client.get_repository.assert_called_with("owner/repo")
-        mock_repo.get_pull.assert_called_with(123)
+        # mock_github_client.get_repository.assert_called_with("owner/repo")
+        # mock_repo.get_pull.assert_called_with(123)
+        mock_github_client.get_pull_request.assert_called_with("owner/repo", 123)
         mock_jules_client.archive_session.assert_called_once_with("s3")
         mock_save_state.assert_called_once_with({})  # s3 removed
 
@@ -112,12 +116,7 @@ class TestJulesEngine(unittest.TestCase):
         mock_load_state.return_value = {}
 
         mock_github_client = mock_github_client_cls.get_instance.return_value
-        mock_repo = MagicMock()
-        mock_pr = MagicMock()
-        mock_pr.state = "closed"
-        mock_pr.merged = True
-        mock_repo.get_pull.return_value = mock_pr
-        mock_github_client.get_repository.return_value = mock_repo
+        mock_github_client.get_pull_request.return_value = {"state": "closed", "merged": True}
 
         # Execute
         check_and_resume_or_archive_sessions()
@@ -136,18 +135,15 @@ class TestJulesEngine(unittest.TestCase):
         mock_load_state.return_value = {}
 
         mock_github_client = mock_github_client_cls.get_instance.return_value
-        mock_repo = MagicMock()
-        mock_pr = MagicMock()
-        mock_pr.state = "open"
-        mock_repo.get_pull.return_value = mock_pr
-        mock_github_client.get_repository.return_value = mock_repo
+        mock_github_client.get_pull_request.return_value = {"state": "open"}
 
         # Execute
         check_and_resume_or_archive_sessions()
 
         # Verify
-        mock_github_client.get_repository.assert_called_with("owner/repo")
-        mock_repo.get_pull.assert_called_with(789)
+        # mock_github_client.get_repository.assert_called_with("owner/repo")
+        # mock_repo.get_pull.assert_called_with(789)
+        mock_github_client.get_pull_request.assert_called_with("owner/repo", 789)
         mock_jules_client.archive_session.assert_not_called()
         mock_jules_client.send_message.assert_not_called()
 

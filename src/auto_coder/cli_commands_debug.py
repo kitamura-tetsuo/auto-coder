@@ -5,7 +5,7 @@ import sys
 import click
 
 from .auth_utils import get_github_token
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .logger_config import setup_logger
 from .util.github_action import _get_playwright_artifact_logs
 

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from hishel import SyncSqliteStorage
 
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 # --- HTTP Server for realistic testing ---
 

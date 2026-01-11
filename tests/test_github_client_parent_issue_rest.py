@@ -1,13 +1,13 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 
 
 
 class TestGitHubClientParentIssueREST:
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_details_rest(self, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_details uses GhApi and proper endpoint."""
         # Setup
@@ -40,7 +40,7 @@ class TestGitHubClientParentIssueREST:
             }
         )
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     @patch.object(GitHubClient, 'get_issue')
     def test_get_parent_issue_body_rest(self, mock_get_issue, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_body uses REST calls."""
@@ -69,7 +69,7 @@ class TestGitHubClientParentIssueREST:
         mock_api.assert_called() 
         mock_get_issue.assert_called_with("owner/repo", 50) 
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_no_parent(self, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_details returns None when no parent exists (404 on both)."""
         # Setup
@@ -94,7 +94,7 @@ class TestGitHubClientParentIssueREST:
         mock_api.issues.get.assert_called_once()
 
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_wrapped(self, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_details handles wrapped nested response."""
         # Setup
@@ -118,7 +118,7 @@ class TestGitHubClientParentIssueREST:
         assert result["title"] == "Wrapper Parent"
 
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_error(self, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_details handles unexpected errors."""
         # Setup
@@ -139,7 +139,7 @@ class TestGitHubClientParentIssueREST:
         # Assert
         assert result is None
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_fallback(self, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_details falls back to issue details on 404 from dedicated endpoint."""
         # Setup

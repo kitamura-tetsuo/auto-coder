@@ -20,7 +20,7 @@ from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
 
-from ..github_client import GitHubClient
+from .gh_cache import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
 from .gh_cache import get_ghapi_client
@@ -1042,35 +1042,6 @@ def get_github_actions_logs_from_url(url: str) -> str:
         # But 'gh run view --log' effectively gets the text log.
         # api.actions.download_job_logs_for_workflow_run is the equivalent.
 
-        # Fallback to gh CLI if API failed to get meaningful logs
-        try:
-            # Try to get logs using gh CLI
-            # gh run view --log --job <job_id> -R <repo>
-            # This is more robust as it handles auth and redirection implicitly
-            if job_id:
-                logger.info(f"Falling back to gh CLI for job {job_id}")
-                command = ["gh", "run", "view", "--log", "--job", str(job_id), "-R", f"{owner}/{repo}"]
-                result = cmd.run_command(command, timeout=60)
-
-                if result.success and result.stdout:
-                    log_text = result.stdout.strip()
-                    if log_text:
-                        # Attempt to extract context from CLI logs
-                        # Re-use _extract_failed_step_logs if we have failing step names?
-                        # failing_step_names might be empty if API call failed earlier.
-                        # We can try to use _extract_error_context directly.
-                        
-                        # Use existing helpers
-                        snippet = _extract_error_context(log_text)
-                        
-                        # If extraction yielded nothing or very little, return full log (head/tail)?
-                        # _extract_error_context already handles this.
-                        
-                        return f"=== Job: {job_name} ===\n{url}\n(Logs retrieved via gh CLI)\n{snippet}"
-
-        except Exception as e_cli:
-            logger.warning(f"gh CLI fallback failed: {e_cli}")
-
         return f"=== Job: {job_name} ===\n{url}\nNo detailed logs available (GhApi retrieval failed or no errors found)"
 
     except Exception as e:
@@ -1806,12 +1777,11 @@ def check_and_handle_closed_state(
     try:
         # Get current item state if not provided
         if current_item is None:
-            repo = github_client.get_repository(repo_name)
             if item_type == "pr":
-                pr = repo.get_pull(item_number)
+                pr = github_client.get_pull_request(repo_name, item_number)
                 current_item = github_client.get_pr_details(pr)
             elif item_type == "issue":
-                issue = repo.get_issue(item_number)
+                issue = github_client.get_issue(repo_name, item_number)
                 current_item = github_client.get_issue_details(issue)
             else:
                 logger.warning(f"Unknown item type: {item_type}")

@@ -1,7 +1,7 @@
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient
 
 class TestGitHubClientREST:
     """Test cases for GitHubClient REST API methods."""
@@ -10,7 +10,7 @@ class TestGitHubClientREST:
     def mock_github_token(self):
         return "test_token"
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_open_prs_json_rest(self, mock_get_ghapi_client, mock_github_token):
         """Test get_open_prs_json uses REST API correctly."""
         # Setup
@@ -66,7 +66,7 @@ class TestGitHubClientREST:
         mock_api.pulls.list.assert_called_once_with("owner", "repo", state='open', per_page=100)
         mock_api.pulls.get.assert_called_once_with("owner", "repo", 123)
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_open_issues_json_rest(self, mock_get_ghapi_client, mock_github_token):
         """Test get_open_issues_json uses REST API correctly."""
         # Setup
@@ -123,7 +123,7 @@ class TestGitHubClientREST:
             mock_sub.assert_called_once_with("owner/repo", 456)
             mock_parent.assert_called_once_with("owner/repo", 456)
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):
         """Test get_issue uses REST API correctly."""
         # Setup
@@ -147,7 +147,7 @@ class TestGitHubClientREST:
         assert result.title == "Test Issue"
         mock_api.issues.get.assert_called_once_with("owner", "repo", 123)
 
-    @patch("src.auto_coder.github_client.get_ghapi_client")
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_details_rest(self, mock_get_ghapi_client, mock_github_token):
         """Test get_parent_issue_details uses REST API correctly."""
         # Setup

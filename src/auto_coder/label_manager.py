@@ -15,7 +15,7 @@ from typing import Any, Dict, Generator, List, Optional, Union
 from github.GithubException import GithubException
 
 from .automation_config import AutomationConfig
-from .github_client import GitHubClient
+from .util.gh_cache import GitHubClient
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -616,8 +616,8 @@ class LabelManager:
             if self.item_type.lower() == "pr":
                 pr_labels: list[str] = []
                 try:
-                    repo = self.github_client.get_repository(self.repo_name)
-                    pr_obj = repo.get_pull(int(self.item_number))
+                    # Use get_pull_request direct method locally on client
+                    pr_obj = self.github_client.get_pull_request(self.repo_name, int(self.item_number))
                     pr_details = self.github_client.get_pr_details(pr_obj)
                     if isinstance(pr_details, dict):
                         pr_labels = pr_details.get("labels", []) or []
@@ -630,8 +630,7 @@ class LabelManager:
             # Issue path
             issue_labels: list[str] = []
             try:
-                repo = self.github_client.get_repository(self.repo_name)
-                issue_obj = repo.get_issue(int(self.item_number))
+                issue_obj = self.github_client.get_issue(self.repo_name, int(self.item_number))
                 issue_details = self.github_client.get_issue_details(issue_obj)
                 if isinstance(issue_details, dict):
                     issue_labels = issue_details.get("labels", []) or []

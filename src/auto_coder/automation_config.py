@@ -148,6 +148,11 @@ class AutomationConfig:
         object.__setattr__(self, "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL", True)
         object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", True)
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
+        
+        # Load Jules wait timeout from config
+        from .llm_backend_config import get_jules_wait_timeout_hours_from_config
+        object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
+
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
         object.__setattr__(self, "CHECK_LABELS", True)
@@ -463,6 +468,10 @@ class AutomationConfig:
     # Skip all dependency-bot PRs (Dependabot/Renovate/[bot]), including ready ones.
     # This provides a way to completely ignore dependency updates.
     IGNORE_DEPENDABOT_PRS: bool = False
+
+    # Jules wait timeout in hours (default: 2)
+    # Configurable via [jules].wait_timeout_hours in config.toml
+    JULES_WAIT_TIMEOUT_HOURS: int = 2
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)
