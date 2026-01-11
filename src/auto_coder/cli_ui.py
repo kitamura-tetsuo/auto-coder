@@ -9,6 +9,10 @@ from typing import Any, Dict, Optional, TextIO
 
 import click
 
+# Spinner frames
+SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
+
 
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
     """
@@ -66,7 +70,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with a spinner.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -79,16 +83,40 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     # Check if we are in a non-interactive environment
+    # In tests or pipes, isatty is False.
+    # We skip the fancy UI but still need to sleep.
     if not stream.isatty():
         time.sleep(seconds)
         return
 
     no_color = "NO_COLOR" in os.environ
+    spinner_frames = SPINNER_FRAMES_ASCII if no_color else SPINNER_FRAMES_UNICODE
+    spinner_idx = 0
 
     try:
-        for remaining in range(seconds, 0, -1):
+        # We'll update the spinner every 0.1s
+        total_ticks = int(seconds * 10)
+
+        for tick in range(total_ticks, 0, -1):
+            remaining_seconds = tick / 10.0
+
             # Format time nicely
-            hours, remainder = divmod(remaining, 3600)
+            # We use ceil/int logic to show reasonable seconds
+            # If 4.1s remains, we probably want to see 4s or 5s depending on preference.
+            # Using int() is fine, but maybe we want to see it tick down at the second mark.
+            # Let's use the same logic as before but based on remaining_seconds
+
+            curr_seconds = int(remaining_seconds)
+            # Adjust so 5.0 shows 5s, 4.9 shows 4s.
+            # Actually, usually users like to see 5, 4, 3, 2, 1.
+            # If we iterate 50 ticks:
+            # 5.0 -> 5s
+            # 4.9 -> 4s (this feels fast)
+            # Let's use ceil for display to match "5 seconds remaining" feeling
+            import math
+            display_seconds = math.ceil(remaining_seconds)
+
+            hours, remainder = divmod(display_seconds, 3600)
             minutes, secs = divmod(remainder, 60)
 
             if hours > 0:
@@ -98,15 +126,28 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            # Spinner frame
+            spinner = spinner_frames[spinner_idx]
+            spinner_idx = (spinner_idx + 1) % len(spinner_frames)
 
+            # Build message
+            # ⏱ is nice if color is enabled
+            icon = "⏱ " if not no_color else ""
+
+            # Colorize the time
             if not no_color:
-                # Dim the text (bright_black is usually dark gray)
-                message = click.style(message, fg="bright_black")
+                time_display = click.style(f"[{time_str}]", fg="yellow")
+                spinner_display = click.style(spinner, fg="cyan")
+                msg_text = click.style("Sleeping...", fg="bright_black")
+                ctrl_c = click.style("(Ctrl+C to interrupt)", fg="bright_black", dim=True)
+
+                message = f"{spinner_display} {msg_text} {icon}{time_display} {ctrl_c}"
+            else:
+                message = f"{spinner} Sleeping... {icon}[{time_str}] (Ctrl+C to interrupt)"
 
             stream.write(f"\r{message}")
             stream.flush()
-            time.sleep(1)
+            time.sleep(0.1)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
