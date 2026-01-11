@@ -1066,6 +1066,85 @@ class GitHubClient:
             logger.error(f"Failed to get commits for PR #{pr_number}: {e}")
             return []
 
+    def get_pr_last_interaction(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
+        """Get last interaction (comment/commit) for a PR using GraphQL.
+
+        Optimization: Fetches only the last comment and last commit in a single request,
+        avoiding N+1 calls to fetch all comments and all commits.
+
+        Returns:
+            Dict containing:
+            - last_comment: {body, created_at, author_login} or None
+            - last_commit: {committed_date, author_login} or None
+        """
+        owner, repo = repo_name.split("/")
+
+        query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              comments(last: 1) {
+                nodes {
+                  body
+                  createdAt
+                  author {
+                    login
+                  }
+                }
+              }
+              commits(last: 1) {
+                nodes {
+                  commit {
+                    committedDate
+                    author {
+                      user {
+                        login
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        variables = {"owner": owner, "name": repo, "number": int(pr_number)}
+
+        try:
+            data = self.graphql_query(query, variables)
+            pr = data.get("repository", {}).get("pullRequest", {})
+            if not pr:
+                return {"last_comment": None, "last_commit": None}
+
+            comments = pr.get("comments", {}).get("nodes", [])
+            last_comment = None
+            if comments:
+                c = comments[0]
+                last_comment = {
+                    "body": c.get("body", ""),
+                    "created_at": c.get("createdAt", ""),
+                    "author_login": c.get("author", {}).get("login") if c.get("author") else None
+                }
+
+            commits = pr.get("commits", {}).get("nodes", [])
+            last_commit = None
+            if commits:
+                c = commits[0].get("commit", {})
+                last_commit = {
+                    "committed_date": c.get("committedDate", ""),
+                    "author_login": c.get("author", {}).get("user", {}).get("login") if c.get("author") and c.get("author").get("user") else None
+                }
+
+            return {
+                "last_comment": last_comment,
+                "last_commit": last_commit
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get PR last interaction via GraphQL for #{pr_number}: {e}")
+            raise
+
     def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of open sub-issues using GitHub REST API.
         

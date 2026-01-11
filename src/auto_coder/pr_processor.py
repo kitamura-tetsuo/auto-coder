@@ -281,16 +281,30 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
     """
     try:
         pr_number = pr_data["number"]
+        last_comment = None
+        last_commit = None
 
-        # Get comments
-        comments = github_client.get_pr_comments(repo_name, pr_number)
-        if not comments:
-            return False
+        # OPTIMIZATION: Try to use GraphQL to fetch only the last comment and commit
+        # This replaces 2 REST API calls (listing all comments + listing all commits) with 1 GraphQL call
+        try:
+            if hasattr(github_client, "get_pr_last_interaction"):
+                interaction = github_client.get_pr_last_interaction(repo_name, pr_number)
+                last_comment = interaction.get("last_comment")
+                last_commit = interaction.get("last_commit")
+        except Exception as e:
+            logger.debug(f"GraphQL optimization failed for PR #{pr_number}: {e}. Falling back to REST.")
+            # Fallback logic handles None values below
 
-        # Sort comments by date (newest last) just to be safe, though API usually returns them sorted
-        comments.sort(key=lambda x: x["created_at"])
+        # Fallback to REST API if GraphQL failed or didn't return data (or method missing)
+        if not last_comment:
+            # Get comments via REST
+            comments = github_client.get_pr_comments(repo_name, pr_number)
+            if not comments:
+                return False
+            # Sort comments by date (newest last)
+            comments.sort(key=lambda x: x["created_at"])
+            last_comment = comments[-1]
 
-        last_comment = comments[-1]
         last_comment_body = last_comment.get("body", "")
 
         # Check if last comment is the specific message
@@ -301,17 +315,18 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
         # Get last comment timestamp
         last_comment_time = last_comment["created_at"]
 
-        # Get commits
-        commits = github_client.get_pr_commits(repo_name, pr_number)
-        if not commits:
-            # If no commits found (unlikely for a PR), assume we shouldn't skip
-            return False
-
-        # Sort commits by date (newest last)
-        commits.sort(key=lambda x: x["commit"]["committer"]["date"])
-
-        last_commit = commits[-1]
-        last_commit_time = last_commit["commit"]["committer"]["date"]
+        if not last_commit:
+            # Get commits via REST
+            commits = github_client.get_pr_commits(repo_name, pr_number)
+            if not commits:
+                # If no commits found (unlikely for a PR), assume we shouldn't skip
+                return False
+            # Sort commits by date (newest last)
+            commits.sort(key=lambda x: x["commit"]["committer"]["date"])
+            last_commit_rest = commits[-1]
+            last_commit_time = last_commit_rest["commit"]["committer"]["date"]
+        else:
+            last_commit_time = last_commit["committed_date"]
 
         # Compare timestamps
         # ISO format strings can be compared lexicographically if they are in the same timezone (usually UTC from GitHub)
