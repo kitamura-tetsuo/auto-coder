@@ -33,6 +33,7 @@ from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
+from .cli_commands_debug import debug
 from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
 from .lock_manager import LockManager
@@ -142,6 +143,7 @@ main.add_command(get_actions_logs)
 main.add_command(auth_status)
 main.add_command(migrate_branches)
 main.add_command(unlock)
+main.add_command(debug)
 
 
 if __name__ == "__main__":
