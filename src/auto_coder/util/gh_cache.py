@@ -8,20 +8,20 @@ from hishel.httpx import SyncCacheClient
 
 logger = logging.getLogger(__name__)
 
-_storage_instance = None
-_storage_lock = threading.Lock()
+_local_storage = threading.local()
 
 
 def get_caching_client() -> httpx.Client:
     """
-    Returns a singleton instance of a caching httpx client using hishel.
+    Returns a thread-local instance of a caching httpx client using hishel.
+    This ensures that the SQLite connection (inside SyncSqliteStorage) is only used
+    by the thread that created it.
     """
-    global _storage_instance
-    if _storage_instance is None:
-        with _storage_lock:
-            if _storage_instance is None:
-                _storage_instance = SyncSqliteStorage(database_path=".cache/gh_cache.db")
-    return SyncCacheClient(storage=_storage_instance)
+    if not hasattr(_local_storage, "client"):
+        # Create a new storage and client for this thread
+        storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
+        _local_storage.client = SyncCacheClient(storage=storage)
+    return _local_storage.client
 
 
 def get_ghapi_client(token: str) -> GhApi:

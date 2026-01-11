@@ -66,8 +66,6 @@ class GitHubClient:
         self.disable_labels = disable_labels
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
-        self._caching_client: Optional[httpx.Client] = None
-        self._caching_client_lock = threading.Lock()
 
         # MONKEY-PATCHING PYGTIHUB FOR CACHING
         # -------------------------------------
@@ -96,10 +94,7 @@ class GitHubClient:
         A custom requester for PyGithub that uses httpx with caching for GET requests.
         """
         if verb.upper() == "GET":
-            if self._caching_client is None:
-                with self._caching_client_lock:
-                    if self._caching_client is None:
-                        self._caching_client = get_caching_client()
+            client = get_caching_client()
 
             # Construct the full URL if it's not already
             if not url.startswith("http"):
@@ -113,7 +108,7 @@ class GitHubClient:
             if headers:
                 final_headers.update(headers)
 
-            response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
+            response = client.get(url, headers=final_headers, params=parameters, timeout=30)
             try:
                 # We cannot use `response.raise_for_status()` for two reasons:
                 # 1. It raises an error on 304 Not Modified, which is a success condition for caching.
@@ -211,8 +206,7 @@ class GitHubClient:
             httpx.HTTPStatusError: If the API returns a non-200 status code.
             ValueError: If the response contains GraphQL errors.
         """
-        if self._caching_client is None:
-            self._caching_client = get_caching_client()
+        client = get_caching_client()
         url = "https://api.github.com/graphql"
         headers = {
             "Authorization": f"bearer {self.token}",
@@ -226,7 +220,7 @@ class GitHubClient:
             payload["variables"] = variables
 
         try:
-            response = self._caching_client.post(url, headers=headers, json=payload, timeout=30)
+            response = client.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
 
@@ -605,8 +599,7 @@ class GitHubClient:
         """
         try:
             owner, repo = repo_name.split("/")
-            if self._caching_client is None:
-                self._caching_client = get_caching_client()
+            client = get_caching_client()
                 
             # Use loose pagination or just get first page? 
             # Usually recent events are what we want? The endpoint returns all or paginated.
@@ -620,7 +613,7 @@ class GitHubClient:
             
             # Simple handling for now - assuming recent events are on first page or reasonable number.
             # If a PR is linked, it should be in the timeline.
-            response = self._caching_client.get(url, headers=headers)
+            response = client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
             
@@ -1129,8 +1122,7 @@ class GitHubClient:
             # Endpoint: GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues
             # Using raw caching client for certainty and custom headers if needed
             
-            if self._caching_client is None:
-                self._caching_client = get_caching_client()
+            client = get_caching_client()
                 
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues"
             headers = {
@@ -1139,7 +1131,7 @@ class GitHubClient:
                 "X-GitHub-Api-Version": "2022-11-28" # As hinted by user docs
             }
             
-            response = self._caching_client.get(url, headers=headers)
+            response = client.get(url, headers=headers)
             
             # If 404, it might simply mean no sub-issues or feature not enabled, return empty
             if response.status_code == 404:

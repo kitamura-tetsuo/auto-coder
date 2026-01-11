@@ -4,7 +4,10 @@ Jules engine module for managing Jules sessions.
 
 import json
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Dict
+
+from dateutil import parser
 
 from .github_client import GitHubClient
 from .jules_client import JulesClient
@@ -41,8 +44,8 @@ def check_and_resume_or_archive_sessions() -> None:
 
     - If state is FAILED: Resume with "ok".
     - If state is COMPLETED and no "outputs"/"pullRequest":
-        - If retried < 2 times: Resume with "ok".
-        - If retried >= 2 times: Request to create PR.
+        - If retried < 5 times: Resume with "ok".
+        - If retried >= 5 times: Request to create PR.
     - If state is COMPLETED and has "outputs"/"pullRequest":
         - Check if PR is closed or merged.
         - If so, archive the session.
@@ -99,9 +102,23 @@ def check_and_resume_or_archive_sessions() -> None:
 
             pull_request = outputs.get("pullRequest")
 
-            # Case 1: Failed session -> Resume
-            if state == "FAILED":
-                logger.info(f"Resuming failed Jules session: {session_id}")
+            # Check for timeout if IN_PROGRESS
+            is_timeout = False
+            if state == "IN_PROGRESS":
+                update_time_str = session.get("updateTime")
+                if update_time_str:
+                    try:
+                        update_time = parser.parse(update_time_str)
+                        now = datetime.now(timezone.utc)
+                        if (now - update_time) > timedelta(minutes=5):
+                            logger.info(f"Session {session_id} is IN_PROGRESS but timed out (> 5 mins). Treating as FAILED.")
+                            is_timeout = True
+                    except Exception as e:
+                        logger.warning(f"Failed to parse updateTime for session {session_id}: {e}")
+
+            # Case 1: Failed session or Timeout -> Resume
+            if state == "FAILED" or is_timeout:
+                logger.info(f"Resuming failed/timed-out Jules session: {session_id}")
                 try:
                     jules_client.send_message(session_id, "ok")
                     logger.info(f"Successfully sent resume message to session {session_id}")
@@ -109,8 +126,6 @@ def check_and_resume_or_archive_sessions() -> None:
                     if session_id in retry_state:
                         del retry_state[session_id]
                         state_changed = True
-                except Exception as e:
-                    logger.error(f"Failed to resume session {session_id}: {e}")
                 except Exception as e:
                     logger.error(f"Failed to resume session {session_id}: {e}")
 
@@ -129,7 +144,7 @@ def check_and_resume_or_archive_sessions() -> None:
             elif state == "COMPLETED" and not pull_request:
                 retry_count = retry_state.get(session_id, 0)
 
-                if retry_count < 2:
+                if retry_count < 5:
                     logger.info(f"Resuming completed Jules session (no PR) [Attempt {retry_count + 1}]: {session_id}")
                     try:
                         jules_client.send_message(session_id, "ok")

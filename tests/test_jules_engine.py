@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from auto_coder.jules_engine import check_and_resume_or_archive_sessions
@@ -168,3 +169,27 @@ class TestJulesEngine(unittest.TestCase):
         # Verify
         mock_jules_client.archive_session.assert_not_called()
         mock_jules_client.send_message.assert_not_called()
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    @patch("auto_coder.jules_engine.datetime")
+    def test_resume_in_progress_session_timed_out(self, mock_datetime, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup
+        mock_jules_client = mock_jules_client_cls.return_value
+        
+        # 6 minutes ago
+        now = datetime(2024, 1, 1, 12, 10, 0, tzinfo=timezone.utc)
+        six_mins_ago = (now - timedelta(minutes=6)).isoformat()
+        
+        mock_datetime.now.return_value = now
+        
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s7", "state": "IN_PROGRESS", "updateTime": six_mins_ago}]
+        mock_load_state.return_value = {}
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify
+        mock_jules_client.send_message.assert_called_once_with("s7", "ok")
