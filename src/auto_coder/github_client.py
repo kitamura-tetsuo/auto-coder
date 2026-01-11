@@ -836,48 +836,12 @@ class GitHubClient:
                 # Log but continue to fallback
                 logger.warning(f"Dedicated parent endpoint failed: {e}")
 
-            # Fallback: Get issue details directly and check 'parent' field
-            # This matches the previous logic but uses GhApi
-            try:
-                issue_details = api.issues.get(owner, repo, issue_number, headers={
-                        "X-GitHub-Api-Version": "2022-11-28",
-                        "Accept": "application/vnd.github+json" 
-                })
-                
-                parent_issue = issue_details.get("parent")
-                if parent_issue:
-                     logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')} (found via issue details)")
-                     return parent_issue
-            
-            except Exception as e:
-                 logger.error(f"Fallback parent retrieval failed: {e}")
-                 
-            return None
-                    
-
         except Exception as e:
             # 404 is common for issues without parents if the endpoint returns 404.
             if "404" in str(e):
                 return None
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
-
-    def get_parent_issue(self, repo_name: str, issue_number: int) -> Optional[int]:
-        """Get parent issue number for a given issue.
-
-        Wrapper around get_parent_issue_details for backward compatibility.
-
-        Args:
-            repo_name: Repository name in format 'owner/repo'
-            issue_number: Issue number to check for parent issue
-
-        Returns:
-            Parent issue number if exists, None otherwise.
-        """
-        parent_details = self.get_parent_issue_details(repo_name, issue_number)
-        if parent_details:
-            return int(parent_details["number"])
-        return None
 
     def get_parent_issue_body(self, repo_name: str, issue_number: int) -> Optional[str]:
         """Get parent issue body content for a given issue using REST API.

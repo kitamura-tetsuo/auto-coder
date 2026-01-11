@@ -104,7 +104,6 @@ class TestGitHubClientREST:
         # Mock the helper methods that are called for each issue
         with patch.object(client, "get_linked_prs", return_value=[1, 2]) as mock_linked, \
              patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub, \
-             patch.object(client, "get_parent_issue", return_value=999) as mock_parent:
              
             # Execute
             result = client.get_open_issues_json("owner/repo")
