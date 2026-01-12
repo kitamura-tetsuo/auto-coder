@@ -15,14 +15,16 @@ def test_sleep_with_countdown_execution(mock_sleep):
 
     cli_ui.sleep_with_countdown(2, stream=mock_stream)
 
-    # Check that time.sleep was called 2 times
-    assert mock_sleep.call_count == 2
+    # Check that time.sleep was called 20 times (2 seconds * 10 Hz)
+    assert mock_sleep.call_count == 20
 
     # Check that stream.write was called
     assert mock_stream.write.called
 
     # Check output format
     writes = [args[0] for args, _ in mock_stream.write.call_args_list]
+    # Check for spinner characters (assuming NO_COLOR is not set in test environment, or checking ASCII fallback)
+    # The default spinner frames include "⠋"
     assert any("Sleeping..." in w for w in writes)
 
 
