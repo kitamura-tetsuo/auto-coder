@@ -42,7 +42,7 @@ def debug(github_action_log_summary: str) -> None:
 
         try:
             from .automation_config import AutomationConfig
-            from .util.github_action import _create_github_action_log_summary, _get_github_actions_logs
+            from .util.github_action import _create_github_action_log_summary
 
             # Create a dummy config and failed_checks to pass to _get_github_actions_logs
             config = AutomationConfig()  # Default config

@@ -85,6 +85,9 @@ def get_ghapi_client(token: str) -> GhApi:
                 timeout=timeout
             )
             
+            # Raise for status to ensure errors are caught (e.g. 404, 422)
+            resp.raise_for_status()
+            
             # Update last headers
             try:
                 self.recv_hdrs = dict(resp.headers)

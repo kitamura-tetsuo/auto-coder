@@ -44,6 +44,8 @@ dependencies = [
     "hishel[sqlite]>=1.0.0",
     "ghapi>=1.0.0",
     "aider-chat>=0.1.0",
+    "rapidfuzz>=3.0.0",
+    "PyGithub>=2.0.0",
 ]
 
 [project.optional-dependencies]

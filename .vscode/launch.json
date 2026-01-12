@@ -146,6 +146,23 @@
             }
         },
         {
+            "name": "Debug github-action-log-summary - Outliner",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/workspace",
+            "args": [
+                "debug",
+                "--github-action-log-summary",
+                "https://github.com/kitamura-tetsuo/outliner/actions/runs/20892683018"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
             "name": "Check GraphRAG Services (All)",
             "type": "debugpy",
             "request": "launch",

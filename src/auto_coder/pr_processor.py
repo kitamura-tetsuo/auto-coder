@@ -41,14 +41,24 @@ from .prompt_loader import render_prompt
 from .test_log_utils import extract_first_failed_test, extract_all_failed_tests
 from .test_result import TestResult
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
+from .util.github_action import _create_github_action_log_summary
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
+# Track active monitors to prevent duplicate execution within the same process
+_active_monitors: set[int] = set()
+_active_monitors_lock = threading.Lock()
+
 
 def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
     """Run the async monitor in a separate thread."""
-    asyncio.run(monitor_workflow_async(repo_name, pr_number, head_sha, workflow_id))
+    try:
+        asyncio.run(monitor_workflow_async(repo_name, pr_number, head_sha, workflow_id))
+    finally:
+        with _active_monitors_lock:
+            _active_monitors.discard(pr_number)
+            logger.debug(f"Removed PR #{pr_number} from active monitors")
 
 
 async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
@@ -74,11 +84,11 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
     }
 
     try:
-        # 1. Wait for workflow run to appear (max 5 minutes)
+        # 1. Wait for workflow run to appear (max 1 minutes)
         run_found = False
         run_id = None
 
-        for _ in range(60):  # 60 * 5s = 5 minutes
+        for _ in range(12):  # 12 * 5s = 1 minutes
             status_result = _check_github_actions_status(repo_name, pr_data, config)
             if status_result.ids:
                 run_found = True
@@ -867,28 +877,56 @@ def _handle_pr_merge(
                 # 2. Trigger workflow_dispatch
                 from auto_coder.util.github_action import trigger_workflow_dispatch
 
+                # Check if monitor is already active BEFORE triggering workflow
+                # This prevents duplicate workflow runs and duplicate monitors
+                with _active_monitors_lock:
+                    if pr_number in _active_monitors:
+                        logger.info(f"Monitor already active for PR #{pr_number}, skipping trigger")
+                        return actions
+                    _active_monitors.add(pr_number)
+                    logger.debug(f"Added PR #{pr_number} to active monitors")
+
                 head_branch = pr_data.get("head", {}).get("ref")
                 workflow_id = "ci.yml"
 
-                triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
+                try:
+                    triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
 
-                if triggered:
-                    actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
+                    if triggered:
+                        actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
 
-                    # 3. Start async monitor
-                    head_sha = pr_data.get("head", {}).get("sha")
-                    monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
-                    monitor_thread.start()
+                        # 3. Start async monitor
+                        head_sha = pr_data.get("head", {}).get("sha")
 
-                    actions.append(f"Started async monitor for {workflow_id}")
+                        try:
+                            monitor_thread = threading.Thread(
+                                target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True
+                            )
+                            monitor_thread.start()
+                            actions.append(f"Started async monitor for {workflow_id}")
+                        except Exception as e:
+                            # Clean up if thread fails to start
+                            with _active_monitors_lock:
+                                _active_monitors.discard(pr_number)
+                            logger.error(f"Failed to start monitor thread for PR #{pr_number}: {e}")
+                            actions.append(f"Failed to start monitor for {workflow_id}: {e}")
+                        
+                        # Keep the label so async monitor can remove it later
+                        lm.keep_label()
+                        return actions
 
-                    # Keep the label so async monitor can remove it later
-                    lm.keep_label()
+                    else:
+                        actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")
+                        # Clean up active monitor since we failed to trigger
+                        with _active_monitors_lock:
+                            _active_monitors.discard(pr_number)
+                        # Label will be removed by LabelManager exit
 
-                    return actions
-                else:
-                    actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")
-                    # Label will be removed by LabelManager exit
+                except Exception as e:
+                    # Clean up active monitor on exception
+                    with _active_monitors_lock:
+                        _active_monitors.discard(pr_number)
+                    raise e
 
         detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
 
@@ -1706,7 +1744,7 @@ def _send_jules_error_feedback(
             return actions
 
         # Get GitHub Actions error logs
-        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+        github_logs, _ = _create_github_action_log_summary(repo_name, config, failed_checks)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
