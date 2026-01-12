@@ -305,7 +305,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
         cached_result = cache.get(cache_key)
         if cached_result:
-            logger.info(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
+            logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
             return cached_result
 
         # Use gh API to get check runs for the commit
