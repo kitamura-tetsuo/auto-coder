@@ -1064,7 +1064,7 @@ def _handle_pr_merge(
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
                 github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
+                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -2098,10 +2098,13 @@ def _fix_pr_issues_with_github_actions_testing(
     attempt_history: List[Dict[str, Any]] = []
 
     try:
+        # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
+        # 1. Apply fix based on GHA logs
         actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
         initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
         actions.extend(initial_fix_actions)
 
+        # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
             test_result = run_local_tests(config, test_file=failed_tests)
 
@@ -2132,18 +2135,13 @@ def _fix_pr_issues_with_github_actions_testing(
                 
                 test_result = run_local_tests(config, test_file=failed_tests)
 
-        # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
-        count_msg = f"{len(failed_tests)} failed tests" if failed_tests is not None else "failed tests (unknown count)"
-        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs ({count_msg})")
-        
-        # 1. Apply fix based on GHA logs
-        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-        actions.extend(initial_fix_actions)
-        
-        # 2. Commit and Push
+        # 3. Commit and Push
         # Check if any changes were made
         result = cmd.run_command(["git", "status", "--porcelain"])
         if result.success and result.stdout.strip():
+            # Stage changes before committing
+            cmd.run_command(["git", "add", "."])
+            
             commit_msg = f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})"
             c_res = git_commit_with_retry(commit_msg)
             if c_res.success:
