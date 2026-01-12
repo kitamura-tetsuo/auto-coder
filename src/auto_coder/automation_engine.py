@@ -154,7 +154,6 @@ class AutomationEngine:
         from .util.dependabot_timestamp import should_process_dependabot_pr
         from .util.github_action import (
             _check_github_actions_status,
-            check_github_actions_and_exit_if_in_progress,
             preload_github_actions_status,
         )
 
@@ -244,25 +243,12 @@ class AutomationEngine:
                         continue
 
                 # Calculate GitHub Actions status for the PR
-                # check_github_actions_and_exit_if_in_progress returns True if we should continue (not in progress)
-                # and False if we should stop/skip (in progress)
-                should_continue = check_github_actions_and_exit_if_in_progress(
-                    repo_name,
-                    pr_data,
-                    self.config,
-                    self.github,
-                    switch_branch_on_in_progress=False,
-                    item_type="pr",
-                )
+                # Optimized: Directly call _check_github_actions_status to avoid double call/cache lookup
+                checks = _check_github_actions_status(repo_name, pr_data, self.config)
 
-                if not should_continue:
+                if checks.in_progress:
                     logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
                     continue
-
-                # We still need the checks object for priority calculation later
-                # Since check_github_actions_and_exit_if_in_progress doesn't return it, we call _check_github_actions_status again
-                # or we could refactor, but for now let's just call it to get the object as it's cached
-                checks = _check_github_actions_status(repo_name, pr_data, self.config)
 
                 # Check if we should skip this PR because it's waiting for Jules
                 if _should_skip_waiting_for_jules(self.github, repo_name, pr_data):
