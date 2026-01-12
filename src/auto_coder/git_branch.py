@@ -1376,18 +1376,7 @@ def branch_context(
     checks for unpushed commits, and returns to the main branch on exit (even if
     an exception occurs).
 
-    Branch Conflict Handling:
-        When create_new=True, this context manager leverages git_checkout_branch()
-        which automatically detects and prevents Git ref namespace conflicts.
-        If a conflict is detected (e.g., trying to create 'issue-699/attempt-1'
-        when 'issue-699' already exists), a RuntimeError is raised with a clear
-        error message indicating the conflicting branch and resolution steps.
-
-        The conflict detection prevents the following scenarios:
-        - Creating 'branch/name' when 'branch' exists
-        - Creating 'branch' when 'branch/*' exists
-
-        See git_checkout_branch() and detect_branch_name_conflict() for details.
+    DEPRECATED: Use BranchManager class from .branch_manager instead.
 
     Args:
         branch_name: Name of the branch to switch to
@@ -1398,107 +1387,16 @@ def branch_context(
         check_unpushed: If True, automatically check and push unpushed commits
                        on entry (default: True)
         remote: Remote name to use for unpushed commit checks (default: 'origin')
-
-    Example Usage:
-        # Work on a feature branch
-        with branch_context("feature/issue-123"):
-            # Perform work on feature/issue-123 branch
-            # Branch is automatically pulled on entry
-            # Unpushed commits are automatically pushed
-            perform_work()
-        # Automatically back on main branch after exiting context
-
-        # Create and work on new branch (with automatic conflict detection)
-        with branch_context("feature/new-feature", create_new=True, base_branch="main"):
-            # New branch created from main
-            # Automatic pull after switch
-            # Unpushed commits are automatically pushed
-            # Raises RuntimeError if branch name conflicts detected
-            perform_work()
-        # Automatically returns to main
-
-    Raises:
-        RuntimeError: If branch creation fails due to naming conflicts or other branch operations
-        Exception: Propagates any exceptions from branch operations
     """
-    from .git_commit import ensure_pushed
-    from .git_info import is_git_repository
+    # Import locally to avoid circular imports
+    from .branch_manager import BranchManager
 
-    # Store the current branch to return to on exit
-    original_branch = get_current_branch(cwd=cwd)
-
-    if not original_branch:
-        raise RuntimeError("Failed to get current branch before switching")
-
-    # If already on the target branch, just yield without switching
-    if original_branch == branch_name and not create_new:
-        logger.info(f"Already on branch '{branch_name}', staying on current branch")
-        try:
-            yield
-        finally:
-            # Even if we're already on the branch, still need to handle cleanup properly
-            pass
-        return
-
-    try:
-        # On entry: switch to the target branch with automatic pull
-        logger.info(f"Switching to branch '{branch_name}'")
-        switch_result = switch_to_branch(
-            branch_name=branch_name,
-            create_new=create_new,
-            base_branch=base_branch,
-            cwd=cwd,
-            publish=True,  # Default to publishing new branches
-            pull_after_switch=True,  # Always pull after switch
-        )
-
-        if not switch_result.success:
-            raise RuntimeError(f"Failed to switch to branch '{branch_name}': {switch_result.stderr}")
-
-        # Check for and push unpushed commits if requested
-        if check_unpushed:
-            try:
-                # Import ProgressStage here to avoid circular imports
-                from .progress_footer import ProgressStage
-
-                with ProgressStage("Checking unpushed commits"):
-                    logger.info("Checking for unpushed commits before processing...")
-                    push_result = ensure_pushed(cwd=cwd, remote=remote)
-                    if push_result.success and "No unpushed commits" not in push_result.stdout:
-                        logger.info("Successfully pushed unpushed commits")
-                    elif not push_result.success:
-                        logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
-            except ImportError:
-                # ProgressStage not available, just check and push without progress indicator
-                logger.info("Checking for unpushed commits before processing...")
-                push_result = ensure_pushed(cwd=cwd, remote=remote)
-                if push_result.success and "No unpushed commits" not in push_result.stdout:
-                    logger.info("Successfully pushed unpushed commits")
-                elif not push_result.success:
-                    logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
-
-        # Yield control to the with block
+    with BranchManager(
+        branch_name=branch_name,
+        create_new=create_new,
+        base_branch=base_branch,
+        cwd=cwd,
+        check_unpushed=check_unpushed,
+        remote=remote
+    ):
         yield
-
-    finally:
-        # On exit: always return to the original branch
-        # First, check if we're still in a git repository
-        if is_git_repository(cwd):
-            # Check if the current branch is different from the original
-            current_branch = get_current_branch(cwd=cwd)
-
-            if current_branch != original_branch:
-                logger.info(f"Returning to original branch '{original_branch}'")
-                return_result = switch_to_branch(
-                    branch_name=original_branch,
-                    cwd=cwd,
-                    pull_after_switch=True,  # Always pull after switch
-                )
-
-                if not return_result.success:
-                    logger.warning(f"Failed to return to branch '{original_branch}': {return_result.stderr}")
-                    # Don't raise here - we're in cleanup mode
-            else:
-                logger.info(f"Already on branch '{original_branch}', no need to switch back")
-        else:
-            logger.warning("Not in a git repository during cleanup, cannot return to original branch")

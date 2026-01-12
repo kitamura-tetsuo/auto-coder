@@ -29,6 +29,7 @@ from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
 
+from .branch_manager import BranchManager
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
@@ -417,27 +418,32 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
         actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
 
-        # Step 2: Checkout the PR branch
+        # Step 2: Ensure PR branch exists and is up to date, then use BranchManager
         # Create minimal PR data for checkout function
-        pr_data_for_checkout = {"number": pr_number, "head": {"ref": f"pr-{pr_number}"}}
-        checkout_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig())
+        pr_branch_name = f"pr-{pr_number}"
+        pr_data_for_checkout = {"number": pr_number, "head": {"ref": pr_branch_name}}
+        
+        # Ensure branch exists and is fetched, but don't switch yet
+        prepare_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig(), perform_checkout=False)
 
-        if not checkout_success:
-            error_msg = f"Failed to checkout PR #{pr_number} branch"
+        if not prepare_success:
+            error_msg = f"Failed to prepare PR #{pr_number} branch"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
 
-        actions.append(f"Checked out PR #{pr_number} branch")
+        with BranchManager(pr_branch_name) as manager:
+            actions.append(f"Checked out PR #{pr_number} branch")
 
-        # Step 3: Update from base branch with conflict resolution
-        # The _update_with_base_branch function includes:
-        # - Fetching latest changes
-        # - Merging base branch
-        # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
-        # - Pushing updated branch with retry
-        update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
-        actions.extend(update_actions)
+            # Step 3: Update from base branch with conflict resolution
+            # The _update_with_base_branch function includes:
+            # - Fetching latest changes
+            # - Merging base branch
+            # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
+            # - Pushing updated branch with retry
+            update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
+            actions.extend(update_actions)
+
 
             # Step 4: Check for degrading merge detection
         if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
@@ -1050,81 +1056,74 @@ def _handle_pr_merge(
                 return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
-        checkout_ok: bool = _checkout_pr_branch(repo_name, pr_data, config)
-        if not checkout_ok:
-            actions.append(f"Failed to checkout PR #{pr_number} branch")
+        # pr_branch_name is defined earlier (around line 1004)
+        
+        # Prepare branch (ensure fetched)
+        prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
+        if not prepare_ok:
+            actions.append(f"Failed to prepare PR #{pr_number} branch")
             return actions
 
-        actions.append(f"Checked out PR #{pr_number} branch")
+        with BranchManager(pr_branch_name) as manager:
+            actions.append(f"Checked out PR #{pr_number} branch")
 
-        # Step 6: Optionally update with latest base branch commits (configurable)
-        if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
-            actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
+            # Step 6: Optionally update with latest base branch commits (configurable)
+            if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
+                actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
 
-            # Proceed directly to extracting GitHub Actions logs and attempting fixes
-            if failed_checks:
-                github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
-                actions.extend(fix_actions)
-            else:
-                actions.append(f"No specific failed checks found for PR #{pr_number}")
-
-            return actions
-        else:
-            actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
-            update_actions = _update_with_base_branch(repo_name, pr_data, config)
-            actions.extend(update_actions)
-
-            # Step 7: Check for special cases from base branch update
-
-            # Check if LLM determined merge would degrade code quality
-            if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
-                actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
-                # Close the PR without merging
-                try:
-                    client = GitHubClient.get_instance()
-                    close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
-                    client.close_pr(repo_name, pr_number, close_comment)
-                    actions.append(f"Closed PR #{pr_number} without merging")
-
-                    # Checkout main branch after closing PR
-                    main_branch = config.MAIN_BRANCH
-                    checkout_res = cmd.run_command(
-                        ["git", "checkout", main_branch],
-                        timeout=30,
-                        stream_output=False,
-                    )
-                    if checkout_res.success:
-                        actions.append(f"Checked out {main_branch} branch")
-                    else:
-                        logger.warning(f"Failed to checkout {main_branch} branch: {checkout_res.stderr}")
-                        actions.append(f"Warning: Failed to checkout {main_branch} branch")
-                except Exception as e:
-                    logger.error(f"Failed to close PR #{pr_number}: {e}")
-                    actions.append(f"Error closing PR #{pr_number}: {e}")
-                return actions
-
-            # If base branch update required pushing changes, skip to next PR
-            if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
-                actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
-                return actions
-
-            # Step 8: If no main branch updates were needed, the test failures are due to PR content
-            # Get GitHub Actions error logs and ask Gemini to fix
-            if any("up to date with" in action for action in update_actions):
-                actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
-
-                # Fix PR issues using GitHub Actions logs first, then local tests
+                # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
-                    # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                    github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
+
+                return actions
             else:
-                # If we reach here, some other update action occurred
-                actions.append(f"PR #{pr_number} processing completed")
+                actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
+                update_actions = _update_with_base_branch(repo_name, pr_data, config)
+                actions.extend(update_actions)
+
+                # Step 7: Check for special cases from base branch update
+
+                # Check if LLM determined merge would degrade code quality
+                if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+                    actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
+                    # Close the PR without merging
+                    try:
+                        client = GitHubClient.get_instance()
+                        close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
+                        client.close_pr(repo_name, pr_number, close_comment)
+                        actions.append(f"Closed PR #{pr_number} without merging")
+                        
+                        # BranchManager handles return to original branch
+                    except Exception as e:
+                        logger.error(f"Failed to close PR #{pr_number}: {e}")
+                        actions.append(f"Error closing PR #{pr_number}: {e}")
+                    return actions
+
+                # If base branch update required pushing changes, skip to next PR
+                if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+                    actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
+                    return actions
+
+                # Step 8: If no main branch updates were needed, the test failures are due to PR content
+                # Get GitHub Actions error logs and ask Gemini to fix
+                if any("up to date with" in action for action in update_actions):
+                    actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
+
+                    # Fix PR issues using GitHub Actions logs first, then local tests
+                    if failed_checks:
+                        # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
+                        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                        actions.extend(fix_actions)
+                    else:
+                        actions.append(f"No specific failed checks found for PR #{pr_number}")
+                else:
+                    # If we reach here, some other update action occurred
+                    actions.append(f"PR #{pr_number} processing completed")
 
     except Exception as e:
         actions.append(f"Error handling PR merge for PR #{pr_number}: {e}")
@@ -1132,7 +1131,7 @@ def _handle_pr_merge(
     return actions
 
 
-def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> bool:
+def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, perform_checkout: bool = True) -> bool:
     """Checkout the PR branch for local testing.
 
     If config.FORCE_CLEAN_BEFORE_CHECKOUT is True, forcefully discard any local changes
@@ -1165,14 +1164,14 @@ def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: Automat
 
         # Step 2: Try manual fetch and checkout (fallback is redundant now but keeps logic similar)
         log_action(f"Direct checkout failed for PR #{pr_number}, trying alternative approach", False)
-        return _force_checkout_pr_manually(repo_name, pr_data, config)
+        return _force_checkout_pr_manually(repo_name, pr_data, config, perform_checkout)
 
     except Exception as e:
         logger.error(f"Error checking out PR #{pr_number}: {e}")
         return False
 
 
-def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> bool:
+def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, perform_checkout: bool = True) -> bool:
     """Manually fetch and checkout PR branch as fallback."""
     pr_number = pr_data["number"]
 
@@ -1212,18 +1211,68 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
                 return False
 
         # Checkout the branch
+        if perform_checkout:
+            checkout_result = cmd.run_command(["git", "checkout", branch_name])
+            if not checkout_result.success:
+                # If branch doesn't exist locally, checkout from fetched ref
+                checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
+
+                if not checkout_result.success:
+                    log_action(
+                        f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
+                        False,
+                        checkout_result.stderr,
+                    )
+                    return False
+        else:
+            # If not checking out, ensure the branch exists/updates from the fetched head
+            # If we fetched to branch_name:branch_name, it's already updated.
+            # If we fetched to FETCH_HEAD (fallback), we need to update/create the local branch.
+            if not fetch_result.success and "FETCH_HEAD" in str(fetch_result.stdout or ""): 
+                 # This logic is tricky because we rely on previous fetch_result variable which might be from branch:branch attempt.
+                 pass
+            
+            # The structure above tries branch:branch first.
+            # checks: fetch_result = ... branch:branch
+            # if not fetch_result.success: fetch_result = ... pull/N/head
+            
+            # Re-evaluating fetch logic to account for perform_checkout=False
+            pass
+        
+        # NOTE: The block above was complex. Re-implementing clearer logic for finish.
+        
+        if not perform_checkout:
+             # Logic to ensure branch ref exists if we fetched to FETCH_HEAD
+             # If branch:branch succeeded, the branch ref is updated.
+             # If pull/N/head succeeded, we need to create/update local branch ptr.
+             
+             # We can't easily know which path succeeded without checking return codes or logic flow.
+             # But we know at least one Fetch Succeeded if we reached here (wait, we didn't check success properly in original code flow? 
+             # Original code: if not fetch (branch:branch): if not fetch (pull): return False. 
+             # So if we are here, we fetched successfully.
+             
+             # If branch:branch failed, we used pull/N/head.
+             # So we verify if branch exists?
+             
+             verify = cmd.run_command(["git", "rev-parse", "--verify", branch_name])
+             if not verify.success:
+                 # It must have been the FETCH_HEAD case or branch didn't exist before.
+                 # Create/Update it.
+                 cmd.run_command(["git", "branch", "-f", branch_name, "FETCH_HEAD"])
+             return True
+
         checkout_result = cmd.run_command(["git", "checkout", branch_name])
         if not checkout_result.success:
-            # If branch doesn't exist locally, checkout from fetched ref
-            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
+             # If branch doesn't exist locally, checkout from fetched ref
+             checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
 
-            if not checkout_result.success:
-                log_action(
-                    f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
-                    False,
-                    checkout_result.stderr,
-                )
-                return False
+             if not checkout_result.success:
+                 log_action(
+                     f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
+                     False,
+                     checkout_result.stderr,
+                 )
+                 return False
 
         log_action(f"Successfully manually checked out PR #{pr_number}")
         return True
@@ -2101,7 +2150,7 @@ def _fix_pr_issues_with_github_actions_testing(
         # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
         # 1. Apply fix based on GHA logs
         actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager)
         actions.extend(initial_fix_actions)
 
         # 2. Apply fix based on local tests when 1-3 tests failed
@@ -2265,6 +2314,7 @@ def _apply_github_actions_fix(
     github_logs: str,
     test_result: Optional[TestResult] = None,
     github_client: Optional[Any] = None,
+    backend_manager: Optional[BackendManager] = None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
@@ -2325,7 +2375,7 @@ def _apply_github_actions_fix(
 
         # Use LLM backend manager to run the prompt
         logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-        response = run_llm_prompt(fix_prompt)
+        response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
 
         if response:
             response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"

@@ -1193,7 +1193,7 @@ def get_llm_backend_manager(
     )
 
 
-def run_llm_prompt(prompt: str) -> str:
+def run_llm_prompt(prompt: str, backend_manager: Optional[BackendManager] = None) -> str:
     """
     Run a prompt using the global LLM backend manager.
 
@@ -1202,6 +1202,7 @@ def run_llm_prompt(prompt: str) -> str:
 
     Args:
         prompt: The prompt to send to the LLM
+        backend_manager: Optional backend manager instance to use
 
     Returns:
         str: The response from the LLM
@@ -1209,7 +1210,7 @@ def run_llm_prompt(prompt: str) -> str:
     Raises:
         RuntimeError: If the LLM backend manager hasn't been initialized
     """
-    manager = LLMBackendManager.get_llm_instance()
+    manager = backend_manager or LLMBackendManager.get_llm_instance()
     if manager is None:
         raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
     return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]

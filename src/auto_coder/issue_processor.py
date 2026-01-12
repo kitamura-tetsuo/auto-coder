@@ -15,7 +15,8 @@ from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessRe
 from .backend_manager import get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .cloud_manager import CloudManager
 
-from .git_branch import branch_context, extract_attempt_from_branch
+from .branch_manager import BranchManager
+from .git_branch import extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .util.gh_cache import GitHubClient
@@ -800,7 +801,7 @@ def _apply_issue_actions_directly(
                         logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
                         # Create parent issue branch from the configured main branch (automatically pushed to remote)
-                        with branch_context(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
+                        with BranchManager(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
                             actions.append(f"Created and published parent branch: {parent_branch}")
                             logger.info(f"Successfully created and published parent branch: {parent_branch}")
 
@@ -847,7 +848,7 @@ def _apply_issue_actions_directly(
             if not should_process:
                 return actions
 
-            with branch_context(
+            with BranchManager(
                 target_branch,
                 create_new=create_new_work_branch,
                 base_branch=(base_branch if "base_branch" in locals() else None),

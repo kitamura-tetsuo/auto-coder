@@ -50,7 +50,7 @@ def test_parent_issue_branch_creation_uses_main_base():
         ]
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+            with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 # Mock get_parent_issue_details to return OPEN parent
@@ -108,7 +108,7 @@ def test_existing_work_branch_not_recreated():
         ]
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+            with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 github_client.get_parent_issue_details.return_value = None  # No parent issue
@@ -163,7 +163,7 @@ def test_missing_work_branch_created_with_correct_base():
         ]
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+            with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 github_client.get_parent_issue_details.return_value = None  # No parent issue
@@ -972,7 +972,7 @@ class TestKeepLabelOnPRCreation:
             ]
 
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
                         with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
                             # Mock _create_pr_for_issue to return success message
@@ -1037,7 +1037,7 @@ class TestKeepLabelOnPRCreation:
             ]
 
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
                         with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
                             # Mock _create_pr_for_issue to return failure message
@@ -1102,7 +1102,7 @@ class TestKeepLabelOnPRCreation:
             ]
 
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
                         with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
                             # Mock GitHub client
