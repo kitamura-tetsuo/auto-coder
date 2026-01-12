@@ -9,6 +9,11 @@ import os
 import re
 from typing import List, Optional
 
+from .test_result import TestResult
+from .logger_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def _strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences from text."""
@@ -314,3 +319,171 @@ def extract_all_failed_tests(stdout: str, stderr: str = "") -> List[str]:
         return sorted(list(candidates_set))
         
     return final_list
+
+
+def extract_important_errors(test_result: TestResult) -> str:
+    """Extract important error information from test output.
+
+    Preserves multi-framework detection (pytest, Playwright, Vitest),
+    Unicode markers (×, ›), and ANSI-friendly parsing.
+    """
+    if test_result.success:
+        return ""
+
+    errors = test_result.errors or ""
+    output = test_result.output or ""
+
+    # Combine stderr and stdout
+    full_output = f"{errors}\n{output}".strip()
+    logger.debug(
+        "extract_important_errors: len(output)=%d len(errors)=%d framework=%s",
+        len(output),
+        len(errors),
+        test_result.framework_type or "unknown",
+    )
+
+    # Prepend stability warning if detected
+    prefix = ""
+    if test_result.stability_issue:
+        prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+
+    if not full_output:
+        return prefix + "Tests failed but no error output available"
+
+    lines = full_output.split("\n")
+
+    # 0) If test detail lines with expected/received (Playwright/Jest) are included, prioritize extracting around the header
+    if ("Expected substring:" in full_output) or ("Received string:" in full_output) or ("expect(received)" in full_output):
+        try:
+            import re
+
+            # Find candidate header by scanning backwards
+            # Playwright header: allow cases without leading "Error:" and allow leading spaces or the × mark
+            hdr_pat = re.compile(r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\).*\.spec\.ts:.*")
+            idx_expect = None
+            for i, ln in enumerate(lines):
+                if ("Expected substring:" in ln) or ("Received string:" in ln) or ("expect(received)" in ln):
+                    idx_expect = i
+                    break
+            if idx_expect is not None:
+                start = 0
+                for j in range(idx_expect, -1, -1):
+                    if hdr_pat.search(lines[j]):
+                        start = j
+                        break
+                end = min(len(lines), idx_expect + 60)
+                block_str = "\n".join(lines[start:end])
+                if block_str:
+                    return prefix + block_str
+        except Exception:
+            pass
+
+    # 1) Prefer Playwright-typical error pattern extraction
+    try:
+        import re
+
+        # Failure header: "Error:   1) [suite] › e2e/... .spec.ts:line:col › ..."
+        header_indices = []
+        # Playwright header: allow both with/without leading "Error:" and also leading whitespace or the × mark
+        header_regex = re.compile(
+            r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|" r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+.*\.spec\.ts:.*",
+            re.UNICODE,
+        )
+        for idx, ln in enumerate(lines):
+            if header_regex.search(ln):
+                header_indices.append(idx)
+        # Typical expected/received patterns
+        expect_regex = re.compile(r"expect\(received\).*|Expected substring:|Received string:")
+
+        blocks = []
+        for start_idx in header_indices:
+            end_idx = min(len(lines), start_idx + 120)  # wider context up to 120 lines
+            # Stop at the next error header (do not stop at empty lines)
+            for j in range(start_idx + 1, min(len(lines), start_idx + 300)):
+                if j >= len(lines):
+                    break
+                s = lines[j]
+                if header_regex.search(s):
+                    end_idx = j
+                    break
+            block = "\n".join(lines[start_idx:end_idx])
+            # Check if it includes expectation/received lines or the corresponding expect line
+            if any(expect_regex.search(b) for b in lines[start_idx:end_idx]) or any(".spec.ts" in b for b in lines[start_idx:end_idx]):
+                blocks.append(block)
+        if blocks:
+            result = "\n\n".join(blocks)
+            # Append expectation/received lines if not included
+            if "Expected substring:" not in result or "Received string:" not in result:
+                extra_lines = []
+                for i, ln in enumerate(lines):
+                    if "Expected substring:" in ln or "Received string:" in ln or "expect(received)" in ln:
+                        start = max(0, i - 2)
+                        end = min(len(lines), i + 4)
+                        extra_lines.extend(lines[start:end])
+                if extra_lines:
+                    result = result + "\n\n--- Expectation Details ---\n" + "\n".join(extra_lines)
+            return prefix + result
+    except Exception:
+        pass
+
+    # 2) Keyword-based fallback extraction
+    important_lines = []
+    # Keywords that indicate important error information
+    error_keywords = [
+        # error detection
+        "error:",
+        "Error:",
+        "ERROR:",
+        "error",
+        # failed detection
+        "failed:",
+        "Failed:",
+        "FAILED:",
+        "failed",
+        # exceptions and traces
+        "exception:",
+        "Exception:",
+        "EXCEPTION:",
+        "traceback:",
+        "Traceback:",
+        "TRACEBACK:",
+        # assertions and common python errors
+        "assertion",
+        "Assertion",
+        "ASSERTION",
+        "syntax error",
+        "SyntaxError",
+        "import error",
+        "ImportError",
+        "module not found",
+        "ModuleNotFoundError",
+        "test failed",
+        "Test failed",
+        "TEST FAILED",
+        # e2e / Playwright related
+        "e2e/",
+        ".spec.ts",
+        "playwright",
+    ]
+
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if any(keyword.lower() in line_lower for keyword in error_keywords):
+            # Extract a slightly broader context
+            start = max(0, i - 5)
+            end = min(len(lines), i + 8)
+            context_lines = lines[start:end]
+            important_lines.extend(context_lines)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_lines = []
+    for line in important_lines:
+        if line not in seen:
+            seen.add(line)
+            unique_lines.append(line)
+
+    # Limit output length
+    result = "\n".join(unique_lines)
+
+    return prefix + (result if result else "Tests failed but no specific error information found")

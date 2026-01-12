@@ -27,6 +27,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
+from .test_log_utils import extract_important_errors
 from .update_manager import check_for_updates_and_restart
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.gh_cache import get_ghapi_client
@@ -1319,11 +1320,11 @@ class AutomationEngine:
             if isinstance(test_result, TestResult):
                 return cast(
                     str,
-                    fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                    extract_important_errors(test_result),
                 )
             # Convert legacy dict payloads to TestResult for better extraction
             tr = fix_to_pass_tests_runner_module._to_test_result(test_result)
-            return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(tr))
+            return cast(str, extract_important_errors(tr))
         except Exception:
             # Legacy fallback: minimal regex-based extraction from dict payloads
             import re

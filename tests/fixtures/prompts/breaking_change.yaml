@@ -81,7 +81,6 @@ pr:
     Commit History Since Branch Creation:
     $commit_log
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     CRITICAL BREAKING CHANGE DIRECTIVES:
     1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them

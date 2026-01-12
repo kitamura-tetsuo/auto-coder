@@ -38,7 +38,7 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test, extract_all_failed_tests
+from .test_log_utils import extract_first_failed_test, extract_all_failed_tests, extract_important_errors
 from .test_result import TestResult
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 from .util.github_action import _create_github_action_log_summary
@@ -1063,8 +1063,8 @@ def _handle_pr_merge(
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
+                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1163,25 +1163,7 @@ def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: Automat
                     clean_result.stderr,
                 )
 
-        # Step 2: Attempt to checkout the PR
-        # Use direct git commands instead of gh pr checkout
-        # We fetch into FETCH_HEAD first to avoid "refusing to fetch into checked out branch" error
-        # checking out locally as pr-{pr_number}
-        fetch_ref = f"pull/{pr_number}/head"
-        fetch_result = cmd.run_command(["git", "fetch", "origin", fetch_ref])
-        
-        if fetch_result.success:
-            # -B forces creation or reset of the branch to FETCH_HEAD
-            checkout_result = cmd.run_command(["git", "checkout", "-B", f"pr-{pr_number}", "FETCH_HEAD"]) 
-            if checkout_result.success:
-                log_action(f"Successfully checked out PR #{pr_number}")
-                return True
-            else:
-                log_action(f"Failed to checkout pr-{pr_number}: {checkout_result.stderr}", False)
-        else:
-             log_action(f"Failed to fetch PR #{pr_number}: {fetch_result.stderr}", False)
-
-        # Step 3: Try manual fetch and checkout (fallback is redundant now but keeps logic similar)
+        # Step 2: Try manual fetch and checkout (fallback is redundant now but keeps logic similar)
         log_action(f"Direct checkout failed for PR #{pr_number}, trying alternative approach", False)
         return _force_checkout_pr_manually(repo_name, pr_data, config)
 
@@ -2081,10 +2063,12 @@ def _fix_pr_issues_with_testing(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_logs: str,
+    failed_tests: List[str] | None = None,
     skip_github_actions_fix: bool = False,
 ) -> List[str]:
     # Extract failed tests from GitHub Actions logs
-    failed_tests = extract_all_failed_tests(github_logs)
+    if failed_tests is None:
+        failed_tests = extract_all_failed_tests(github_logs)
     
     if skip_github_actions_fix:
         return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
@@ -2352,6 +2336,7 @@ def _apply_github_actions_fix(
             actions.append("No response from LLM for GitHub Actions fix")
 
     except Exception as e:
+        logger.error(f"Error applying GitHub Actions fix for PR #{pr_number}: {e}")
         actions.append(f"Error applying GitHub Actions fix for PR #{pr_number}: {e}")
 
     return actions

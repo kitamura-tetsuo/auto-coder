@@ -16,8 +16,6 @@ pr:
     - Do NOT run git commit/push; the system will handle committing.
     - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). Existing branches with 'pr-<number>' pattern can be checked out but new branches must use 'issue-<number>' naming.
-
     Return format:
     - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
     - No greetings, no multi-paragraph analysis.
@@ -108,7 +106,7 @@ pr:
     Extracted Important Errors (failed test files and key error details):
     $extracted_errors
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     Your task:
     1) Identify the root cause(s) of the failing checks based on the extracted errors.
@@ -128,7 +126,7 @@ pr:
     - Body: $pr_body
     - Number: $pr_number
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     GitHub Actions Logs:
     $github_logs
@@ -159,7 +157,7 @@ pr:
 
     $endif
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     Please analyze the test failures and provide specific code fixes.
     Focus on making the tests pass while maintaining code quality.
@@ -203,8 +201,6 @@ pr:
     $commit_log
 
     $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     CRITICAL BREAKING CHANGE DIRECTIVES:
     1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
@@ -261,7 +257,6 @@ pr:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     URGENT PR DIRECTIVES:
     1. IMMEDIATE ACTION: Analyze and implement a solution as quickly as possible
@@ -318,7 +313,6 @@ pr:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     BUG FIX PR DIRECTIVES:
     1. ROOT CAUSE ANALYSIS: Identify the underlying cause of the bug
@@ -376,7 +370,6 @@ pr:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     ENHANCEMENT PR DIRECTIVES:
     1. DESIGN: Consider architecture and design patterns before implementing
@@ -435,7 +428,6 @@ pr:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
 
     DOCUMENTATION PR DIRECTIVES:
     1. ACCURACY: Ensure documentation accurately reflects current implementation
@@ -514,8 +506,6 @@ issue:
     $commit_log
 
     $linked_issues_context
-
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
     DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
 
@@ -643,8 +633,7 @@ issue:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
+ 
     DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
 
     URGENT ISSUE DIRECTIVES:
@@ -716,8 +705,7 @@ issue:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
+ 
     DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
 
     BUG FIX DIRECTIVES:
@@ -792,8 +780,7 @@ issue:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
+ 
     DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
 
     ENHANCEMENT DIRECTIVES:
@@ -869,8 +856,7 @@ issue:
 
     $linked_issues_context
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
-
+ 
     DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
 
     DOCUMENTATION DIRECTIVES:
@@ -913,7 +899,7 @@ tests:
 
     Goal: Make local tests pass by applying safe edits.
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     Task Memory File: ./llm_task.md
     - If the file exists, review the "Logging Protocol" section before making changes.
@@ -948,7 +934,7 @@ tests:
 
     Goal: Fix test stability and dependency issues.
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     PROBLEM DETECTED:
     A test file failed when run as part of the full test suite, but passed when run in isolation.
@@ -1043,7 +1029,7 @@ tests:
     Commit message that was attempted if exist:
     $commit_message
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     **Your task is to:**
     1. First, review the current state by running:
@@ -1090,7 +1076,7 @@ tests:
     Commit message that was attempted if exist:
     $commit_message
 
-    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+    
 
     **Your task is to:**
     1. First, review the current state by running:
