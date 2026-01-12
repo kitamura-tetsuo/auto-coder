@@ -526,8 +526,6 @@ def _check_github_actions_status_from_history(
         pr_number = pr_data["number"]
         head_branch = pr_data.get("head_branch") or pr_data.get("head", {}).get("ref")
         logger.info(f"PR number: {pr_number}, head_branch: {head_branch}")
-        logger.info(f"pr_data keys: {list(pr_data.keys())}")
-        logger.info(f"pr_data['head'] keys if exists: {list(pr_data.get('head', {}).keys()) if 'head' in pr_data else 'No head key'}")
         assert pr_number
         assert head_branch
 

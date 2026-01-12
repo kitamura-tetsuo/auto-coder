@@ -1178,7 +1178,7 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
 
     try:
         # Get PR branch information from PR data
-        branch_name = pr_data.get("head", {}).get("ref")
+        branch_name = pr_data.get("head_branch") or pr_data.get("head", {}).get("ref")
         if not branch_name:
             log_action(f"Cannot determine branch name for PR #{pr_number}", False, "No head.ref in PR data")
             return False

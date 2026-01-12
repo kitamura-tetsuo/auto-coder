@@ -647,8 +647,12 @@ class GitHubClient:
         try:
             prs = self.get_open_pull_requests(repo_name)
             for pr in prs:
-                if pr.head.ref == branch_name:
-                    logger.info(f"Found PR #{pr.number} with head branch '{branch_name}'")
+                # Handle both AttrDict and dict
+                head_ref = pr.get('head', {}).get('ref') if isinstance(pr, dict) else pr.head.ref
+                
+                if head_ref == branch_name:
+                    pr_number = pr.get('number') if isinstance(pr, dict) else pr.number
+                    logger.info(f"Found PR #{pr_number} with head branch '{branch_name}'")
                     return self.get_pr_details(pr)
             logger.debug(f"No open PR found with head branch '{branch_name}'")
             return None
