@@ -441,14 +441,198 @@ class GitHubClient:
 
 
     def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get open issues from repository using REST API (cached).
+        """Get open issues from repository using GraphQL to avoid N+1 API calls.
 
         Matches the output format expected by automation engine.
-        Uses N+1 calls if necessary, but tries to stay efficient.
-        Note: Sub-issues and Linked PRs via timeline are expensive to fetch via REST for all issues.
-        We return empty lists for those fields in this implementation to respect the REST/caching requirement.
+        Falls back to REST API if GraphQL query fails.
         """
         # Check memory cache
+        with self._open_issues_cache_lock:
+            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
+                logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
+                return list(self._open_issues_cache)
+
+        try:
+            owner, repo = repo_name.split("/")
+
+            # GraphQL query to fetch all issue details in one go
+            query = """
+            query($owner: String!, $repo: String!, $limit: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issues(first: $limit, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
+                  nodes {
+                    number
+                    title
+                    body
+                    state
+                    url
+                    createdAt
+                    updatedAt
+                    author {
+                      login
+                    }
+                    labels(first: 20) {
+                      nodes {
+                        name
+                      }
+                    }
+                    assignees(first: 10) {
+                      nodes {
+                        login
+                      }
+                    }
+                    comments {
+                      totalCount
+                    }
+                    parent {
+                      number
+                    }
+                    subIssues(first: 20, states: OPEN) {
+                      nodes {
+                        number
+                      }
+                    }
+                    timelineItems(first: 50, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT]) {
+                      nodes {
+                        ... on ConnectedEvent {
+                          __typename
+                          source {
+                            ... on PullRequest {
+                              number
+                            }
+                          }
+                          subject {
+                            ... on PullRequest {
+                              number
+                            }
+                          }
+                        }
+                        ... on CrossReferencedEvent {
+                          __typename
+                          source {
+                            ... on PullRequest {
+                              number
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+
+            variables = {
+                "owner": owner,
+                "repo": repo,
+                "limit": limit
+            }
+
+            # Sub-issues require preview header
+            extra_headers = {
+                "GraphQL-Features": "sub_issues"
+            }
+
+            result = self.graphql_query(query, variables, extra_headers=extra_headers)
+
+            issues_nodes = result.get("repository", {}).get("issues", {}).get("nodes", [])
+            all_issues: List[Dict[str, Any]] = []
+
+            for node in issues_nodes:
+                if not node:
+                    continue
+
+                # Parse linked PRs
+                linked_prs_ids = set()
+                timeline_nodes = node.get("timelineItems", {}).get("nodes", [])
+                for event in timeline_nodes:
+                    if not event:
+                        continue
+
+                    typename = event.get("__typename")
+
+                    if typename == "ConnectedEvent":
+                        source = event.get("source")
+                        if source and "number" in source and source.get("number"):
+                             linked_prs_ids.add(source.get("number"))
+
+                        subject = event.get("subject")
+                        if subject and "number" in subject and subject.get("number"):
+                             linked_prs_ids.add(subject.get("number"))
+
+                    elif typename == "CrossReferencedEvent":
+                        source = event.get("source")
+                        if source and "number" in source and source.get("number"):
+                             linked_prs_ids.add(source.get("number"))
+
+                linked_prs_list = list(linked_prs_ids)
+
+                # Parse sub-issues
+                sub_issues_nodes = node.get("subIssues", {}).get("nodes", [])
+                open_sub_issues_ids = [n["number"] for n in sub_issues_nodes if n and n.get("number")]
+
+                # Parse parent
+                parent = node.get("parent")
+                parent_issue_id = parent.get("number") if parent else None
+
+                # Labels
+                labels_nodes = node.get("labels", {}).get("nodes", [])
+                labels = [l["name"] for l in labels_nodes if l and l.get("name")]
+
+                # Assignees
+                assignees_nodes = node.get("assignees", {}).get("nodes", [])
+                assignees = [a["login"] for a in assignees_nodes if a and a.get("login")]
+
+                # Author
+                author = node.get("author", {})
+                author_login = author.get("login") if author else None
+
+                # Dates
+                created_at = node.get("createdAt")
+                updated_at = node.get("updatedAt")
+
+                issue_data = {
+                    "number": node["number"],
+                    "title": node["title"],
+                    "body": node["body"] or "",
+                    "state": node["state"].lower(),
+                    "labels": labels,
+                    "assignees": assignees,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "url": node["url"],
+                    "author": author_login,
+                    "comments_count": node.get("comments", {}).get("totalCount", 0),
+                    # Extended fields
+                    "linked_prs": linked_prs_list,
+                    "has_linked_prs": bool(linked_prs_list),
+                    "open_sub_issue_numbers": open_sub_issues_ids,
+                    "has_open_sub_issues": bool(open_sub_issues_ids),
+                    "parent_number": parent_issue_id,
+                    "parent_issue_number": parent_issue_id,
+                    "linked_pr_numbers": linked_prs_list,
+                }
+
+                all_issues.append(issue_data)
+
+            logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via GraphQL (optimized)")
+
+            # Update cache
+            with self._open_issues_cache_lock:
+                self._open_issues_cache = all_issues
+                self._open_issues_cache_repo = repo_name
+                self._open_issues_cache_time = datetime.now()
+
+            return all_issues
+
+        except Exception as e:
+            logger.warning(f"Failed to get open issues via GraphQL from {repo_name} (falling back to REST): {e}")
+            return self._get_open_issues_rest(repo_name, limit)
+
+    def _get_open_issues_rest(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get open issues from repository using REST API (fallback)."""
+        # Check memory cache again (in case called directly)
         with self._open_issues_cache_lock:
             if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
                 logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
@@ -459,34 +643,27 @@ class GitHubClient:
             api = get_ghapi_client(self.token)
             
             # List Issues (state=open)
-            # per_page=limit. Note: GitHub treats PRs as Issues, so we must filter them out.
             issues_summary = api.issues.list_for_repo(owner, repo, state='open', per_page=limit)
             
             all_issues: List[Dict[str, Any]] = []
             
             for issue in issues_summary:
-                # Filter out Pull Requests (which are returned in issues list by REST API)
+                # Filter out Pull Requests
                 if "pull_request" in issue:
                     continue
                     
-                # Safe access (dict expected)
                 i = issue
                 nb = i['number']
                 
-                # Fetch extended details via REST (N+1 calls, but cached via ETag)
-                # linked_prs via timeline
+                # Fetch extended details via REST (N+1 calls)
                 linked_prs_ids = self.get_linked_prs(repo_name, nb)
                 
-                # open_sub_issue_numbers via sub_issues endpoint
-                # Optimization: Check sub_issues_summary from issue object first
                 sub_issues_summary = i.get('sub_issues_summary')
                 if sub_issues_summary and sub_issues_summary.get('total', 0) == 0:
                     open_sub_issues_ids = []
                 else:
                     open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
                 
-                # parent_issue via parent_issue_url
-                # Optimization: Extract from URL if available
                 parent_issue_id = None
                 parent_issue_url = i.get('parent_issue_url')
                 if parent_issue_url:
@@ -494,10 +671,8 @@ class GitHubClient:
                         parent_issue_id = int(parent_issue_url.split('/')[-1])
                     except (ValueError, IndexError):
                         logger.warning(f"Failed to parse parent issue ID from URL: {parent_issue_url}")
-                        # Fallback if parsing fails? Or just leave as None? 
-                        # Original logic would try to fetch. Let's stick to parsing or None to avoid N+1.
                 
-                issue_data: Dict[str, Any] = {
+                issue_data = {
                     "number": nb,
                     "title": i['title'],
                     "body": i['body'] or "",
@@ -509,7 +684,6 @@ class GitHubClient:
                     "url": i['html_url'],
                     "author": i['user']['login'] if i['user'] else None,
                     "comments_count": i['comments'],
-                    # Extended fields populated via REST
                     "linked_prs": linked_prs_ids,
                     "has_linked_prs": bool(linked_prs_ids),
                     "open_sub_issue_numbers": open_sub_issues_ids,
@@ -524,7 +698,7 @@ class GitHubClient:
                 if len(all_issues) >= limit:
                     break
 
-            logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via REST (cached) with extended details")
+            logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via REST (fallback)")
 
             # Update cache
             with self._open_issues_cache_lock:
