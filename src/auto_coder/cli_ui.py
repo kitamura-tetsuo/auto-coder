@@ -2,12 +2,17 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
 from typing import Any, Dict, Optional, TextIO
 
 import click
+
+# Spinner frames for animation
+SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
@@ -64,13 +69,14 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
     click.echo("")  # Add spacing after summary
 
 
-def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
+def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None, message: str = "Sleeping") -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with a spinner.
 
     Args:
         seconds: Number of seconds to sleep.
         stream: Output stream to write to (defaults to sys.stdout).
+        message: Message to display alongside the countdown (default: "Sleeping").
     """
     if stream is None:
         stream = sys.stdout
@@ -84,9 +90,20 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    spinner_frames = SPINNER_FRAMES_ASCII if no_color else SPINNER_FRAMES_UNICODE
+
+    end_time = time.time() + seconds
+    spinner_idx = 0
 
     try:
-        for remaining in range(seconds, 0, -1):
+        while True:
+            current_time = time.time()
+            if current_time >= end_time:
+                break
+
+            # Calculate remaining time (ceil)
+            remaining = math.ceil(end_time - current_time)
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,15 +115,21 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            spinner = spinner_frames[spinner_idx % len(spinner_frames)]
+            display_msg = f"{spinner} {message}... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
-                message = click.style(message, fg="bright_black")
+                display_msg = click.style(display_msg, fg="bright_black")
 
-            stream.write(f"\r{message}")
+            # Pad with spaces to clear previous content if it shrinks
+            # \033[K (clear to end of line) is better but depends on terminal support
+            # We'll use space padding as a fallback
+            stream.write(f"\r{display_msg:<80}")
             stream.flush()
-            time.sleep(1)
+
+            time.sleep(0.1)
+            spinner_idx += 1
 
         # Clear the line after done
         # We need to clear enough space for the longest message
