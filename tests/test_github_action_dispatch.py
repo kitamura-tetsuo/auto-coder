@@ -88,5 +88,49 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         new_content_decoded = base64.b64decode(call_kwargs['content']).decode("utf-8")
         self.assertIn("workflow_dispatch:", new_content_decoded)
 
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_duplicate_fix(self, mock_gh_client_cls, mock_get_ghapi):
+        # Setup
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+        
+        repo_name = "owner/repo"
+        workflow_id = "ci.yml"
+        ref = "feature-branch"
+        
+        # Mock create_workflow_dispatch to raise 422 first, then succeed
+        mock_api.actions.create_workflow_dispatch.side_effect = [
+            Exception("422 Unprocessable Entity"),  # First call fails
+            None  # Second call succeeds
+        ]
+        
+        # Mock get_content to return file with duplicate workflow_dispatch
+        import base64
+        # YAML with duplicate workflow_dispatch
+        yaml_content = "name: CI\non:\n  workflow_dispatch:\n  workflow_dispatch:\n  push:\n    branches: [main]\n"
+        encoded_content = base64.b64encode(yaml_content.encode("utf-8")).decode("utf-8")
+        
+        mock_api.repos.get_content.return_value = {
+            "content": encoded_content,
+            "sha": "sha123"
+        }
+        
+        # Execute
+        with patch("time.sleep"):
+             result = trigger_workflow_dispatch(repo_name, workflow_id, ref)
+        
+        # Verify
+        self.assertTrue(result)
+        
+        # Check create_or_update_file_contents called
+        mock_api.repos.create_or_update_file_contents.assert_called_once()
+        call_kwargs = mock_api.repos.create_or_update_file_contents.call_args[1]
+        
+        # Verify content has only one workflow_dispatch
+        new_content_decoded = base64.b64decode(call_kwargs['content']).decode("utf-8")
+        self.assertEqual(new_content_decoded.count("workflow_dispatch:"), 1)
+
 if __name__ == "__main__":
     unittest.main()

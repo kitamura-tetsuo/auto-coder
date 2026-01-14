@@ -856,46 +856,60 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
                     import base64
                     content_decoded = base64.b64decode(content_encoded).decode("utf-8")
                     
-                    if "workflow_dispatch:" not in content_decoded:
-                         # Basic injection: find 'on:' and add 'workflow_dispatch:'
-                         # This is a simple heuristic. Ideally we parse YAML but regex might be safer for preservation.
-                         # If we can't find 'on:', we might fail.
+
+                    # Check for duplicate workflow_dispatch
+                    dispatch_count = content_decoded.count("workflow_dispatch:")
+                    new_content = None
+
+                    if dispatch_count > 1:
+                         logger.warning(f"Found {dispatch_count} 'workflow_dispatch' keys in {workflow_id}. Attempting to fix...")
+                         # Remove all occurrences
+                         # This naive replacement assumes 'workflow_dispatch:' is on its own line(s).
+                         # We'll use a regex to remove lines containing 'workflow_dispatch:' and optional surrounding whitespace
+                         # Be careful not to damage structure.
+                         # Safer approach: replace all 'workflow_dispatch:' with nothing, then add one back.
+                         # But we need to handle indentation and context.
                          
-                         new_content = None
+                         # Let's try to remove all of them and then re-add one at the top of 'on:'.
+                         temp_content = re.sub(r"^\s*workflow_dispatch:.*$\n?", "", content_decoded, flags=re.MULTILINE)
+                         
+                         # Now add it back
+                         if "on:" in temp_content:
+                               new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", temp_content, count=1)
+                         
+                    elif dispatch_count == 0:
                          if "on:" in content_decoded:
-                              # Replaces "on:\n" with "on:\n  workflow_dispatch:\n"
-                              # Handles different indentations? 
-                              # Let's assume standard YAML structure or just insert at top of 'on'.
-                              new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", content_decoded, count=1)
+                               # Replaces "on:\n" with "on:\n  workflow_dispatch:\n"
+                               new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", content_decoded, count=1)
+                    
+                    if new_content and new_content != content_decoded:
+                         logger.info(f"Updating {workflow_id} to ensure single workflow_dispatch trigger")
+                              
+                         # Commit changes via API (faster/cleaner than checkout for just one file?)
+                         # Or use existing helpers if we are local?
+                         # automation_engine code usually runs local git.
+                         # But here passing 'ref' implies we might not be checked out to it?
+                         # The caller (pr_processor) usually has local repo.
+                         # BUT, 'trigger_workflow_dispatch' is a utility.
                          
-                         if new_content and new_content != content_decoded:
-                              logger.info(f"Adding workflow_dispatch to {workflow_id}")
-                              
-                              # Commit changes via API (faster/cleaner than checkout for just one file?)
-                              # Or use existing helpers if we are local?
-                              # automation_engine code usually runs local git.
-                              # But here passing 'ref' implies we might not be checked out to it?
-                              # The caller (pr_processor) usually has local repo.
-                              # BUT, 'trigger_workflow_dispatch' is a utility.
-                              
-                              # Let's use API commit to be safe and independent of local state
-                              message = f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}"
-                              
-                              api.repos.create_or_update_file_contents(
-                                   owner=owner,
-                                   repo=repo,
-                                   path=file_path,
-                                   message=message,
-                                   content=base64.b64encode(new_content.encode("utf-8")).decode("utf-8"),
-                                   sha=sha,
-                                   branch=ref 
-                              )
-                              
-                              logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
-                              time.sleep(2) # Wait for propagation
-                              api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
-                              logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
-                              return True
+                         # Let's use API commit to be safe and independent of local state
+                         message = f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}"
+                         
+                         api.repos.create_or_update_file_contents(
+                              owner=owner,
+                              repo=repo,
+                              path=file_path,
+                              message=message,
+                              content=base64.b64encode(new_content.encode("utf-8")).decode("utf-8"),
+                              sha=sha,
+                              branch=ref 
+                         )
+                         
+                         logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
+                         time.sleep(2) # Wait for propagation
+                         api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
+                         logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
+                         return True
                     else:
                          logger.warning(f"workflow_dispatch already present in {workflow_id}, 422 might be due to other reasons.")
                          
