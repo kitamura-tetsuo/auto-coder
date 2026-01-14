@@ -197,7 +197,7 @@ def process_pull_request(
 
         # Process Jules PRs to detect session IDs and update PR body
         try:
-            jules_success = _process_jules_pr(repo_name, pr_data, github_client)
+            jules_success = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
             if jules_success:
                 logger.info(f"Successfully processed Jules PR #{pr_number} (or not a Jules PR)")
             else:
@@ -1589,7 +1589,7 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     return False
 
 
-def _process_jules_pr(
+def _link_jules_pr_to_issue(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Any,
@@ -1615,6 +1615,13 @@ def _process_jules_pr(
             return True  # Not an error, just not a Jules PR
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
+
+        # Check for special Jules PRs that don't need issue linking
+        pr_title = pr_data.get("title", "")
+        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
+            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
+            return True
 
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)

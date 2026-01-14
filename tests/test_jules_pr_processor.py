@@ -1,7 +1,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch, ANY
-from auto_coder.pr_processor import _update_jules_pr_body, _find_issue_by_session_id_in_comments
+from auto_coder.pr_processor import _update_jules_pr_body, _find_issue_by_session_id_in_comments, _link_jules_pr_to_issue
 
 class TestJulesPRProcessor:
 
@@ -91,3 +91,55 @@ class TestJulesPRProcessor:
         assert result == 201
         mock_client.get_issue_comments.assert_called_once_with(repo_name, 201)
 
+    @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
+    @patch("auto_coder.pr_processor._is_jules_pr")
+    def test_process_jules_pr_skips_special_prefixes(self, mock_is_jules, mock_extract_session):
+        # Setup
+        repo_name = "owner/repo"
+        mock_client = MagicMock()
+        mock_is_jules.return_value = True
+        
+        # Test cases for prefixes
+        prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        
+        for prefix in prefixes:
+            pr_data = {
+                "number": 123,
+                "title": f"{prefix} Some Title",
+                "body": "Some body",
+                "user": {"login": "google-labs-jules"}
+            }
+            
+            # Execute
+            result = _link_jules_pr_to_issue(repo_name, pr_data, mock_client)
+            
+            # Verify
+            assert result is True
+            # Should NOT call extract session or proceed
+            mock_extract_session.assert_not_called()
+            
+    @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
+    @patch("auto_coder.pr_processor._is_jules_pr")
+    def test_process_jules_pr_normal_title(self, mock_is_jules, mock_extract_session):
+        """Verify normal titles still proceed to extraction."""
+        # Setup
+        repo_name = "owner/repo"
+        mock_client = MagicMock()
+        mock_is_jules.return_value = True
+        mock_extract_session.return_value = None # Stop early after extraction
+        
+        pr_data = {
+            "number": 124,
+            "title": "Normal Title",
+            "body": "Some body",
+            "user": {"login": "google-labs-jules"}
+        }
+        
+        # Execute
+        result = _link_jules_pr_to_issue(repo_name, pr_data, mock_client)
+        
+        # Verify
+        # It returns False because extraction returns None (simulating failure to find session)
+        # But importantly, it DID call extraction
+        assert result is False
+        mock_extract_session.assert_called_once()
