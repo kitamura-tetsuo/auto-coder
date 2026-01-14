@@ -301,13 +301,14 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Check cache first
-        # Caching removed to ensure fresh status is always retrieved
-        # cache = get_github_cache()
-        # cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
-        # cached_result = cache.get(cache_key)
-        # if cached_result:
-        #     logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
-        #     return cached_result
+        # Caching restored to utilize preload optimization (N+1 fix)
+        # Since cache is cleared on every iteration of the main loop, this is safe
+        cache = get_github_cache()
+        cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
+            return cached_result
 
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
