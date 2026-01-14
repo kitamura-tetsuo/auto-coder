@@ -672,6 +672,70 @@ def reset_llm_config() -> None:
     _llm_config = None
 
 
+def _get_config_value(
+    section: str,
+    key: str,
+    default: Any,
+    config_path: Optional[str] = None,
+    value_type: Optional[type] = None,
+) -> Any:
+    """Helper to get a value from config.toml with standard lookup paths.
+
+    Args:
+        section: TOML section name (e.g., 'jules')
+        key: Key name within section (e.g., 'enabled')
+        default: Default value if not found
+        config_path: Optional explicit path to config file
+        value_type: Optional type to cast the value to (e.g., int, bool)
+
+    Returns:
+        The configured value or default
+    """
+    import os
+
+    # If explicit path provided, check only that file
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+
+                section_config = data.get(section, {})
+                if key in section_config:
+                    val = section_config[key]
+                    return value_type(val) if value_type else val
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+
+        return default
+
+    # Try to find config.toml in standard locations
+    config_paths = [
+        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
+        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
+    ]
+
+    for path in config_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    data = tomllib.load(f)
+
+                section_config = data.get(section, {})
+                if key in section_config:
+                    val = section_config[key]
+                    return value_type(val) if value_type else val
+
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {path}: {e}")
+                continue
+
+    return default
+
+
+
 def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
     """Check if Jules is enabled via [jules].enabled in config.toml.
 
@@ -685,51 +749,13 @@ def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
     Returns:
         True if Jules is enabled (default), False if explicitly disabled.
     """
-    import os
-
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                jules_config = data.get("jules", {})
-                if "enabled" in jules_config:
-                    return bool(jules_config["enabled"])
-            except Exception as e:
-                # Log warning
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
-        # If explicit path doesn't exist or has no [jules].enabled, return default
-        return True
-
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                # Check for [jules] section
-                jules_config = data.get("jules", {})
-                if "enabled" in jules_config:
-                    return bool(jules_config["enabled"])
-
-            except Exception as e:
-                # Log warning but continue checking other paths
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-                continue
-
-    # If no config.toml found or no [jules].enabled setting, return default (enabled)
-    return True
+    return _get_config_value(
+        section="jules",
+        key="enabled",
+        default=True,
+        config_path=config_path,
+        value_type=bool,
+    )
 
 
 def is_jules_mode_enabled() -> bool:
@@ -762,51 +788,13 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     Returns:
         True if fallback is enabled (default), False if explicitly disabled.
     """
-    import os
-
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                jules_config = data.get("jules", {})
-                if "enabled_fallback_to_local" in jules_config:
-                    return bool(jules_config["enabled_fallback_to_local"])
-            except Exception as e:
-                # Log warning
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
-        # If explicit path doesn't exist or has no setting, return default
-        return True
-
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                # Check for [jules] section
-                jules_config = data.get("jules", {})
-                if "enabled_fallback_to_local" in jules_config:
-                    return bool(jules_config["enabled_fallback_to_local"])
-
-            except Exception as e:
-                # Log warning but continue checking other paths
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-                continue
-
-    # If no config.toml found or no setting, return default (enabled)
-    return True
+    return _get_config_value(
+        section="jules",
+        key="enabled_fallback_to_local",
+        default=True,
+        config_path=config_path,
+        value_type=bool,
+    )
 
 
 def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
@@ -815,54 +803,13 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
     Looks for [jules] wait_timeout_hours in config.toml.
     Default is 2 hours.
     """
-    import os
-
-    # Default value
-    DEFAULT_TIMEOUT = 2
-
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                jules_config = data.get("jules", {})
-                if "wait_timeout_hours" in jules_config:
-                    return int(jules_config["wait_timeout_hours"])
-            except Exception as e:
-                # Log warning
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
-        # If explicit path doesn't exist or has no setting, return default
-        return DEFAULT_TIMEOUT
-
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                # Check for [jules] section
-                jules_config = data.get("jules", {})
-                if "wait_timeout_hours" in jules_config:
-                    return int(jules_config["wait_timeout_hours"])
-
-            except Exception as e:
-                # Log warning but continue checking other paths
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-                continue
-
-    # If no config.toml found or no setting, return default
-    return DEFAULT_TIMEOUT
+    return _get_config_value(
+        section="jules",
+        key="wait_timeout_hours",
+        default=2,
+        config_path=config_path,
+        value_type=int,
+    )
 
 
 def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None) -> int:
@@ -874,48 +821,13 @@ def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None)
     Returns:
         Sleep time in seconds (default: 300)
     """
-    import os
-
-    default_sleep_time = 300
-
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                process_issues_config = data.get("process_issues", {})
-                if "sleep_time" in process_issues_config:
-                    return int(process_issues_config["sleep_time"])
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
-        return default_sleep_time
-
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                process_issues_config = data.get("process_issues", {})
-                if "sleep_time" in process_issues_config:
-                    return int(process_issues_config["sleep_time"])
-
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-                continue
-
-    return default_sleep_time
+    return _get_config_value(
+        section="process_issues",
+        key="sleep_time",
+        default=300,
+        config_path=config_path,
+        value_type=int,
+    )
 
 
 def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] = None) -> int:
@@ -927,48 +839,13 @@ def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] =
     Returns:
         Sleep time in seconds (default: 600)
     """
-    import os
-
-    default_sleep_time = 600
-
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                process_issues_config = data.get("process_issues", {})
-                if "empty_sleep_time" in process_issues_config:
-                    return int(process_issues_config["empty_sleep_time"])
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
-        return default_sleep_time
-
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                process_issues_config = data.get("process_issues", {})
-                if "empty_sleep_time" in process_issues_config:
-                    return int(process_issues_config["empty_sleep_time"])
-
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-                continue
-
-    return default_sleep_time
+    return _get_config_value(
+        section="process_issues",
+        key="empty_sleep_time",
+        default=600,
+        config_path=config_path,
+        value_type=int,
+    )
 
 
 def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = None) -> bool:
@@ -983,45 +860,25 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
     Returns:
         True if isolation is enabled, False otherwise (default: False)
     """
-    import os
+    return _get_config_value(
+        section="test",
+        key="isolate_single_test_on_failure",
+        default=False,
+        config_path=config_path,
+        value_type=bool,
+    )
 
-    default_value = False
 
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
+def get_dependabot_wait_interval_hours_from_config(config_path: Optional[str] = None) -> int:
+    """Get the Dependabot wait interval in hours from config.toml.
 
-                test_config = data.get("test", {})
-                if "isolate_single_test_on_failure" in test_config:
-                    return bool(test_config["isolate_single_test_on_failure"])
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
-        return default_value
-
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                test_config = data.get("test", {})
-                if "isolate_single_test_on_failure" in test_config:
-                    return bool(test_config["isolate_single_test_on_failure"])
-
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-                continue
-
-    return default_value
+    Looks for [dependabot] wait_interval_hours in config.toml.
+    Default is 24 hours.
+    """
+    return _get_config_value(
+        section="dependabot",
+        key="wait_interval_hours",
+        default=24,
+        config_path=config_path,
+        value_type=int,
+    )

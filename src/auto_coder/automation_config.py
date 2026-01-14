@@ -150,8 +150,9 @@ class AutomationConfig:
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
         
         # Load Jules wait timeout from config
-        from .llm_backend_config import get_jules_wait_timeout_hours_from_config
+        from .llm_backend_config import get_jules_wait_timeout_hours_from_config, get_dependabot_wait_interval_hours_from_config
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
+        object.__setattr__(self, "DEPENDABOT_WAIT_INTERVAL_HOURS", get_dependabot_wait_interval_hours_from_config())
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
@@ -472,6 +473,10 @@ class AutomationConfig:
     # Jules wait timeout in hours (default: 2)
     # Configurable via [jules].wait_timeout_hours in config.toml
     JULES_WAIT_TIMEOUT_HOURS: int = 2
+
+    # Dependabot wait interval in hours (default: 24)
+    # Configurable via [dependabot].wait_interval_hours in config.toml
+    DEPENDABOT_WAIT_INTERVAL_HOURS: int = 24
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)

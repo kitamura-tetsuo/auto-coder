@@ -19,9 +19,9 @@ def get_last_dependabot_pr_processed_time():
         return datetime.fromisoformat(f.read().strip())
 
 
-def should_process_dependabot_pr():
+def should_process_dependabot_pr(interval_hours: int = 24):
     """Check if a Dependabot PR should be processed."""
     last_processed_time = get_last_dependabot_pr_processed_time()
     if last_processed_time is None:
         return True
-    return datetime.utcnow() - last_processed_time > timedelta(hours=24)
+    return datetime.utcnow() - last_processed_time > timedelta(hours=interval_hours)

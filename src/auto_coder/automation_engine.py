@@ -163,9 +163,9 @@ class AutomationEngine:
 
         try:
             # Check if we should process Dependabot PRs at all in this run
-            can_process_dependabot_pr = should_process_dependabot_pr()
+            can_process_dependabot_pr = should_process_dependabot_pr(self.config.DEPENDABOT_WAIT_INTERVAL_HOURS)
             if not can_process_dependabot_pr:
-                logger.info("Skipping Dependabot PRs in this run due to 24-hour processing limit.")
+                logger.info(f"Skipping Dependabot PRs in this run due to {self.config.DEPENDABOT_WAIT_INTERVAL_HOURS}-hour processing limit.")
 
             # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
             # Optimized to use get_open_prs_json to batch fetch details
