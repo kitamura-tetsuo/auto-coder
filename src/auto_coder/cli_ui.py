@@ -2,12 +2,17 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
 from typing import Any, Dict, Optional, TextIO
 
 import click
+
+# Spinner frames
+SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
@@ -66,7 +71,7 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
-    Sleep for a specified number of seconds, displaying a countdown.
+    Sleep for a specified number of seconds, displaying a countdown with a spinner.
 
     Args:
         seconds: Number of seconds to sleep.
@@ -84,9 +89,21 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    spinner_frames = SPINNER_FRAMES_ASCII if no_color else SPINNER_FRAMES_UNICODE
+    spinner_idx = 0
+
+    end_time = time.time() + seconds
 
     try:
-        for remaining in range(seconds, 0, -1):
+        while True:
+            current_time = time.time()
+            if current_time >= end_time:
+                break
+
+            remaining_seconds = end_time - current_time
+            # Use ceil to match the "5, 4, 3..." countdown style
+            remaining = int(math.ceil(remaining_seconds))
+
             # Format time nicely
             hours, remainder = divmod(remaining, 3600)
             minutes, secs = divmod(remainder, 60)
@@ -98,15 +115,28 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            spinner = spinner_frames[spinner_idx]
+            spinner_idx = (spinner_idx + 1) % len(spinner_frames)
+
+            message = f"{spinner} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
                 message = click.style(message, fg="bright_black")
 
-            stream.write(f"\r{message}")
+            # Pad with spaces to clear any previous longer line
+            # \033[K is ANSI clear line, but spaces are safer cross-platform if we don't assume ANSI support fully
+            # However, we are in a TTY block.
+            # Using a fixed padding of sufficient length is simple and effective.
+            padding = " " * 10
+            stream.write(f"\r{message}{padding}")
             stream.flush()
-            time.sleep(1)
+
+            # Sleep for a short interval to animate spinner
+            # Check remaining time to avoid oversleeping
+            sleep_time = min(0.1, remaining_seconds)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         # Clear the line after done
         # We need to clear enough space for the longest message
