@@ -85,7 +85,8 @@ class TestGitHubClientREST:
             "updated_at": "2024-01-02",
             "html_url": "http://issue-url",
             "user": {"login": "user"},
-            "comments": 3
+            "comments": 3,
+            "parent_issue_url": "https://github.com/owner/repo/issues/999"
             # No 'pull_request' key
         }
         
@@ -103,8 +104,7 @@ class TestGitHubClientREST:
         
         # Mock the helper methods that are called for each issue
         with patch.object(client, "get_linked_prs", return_value=[1, 2]) as mock_linked, \
-             patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub, \
-             
+             patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub:             
             # Execute
             result = client.get_open_issues_json("owner/repo")
             
@@ -121,7 +121,6 @@ class TestGitHubClientREST:
             mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state='open', per_page=100)
             mock_linked.assert_called_once_with("owner/repo", 456)
             mock_sub.assert_called_once_with("owner/repo", 456)
-            mock_parent.assert_called_once_with("owner/repo", 456)
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):
@@ -154,40 +153,31 @@ class TestGitHubClientREST:
         mock_api = MagicMock()
         mock_get_ghapi_client.return_value = mock_api
         
-        # Mock Issue with parent in body
-        mock_issue = Mock()
-        mock_issue.number = 456
-        mock_issue.body = "Parent Issue: #123"
-        
-        mock_parent = Mock()
-        mock_parent.number = 123
-        mock_parent.title = "Parent Issue"
-        mock_parent.body = "Parent Body"
-
-        # Side effect for getting issues: first call 456, second call 123
-        def get_issue_side_effect(owner, repo, issue_number):
-            if issue_number == 456:
-                return mock_issue
-            if issue_number == 123:
-                return mock_parent
-            return None
-            
-        mock_api.issues.get.side_effect = get_issue_side_effect
+        # Mock Parent Issue Response
+        mock_parent_response = {
+            "number": 123,
+            "title": "Parent Issue",
+            "body": "Parent Body"
+        }
+        mock_api.return_value = mock_parent_response
         
         client = GitHubClient.get_instance(mock_github_token)
         
         # Execute
-        # Note: get_parent_issue_details implementation relies on get_issue (which we just added/verified)
-        # OR it might have its own implementation. Let's assume it used existing methods or we verified it exists.
-        # Wait, I saw it existed in grep search.
         result = client.get_parent_issue_details("owner/repo", 456)
         
         # Assert
-        # If get_parent_issue_details is implemented to parse body and fetch parent:
-        if result:
-            assert result["number"] == 123
-            assert result["title"] == "Parent Issue"
-        else:
-            # If implementation is different/mocking is incomplete for parsing logic
-            pass
+        assert result is not None
+        assert result["number"] == 123
+        assert result["title"] == "Parent Issue"
+        
+        # Verify call
+        mock_api.assert_called_with(
+            "/repos/owner/repo/issues/456/parent",
+            verb='GET',
+            headers={
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Accept": "application/vnd.github+json"
+            }
+        )
 

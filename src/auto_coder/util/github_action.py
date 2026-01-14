@@ -700,10 +700,10 @@ def get_detailed_checks_from_history(
     status_result: GitHubActionsStatusResult,
     repo_name: str,
 ) -> DetailedChecksResult:
-    """Get detailed checks information from run IDs using gh run view.
+    """Get detailed checks information from run IDs using API.
 
     This function takes a GitHubActionsStatusResult with run IDs and fetches
-    detailed information using gh run view to get jobs and their statuses.
+    detailed information using API to get jobs and their statuses.
 
     Args:
         status_result: GitHubActionsStatusResult containing run IDs
@@ -718,7 +718,7 @@ def get_detailed_checks_from_history(
         - has_in_progress: Whether any checks are still in progress
         - run_ids: List of processed run IDs
     """
-    logger.info("Getting detailed checks from run IDs using gh run view")
+    logger.info("Getting detailed checks from run IDs using API")
 
     try:
         # Get detailed checks from the provided run IDs

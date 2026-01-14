@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import functools
+import time
 import httpx
 from ghapi.all import GhApi
 from hishel import SyncSqliteStorage
@@ -28,6 +30,25 @@ def get_caching_client() -> httpx.Client:
         storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
         _local_storage.client = SyncCacheClient(storage=storage)
     return _local_storage.client
+
+
+def retry_with_backoff(retries=3, backoff_in_seconds=1):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            x = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
+                    if x == retries:
+                        raise
+                    sleep = (backoff_in_seconds * 2 ** x)
+                    logger.warning(f"Network error in {func.__name__} ({e}), retrying in {sleep}s...")
+                    time.sleep(sleep)
+                    x += 1
+        return wrapper
+    return decorator
 
 
 def get_ghapi_client(token: str) -> GhApi:
@@ -171,6 +192,7 @@ class GitHubClient:
         with cls._lock:
             cls._instance = None
 
+    @retry_with_backoff()
     def graphql_query(self, query: str, variables: Optional[Dict[str, Any]] = None, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Executes a GraphQL query against the GitHub API using a caching client.
@@ -240,6 +262,7 @@ class GitHubClient:
             logger.error(f"Failed to get repository {repo_name}: {e}")
             raise
 
+    @retry_with_backoff()
     def get_open_issues(self, repo_name: str, limit: Optional[int] = None) -> List[Any]:
         """Get open issues from repository, sorted by creation date (oldest first).
         
@@ -298,6 +321,7 @@ class GitHubClient:
             logger.error(f"Failed to get issues from {repo_name}: {e}")
             raise
 
+    @retry_with_backoff()
     def get_open_pull_requests(self, repo_name: str, limit: Optional[int] = None) -> List[Any]:
         """Get open pull requests from repository, sorted by creation date (oldest first).
         
@@ -338,6 +362,7 @@ class GitHubClient:
             return None
 
 
+    @retry_with_backoff()
     def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open pull requests from repository using REST API (cached).
 
@@ -440,6 +465,7 @@ class GitHubClient:
                         return
 
 
+    @retry_with_backoff()
     def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open issues from repository using REST API (cached).
 
@@ -540,6 +566,7 @@ class GitHubClient:
 
 
 
+    @retry_with_backoff()
     def get_issue(self, repo_name: str, issue_number: int) -> Optional[Any]:
         """Get a single issue by number using REST API (cached).
 
@@ -873,6 +900,7 @@ class GitHubClient:
     # Deprecated/Removed: get_pr_closing_issues
 
 
+    @retry_with_backoff()
     def get_parent_issue_details(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
         """Get details of the parent issue if it exists using GitHub REST API.
 
