@@ -934,10 +934,8 @@ def _handle_pr_merge(
                         _active_monitors.discard(pr_number)
                     raise e
 
-        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
-
         # Step 4: If GitHub Actions passed, merge directly
-        if github_checks.success and detailed_checks.success:
+        if github_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
             # Check if AUTO_MERGE is enabled before attempting merge
@@ -994,6 +992,8 @@ def _handle_pr_merge(
                 actions.append(f"Failed to merge PR #{pr_number}")
 
         # Step 4: GitHub Actions failed - handle Jules PR feedback loop
+        # Fetch detailed checks only when needed to save API calls
+        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 

@@ -301,12 +301,13 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Check cache first
-        cache = get_github_cache()
-        cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
-            return cached_result
+        # Caching removed to ensure fresh status is always retrieved
+        # cache = get_github_cache()
+        # cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
+        # cached_result = cache.get(cache_key)
+        # if cached_result:
+        #     logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
+        #     return cached_result
 
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
@@ -316,7 +317,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             owner, repo = repo_name.split("/")
 
             # API: api.checks.list_for_ref(owner, repo, ref)
-            res = api.checks.list_for_ref(owner, repo, ref=current_head_sha)
+            res = api.checks.list_for_ref(owner, repo, ref=current_head_sha, per_page=100)
             checks_data = res.get("check_runs", [])
         except Exception as e:
             api_error = str(e)
@@ -339,7 +340,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 ids=[],
                 in_progress=False,
             )
-            cache.set(cache_key, gh_status_result)
+            # cache.set(cache_key, gh_status_result)
             return gh_status_result
 
         # Map API response matching_checks to the expected format
@@ -415,8 +416,9 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             in_progress=has_in_progress,
         )
 
+
         # Cache the result
-        cache.set(cache_key, gh_status_result)
+        # cache.set(cache_key, gh_status_result)
 
         return gh_status_result
 
@@ -534,15 +536,13 @@ def _check_github_actions_status_from_history(
         # Check cache first (using head_branch as part of key since we might not have exact SHA yet,
         # but ideally we should use SHA if possible. However, this function is a fallback when we might lack info.
         # Let's use a composite key including head_branch.)
-        cache = get_github_cache()
-        # Note: Historical check is more expensive, so caching is valuable.
-        # But since it depends on "latest" state, it might change.
-        # However, we clear cache at end of loop, so it's safe for one iteration.
-        cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
-            return cached_result
+        # cache = get_github_cache()
+        # Note: Historical check is more expensive, but relying on cache causes stale status issues.
+        # cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
+        # cached_result = cache.get(cache_key)
+        # if cached_result:
+        #     logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
+        #     return cached_result
 
         # 1. Get all PR commits/oid
         # 1. Get all PR commits/oid
@@ -681,7 +681,7 @@ def _check_github_actions_status_from_history(
         )
 
         # Cache the result
-        cache.set(cache_key, result)
+        # cache.set(cache_key, result)
 
         return result
 
@@ -757,46 +757,75 @@ def get_detailed_checks_from_history(
 
                     check_info = {
                         "name": f"{job_name} (run {run_id})",
+                        "job_name": job_name,  # Store raw name for deduplication
                         "conclusion": conclusion if conclusion else status,
                         "details_url": (f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}" if job_id else ""),
                         "run_id": run_id,
                         "job_id": job_id,
                         "status": status,
+                        "completed_at": job.get("completed_at"),
+                        "started_at": job.get("started_at"),
                     }
 
                     all_checks.append(check_info)
-
-                    # Track overall status
-                    if conclusion in ["failure", "failed", "error", "cancelled"]:
-                        any_failed = True
-                        all_failed_checks.append(check_info)
-                    elif status in ["in_progress", "queued", "pending"]:
-                        has_in_progress = True
-                    elif not conclusion and status in [
-                        "failure",
-                        "failed",
-                        "error",
-                        "cancelled",
-                    ]:
-                        any_failed = True
-                        all_failed_checks.append(check_info)
 
             except Exception as e:
                 logger.warning(f"Failed to get jobs via GhApi for run {run_id}: {e}")
                 continue
 
+        # Deduplicate checks by job_name, keeping only the latest run
+        # Sort by completed_at (descending), then started_at (descending), then job_id (descending)
+        # We want the most recent run for each job name
+        all_checks.sort(
+            key=lambda x: (
+                x.get("completed_at") or "",
+                x.get("started_at") or "",
+                x.get("job_id") or 0
+            ),
+            reverse=True
+        )
+
+        unique_checks = {}
+        for check in all_checks:
+            name = check.get("job_name")
+            if name and name not in unique_checks:
+                unique_checks[name] = check
+        
+        # Use deduplicated checks
+        final_checks = list(unique_checks.values())
+        
+        # Re-evaluate status based on deduplicated checks
+        all_failed_checks = []
+        has_in_progress = False
+        any_failed = False
+        
+        for check in final_checks:
+            conclusion = check.get("conclusion", "")
+            status = check.get("status", "")
+            
+            if conclusion in ["failure", "failed", "error", "cancelled"]:
+                any_failed = True
+                all_failed_checks.append(check)
+            elif status in ["in_progress", "queued", "pending"]:
+                has_in_progress = True
+            elif not conclusion and status in [
+                "failure",
+                "failed",
+                "error",
+                "cancelled",
+            ]:
+                any_failed = True
+                all_failed_checks.append(check)
+
         # Determine overall success
         # Success if no failures and no in-progress checks (and we found checks)
-        # If no checks found at all, it's technically "success" in terms of "no failures",
-        # but usually we want to know if checks passed.
-        # However, keeping consistent with status_result.success:
         final_success = not any_failed and not has_in_progress
 
         return DetailedChecksResult(
             success=final_success,
-            total_checks=len(all_checks),
+            total_checks=len(final_checks),
             failed_checks=all_failed_checks,
-            all_checks=all_checks,
+            all_checks=final_checks,
             has_in_progress=has_in_progress,
             run_ids=processed_run_ids,
         )
