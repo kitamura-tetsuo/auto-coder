@@ -1474,19 +1474,30 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
                 break
             count += 1
 
+            # Helper to get attributes from dict or object (GhApi returns AttrDict usually)
+            def get_attr(obj, attr):
+                return getattr(obj, attr, None) or (obj.get(attr) if isinstance(obj, dict) else None)
+
+            issue_number = get_attr(issue, 'number')
+            issue_body = get_attr(issue, 'body')
+
             # Double check if session_id is actually in body or comments to be sure
             # Search API might return loose matches, although exact string match usually ranks high
-            if issue.body and session_id in issue.body:
-                logger.info(f"Found session ID '{session_id}' in body of issue #{issue.number}")
-                return issue.number
+            if issue_body and session_id in issue_body:
+                logger.info(f"Found session ID '{session_id}' in body of issue #{issue_number}")
+                return issue_number
 
             # Check comments
             # This is still an API call per issue, but we only do it for a few candidates
-            comments = issue.get_comments()
-            for comment in comments:
-                if comment.body and session_id in comment.body:
-                    logger.info(f"Found session ID '{session_id}' in comment of issue #{issue.number}")
-                    return issue.number
+            try:
+                comments = github_client.get_issue_comments(repo_name, issue_number)
+                for comment in comments:
+                    comment_body = comment.get('body')
+                    if comment_body and session_id in comment_body:
+                        logger.info(f"Found session ID '{session_id}' in comment of issue #{issue_number}")
+                        return issue_number
+            except Exception as e:
+                logger.warning(f"Failed to fetch comments for potential issue #{issue_number}: {e}")
 
         logger.warning(f"Session ID '{session_id}' not found via search query")
         return None
@@ -1528,11 +1539,19 @@ def _update_jules_pr_body(
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
         new_body = f"{pr_body}{separator}{close_statement}\n\nRelated issue: {issue_link}"
 
-        # Update PR body via GitHub Client (PyGithub)
+        # Update PR body via GitHub Client (GhApi)
         try:
-            repo = github_client.get_repository(repo_name)
-            pr = repo.get_pull(pr_number)
-            pr.edit(body=new_body)
+            from auto_coder.util.gh_cache import get_ghapi_client, GitHubClient
+            
+            # Use token from client if available, else get from singleton
+            token = getattr(github_client, 'token', None)
+            if not token:
+                 token = GitHubClient.get_instance().token
+            
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+            
+            api.pulls.update(owner, repo, pr_number, body=new_body)
 
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
             log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
