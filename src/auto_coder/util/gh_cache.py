@@ -759,6 +759,57 @@ class GitHubClient:
             
     # Deprecated/Removed: get_linked_prs_via_graphql
 
+    def get_pr_closing_issues(self, repo_name: str, pr_number: int) -> List[int]:
+        """Get issues that will be closed by this PR via GraphQL.
+
+        Note:
+            GitHub REST API (v3) cannot retrieve closing issues directly, so we use GraphQL.
+        
+        Args:
+            repo_name: Repository name (owner/repo)
+            pr_number: Pull request number
+            
+        Returns:
+            List of issue numbers that this PR closes.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+            query = """
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  closingIssuesReferences(first: 20) {
+                    nodes {
+                      number
+                    }
+                  }
+                }
+              }
+            }
+            """
+            
+            variables = {
+                "owner": owner,
+                "name": repo,
+                "number": pr_number
+            }
+            
+            response = self.graphql_query(query, variables)
+            
+            if not response or "data" not in response:
+                return []
+                
+            pr_data = response.get("data", {}).get("repository", {}).get("pullRequest", {})
+            if not pr_data:
+                return []
+                
+            closing_issues = pr_data.get("closingIssuesReferences", {}).get("nodes", [])
+            return [issue["number"] for issue in closing_issues if issue]
+            
+        except Exception as e:
+            logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
+            return []
+
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
         """Check if an issue has a linked pull request.
 
