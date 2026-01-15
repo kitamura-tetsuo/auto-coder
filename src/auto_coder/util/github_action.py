@@ -836,17 +836,18 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
         # API: api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref)
         # Note: input parameters are not currently supported by this wrapper function
         api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
-        
+
         logger.info(f"Successfully triggered workflow '{workflow_id}'")
         return True
 
     except Exception as e:
         # Fallback for 422 error (missing workflow_dispatch trigger)
         import time
+
         try:
             if "422" in str(e):
                 logger.warning(f"Failed to trigger {workflow_id} with 422. Attempting to add workflow_dispatch trigger...")
-                
+
                 # Get the file content
                 try:
                     # Using GhApi to get file
@@ -854,58 +855,51 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
                     contents_res = api.repos.get_content(owner, repo, file_path, ref=ref)
                     content_encoded = contents_res.get("content", "")
                     sha = contents_res.get("sha")
-                    
+
                     import base64
+
                     content_decoded = base64.b64decode(content_encoded).decode("utf-8")
-                    
+
                     if "workflow_dispatch:" not in content_decoded:
-                         # Basic injection: find 'on:' and add 'workflow_dispatch:'
-                         # This is a simple heuristic. Ideally we parse YAML but regex might be safer for preservation.
-                         # If we can't find 'on:', we might fail.
-                         
-                         new_content = None
-                         if "on:" in content_decoded:
-                              # Replaces "on:\n" with "on:\n  workflow_dispatch:\n"
-                              # Handles different indentations? 
-                              # Let's assume standard YAML structure or just insert at top of 'on'.
-                              new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", content_decoded, count=1)
-                         
-                         if new_content and new_content != content_decoded:
-                              logger.info(f"Adding workflow_dispatch to {workflow_id}")
-                              
-                              # Commit changes via API (faster/cleaner than checkout for just one file?)
-                              # Or use existing helpers if we are local?
-                              # automation_engine code usually runs local git.
-                              # But here passing 'ref' implies we might not be checked out to it?
-                              # The caller (pr_processor) usually has local repo.
-                              # BUT, 'trigger_workflow_dispatch' is a utility.
-                              
-                              # Let's use API commit to be safe and independent of local state
-                              message = f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}"
-                              
-                              api.repos.create_or_update_file_contents(
-                                   owner=owner,
-                                   repo=repo,
-                                   path=file_path,
-                                   message=message,
-                                   content=base64.b64encode(new_content.encode("utf-8")).decode("utf-8"),
-                                   sha=sha,
-                                   branch=ref 
-                              )
-                              
-                              logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
-                              time.sleep(2) # Wait for propagation
-                              api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
-                              logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
-                              return True
+                        # Basic injection: find 'on:' and add 'workflow_dispatch:'
+                        # This is a simple heuristic. Ideally we parse YAML but regex might be safer for preservation.
+                        # If we can't find 'on:', we might fail.
+
+                        new_content = None
+                        if "on:" in content_decoded:
+                            # Replaces "on:\n" with "on:\n  workflow_dispatch:\n"
+                            # Handles different indentations?
+                            # Let's assume standard YAML structure or just insert at top of 'on'.
+                            new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", content_decoded, count=1)
+
+                        if new_content and new_content != content_decoded:
+                            logger.info(f"Adding workflow_dispatch to {workflow_id}")
+
+                            # Commit changes via API (faster/cleaner than checkout for just one file?)
+                            # Or use existing helpers if we are local?
+                            # automation_engine code usually runs local git.
+                            # But here passing 'ref' implies we might not be checked out to it?
+                            # The caller (pr_processor) usually has local repo.
+                            # BUT, 'trigger_workflow_dispatch' is a utility.
+
+                            # Let's use API commit to be safe and independent of local state
+                            message = f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}"
+
+                            api.repos.create_or_update_file_contents(owner=owner, repo=repo, path=file_path, message=message, content=base64.b64encode(new_content.encode("utf-8")).decode("utf-8"), sha=sha, branch=ref)
+
+                            logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
+                            time.sleep(2)  # Wait for propagation
+                            api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
+                            logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
+                            return True
                     else:
-                         logger.warning(f"workflow_dispatch already present in {workflow_id}, 422 might be due to other reasons.")
-                         
+                        logger.warning(f"workflow_dispatch already present in {workflow_id}, 422 might be due to other reasons.")
+
                 except Exception as inner_e:
-                     logger.error(f"Failed to apply fallback for {workflow_id}: {inner_e}")
+                    logger.error(f"Failed to apply fallback for {workflow_id}: {inner_e}")
 
         except Exception as retry_e:
-             logger.error(f"Fallback retry failed: {retry_e}")
+            logger.error(f"Fallback retry failed: {retry_e}")
 
         logger.error(f"Error triggering workflow '{workflow_id}': {e}")
         return False
@@ -934,17 +928,17 @@ def get_github_actions_logs_from_url(url: str) -> str:
             if m_run:
                 owner, repo, run_id = m_run.groups()
                 owner_repo = f"{owner}/{repo}"
-                
+
                 # Fetch jobs to find failed ones
                 try:
                     token = GitHubClient.get_instance().token
                     api = get_ghapi_client(token)
-                    
+
                     jobs_res = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
                     jobs = jobs_res.get("jobs", [])
-                    
+
                     failed_jobs = [j for j in jobs if j.get("conclusion") == "failure"]
-                    
+
                     if failed_jobs:
                         logs_list = []
                         for job in failed_jobs:
@@ -954,16 +948,16 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 # specific job url
                                 j_url = f"https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{j_id}"
                                 logs_list.append(get_github_actions_logs_from_url(j_url))
-                        
+
                         if logs_list:
                             return "\n\n".join(logs_list)
-                        
+
                     # If no failed jobs found or no logs
                     return f"No failed jobs found in run {run_id}"
                 except Exception as e:
                     logger.warning(f"Error expanding run URL {url}: {e}")
                     pass
-                
+
                 return "Invalid GitHub Actions job URL (Run expansion failed)"
 
             return "Invalid GitHub Actions job URL"
@@ -975,11 +969,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
         # 1) Get job details to get name and identifying failing steps
         job_name = f"job-{job_id}"
         failing_step_names: set = set()
-        
+
         try:
             job_detail = api.actions.get_job_for_workflow_run(owner=owner, repo=repo, job_id=job_id)
             job_name = job_detail.get("name", job_name)
-            
+
             steps = job_detail.get("steps", [])
             for st in steps:
                 if (st.get("conclusion") == "failure") or (st.get("conclusion") is None and st.get("status") == "completed" and job_detail.get("conclusion") == "failure"):
@@ -1012,14 +1006,14 @@ def get_github_actions_logs_from_url(url: str) -> str:
             # The API call might return bytes (zip) or text depending on endpoint/headers
             # But the 'download_job_logs_for_workflow_run' usually redirects to a zip location
             log_content = api.actions.download_job_logs_for_workflow_run(owner=owner, repo=repo, job_id=job_id)
-            
+
             # log_content should be bytes if it's a zip
             if isinstance(log_content, bytes):
-                 with tempfile.TemporaryDirectory() as tmpdir:
+                with tempfile.TemporaryDirectory() as tmpdir:
                     zip_path = os.path.join(tmpdir, "job_logs.zip")
                     with open(zip_path, "wb") as f:
                         f.write(log_content)
-                    
+
                     try:
                         with zipfile.ZipFile(zip_path, "r") as zf:
                             step_snippets = []
@@ -1034,27 +1028,27 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             content = ""
                                     if not content:
                                         continue
-                                    
+
                                     step_file_label = os.path.splitext(os.path.basename(name))[0]
-                                    
+
                                     # Step filter
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
-                                    
+
                                     # Collect job-wide summary candidates
                                     for ln in content.split("\n"):
                                         ll = ln.lower()
                                         if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
                                             job_summary_lines.append(ln)
-                                            
+
                                     step_name = step_file_label
-                                    
+
                                     # Extract important error-related information
                                     if "eslint" in job_name.lower() or "lint" in job_name.lower():
                                         snippet = _filter_eslint_log(content)
                                     else:
                                         snippet = _extract_error_context(content)
-                                        
+
                                     # Enhance with expected/received
                                     exp_lines = []
                                     for ln in content.split("\n"):
@@ -1066,7 +1060,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
                                             snippet = snippet + "\n" + "\n".join(norm_lines)
-                                            
+
                                     if snippet and snippet.strip():
                                         s = snippet
                                         s_lower = s.lower()
@@ -1097,21 +1091,21 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     body_str = "\n\n".join(step_snippets)
                                     filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
                                     summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
-                                
+
                                 body = "\n\n".join(step_snippets) + summary_block
                                 if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
                                     body = slice_relevant_error_window(body)
                                 return f"=== Job: {job_name} ===\n" + body
-                                
+
                     except zipfile.BadZipFile:
                         pass
 
             elif isinstance(log_content, str) and log_content:
                 # Handle text content (likely standard log text if not a zip)
                 # This happens if GhApi returns text for download_job_logs_for_workflow_run
-                
+
                 snippet_parts = []
-                
+
                 # 1. Try to extract logs for specific failed steps (good for context if it works)
                 if failing_step_names:
                     step_log = _extract_failed_step_logs(log_content, list(failing_step_names))
@@ -1125,13 +1119,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     # Deduplicate if possible, but for now just appending is safer
                     if not snippet_parts or error_ctx not in snippet_parts[0]:
                         snippet_parts.append("--- Additional Error Context ---\n" + error_ctx)
-                
+
                 if snippet_parts:
-                     return f"=== Job: {job_name} ===\n" + "\n\n".join(snippet_parts)
+                    return f"=== Job: {job_name} ===\n" + "\n\n".join(snippet_parts)
                 else:
-                     # If no error context found but we have logs, return tail
-                     snippet = slice_relevant_error_window(log_content)
-                     return f"=== Job: {job_name} ===\n" + snippet
+                    # If no error context found but we have logs, return tail
+                    snippet = slice_relevant_error_window(log_content)
+                    return f"=== Job: {job_name} ===\n" + snippet
         except Exception as e:
             logger.warning(f"Error processing job zip for {job_id}: {e}")
             pass
@@ -1722,6 +1716,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
 
     try:
         from ..util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
@@ -1910,6 +1905,8 @@ def check_and_handle_closed_state(
     except Exception as e:
         logger.warning(f"Failed to check/handle closed item state: {e}")
         return False  # Continue on error
+
+
 def _normalize_gh_path(line: str) -> str:
     """Normalize GitHub Actions absolute paths to relative paths.
 
@@ -1928,6 +1925,7 @@ def _normalize_gh_path(line: str) -> str:
         line = re.sub(r"/home/runner/work/[^/]+/[^/]+/", "", line)
 
     return line
+
 
 def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token: str) -> list:
     """Sort jobs based on the order defined in the workflow file."""
@@ -2005,6 +2003,7 @@ def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token
     except Exception as e:
         logger.warning(f"Warning: Failed to sort jobs by workflow: {e}")
         return jobs
+
 
 def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
     """Download and parse Playwright JSON logs from GitHub Artifacts using direct API calls.
@@ -2564,10 +2563,10 @@ def _create_github_action_log_summary(
 
                 # Check against kept logs
                 is_duplicate = False
-                
+
                 # Extract body for comparison (skip header)
                 log_body = log.split("\n", 1)[1] if "\n" in log else log
-                
+
                 # If log is too short (just "No detailed logs available"), don't deduplicate it aggressively?
                 # Or maybe we WANT to deduplicate "No detailed logs available"?
                 # Let's deduplicate everything.
@@ -2575,21 +2574,21 @@ def _create_github_action_log_summary(
                 for kept_log in kept_logs:
                     if fuzz is None:
                         break
-                        
+
                     kept_body = kept_log.split("\n", 1)[1] if "\n" in kept_log else kept_log
-                    
+
                     # basic fuzz.ratio is Levenshtein distance based
                     ratio = fuzz.ratio(log_body, kept_body)
                     if ratio > 95:
                         is_duplicate = True
                         break
-                
+
                 if is_duplicate:
                     final_logs.append(f"=== Job: {job_name} ===\nFailure is similar to others (omitted).")
                 else:
                     final_logs.append(log)
                     kept_logs.append(log)
-            
+
             logs = final_logs
         except Exception as e:
             logger.warning(f"Error during log deduplication: {e}")
@@ -2599,5 +2598,3 @@ def _create_github_action_log_summary(
         failed_test_files = _extract_failed_tests_from_playwright_reports(artifacts_list)
 
     return "\n\n".join(logs) if logs else "No detailed logs available", failed_test_files if failed_test_files else None
-
-
