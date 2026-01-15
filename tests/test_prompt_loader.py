@@ -918,7 +918,7 @@ class TestConditionalPrompts:
         """Test render_prompt with multiline conditional block."""
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            'test:\n  cond: |-\n    Start\n    $if(ctx)\n    CONTEXT:\n    $ctx\n    $endif\n    End\n',
+            "test:\n  cond: |-\n    Start\n    $if(ctx)\n    CONTEXT:\n    $ctx\n    $endif\n    End\n",
             encoding="utf-8",
         )
         clear_prompt_cache()
@@ -932,7 +932,7 @@ class TestConditionalPrompts:
         # Let's check matching content
         assert "CONTEXT:" in result
         assert "Info" in result
-        
+
         # Check negative case
         result = render_prompt(
             "test.cond",
