@@ -591,7 +591,9 @@ def change_fraction(old: str, new: str) -> float:
             if not s:
                 return ""
             # Trailing 20 lines
-            lines = s.splitlines()
+            # Optimization: slice only the end to avoid splitting massive strings
+            # 4000 chars is sufficient cover > 20 lines typically, or > 1000 chars
+            lines = s[-4000:].splitlines()
             tail_by_lines = "\n".join(lines[-20:])
             # Trailing 1000 characters
             tail_by_chars = s[-1000:]
