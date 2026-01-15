@@ -1075,7 +1075,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
 
                                     # Extract important error-related information
                                     if "eslint" in job_name.lower() or "lint" in job_name.lower():
-                                        snippet = _filter_eslint_log(content)
+                                        # Use standard context extraction for eslint if dedicated filter is not available
+                                        snippet = _extract_error_context(content)
                                     else:
                                         snippet = _extract_error_context(content)
 
@@ -2343,7 +2344,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(ln) for ln in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:
