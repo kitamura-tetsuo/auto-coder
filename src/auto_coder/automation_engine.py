@@ -11,11 +11,9 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
-
 from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
 from .git_info import get_current_branch
-from .util.gh_cache import GitHubClient
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_engine import check_and_resume_or_archive_sessions
@@ -26,11 +24,11 @@ from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .test_result import TestResult
 from .test_log_utils import extract_important_errors
+from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
+from .util.gh_cache import GitHubClient, get_ghapi_client
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
-from .util.gh_cache import get_ghapi_client
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
@@ -195,7 +193,7 @@ class AutomationEngine:
                         token = self.github.token
                         api = get_ghapi_client(token)
                         node_id = pr_data.get("node_id")
-                        
+
                         if not node_id:
                             logger.info(f"Node ID missing for PR #{pr_number}, fetching details...")
                             try:
@@ -300,21 +298,21 @@ class AutomationEngine:
                         # Check reviews
                         reviews = self.github.get_pr_reviews(repo_name, pr_number)
                         for review in reviews:
-                            user = review.get('user')
-                            if user and user.get('login') != "jules":
-                                submitted_at = review.get('submitted_at')
+                            user = review.get("user")
+                            if user and user.get("login") != "jules":
+                                submitted_at = review.get("submitted_at")
                                 if submitted_at:
                                     dt = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
                                     if last_interaction_time is None or dt > last_interaction_time:
                                         last_interaction_time = dt
-                                        last_interaction_type = review.get('state')
+                                        last_interaction_type = review.get("state")
 
                         # Check comments
                         comments = self.github.get_pr_comments(repo_name, pr_number)
                         for comment in comments:
-                            user = comment.get('user')
-                            if user and user.get('login') != "jules":
-                                created_at = comment.get('created_at')
+                            user = comment.get("user")
+                            if user and user.get("login") != "jules":
+                                created_at = comment.get("created_at")
                                 if created_at:
                                     dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                                     if last_interaction_time is None or dt > last_interaction_time:
@@ -328,13 +326,13 @@ class AutomationEngine:
                             if commits:
                                 for commit_data in reversed(commits):
                                     # Check commit date
-                                    committer = commit_data.get('commit', {}).get('committer', {})
-                                    commit_date_str = committer.get('date')
+                                    committer = commit_data.get("commit", {}).get("committer", {})
+                                    commit_date_str = committer.get("date")
                                     if commit_date_str:
                                         commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
                                         if commit_date > last_interaction_time:
-                                            author = commit_data.get('author')
-                                            if author and author.get('login') == "jules":
+                                            author = commit_data.get("author")
+                                            if author and author.get("login") == "jules":
                                                 jules_responded = True
                                                 break
                                         else:
@@ -1468,10 +1466,8 @@ class AutomationEngine:
                     token = self.github.token
                     api = get_ghapi_client(token)
                     owner, repo = repo_name.split("/")
-                    
-                    runs_resp = api.actions.list_workflow_runs_for_repo(
-                        owner, repo, head_sha=commit_hash, per_page=1
-                    )
+
+                    runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, head_sha=commit_hash, per_page=1)
                     runs = runs_resp.get("workflow_runs", [])
 
                     if not runs:

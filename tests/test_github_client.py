@@ -3,22 +3,26 @@ Tests for GitHub client functionality.
 """
 
 import json
-from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from src.auto_coder.util.gh_cache import GitHubClient
 
+
 class AttrDict(dict):
     """Helper class to mock GhApi's AttrDict behavior."""
+
     def __getattr__(self, key):
         try:
             return self[key]
         except KeyError:
             raise AttributeError(key)
+
     def __setattr__(self, key, value):
         self[key] = value
+
 
 class TestGitHubClient:
     """Test cases for GitHubClient class."""
@@ -65,28 +69,15 @@ class TestGitHubClient:
         """Test successful open issues retrieval."""
         # Setup
         mock_api = Mock()
-        
+
         # Issue 1 - Regular issue
-        issue1 = AttrDict({
-            "number": 1, 
-            "title": "Issue 1", 
-            "created_at": "2024-01-01T00:00:00Z"
-        })
-        
+        issue1 = AttrDict({"number": 1, "title": "Issue 1", "created_at": "2024-01-01T00:00:00Z"})
+
         # Issue 2 - Pull Request (should be filtered)
-        issue2 = AttrDict({
-            "number": 2, 
-            "title": "PR 1", 
-            "pull_request": {},
-            "created_at": "2024-01-02T00:00:00Z"
-        })
-        
+        issue2 = AttrDict({"number": 2, "title": "PR 1", "pull_request": {}, "created_at": "2024-01-02T00:00:00Z"})
+
         # Issue 3 - Regular issue
-        issue3 = AttrDict({
-            "number": 3, 
-            "title": "Issue 3", 
-            "created_at": "2024-01-03T00:00:00Z"
-        })
+        issue3 = AttrDict({"number": 3, "title": "Issue 3", "created_at": "2024-01-03T00:00:00Z"})
 
         mock_api.issues.list_for_repo.return_value = [issue1, issue2, issue3]
         mock_get_client.return_value = mock_api
@@ -132,30 +123,13 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Mock open PRs
-        pr1 = AttrDict({
-            "number": 123,
-            "title": "Feature",
-            "head": AttrDict({"ref": "feature-branch"}),
-            "base": AttrDict({"ref": "main"}),
-            "state": "open",
-            "body": "",
-            "html_url": "url",
-            "user": AttrDict({"login": "user"}),
-            "created_at": "date",
-            "updated_at": "date"
-        })
-        
-        pr2 = AttrDict({
-            "number": 456,
-            "title": "Other",
-            "head": AttrDict({"ref": "other"}),
-            "base": AttrDict({"ref": "main"}),
-             "state": "open"
-        })
+        pr1 = AttrDict({"number": 123, "title": "Feature", "head": AttrDict({"ref": "feature-branch"}), "base": AttrDict({"ref": "main"}), "state": "open", "body": "", "html_url": "url", "user": AttrDict({"login": "user"}), "created_at": "date", "updated_at": "date"})
+
+        pr2 = AttrDict({"number": 456, "title": "Other", "head": AttrDict({"ref": "other"}), "base": AttrDict({"ref": "main"}), "state": "open"})
 
         # Mock get_open_pull_requests calls
         with patch.object(client, "get_open_pull_requests", return_value=[pr1, pr2]):
-            
+
             # Execute
             result = client.find_pr_by_head_branch("test/repo", "feature-branch")
 
@@ -168,7 +142,7 @@ class TestGitHubClient:
     def test_find_pr_by_head_branch_not_found(self, mock_get_client, mock_github_token):
         """Test finding PR by head branch when PR does not exist."""
         client = GitHubClient.get_instance(mock_github_token)
-        
+
         with patch.object(client, "get_open_pull_requests", return_value=[]):
             result = client.find_pr_by_head_branch("test/repo", "non-existent")
             assert result is None
@@ -176,20 +150,22 @@ class TestGitHubClient:
     def test_get_issue_details(self, mock_github_token):
         """Test issue details extraction."""
         client = GitHubClient.get_instance(mock_github_token)
-        
-        mock_issue = AttrDict({
-            "number": 123,
-            "title": "Test Issue",
-            "body": "Test body",
-            "state": "open",
-            "labels": [AttrDict({"name": "bug"}), AttrDict({"name": "high-priority"})],
-            "assignees": [AttrDict({"login": "testuser"})],
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T00:00:00Z",
-            "html_url": "https://github.com/test/repo/issues/123",
-            "user": AttrDict({"login": "author"}),
-            "comments": 5
-        })
+
+        mock_issue = AttrDict(
+            {
+                "number": 123,
+                "title": "Test Issue",
+                "body": "Test body",
+                "state": "open",
+                "labels": [AttrDict({"name": "bug"}), AttrDict({"name": "high-priority"})],
+                "assignees": [AttrDict({"login": "testuser"})],
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "html_url": "https://github.com/test/repo/issues/123",
+                "user": AttrDict({"login": "author"}),
+                "comments": 5,
+            }
+        )
 
         result = client.get_issue_details(mock_issue)
 
@@ -211,29 +187,31 @@ class TestGitHubClient:
     def test_get_pr_details(self, mock_github_token):
         """Test PR details extraction."""
         client = GitHubClient.get_instance(mock_github_token)
-        
-        mock_pr = AttrDict({
-            "number": 456,
-            "title": "Test PR",
-            "body": "Test PR body",
-            "state": "open",
-            "labels": [AttrDict({"name": "feature"})],
-            "assignees": [AttrDict({"login": "testuser"})],
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T00:00:00Z",
-            "html_url": "https://github.com/test/repo/pull/456",
-            "user": AttrDict({"login": "author"}),
-            "head": AttrDict({"ref": "feature-branch"}),
-            "base": AttrDict({"ref": "main"}),
-            "mergeable": True,
-            "draft": False,
-            "comments": 2,
-            "review_comments": 1,
-            "commits": 3,
-            "additions": 50,
-            "deletions": 10,
-            "changed_files": 2
-        })
+
+        mock_pr = AttrDict(
+            {
+                "number": 456,
+                "title": "Test PR",
+                "body": "Test PR body",
+                "state": "open",
+                "labels": [AttrDict({"name": "feature"})],
+                "assignees": [AttrDict({"login": "testuser"})],
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "html_url": "https://github.com/test/repo/pull/456",
+                "user": AttrDict({"login": "author"}),
+                "head": AttrDict({"ref": "feature-branch"}),
+                "base": AttrDict({"ref": "main"}),
+                "mergeable": True,
+                "draft": False,
+                "comments": 2,
+                "review_comments": 1,
+                "commits": 3,
+                "additions": 50,
+                "deletions": 10,
+                "changed_files": 2,
+            }
+        )
 
         result = client.get_pr_details(mock_pr)
 
@@ -350,7 +328,7 @@ class TestGitHubClient:
     def test_has_linked_pr_with_linked_pr(self, mock_get_client, mock_get_linked, mock_github_token):
         """Test has_linked_pr returns True when PR references issue."""
         mock_get_linked.return_value = [456]
-        
+
         mock_api = Mock()
         # Mock PR details check (must be open)
         mock_api.pulls.get.return_value = AttrDict({"state": "open"})
@@ -368,12 +346,12 @@ class TestGitHubClient:
     def test_has_linked_pr_via_text_fallback(self, mock_get_open_prs, mock_get_linked, mock_github_token):
         """Test has_linked_pr via text fallback."""
         mock_get_linked.return_value = []
-        
+
         pr = AttrDict({"number": 789, "title": "Fixes #123", "body": "description"})
         mock_get_open_prs.return_value = [pr]
 
         client = GitHubClient.get_instance(mock_github_token)
-        
+
         result = client.has_linked_pr("test/repo", 123)
 
         assert result is True
@@ -382,10 +360,8 @@ class TestGitHubClient:
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_find_closing_pr_success(self, mock_get_client, mock_get_timeline, mock_github_token):
         """Test find_closing_pr finds open closing PR."""
-        mock_get_timeline.return_value = [
-             {"event": "connected", "source": {"issue": {"number": 200, "pull_request": {}}}}
-        ]
-        
+        mock_get_timeline.return_value = [{"event": "connected", "source": {"issue": {"number": 200, "pull_request": {}}}}]
+
         mock_api = Mock()
         # Check if PR open
         mock_api.pulls.get.return_value = AttrDict({"state": "open"})
@@ -402,7 +378,7 @@ class TestGitHubClient:
     def test_find_closing_pr_fallback(self, mock_get_open_prs, mock_get_timeline, mock_github_token):
         """Test find_closing_pr falls back to text search."""
         mock_get_timeline.return_value = []
-        
+
         pr = AttrDict({"number": 789, "title": "Closes #123"})
         mock_get_open_prs.return_value = [pr]
 
@@ -416,15 +392,13 @@ class TestGitHubClient:
     def test_search_issues(self, mock_get_client, mock_github_token):
         """Test search_issues call."""
         mock_api = Mock()
-        mock_api.search.issues_and_pull_requests.return_value = {
-            "items": [AttrDict({"number": 1, "title": "Found"})]
-        }
+        mock_api.search.issues_and_pull_requests.return_value = {"items": [AttrDict({"number": 1, "title": "Found"})]}
         mock_get_client.return_value = mock_api
-        
+
         client = GitHubClient.get_instance(mock_github_token)
-        
+
         result = client.search_issues("query")
-        
+
         assert len(result) == 1
         assert result[0].number == 1
         mock_api.search.issues_and_pull_requests.assert_called_once_with(q="query", sort="updated", order="desc")
@@ -434,17 +408,13 @@ class TestGitHubClient:
     def test_check_issue_dependencies_resolved(self, mock_details, mock_get_issue, mock_github_token):
         """Test check_issue_dependencies_resolved."""
         client = GitHubClient.get_instance(mock_github_token)
-        
+
         # Mock get_issue to return something
         mock_get_issue.return_value = Mock()
-        
-        # Mock details: 100 closed, 200 open
-        mock_details.side_effect = [
-            {"number": 100, "state": "closed"},
-            {"number": 200, "state": "open"}
-        ]
-        
-        result = client.check_issue_dependencies_resolved("test/repo", [100, 200])
-        
-        assert result == [200]
 
+        # Mock details: 100 closed, 200 open
+        mock_details.side_effect = [{"number": 100, "state": "closed"}, {"number": 200, "state": "open"}]
+
+        result = client.check_issue_dependencies_resolved("test/repo", [100, 200])
+
+        assert result == [200]
