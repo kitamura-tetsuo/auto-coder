@@ -11,7 +11,6 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
-
 from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
 from .git_info import get_current_branch
@@ -28,8 +27,8 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
-from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.gh_cache import get_ghapi_client
+from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
@@ -194,7 +193,7 @@ class AutomationEngine:
                         token = self.github.token
                         api = get_ghapi_client(token)
                         node_id = pr_data.get("node_id")
-                        
+
                         if not node_id:
                             logger.info(f"Node ID missing for PR #{pr_number}, fetching details...")
                             try:
@@ -1469,10 +1468,8 @@ class AutomationEngine:
                     token = self.github.token
                     api = get_ghapi_client(token)
                     owner, repo = repo_name.split("/")
-                    
-                    runs_resp = api.actions.list_workflow_runs_for_repo(
-                        owner, repo, head_sha=commit_hash, per_page=1
-                    )
+
+                    runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, head_sha=commit_hash, per_page=1)
                     runs = runs_resp.get("workflow_runs", [])
 
                     if not runs:
