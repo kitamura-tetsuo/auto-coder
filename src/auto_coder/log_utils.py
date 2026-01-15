@@ -38,5 +38,11 @@ class LogEntry:
         """Saves the log entry to a file."""
         ensure_log_dirs(log_dir)
         filepath = log_dir / filename
-        with open(filepath, "w") as f:
+
+        # Use os.open to ensure file is created with 600 permissions
+        fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+        # The 'with' statement will automatically close the file descriptor (via fdopen)
+        # even if an exception occurs during the block.
+        with os.fdopen(fd, "w") as f:
             json.dump(asdict(self), f, indent=2)

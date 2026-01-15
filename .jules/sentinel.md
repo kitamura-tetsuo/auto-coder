@@ -27,3 +27,8 @@
 **Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
 **Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
 **Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.
+
+## 2026-02-13 - Insecure Test Log File Permissions
+**Vulnerability:** Test logs containing potentially sensitive stdout/stderr were created with default permissions (often world-readable).
+**Learning:** Even diagnostic logs can contain sensitive information captured from test runs.
+**Prevention:** Apply strict file permissions (0o600) to all log files that store captured command output using `os.open` and `os.fdopen`.
