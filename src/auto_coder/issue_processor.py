@@ -302,19 +302,12 @@ Closes #{issue_number}
 
             # Create the PR
             logger.info(f"Creating PR for parent issue via GhApi: {pr_title}")
-            pr_response = api.pulls.create(
-                owner,
-                repo,
-                title=pr_title,
-                body=pr_body,
-                head=parent_branch,
-                base=config.MAIN_BRANCH
-            )
-            
+            pr_response = api.pulls.create(owner, repo, title=pr_title, body=pr_body, head=parent_branch, base=config.MAIN_BRANCH)
+
             # If successful, we get a response dict
             pr_number = pr_response.get("number")
             pr_url = pr_response.get("html_url")
-            
+
             logger.info(f"Successfully created PR for parent issue #{issue_number}: {pr_url}")
 
             # Verify that the PR is linked to the issue
@@ -633,19 +626,12 @@ def _create_pr_for_issue(
 
             # Create the PR
             logger.info(f"Creating PR for issue #{issue_number} via GhApi: {pr_title}")
-            pr_response = api.pulls.create(
-                owner,
-                repo,
-                title=pr_title,
-                body=pr_body,
-                head=work_branch,
-                base=base_branch
-            )
-            
+            pr_response = api.pulls.create(owner, repo, title=pr_title, body=pr_body, head=work_branch, base=base_branch)
+
             # If successful, we get a response dict
             pr_number = pr_response.get("number")
             pr_url = pr_response.get("html_url")
-            
+
             logger.info(f"Successfully created PR for issue #{issue_number}: {pr_url}")
 
             # Propagate semantic labels from issue to PR if present
