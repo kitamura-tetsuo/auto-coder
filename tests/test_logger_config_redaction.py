@@ -1,9 +1,11 @@
 """Tests for logger redaction functionality."""
 
-import pytest
 from unittest.mock import MagicMock, patch
-from src.auto_coder.logger_config import log_calls, setup_logger, get_logger
+
+import pytest
 from loguru import logger
+
+from src.auto_coder.logger_config import get_logger, log_calls, setup_logger
 
 
 class TestLoggerRedaction:

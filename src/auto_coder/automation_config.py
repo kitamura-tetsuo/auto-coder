@@ -150,7 +150,7 @@ class AutomationConfig:
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
 
         # Load Jules wait timeout from config
-        from .llm_backend_config import get_jules_wait_timeout_hours_from_config, get_dependabot_wait_interval_hours_from_config
+        from .llm_backend_config import get_dependabot_wait_interval_hours_from_config, get_jules_wait_timeout_hours_from_config
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
         object.__setattr__(self, "DEPENDABOT_WAIT_INTERVAL_HOURS", get_dependabot_wait_interval_hours_from_config())
