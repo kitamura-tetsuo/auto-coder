@@ -2142,7 +2142,7 @@ def _fix_pr_issues_with_testing(
         failed_tests = extract_all_failed_tests(github_logs)
 
     if skip_github_actions_fix:
-        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
+        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests, skip_github_actions_fix=skip_github_actions_fix)
     else:
         return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
 
@@ -2240,6 +2240,7 @@ def _fix_pr_issues_with_local_testing(
     config: AutomationConfig,
     github_logs: str,
     test_files: Optional[List[str]] = None,
+    skip_github_actions_fix: bool = False,
 ) -> List[str]:
     """Fix PR issues using local testing loop."""
     actions = []

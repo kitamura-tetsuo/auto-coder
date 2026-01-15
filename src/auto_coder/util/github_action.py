@@ -1494,6 +1494,43 @@ def _get_github_actions_logs(
     return "\n\n".join(logs) if logs else "No detailed logs available"
 
 
+def _filter_eslint_log(content: str) -> str:
+    """Extract relevant lines from ESLint output."""
+    if not content:
+        return ""
+
+    lines = content.split("\n")
+    relevant_lines = []
+
+    # Common ESLint output patterns:
+    # /path/to/file.ts
+    #   line:col  error  Message  rule-name
+
+    capture = False
+    for line in lines:
+        line_strip = line.strip()
+        # Start capturing on file path or error header
+        if line_strip.endswith((".ts", ".js", ".tsx", ".jsx")) and "/" in line:
+            capture = True
+            relevant_lines.append(line)
+        elif "error" in line.lower() and ("line" in line.lower() or ":" in line):
+            relevant_lines.append(line)
+        elif "problems" in line.lower() and "(" in line:
+            relevant_lines.append(line)
+        elif capture and line_strip:
+            # Capture indented lines after file path (usually errors)
+            if line.startswith(" ") or line.startswith("\t"):
+                relevant_lines.append(line)
+            else:
+                capture = False
+
+    if not relevant_lines:
+        # Fallback to general error extraction if specific parsing fails
+        return _extract_error_context(content)
+
+    return "\n".join(relevant_lines[:500])
+
+
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
     """Extract only the logs for failed steps from the full log content.
 
@@ -2343,7 +2380,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:

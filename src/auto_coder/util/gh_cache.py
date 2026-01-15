@@ -601,7 +601,7 @@ class GitHubClient:
             "title": get(issue, "title"),
             "body": get(issue, "body") or "",
             "state": get(issue, "state"),
-            "labels": [get(l, "name") for l in labels],
+            "labels": [get(lbl, "name") for lbl in labels],
             "assignees": [get(a, "login") for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
@@ -641,7 +641,7 @@ class GitHubClient:
             "title": get(pr, "title"),
             "body": get(pr, "body") or "",
             "state": get(pr, "state"),
-            "labels": [get(l, "name") for l in labels],
+            "labels": [get(lbl, "name") for lbl in labels],
             "assignees": [get(a, "login") for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
@@ -912,7 +912,7 @@ class GitHubClient:
             logger.debug(f"No closing PR found for issue #{issue_number}")
             return None
 
-        except GithubException as e:
+        except Exception as e:
             logger.error(f"Failed to find closing PR for issue #{issue_number}: {e}")
             return None
 
@@ -1372,7 +1372,7 @@ class GitHubClient:
 
             # Use basic get issue to check current labels
             issue_data = api.issues.get(owner, repo, issue_number)
-            current_labels = [l["name"] for l in issue_data.get("labels", [])]
+            current_labels = [lbl["name"] for lbl in issue_data.get("labels", [])]
 
             existing_labels = [lbl for lbl in labels if lbl in current_labels]
             if existing_labels:
