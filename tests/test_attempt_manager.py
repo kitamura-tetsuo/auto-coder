@@ -538,13 +538,13 @@ class TestGetCurrentAttempt:
         # client.get_issue_comments returns list of dicts mostly, but code iterates and does .get() or getattr
         # The code does: for comment in comments: body = comment.get("body", "")
         # So get_issue_comments should return list of dicts.
-        
+
         # However, the previous code handled PyGithub objects (getattr).
         # My refactored code uses `.get()` on the items returned by get_issue_comments.
         # So I should return list of dicts.
         comments_data = [{"body": f"{ATTEMPT_COMMENT_PREFIX}1"}, {"body": f"{ATTEMPT_COMMENT_PREFIX}2"}]
         mock_client.get_issue_comments.return_value = comments_data
-        
+
         # mock_repo.get_issue.return_value = mock_issue  <-- No longer used
         mock_github_client.get_instance.return_value = mock_client
         # mock_github_client.get_repository.return_value = mock_repo
@@ -557,10 +557,10 @@ class TestGetCurrentAttempt:
     def test_get_current_attempt_no_comments(self, mock_github_client):
         """Test getting current attempt when no attempt comments exist."""
         # Mock the GitHub client and repository
-        
+
         mock_client = Mock()
         mock_client.get_issue_comments.return_value = [{"body": "Regular comment"}]
-        
+
         mock_github_client.get_instance.return_value = mock_client
 
         result = get_current_attempt("owner/repo", 123)
@@ -571,7 +571,7 @@ class TestGetCurrentAttempt:
     def test_get_current_attempt_empty_comments(self, mock_github_client):
         """Test getting current attempt when issue has no comments."""
         # Mock the GitHub client and repository
-        msg = "" # dummy
+        msg = ""  # dummy
         mock_client = Mock()
         mock_client.get_issue_comments.return_value = []
         mock_github_client.get_instance.return_value = mock_client
@@ -657,13 +657,9 @@ class TestIncrementAttempt:
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456, 789] if issue_num == 123 else []
         # Update mocks for get_issue
         # get_issue now returns dicts
-        issues_dicts = {
-            123: {"number": 123, "state": "open"},
-            456: {"number": 456, "state": "closed"},
-            789: {"number": 789, "state": "closed"}
-        }
+        issues_dicts = {123: {"number": 123, "state": "open"}, 456: {"number": 456, "state": "closed"}, 789: {"number": 789, "state": "closed"}}
         mock_client.get_issue.side_effect = lambda repo, num: issues_dicts.get(num, {})
-        
+
         mock_github_client.get_instance.return_value = mock_client
 
         result = increment_attempt("owner/repo", 123)
@@ -707,7 +703,7 @@ class TestIncrementAttempt:
         mock_get_current_attempt.return_value = 1
 
         mock_client = Mock()
-        
+
         mock_client.get_issue.return_value = {"state": "open"}
         mock_client.get_all_sub_issues.return_value = []
         mock_github_client.get_instance.return_value = mock_client
@@ -735,10 +731,7 @@ class TestIncrementAttempt:
         issues = {123: Mock(state="open"), 456: Mock(state="closed")}
 
         # issues = {123: Mock(state="open"), 456: Mock(state="closed")}
-        issues_dicts = {
-            123: {"state": "open"},
-            456: {"state": "closed"}
-        }
+        issues_dicts = {123: {"state": "open"}, 456: {"state": "closed"}}
         mock_client.get_issue.side_effect = lambda repo, num: issues_dicts.get(num, {})
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client
@@ -801,8 +794,10 @@ class TestIncrementAttempt:
         def get_issue_side_effect(repo, issue_num):
             if issue_num == 789:
                 raise Exception("failed to load sub-issue")
-            if issue_num == 123: return {"state": "open"}
-            if issue_num == 456: return {"state": "closed"}
+            if issue_num == 123:
+                return {"state": "open"}
+            if issue_num == 456:
+                return {"state": "closed"}
             return {"state": "open"}
 
         mock_client.get_issue.side_effect = get_issue_side_effect
@@ -824,7 +819,7 @@ class TestIncrementAttempt:
         mock_get_current_attempt.return_value = 5
 
         mock_client = Mock()
-        mock_client.get_issue.return_value = {"state": "open"} # Mock get_issue directly
+        mock_client.get_issue.return_value = {"state": "open"}  # Mock get_issue directly
         mock_client.get_all_sub_issues.return_value = []
         mock_github_client.get_instance.return_value = mock_client
 
@@ -848,10 +843,7 @@ class TestIncrementAttempt:
 
         mock_client = Mock()
         # issues = {123: Mock(state="open"), 456: Mock(state="closed")}
-        issues_dicts = {
-            123: {"state": "open"},
-            456: {"state": "closed"}
-        }
+        issues_dicts = {123: {"state": "open"}, 456: {"state": "closed"}}
         mock_client.get_issue.side_effect = lambda repo, num: issues_dicts.get(num, {})
         mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client

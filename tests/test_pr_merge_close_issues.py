@@ -115,12 +115,8 @@ class TestCloseLinkedIssues:
         mock_api.pulls.get.assert_called_once_with("test", "repo", 456)
 
         # Verify issue comment and close
-        mock_api.issues.create_comment.assert_called_once_with(
-            "test", "repo", 123, body="Closed by PR #456"
-        )
-        mock_api.issues.update.assert_called_once_with(
-            "test", "repo", 123, state="closed"
-        )
+        mock_api.issues.create_comment.assert_called_once_with("test", "repo", 123, body="Closed by PR #456")
+        mock_api.issues.update.assert_called_once_with("test", "repo", 123, state="closed")
 
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("src.auto_coder.pr_processor.GitHubClient")
@@ -138,11 +134,11 @@ class TestCloseLinkedIssues:
         # Verify both issues were processed
         assert mock_api.issues.create_comment.call_count == 2
         assert mock_api.issues.update.call_count == 2
-        
+
         # Verify calls for #123
         mock_api.issues.create_comment.assert_any_call("test", "repo", 123, body="Closed by PR #789")
         mock_api.issues.update.assert_any_call("test", "repo", 123, state="closed")
-        
+
         # Verify calls for #456
         mock_api.issues.create_comment.assert_any_call("test", "repo", 456, body="Closed by PR #789")
         mock_api.issues.update.assert_any_call("test", "repo", 456, state="closed")
@@ -186,7 +182,7 @@ class TestCloseLinkedIssues:
         mock_github_client.get_instance.return_value.token = "token"
 
         mock_api.pulls.get.return_value = {"body": "Closes #123"}
-        
+
         # Mock comment failure (should continue to try close)
         mock_api.issues.create_comment.side_effect = Exception("Comment failed")
         # Mock close failure
@@ -241,7 +237,7 @@ class TestMergePRWithIssueClosing:
 
         # Mock failed merge (API failure)
         mock_api.pulls.merge.side_effect = Exception("Merge failed")
-        
+
         # Mock conflict check (not conflict)
         mock_api.pulls.get.return_value = {"mergeable": True}
 
