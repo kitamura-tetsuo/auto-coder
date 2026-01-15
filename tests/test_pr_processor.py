@@ -57,11 +57,11 @@ class TestPRProcessorBackendSwitching:
         fail_result_1 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed", errors="Error details")
         fail_result_2 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed again", errors="More errors")
         pass_result = Mock(failed_tests=[], success=True, output="All tests passed", errors="")
-        
+
         mock_run_tests.side_effect = [
             fail_result_1,  # attempt 1
             fail_result_2,  # attempt 2
-            pass_result,    # attempt 3
+            pass_result,  # attempt 3
         ]
 
         # Mock local fix to return empty actions and no response
