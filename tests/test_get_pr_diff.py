@@ -1,7 +1,8 @@
-
 import unittest
 from unittest.mock import Mock, patch
+
 from auto_coder.util.gh_cache import GitHubClient
+
 
 class TestGetPRDiff(unittest.TestCase):
     @patch("auto_coder.util.gh_cache.get_caching_client")
@@ -16,10 +17,10 @@ class TestGetPRDiff(unittest.TestCase):
         mock_get_client.return_value = mock_client_instance
 
         client = GitHubClient("test_token")
-        
+
         # Execute
         diff = client.get_pr_diff("owner/repo", 123)
-        
+
         # Verify
         assert diff == "diff content"
         mock_client_instance.get.assert_called_once()
@@ -30,15 +31,15 @@ class TestGetPRDiff(unittest.TestCase):
 
     @patch("auto_coder.util.gh_cache.get_caching_client")
     def test_get_pr_diff_handles_error(self, mock_get_client):
-         # Setup
+        # Setup
         mock_client_instance = Mock()
         mock_client_instance.get.side_effect = Exception("API error")
         mock_get_client.return_value = mock_client_instance
 
         client = GitHubClient("test_token")
-        
+
         # Execute
         diff = client.get_pr_diff("owner/repo", 123)
-        
+
         # Verify
         assert diff == ""
