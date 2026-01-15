@@ -13,7 +13,6 @@ import httpx
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
-
 from .logger_config import get_logger
 from .util.gh_cache import get_caching_client, get_ghapi_client
 
@@ -322,22 +321,22 @@ class GitHubClient:
         try:
             owner, repo = repo_name.split("/")
             api = get_ghapi_client(self.token)
-            
+
             # List PRs (automatically pages)
             # GhApi paged operations return a generator or we can just fetch pages manually or use max limit
             # For simplicity with 'limit', we can use per_page.
             # GhApi doesn't auto-page in simple calls usually unless using paged helper.
             # Let's use simple list for now, assuming < 100 PRs usually, or implement paging if needed.
             # limit defaults to 100.
-            
-            prs_summary = api.pulls.list(owner, repo, state='open', per_page=limit)
-            
+
+            prs_summary = api.pulls.list(owner, repo, state="open", per_page=limit)
+
             all_prs: List[Dict[str, Any]] = []
-            
+
             for pr_summary in prs_summary:
                 # Fetch full details for mergeable status, etc.
                 try:
-                    pr_num = pr_summary['number'] if isinstance(pr_summary, dict) else pr_summary.number
+                    pr_num = pr_summary["number"] if isinstance(pr_summary, dict) else pr_summary.number
                     pr_details = api.pulls.get(owner, repo, pr_num)
                 except Exception as e:
                     logger.warning(f"Failed to fetch details for PR #{pr_summary.get('number', 'unknown')}: {e}")
@@ -353,32 +352,32 @@ class GitHubClient:
                 # Using bracket access is safer if we know it works for both (AttrDict is dict)
                 # But let's use a safe accessor to be sure.
                 d = pr_details
-                
+
                 pr_data: Dict[str, Any] = {
-                    "number": d['number'],
-                    "title": d['title'],
-                    "node_id": d['node_id'],
-                    "body": d['body'] or "",
-                    "state": d['state'].lower(),
-                    "url": d['html_url'],
-                    "created_at": d['created_at'],
-                    "updated_at": d['updated_at'],
-                    "draft": d['draft'],
-                    "mergeable": d['mergeable'],
-                    "head_branch": d['head']['ref'],
-                    "head": {"ref": d['head']['ref'], "sha": d['head']['sha']},
-                    "base_branch": d['base']['ref'],
-                    "author": d['user']['login'] if d['user'] else None,
-                    "assignees": [a['login'] for a in d['assignees']],
-                    "labels": [lbl['name'] for lbl in d['labels']],
-                    "comments_count": d['comments'] + d['review_comments'],
-                    "commits_count": d['commits'],
-                    "additions": d['additions'],
-                    "deletions": d['deletions'],
-                    "changed_files": d['changed_files'],
+                    "number": d["number"],
+                    "title": d["title"],
+                    "node_id": d["node_id"],
+                    "body": d["body"] or "",
+                    "state": d["state"].lower(),
+                    "url": d["html_url"],
+                    "created_at": d["created_at"],
+                    "updated_at": d["updated_at"],
+                    "draft": d["draft"],
+                    "mergeable": d["mergeable"],
+                    "head_branch": d["head"]["ref"],
+                    "head": {"ref": d["head"]["ref"], "sha": d["head"]["sha"]},
+                    "base_branch": d["base"]["ref"],
+                    "author": d["user"]["login"] if d["user"] else None,
+                    "assignees": [a["login"] for a in d["assignees"]],
+                    "labels": [lbl["name"] for lbl in d["labels"]],
+                    "comments_count": d["comments"] + d["review_comments"],
+                    "commits_count": d["commits"],
+                    "additions": d["additions"],
+                    "deletions": d["deletions"],
+                    "changed_files": d["changed_files"],
                 }
                 all_prs.append(pr_data)
-                
+
                 if len(all_prs) >= limit:
                     break
 
@@ -413,7 +412,6 @@ class GitHubClient:
                             logger.debug(f"Updated issue #{issue_number} in cache: {kwargs.keys()}")
                         return
 
-
     def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open issues from repository using REST API (cached).
 
@@ -431,58 +429,58 @@ class GitHubClient:
         try:
             owner, repo = repo_name.split("/")
             api = get_ghapi_client(self.token)
-            
+
             # List Issues (state=open)
             # per_page=limit. Note: GitHub treats PRs as Issues, so we must filter them out.
-            issues_summary = api.issues.list_for_repo(owner, repo, state='open', per_page=limit)
-            
+            issues_summary = api.issues.list_for_repo(owner, repo, state="open", per_page=limit)
+
             all_issues: List[Dict[str, Any]] = []
-            
+
             for issue in issues_summary:
                 # Filter out Pull Requests (which are returned in issues list by REST API)
                 if "pull_request" in issue:
                     continue
-                    
+
                 # Safe access (dict expected)
                 i = issue
-                nb = i['number']
-                
+                nb = i["number"]
+
                 # Fetch extended details via REST (N+1 calls, but cached via ETag)
                 # linked_prs via timeline
                 linked_prs_ids = self.get_linked_prs(repo_name, nb)
-                
+
                 # open_sub_issue_numbers via sub_issues endpoint
                 # Optimization: Check sub_issues_summary from issue object first
-                sub_issues_summary = i.get('sub_issues_summary')
-                if sub_issues_summary and sub_issues_summary.get('total', 0) == 0:
+                sub_issues_summary = i.get("sub_issues_summary")
+                if sub_issues_summary and sub_issues_summary.get("total", 0) == 0:
                     open_sub_issues_ids = []
                 else:
                     open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
-                
+
                 # parent_issue via parent_issue_url
                 # Optimization: Extract from URL if available
                 parent_issue_id = None
-                parent_issue_url = i.get('parent_issue_url')
+                parent_issue_url = i.get("parent_issue_url")
                 if parent_issue_url:
                     try:
-                        parent_issue_id = int(parent_issue_url.split('/')[-1])
+                        parent_issue_id = int(parent_issue_url.split("/")[-1])
                     except (ValueError, IndexError):
                         logger.warning(f"Failed to parse parent issue ID from URL: {parent_issue_url}")
-                        # Fallback if parsing fails? Or just leave as None? 
+                        # Fallback if parsing fails? Or just leave as None?
                         # Original logic would try to fetch. Let's stick to parsing or None to avoid N+1.
-                
+
                 issue_data: Dict[str, Any] = {
                     "number": nb,
-                    "title": i['title'],
-                    "body": i['body'] or "",
-                    "state": i['state'],
-                    "labels": [lbl['name'] for lbl in i['labels']],
-                    "assignees": [a['login'] for a in i['assignees']],
-                    "created_at": i['created_at'],
-                    "updated_at": i['updated_at'],
-                    "url": i['html_url'],
-                    "author": i['user']['login'] if i['user'] else None,
-                    "comments_count": i['comments'],
+                    "title": i["title"],
+                    "body": i["body"] or "",
+                    "state": i["state"],
+                    "labels": [lbl["name"] for lbl in i["labels"]],
+                    "assignees": [a["login"] for a in i["assignees"]],
+                    "created_at": i["created_at"],
+                    "updated_at": i["updated_at"],
+                    "url": i["html_url"],
+                    "author": i["user"]["login"] if i["user"] else None,
+                    "comments_count": i["comments"],
                     # Extended fields populated via REST
                     "linked_prs": linked_prs_ids,
                     "has_linked_prs": bool(linked_prs_ids),
@@ -492,9 +490,9 @@ class GitHubClient:
                     "parent_issue_number": parent_issue_id,
                     "linked_pr_numbers": linked_prs_ids,
                 }
-                
+
                 all_issues.append(issue_data)
-                
+
                 if len(all_issues) >= limit:
                     break
 
@@ -511,8 +509,6 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to get open issues via REST from {repo_name}: {e}")
             raise
-
-
 
     def get_issue(self, repo_name: str, issue_number: int) -> Optional[Any]:
         """Get a single issue by number using REST API (cached).
@@ -591,17 +587,16 @@ class GitHubClient:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
-
     def _get_issue_timeline(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Get timeline for an issue using GitHub REST API.
-        
+
         Endpoint: /repos/{owner}/{repo}/issues/{issue_number}/timeline
         """
         try:
             owner, repo = repo_name.split("/")
             client = get_caching_client()
-                
-            # Use loose pagination or just get first page? 
+
+            # Use loose pagination or just get first page?
             # Usually recent events are what we want? The endpoint returns all or paginated.
             # Using standard per_page=100
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100"
@@ -610,27 +605,27 @@ class GitHubClient:
                 "Accept": "application/vnd.github.v3+json",
                 # "X-GitHub-Api-Version": "2022-11-28" # Standard API
             }
-            
+
             # Simple handling for now - assuming recent events are on first page or reasonable number.
             # If a PR is linked, it should be in the timeline.
             response = client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
-            
+
         except Exception as e:
             logger.warning(f"Failed to get timeline for issue #{issue_number}: {e}")
             return []
 
     def get_linked_prs(self, repo_name: str, issue_number: int) -> List[int]:
         """Get PRs linked to this issue via REST Timeline.
-        
+
         Replaces get_linked_prs_via_graphql.
         Look for 'connected' (closing) or 'cross-referenced' (mention) events.
         """
         try:
             timeline = self._get_issue_timeline(repo_name, issue_number)
             pr_numbers = set()
-            
+
             for event in timeline:
                 event_type = event.get("event")
                 # 'connected' means it was linked as closing (fix/close keyword or sidebar)
@@ -639,28 +634,28 @@ class GitHubClient:
                     source = event.get("source", {})
                     # For cross-referenced, source implies who mentioned it.
                     # For connected, source is the PR that was connected.
-                    
+
                     # Structure for cross-referenced: source.issue.number (if from a PR/issue)
                     # Structure for connected: source.issue.number
-                    
+
                     # It might vary. Let's inspect 'source'.
                     # Usually source -> issue -> number
                     if "issue" in source:
-                         # Check if it is a PR
-                         issue_obj = source["issue"]
-                         if "pull_request" in issue_obj:
-                             pr_numbers.add(issue_obj["number"])
-                    
-                # NOTE: Timeline logic can be complex. 
+                        # Check if it is a PR
+                        issue_obj = source["issue"]
+                        if "pull_request" in issue_obj:
+                            pr_numbers.add(issue_obj["number"])
+
+                # NOTE: Timeline logic can be complex.
                 # cross-referenced source might be just the issue object directly in some API versions?
                 # REST API docs say: source: { type: "issue", issue: { ... } }
-                
+
             return list(pr_numbers)
-            
+
         except Exception as e:
             logger.error(f"Failed to get linked PRs for issue #{issue_number}: {e}")
             return []
-            
+
     # Deprecated/Removed: get_linked_prs_via_graphql
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
@@ -683,7 +678,7 @@ class GitHubClient:
                             return True
                     except:
                         continue
-            
+
             # Fallback: Search for PRs that reference this issue in title/body
             # (Existing logic remains)
             repo = self.get_repository(repo_name)
@@ -711,7 +706,7 @@ class GitHubClient:
 
     def find_closing_pr(self, repo_name: str, issue_number: int) -> Optional[int]:
         """Find a PR that closes the given issue.
-        
+
         Updated to use REST Timeline.
         """
         try:
@@ -761,7 +756,7 @@ class GitHubClient:
 
     def verify_pr_closes_issue(self, repo_name: str, pr_number: int, issue_number: int) -> bool:
         """Verify if a PR is linked to close an issue via REST Timeline.
-        
+
         Replaces usage of get_pr_closing_issues for validation.
         """
         try:
@@ -772,20 +767,19 @@ class GitHubClient:
                     source = event.get("source", {})
                     if "issue" in source and source["issue"].get("number") == pr_number:
                         return True
-            
+
             # If not found in connected, it might be just text referenced but not yet 'connected'
             # (GitHub sometimes delays connecting, or if it's not a mergeable branch yet?)
             # But the caller usually wants to check if we SET IT UP correctly.
             # If we just created the PR, the event might not exist yet?
             # Actually, the user code waits 2 seconds.
-            
+
             return False
         except Exception as e:
             logger.warning(f"Failed to verify PR closing link: {e}")
             return False
 
     # Deprecated/Removed: get_pr_closing_issues
-
 
     def get_parent_issue_details(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
         """Get details of the parent issue if it exists using GitHub REST API.
@@ -795,35 +789,28 @@ class GitHubClient:
         try:
             owner, repo = repo_name.split("/")
             api = get_ghapi_client(self.token)
-            
+
             # Fetch parent issue using dedicated endpoint via GhApi
             # Endpoint: GET /repos/{owner}/{repo}/issues/{issue_number}/parent
             # Note: We use GhApi generic call string method because 'get_parent_issue' might not be in the installed spec.
-            
+
             try:
                 # Use raw path call with GhApi
-                parent_issue = api(
-                    f"/repos/{owner}/{repo}/issues/{issue_number}/parent",
-                    verb='GET',
-                    headers={
-                        "X-GitHub-Api-Version": "2022-11-28",
-                        "Accept": "application/vnd.github+json"
-                    }
-                )
+                parent_issue = api(f"/repos/{owner}/{repo}/issues/{issue_number}/parent", verb="GET", headers={"X-GitHub-Api-Version": "2022-11-28", "Accept": "application/vnd.github+json"})
                 if parent_issue:
                     # Check if response is wrapped in 'parent' key
-                    if not parent_issue.get('number') and parent_issue.get('parent'):
-                        parent_issue = parent_issue.get('parent')
+                    if not parent_issue.get("number") and parent_issue.get("parent"):
+                        parent_issue = parent_issue.get("parent")
 
-                    if parent_issue.get('number'):
+                    if parent_issue.get("number"):
                         # Use .get() method to be safe if parent_issue is a dict or AttrDict
                         logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
                         return parent_issue
-                    
+
                     if parent_issue.get("status") == "404":
-                         logger.warning(f"Dedicated parent endpoint returned 404 for issue #{issue_number}. Attempting fallback.")
+                        logger.warning(f"Dedicated parent endpoint returned 404 for issue #{issue_number}. Attempting fallback.")
                     else:
-                         logger.warning(f"Parent issue response missing number: {parent_issue}")
+                        logger.warning(f"Parent issue response missing number: {parent_issue}")
 
             except Exception as e:
                 # Log but continue to fallback
@@ -859,19 +846,19 @@ class GitHubClient:
                 return None
 
             logger.debug(f"Fetching body for parent issue #{parent_number} of issue #{issue_number}")
-            
+
             # Use standard REST get_issue which is already migrated/available
             parent_issue = self.get_issue(repo_name, parent_number)
             if parent_issue:
                 # parent_issue might be object or dict depending on get_issue impl (AttrDict usually)
-                body = getattr(parent_issue, 'body', None) or parent_issue.get('body')
+                body = getattr(parent_issue, "body", None) or parent_issue.get("body")
                 if body:
                     logger.info(f"Retrieved body for parent issue #{parent_number} ({len(body) if body else 0} chars)")
                     return body
-            
+
             logger.debug(f"No body found for parent issue #{parent_number}")
             return None
-            
+
         except Exception as e:
             logger.error(f"Failed to get parent issue body for issue #{issue_number}: {e}")
             return None
@@ -1068,38 +1055,35 @@ class GitHubClient:
 
     def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of open sub-issues using GitHub REST API.
-        
+
         Uses the sub-issues endpoint: /repos/{owner}/{repo}/issues/{issue_number}/sub_issues
         """
         open_sub_issues = []
-        
+
         # Check cache first
         cache_key = (repo_name, issue_number)
         if cache_key in self._sub_issue_cache:
             return self._sub_issue_cache[cache_key]
-        
-        # We need to check the state of each sub-issue. 
+
+        # We need to check the state of each sub-issue.
         # The list_sub_issues endpoint might return state, checking...
         # If the endpoint returns issue objects, they have a 'state' field.
         # Assuming get_all_sub_issues now returns objects or we fetch them.
-        # To keep get_all_sub_issues returning List[int] as per signature, 
+        # To keep get_all_sub_issues returning List[int] as per signature,
         # we might need to fetch details here, OR update get_all_sub_issues to return dicts?
         # The current contract says List[int].
-        
+
         # Let's verify what the endpoint returns. Usually list of issues.
         # For efficiency, let's have a private method that returns the full data.
-        
+
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            open_sub_issues = [
-                i['number'] for i in sub_issues_data 
-                if i.get('state') == 'open'
-            ]
-            
+            open_sub_issues = [i["number"] for i in sub_issues_data if i.get("state") == "open"]
+
             # Update cache for open sub-issues (compatibility)
             cache_key = (repo_name, issue_number)
             self._sub_issue_cache[cache_key] = open_sub_issues
-            
+
             return open_sub_issues
         except Exception as e:
             logger.error(f"Failed to get open sub-issues for #{issue_number}: {e}")
@@ -1109,7 +1093,7 @@ class GitHubClient:
         """Get all sub-issues (open and closed) using GitHub REST API."""
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            return [i['number'] for i in sub_issues_data]
+            return [i["number"] for i in sub_issues_data]
         except Exception as e:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
@@ -1121,25 +1105,21 @@ class GitHubClient:
             # Attempt to use GhApi if available, but it might not have the method yet
             # Endpoint: GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues
             # Using raw caching client for certainty and custom headers if needed
-            
+
             client = get_caching_client()
-                
+
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues"
-            headers = {
-                "Authorization": f"bearer {self.token}",
-                "Accept": "application/vnd.github.v3+json",
-                "X-GitHub-Api-Version": "2022-11-28" # As hinted by user docs
-            }
-            
+            headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3+json", "X-GitHub-Api-Version": "2022-11-28"}  # As hinted by user docs
+
             response = client.get(url, headers=headers)
-            
+
             # If 404, it might simply mean no sub-issues or feature not enabled, return empty
             if response.status_code == 404:
                 return []
-                
+
             response.raise_for_status()
             return response.json()
-            
+
         except Exception as e:
             logger.debug(f"Failed to fetch sub-issues data via REST: {e}")
             return []

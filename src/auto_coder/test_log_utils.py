@@ -283,10 +283,10 @@ def extract_all_failed_tests(stdout: str, stderr: str = "") -> List[str]:
     """
     # Analyze stderr first, then stdout, if neither found, analyze combined output
     ordered_outputs = [stderr, stdout, f"{stdout}\\n{stderr}"]
-    
+
     # Use a set to maintain uniqueness while collecting
     candidates_set = set()
-    
+
     for output in ordered_outputs:
         failed_library = _detect_failed_test_library(output)
 
@@ -299,7 +299,7 @@ def extract_all_failed_tests(stdout: str, stderr: str = "") -> List[str]:
         elif failed_library == "vitest":
             found = _collect_vitest_candidates(output)
             candidates_set.update(found)
-            
+
         if candidates_set:
             break
 
@@ -308,9 +308,9 @@ def extract_all_failed_tests(stdout: str, stderr: str = "") -> List[str]:
     for path in sorted(list(candidates_set)):
         if os.path.exists(path):
             final_list.append(path)
-            
+
     # If no existing files found, return logical candidates
     if not final_list and candidates_set:
         return sorted(list(candidates_set))
-        
+
     return final_list

@@ -2,6 +2,7 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
@@ -106,14 +107,7 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             # Using int() is fine, but maybe we want to see it tick down at the second mark.
             # Let's use the same logic as before but based on remaining_seconds
 
-            curr_seconds = int(remaining_seconds)
-            # Adjust so 5.0 shows 5s, 4.9 shows 4s.
-            # Actually, usually users like to see 5, 4, 3, 2, 1.
-            # If we iterate 50 ticks:
-            # 5.0 -> 5s
-            # 4.9 -> 4s (this feels fast)
-            # Let's use ceil for display to match "5 seconds remaining" feeling
-            import math
+            # Using ceil for display to match "5 seconds remaining" feeling
             display_seconds = math.ceil(remaining_seconds)
 
             hours, remainder = divmod(display_seconds, 3600)

@@ -563,14 +563,14 @@ class TestGitHubClient:
             # Create a PR that references issue #123
             mock_pr = Mock(spec=PullRequest.PullRequest)
             mock_pr.state = "open"
-            
+
             # Mock get_pr_details via get_repository().get_pull()
             mock_repo.get_pull.return_value = mock_pr
             mock_github.get_repo.return_value = mock_repo
             mock_github_class.return_value = mock_github
 
             client = GitHubClient.get_instance(mock_github_token)
-            
+
             # Mock get_pr_details to return open state
             with patch.object(client, "get_pr_details", return_value={"state": "open"}):
                 # Execute
@@ -668,7 +668,7 @@ class TestGitHubClient:
         mock_get_timeline.return_value = [
             {"event": "connected", "source": {"issue": {"number": 101, "pull_request": {}}}},
             {"event": "cross-referenced", "source": {"issue": {"number": 102, "pull_request": {}}}},
-            {"event": "mentioned", "source": {}}, # Should be ignored
+            {"event": "mentioned", "source": {}},  # Should be ignored
         ]
 
         client = GitHubClient.get_instance(mock_github_token)
@@ -699,13 +699,11 @@ class TestGitHubClient:
     def test_find_closing_pr_success(self, mock_get_timeline, mock_get_pr_details, mock_get_repo, mock_github_token):
         """Test find_closing_pr finds open closing PR."""
         # Setup
-        mock_get_timeline.return_value = [
-            {"event": "connected", "source": {"issue": {"number": 200, "pull_request": {}}}}
-        ]
-        
+        mock_get_timeline.return_value = [{"event": "connected", "source": {"issue": {"number": 200, "pull_request": {}}}}]
+
         # Mock get_pr_details to return OPEN state
         mock_get_pr_details.return_value = {"state": "open"}
-        
+
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
@@ -717,23 +715,22 @@ class TestGitHubClient:
     @patch("src.auto_coder.github_client.GitHubClient.get_repository")
     @patch("src.auto_coder.github_client.GitHubClient._get_issue_timeline")
     def test_find_closing_pr_not_found(self, mock_get_timeline, mock_get_repo, mock_github_token):
-         """Test find_closing_pr returns None if not found in timeline or fallback."""
-         # Setup
-         mock_get_timeline.return_value = []
-         
-         # Mock fallback PR search to return empty
-         mock_repo = Mock()
-         mock_repo.get_pulls.return_value = []
-         mock_get_repo.return_value = mock_repo
-         
-         client = GitHubClient.get_instance(mock_github_token)
-         
-         # Execute
-         result = client.find_closing_pr("test/repo", 123)
-         
-         # Assert
-         assert result is None
+        """Test find_closing_pr returns None if not found in timeline or fallback."""
+        # Setup
+        mock_get_timeline.return_value = []
 
+        # Mock fallback PR search to return empty
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = []
+        mock_get_repo.return_value = mock_repo
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert
+        assert result is None
 
     @patch("src.auto_coder.github_client.Github")
     def test_check_issue_dependencies_resolved_all_closed(self, mock_github_class, mock_github_token):
@@ -934,6 +931,7 @@ class TestGitHubClient:
         # Assert
         assert result is None
 
+
 class TestGitHubClientLogging:
     """Test cases for GitHub client logging functionality."""
 
@@ -1041,10 +1039,10 @@ class TestGitHubClientSubIssueCaching:
         # Setup
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
-        
+
         # Mock caching client
         client._caching_client = Mock()
-        
+
         # Mock REST response
         mock_response = Mock()
         mock_response.json.return_value = [
@@ -1075,10 +1073,10 @@ class TestGitHubClientSubIssueCaching:
         # Setup
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
-        
+
         # Mock caching client
         client._caching_client = Mock()
-        
+
         # Mock REST response
         mock_response = Mock()
         mock_response.json.return_value = [
@@ -1120,29 +1118,27 @@ class TestGitHubClientFindClosingPr:
 
         # Mock timeline response
         mock_get_timeline.return_value = [
-             {"event": "connected", "source": {"issue": {"number": 123, "pull_request": {}}}}, # Refers to issue 123? verify implementation
+            {"event": "connected", "source": {"issue": {"number": 123, "pull_request": {}}}},  # Refers to issue 123? verify implementation
         ]
         # In implementation: source.issue.number IS the PR number if event is regarding the PR closing the issue?
-        # Logic says: 
+        # Logic says:
         # for event in timeline:
         #   if event.get("event") == "connected":
         #       source = event.get("source", {})
         #       if "issue" in source and "pull_request" in source["issue"]:
         #           pr_num = source["issue"]["number"]
-        
+
         # So yes, source.issue.number is PR number.
-        
-        mock_get_timeline.return_value = [
-             {"event": "connected", "source": {"issue": {"number": 456, "pull_request": {}}}}
-        ]
+
+        mock_get_timeline.return_value = [{"event": "connected", "source": {"issue": {"number": 456, "pull_request": {}}}}]
 
         # Mock get_pr_details to return OPEN state
         mock_get_pr_details.side_effect = lambda pr: {"state": "open"}
-        
-        # Mock get_pull calls inside get_pr_details wrapper? 
+
+        # Mock get_pull calls inside get_pr_details wrapper?
         # get_pr_details takes a PR object.
         # find_closing_pr calls: self.get_pr_details(self.get_repository(repo_name).get_pull(pr_num))
-        
+
         mock_repo = Mock()
         mock_pr_obj = Mock()
         mock_repo.get_pull.return_value = mock_pr_obj
@@ -1204,7 +1200,6 @@ class TestGitHubClientFindClosingPr:
         # Assert
         assert result is None
 
-
     @pytest.mark.parametrize(
         "title,body,pr_number",
         [
@@ -1249,7 +1244,7 @@ class TestGitHubClientFindClosingPr:
 
         # Timeline ok but empty
         mock_get_timeline.return_value = []
-        
+
         # Fallback raises Exception
         mock_get_repo.side_effect = GithubException(500, "Server Error")
 
