@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
-
 from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
@@ -829,7 +828,7 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
         # API: api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref)
         # Note: input parameters are not currently supported by this wrapper function
         api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref)
-        
+
         logger.info(f"Successfully triggered workflow '{workflow_id}'")
         return True
 
@@ -861,17 +860,17 @@ def get_github_actions_logs_from_url(url: str) -> str:
             if m_run:
                 owner, repo, run_id = m_run.groups()
                 owner_repo = f"{owner}/{repo}"
-                
+
                 # Fetch jobs to find failed ones
                 try:
                     token = GitHubClient.get_instance().token
                     api = get_ghapi_client(token)
-                    
+
                     jobs_res = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
                     jobs = jobs_res.get("jobs", [])
-                    
+
                     failed_jobs = [j for j in jobs if j.get("conclusion") == "failure"]
-                    
+
                     if failed_jobs:
                         logs_list = []
                         for job in failed_jobs:
@@ -881,16 +880,16 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 # specific job url
                                 j_url = f"https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{j_id}"
                                 logs_list.append(get_github_actions_logs_from_url(j_url))
-                        
+
                         if logs_list:
                             return "\n\n".join(logs_list)
-                        
+
                     # If no failed jobs found or no logs
                     return f"No failed jobs found in run {run_id}"
                 except Exception as e:
                     logger.warning(f"Error expanding run URL {url}: {e}")
                     pass
-                
+
                 return "Invalid GitHub Actions job URL (Run expansion failed)"
 
             return "Invalid GitHub Actions job URL"
@@ -902,11 +901,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
         # 1) Get job details to get name and identifying failing steps
         job_name = f"job-{job_id}"
         failing_step_names: set = set()
-        
+
         try:
             job_detail = api.actions.get_job_for_workflow_run(owner=owner, repo=repo, job_id=job_id)
             job_name = job_detail.get("name", job_name)
-            
+
             steps = job_detail.get("steps", [])
             for st in steps:
                 if (st.get("conclusion") == "failure") or (st.get("conclusion") is None and st.get("status") == "completed" and job_detail.get("conclusion") == "failure"):
@@ -939,14 +938,14 @@ def get_github_actions_logs_from_url(url: str) -> str:
             # The API call might return bytes (zip) or text depending on endpoint/headers
             # But the 'download_job_logs_for_workflow_run' usually redirects to a zip location
             log_content = api.actions.download_job_logs_for_workflow_run(owner=owner, repo=repo, job_id=job_id)
-            
+
             # log_content should be bytes if it's a zip
             if isinstance(log_content, bytes):
-                 with tempfile.TemporaryDirectory() as tmpdir:
+                with tempfile.TemporaryDirectory() as tmpdir:
                     zip_path = os.path.join(tmpdir, "job_logs.zip")
                     with open(zip_path, "wb") as f:
                         f.write(log_content)
-                    
+
                     try:
                         with zipfile.ZipFile(zip_path, "r") as zf:
                             step_snippets = []
@@ -961,27 +960,27 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             content = ""
                                     if not content:
                                         continue
-                                    
+
                                     step_file_label = os.path.splitext(os.path.basename(name))[0]
-                                    
+
                                     # Step filter
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
-                                    
+
                                     # Collect job-wide summary candidates
                                     for ln in content.split("\n"):
                                         ll = ln.lower()
                                         if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
                                             job_summary_lines.append(ln)
-                                            
+
                                     step_name = step_file_label
-                                    
+
                                     # Extract important error-related information
                                     if "eslint" in job_name.lower() or "lint" in job_name.lower():
                                         snippet = _filter_eslint_log(content)
                                     else:
                                         snippet = _extract_error_context(content)
-                                        
+
                                     # Enhance with expected/received
                                     exp_lines = []
                                     for ln in content.split("\n"):
@@ -993,7 +992,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
                                             snippet = snippet + "\n" + "\n".join(norm_lines)
-                                            
+
                                     if snippet and snippet.strip():
                                         s = snippet
                                         s_lower = s.lower()
@@ -1024,12 +1023,12 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     body_str = "\n\n".join(step_snippets)
                                     filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
                                     summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
-                                
+
                                 body = "\n\n".join(step_snippets) + summary_block
                                 if "eslint" not in job_name.lower() and "lint" not in job_name.lower():
                                     body = slice_relevant_error_window(body)
                                 return f"=== Job: {job_name} ===\n" + body
-                                
+
                     except zipfile.BadZipFile:
                         pass
         except Exception as e:
@@ -1041,7 +1040,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
         # If we failed to get zip or extract useful info, we can try matching 'Run failed' logs if available via other means?
         # But 'gh run view --log' effectively gets the text log.
         # api.actions.download_job_logs_for_workflow_run is the equivalent.
-        
+
         return f"=== Job: {job_name} ===\n{url}\nNo detailed logs available (GhApi retrieval failed or no errors found)"
 
     except Exception as e:
@@ -1622,6 +1621,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
 
     try:
         from ..util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")

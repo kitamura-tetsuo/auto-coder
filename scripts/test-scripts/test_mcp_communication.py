@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 
+
 def _read_headers(stdin):
     """Read headers in compliance with FastMCP echo server"""
     data = b""
@@ -26,6 +27,7 @@ def _read_headers(stdin):
             headers[k.strip().lower()] = v.strip()
     return headers
 
+
 def _send_message(stdin, obj):
     """Send message in compliance with FastMCP echo server"""
     b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -33,36 +35,19 @@ def _send_message(stdin, obj):
     stdin.write(b)
     stdin.flush()
 
+
 def test_mcp_communication():
     """MCP protocol communication test (Echo Server compliant version)"""
     print("=== Test Watcher MCP Communication Test (Echo Server Compliant Version) ===")
 
     try:
         # Start process (no buffering, standard I/O)
-        process = subprocess.Popen(
-            [sys.executable, "src/auto_coder/mcp_servers/test_watcher/main.py"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0  # No buffering
-        )
+        process = subprocess.Popen([sys.executable, "src/auto_coder/mcp_servers/test_watcher/main.py"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)  # No buffering
 
         print(f"✓ Process started (PID: {process.pid})")
 
         # 1. Send initialization message
-        init_message = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "test-client",
-                    "version": "1.0.0"
-                }
-            }
-        }
+        init_message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test-client", "version": "1.0.0"}}}
 
         _send_message(process.stdin, init_message)
         print("✓ initialize sent")
@@ -95,11 +80,7 @@ def test_mcp_communication():
                 print("✗ Content-Length missing")
 
         # 2. tools/list request
-        tools_request = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list"
-        }
+        tools_request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
 
         _send_message(process.stdin, tools_request)
         print("✓ tools/list sent")
@@ -132,11 +113,7 @@ def test_mcp_communication():
                     print("✗ Failed to receive tools/list body")
 
         # 3. ping request
-        ping_request = {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "ping"
-        }
+        ping_request = {"jsonrpc": "2.0", "id": 3, "method": "ping"}
 
         _send_message(process.stdin, ping_request)
         print("✓ ping sent")
@@ -166,15 +143,7 @@ def test_mcp_communication():
                     print("✗ Failed to receive ping body")
 
         # 4. get_status tool call test
-        get_status_request = {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "get_status",
-                "arguments": {}
-            }
-        }
+        get_status_request = {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "get_status", "arguments": {}}}
 
         _send_message(process.stdin, get_status_request)
         print("✓ get_status tool sent")
@@ -215,12 +184,13 @@ def test_mcp_communication():
 
     except Exception as e:
         print(f"✗ Error: {e}")
-        if 'process' in locals():
+        if "process" in locals():
             try:
                 process.kill()
             except Exception:
                 pass
         return False
+
 
 if __name__ == "__main__":
     test_mcp_communication()
