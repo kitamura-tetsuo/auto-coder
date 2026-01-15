@@ -1546,6 +1546,40 @@ def _update_jules_pr_body(
             api = get_ghapi_client(token)
             owner, repo = repo_name.split("/")
 
+            # Check if this is a Mock during testing
+            # GhApi mocks in tests might return a Mock object for the PR body or similar fields
+            # which can cause concatenation errors if we try to use them as strings.
+            # However, new_body is constructed from pr_body (arg) which comes from caller.
+            # In tests, pr_body is passed as string.
+
+            # The error "can only concatenate str (not "Mock") to str" likely happens inside GhApi
+            # or when constructing new_body if pr_body was a Mock?
+            # Test passes string for pr_body.
+            # Let's check api.pulls.update usage.
+            # GhApi dynamically constructs calls.
+
+            # Re-reading the traceback: "Failed to update PR #123 body: can only concatenate str (not "Mock") to str"
+            # This exception is caught in the except block here.
+            # So `api.pulls.update` raised TypeError.
+
+            # In `tests/test_pr_processor_jules.py`, `get_ghapi_client` is NOT patched in the context of `_update_jules_pr_body`?
+            # Wait, `get_ghapi_client` is imported inside the function.
+            # `GitHubClient` is also imported inside.
+            # The test mocks `github_client` argument, but doesn't patch `auto_coder.pr_processor.get_ghapi_client`.
+            # So `get_ghapi_client(token)` runs.
+            # If `token` is a Mock (from `github_client.token`), `GhApi(token=Mock)` is created.
+            # Then `api.pulls.update` calls the real GhApi (or CachedGhApi).
+            # Inside GhApi/CachedGhApi, it probably constructs headers/URL using the token.
+            # If token is a Mock, string concatenation fails.
+
+            # Fix: Ensure token is a string in tests or patch get_ghapi_client.
+            # Since we can't easily change the test setup from here (we are editing source),
+            # we should make the code robust or patch it in the test file (next step).
+
+            # BUT, the user prompt says "Fix tests/test_pr_processor_jules.py failures".
+            # I should edit the TEST file, not the source, unless the source is buggy.
+            # The source is fine, the test setup is incomplete.
+
             api.pulls.update(owner, repo, pr_number, body=new_body)
 
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
