@@ -35,7 +35,7 @@ def test_sleep_with_countdown_execution(mock_sleep, mock_time):
     # 1st call: start setup
     # Loop iterations...
 
-    time_values = [start_time] # for setup
+    time_values = [start_time]  # for setup
 
     current = start_time
     while current <= start_time + duration:
