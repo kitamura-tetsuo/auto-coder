@@ -12,6 +12,7 @@ from dateutil import parser
 from .util.gh_cache import GitHubClient
 from .jules_client import JulesClient
 from .logger_config import get_logger
+from .llm_backend_config import get_jules_session_expiration_days_from_config
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,9 @@ def check_and_resume_or_archive_sessions() -> None:
             logger.warning("GitHubClient not initialized, skipping PR status checks")
             github_client = None
 
+        now = datetime.now(timezone.utc)
+        expiration_days = get_jules_session_expiration_days_from_config()
+        expiration_date_threshold = now - timedelta(days=expiration_days)
         for session in sessions:
             if isinstance(session, list):
                 try:
@@ -84,6 +88,17 @@ def check_and_resume_or_archive_sessions() -> None:
 
             if not session_id:
                 continue
+
+            # Check if session is expired
+            update_time_str = session.get("updateTime")
+            if update_time_str:
+                try:
+                    update_time = parser.parse(update_time_str)
+                    if update_time < expiration_date_threshold:
+                        logger.debug(f"Ignoring expired Jules session: {session_id} (Last updated: {update_time}, Expiration: {expiration_days} days)")
+                        continue
+                except Exception as e:
+                    logger.error(f"Failed to check expiration for session {session_id}: {e}")
 
             state = session.get("state")
             outputs = session.get("outputs", {})
@@ -140,8 +155,8 @@ def check_and_resume_or_archive_sessions() -> None:
                         logger.error(f"Failed to approve plan for session {session_id}")
                 except Exception as e:
                     logger.error(f"Failed to approve plan for session {session_id}: {e}")
-            # Case 2: Completed session without PR -> Resume with retry logic
-            elif state == "COMPLETED" and not pull_request:
+            # Case 2: Awaiting User Feedback or Completed session without PR -> Resume with retry logic
+            elif state == "AWAITING_USER_FEEDBACK" or (state == "COMPLETED" and not pull_request):
                 retry_count = retry_state.get(session_id, 0)
 
                 if retry_count < 5:

@@ -812,6 +812,21 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
     )
 
 
+def get_jules_session_expiration_days_from_config(config_path: Optional[str] = None) -> int:
+    """Get the Jules session expiration in days from config.toml.
+
+    Looks for [jules] session_expiration_days in config.toml.
+    Default is 7 days.
+    """
+    return _get_config_value(
+        section="jules",
+        key="session_expiration_days",
+        default=7,
+        config_path=config_path,
+        value_type=int,
+    )
+
+
 def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None) -> int:
     """Get process_issues sleep time from [process_issues].sleep_time in config.toml.
 

@@ -1616,13 +1616,6 @@ def _link_jules_pr_to_issue(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
-        # Check for special Jules PRs that don't need issue linking
-        pr_title = pr_data.get("title", "")
-        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
-        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
-            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
-            return True
-
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
         if not session_id:
@@ -1633,6 +1626,13 @@ def _link_jules_pr_to_issue(
 
         # Step 2: Store session_id in pr_data for later use in the feedback loop
         pr_data["_jules_session_id"] = session_id
+
+        # Check for special Jules PRs that don't need issue linking
+        pr_title = pr_data.get("title", "")
+        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
+            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
+            return True
 
         # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)

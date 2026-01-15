@@ -105,6 +105,7 @@
                 // "--only",
                 // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
+                "--force",
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
