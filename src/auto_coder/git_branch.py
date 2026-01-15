@@ -1391,12 +1391,5 @@ def branch_context(
     # Import locally to avoid circular imports
     from .branch_manager import BranchManager
 
-    with BranchManager(
-        branch_name=branch_name,
-        create_new=create_new,
-        base_branch=base_branch,
-        cwd=cwd,
-        check_unpushed=check_unpushed,
-        remote=remote
-    ):
+    with BranchManager(branch_name=branch_name, create_new=create_new, base_branch=base_branch, cwd=cwd, check_unpushed=check_unpushed, remote=remote):
         yield
