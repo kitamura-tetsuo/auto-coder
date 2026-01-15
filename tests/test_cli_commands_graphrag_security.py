@@ -5,7 +5,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from src.auto_coder.cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+
 
 class TestGraphRAGSecurity:
 
@@ -25,17 +27,11 @@ class TestGraphRAGSecurity:
             install_path = Path(temp_dir)
 
             # Malicious inputs attempting to inject variables
-            malicious_password = 'password\nINJECTED_VAR=hacked'
+            malicious_password = "password\nINJECTED_VAR=hacked"
             malicious_user = 'neo4j"\nINJECTED_USER=hacked'
 
             # Run the setup with the malicious password
-            success = run_graphrag_setup_mcp_programmatically(
-                install_dir=str(install_path),
-                neo4j_user=malicious_user,
-                neo4j_password=malicious_password,
-                skip_clone=True, # Skip cloning to avoid needing the bundled mcp
-                silent=True
-            )
+            success = run_graphrag_setup_mcp_programmatically(install_dir=str(install_path), neo4j_user=malicious_user, neo4j_password=malicious_password, skip_clone=True, silent=True)  # Skip cloning to avoid needing the bundled mcp
 
             # Check the generated .env file
             env_path = install_path / ".env"
@@ -53,6 +49,7 @@ class TestGraphRAGSecurity:
 
             # Also verify via dotenv loading (simulating how it's consumed)
             from dotenv import dotenv_values
+
             env_values = dotenv_values(env_path)
 
             assert env_values["NEO4J_PASSWORD"] == malicious_password
@@ -76,15 +73,11 @@ class TestGraphRAGSecurity:
             # Test case with backslashes and quotes
             complex_password = 'pass\\word"with"quotes'
 
-            success = run_graphrag_setup_mcp_programmatically(
-                install_dir=str(install_path),
-                neo4j_password=complex_password,
-                skip_clone=True,
-                silent=True
-            )
+            success = run_graphrag_setup_mcp_programmatically(install_dir=str(install_path), neo4j_password=complex_password, skip_clone=True, silent=True)
 
             env_path = install_path / ".env"
             from dotenv import dotenv_values
+
             env_values = dotenv_values(env_path)
 
             assert env_values["NEO4J_PASSWORD"] == complex_password

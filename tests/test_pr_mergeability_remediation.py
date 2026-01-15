@@ -135,7 +135,6 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
     mock_check_status.assert_not_called()
 
 
-
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
 def test_get_mergeable_state_uses_existing_data(mock_github_client, mock_get_ghapi_client):
@@ -206,7 +205,7 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
     mock_github_client.get_instance.return_value.token = "token"
-    
+
     # Mock PR details retrieval
     mock_api.pulls.get.return_value = {"base": {"ref": "develop"}}
 
@@ -336,9 +335,7 @@ def test_start_mergeability_remediation_parses_base_branch_fallback(mock_github_
         # In `_start_mergeability_remediation`, if API fails, does it fallback or return?
         # Re-checking logic:
         # If API fails, it logs error and might return or use default.
-        pass # The test assertion will reveal behavior or I should update assertion.
-        
-        # If the code logs "Failed to retrieve PR details", then it fails early.
-        assert any("Failed to get PR #205 details" in action for action in actions) or \
-               any("Determined base branch for PR #205: main" in action for action in actions)
+        pass  # The test assertion will reveal behavior or I should update assertion.
 
+        # If the code logs "Failed to retrieve PR details", then it fails early.
+        assert any("Failed to get PR #205 details" in action for action in actions) or any("Determined base branch for PR #205: main" in action for action in actions)
