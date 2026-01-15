@@ -88,6 +88,7 @@ def test_sleep_with_countdown_zero_seconds(mock_sleep):
     mock_sleep.assert_not_called()
     mock_stream.write.assert_not_called()
 
+
 @patch("time.sleep")
 @patch("time.time")
 def test_sleep_with_countdown_custom_message(mock_time, mock_sleep):
