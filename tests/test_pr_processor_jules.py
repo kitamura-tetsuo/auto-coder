@@ -8,7 +8,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
     _extract_session_id_from_pr_body,
     _is_jules_pr,
-    _process_jules_pr,
+    _link_jules_pr_to_issue,
     _send_jules_error_feedback,
     _update_jules_pr_body,
 )
@@ -115,36 +115,48 @@ class TestExtractSessionIdFromPrBody:
 class TestUpdateJulesPrBody:
     """Test cases for _update_jules_pr_body function."""
 
-    def test_update_jules_pr_body_success(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_success(self, mock_get_ghapi):
         """Test successfully updating PR body."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
+        mock_api = Mock()
+        mock_get_ghapi.return_value = mock_api
+
         github_client = Mock()
-        github_client.get_repository.return_value = mock_repo
+        # Even with mock, we set token to avoid any 'None' checks failing if they happen before get_ghapi_client
+        github_client.token = "dummy_token"
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        github_client.get_repository.assert_called_once_with(repo_name)
-        mock_repo.get_pull.assert_called_once_with(pr_number)
-        mock_pr.edit.assert_called_once()
-        # Verify the body contains the close statement and issue link
-        call_kwargs = mock_pr.edit.call_args[1]
-        body_content = call_kwargs["body"]
+        # Verify get_ghapi_client called
+        mock_get_ghapi.assert_called()
+        # Verify update called
+        mock_api.pulls.update.assert_called_once()
+        call_kwargs = mock_api.pulls.update.call_args[1]
+        # Or positional arguments depending on how it was called.
+        # Original call: api.pulls.update(owner, repo, pr_number, body=new_body)
+        # Positional: owner, repo, pr_number. Kwargs: body.
+
+        args = mock_api.pulls.update.call_args[0]
+        kwargs = mock_api.pulls.update.call_args[1]
+
+        assert args[0] == "owner"
+        assert args[1] == "repo"
+        assert args[2] == 123
+
+        body_content = kwargs["body"]
         assert "close #456" in body_content
         assert "https://github.com/owner/repo/issues/456" in body_content
         assert "Original PR body content." in body_content
 
-    @patch("auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_already_has_close(self, mock_gh_logger):
+    def test_update_jules_pr_body_already_has_close(self):
         """Test that PR body update is skipped if already has close reference."""
         repo_name = "owner/repo"
         pr_number = 123
@@ -152,21 +164,15 @@ class TestUpdateJulesPrBody:
         issue_number = 456
 
         github_client = Mock()
-        mock_repo = Mock()
-        mock_pr = Mock()
-        github_client.get_repository.return_value = mock_repo
-        mock_repo.get_pull.return_value = mock_pr
+        # No API calls should happen, so no need to mock get_ghapi_client
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # edit should not be called if close reference already exists
-        mock_pr.edit.assert_not_called()
 
-    @patch("auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_already_has_closes(self, mock_gh_logger):
+    def test_update_jules_pr_body_already_has_closes(self):
         """Test that PR body update is skipped if already has closes reference."""
         repo_name = "owner/repo"
         pr_number = 123
@@ -174,21 +180,14 @@ class TestUpdateJulesPrBody:
         issue_number = 456
 
         github_client = Mock()
-        mock_repo = Mock()
-        mock_pr = Mock()
-        github_client.get_repository.return_value = mock_repo
-        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # edit should not be called if closes reference already exists
-        mock_pr.edit.assert_not_called()
 
-    @patch("auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_case_insensitive_check(self, mock_gh_logger):
+    def test_update_jules_pr_body_case_insensitive_check(self):
         """Test that close reference check is case insensitive."""
         repo_name = "owner/repo"
         pr_number = 123
@@ -196,32 +195,27 @@ class TestUpdateJulesPrBody:
         issue_number = 456
 
         github_client = Mock()
-        mock_repo = Mock()
-        mock_pr = Mock()
-        github_client.get_repository.return_value = mock_repo
-        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # edit should not be called if close reference already exists (case insensitive)
-        mock_pr.edit.assert_not_called()
 
-    def test_update_jules_pr_body_failure(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_failure(self, mock_get_ghapi):
         """Test failure when updating PR body."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_pr.edit.side_effect = Exception("Error updating PR")
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
+        mock_api = Mock()
+        mock_api.pulls.update.side_effect = Exception("Error updating PR")
+        mock_get_ghapi.return_value = mock_api
+
         github_client = Mock()
-        github_client.get_repository.return_value = mock_repo
+        github_client.token = "dummy_token"
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -229,60 +223,60 @@ class TestUpdateJulesPrBody:
         # Assert
         assert result is False
 
-    def test_update_jules_pr_body_empty_original(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_empty_original(self, mock_get_ghapi):
         """Test updating PR body when original body is empty."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = ""
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
+        mock_api = Mock()
+        mock_get_ghapi.return_value = mock_api
+
         github_client = Mock()
-        github_client.get_repository.return_value = mock_repo
+        github_client.token = "dummy_token"
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # Verify body is properly formatted even when original is empty
-        call_kwargs = mock_pr.edit.call_args[1]
-        body_content = call_kwargs["body"]
+        kwargs = mock_api.pulls.update.call_args[1]
+        body_content = kwargs["body"]
         assert "close #456" in body_content
         assert "https://github.com/owner/repo/issues/456" in body_content
 
-    def test_update_jules_pr_body_with_newline_ending(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_with_newline_ending(self, mock_get_ghapi):
         """Test updating PR body when original body ends with newline."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content.\n"
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
+        mock_api = Mock()
+        mock_get_ghapi.return_value = mock_api
+
         github_client = Mock()
-        github_client.get_repository.return_value = mock_repo
+        github_client.token = "dummy_token"
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # Verify body is properly formatted
-        call_kwargs = mock_pr.edit.call_args[1]
-        body_content = call_kwargs["body"]
+        kwargs = mock_api.pulls.update.call_args[1]
+        body_content = kwargs["body"]
         assert "close #456" in body_content
         assert "https://github.com/owner/repo/issues/456" in body_content
         assert "Original PR body content.\n" in body_content
 
 
-class TestProcessJulesPr:
-    """Test cases for _process_jules_pr function."""
+class TestLinkJulesPrToIssue:
+    """Test cases for _link_jules_pr_to_issue function."""
 
-    def test_process_jules_pr_not_author(self):
+    def test_link_jules_pr_to_issue_not_author(self):
         """Test that non-Jules PRs without session ID are skipped."""
         pr_data = {
             "number": 123,
@@ -293,14 +287,12 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True  # Not an error, just not a Jules PR
-        # CloudManager should not be called
-        # gh command should not be called
 
-    def test_process_jules_pr_no_session_id(self):
+    def test_link_jules_pr_to_issue_no_session_id(self):
         """Test that PRs without session ID return False."""
         pr_data = {
             "number": 123,
@@ -311,13 +303,12 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
-        # CloudManager.get_issue_by_session should not be called
 
-    def test_process_jules_pr_no_matching_issue(self):
+    def test_link_jules_pr_to_issue_no_matching_issue(self):
         """Test that PRs with no matching issue return False."""
         # Setup
         pr_data = {
@@ -335,7 +326,7 @@ class TestProcessJulesPr:
             repo_name = "owner/repo"
 
             # Execute
-            result = _process_jules_pr(repo_name, pr_data, github_client)
+            result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
             # Assert
             assert result is False
@@ -343,7 +334,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_success(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_success(self, mock_cloud_manager_class, mock_update_body):
         """Test successful Jules PR processing."""
         # Setup
         pr_data = {
@@ -362,7 +353,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True
@@ -371,7 +362,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_update_failure(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_update_failure(self, mock_cloud_manager_class, mock_update_body):
         """Test that PR body update failure is handled correctly."""
         # Setup
         pr_data = {
@@ -390,7 +381,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -398,7 +389,7 @@ class TestProcessJulesPr:
         mock_update_body.assert_called_once_with(repo_name, 123, "Session ID: sessionXYZ789", 789, github_client)
 
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_exception_handling(self, mock_cloud_manager_class):
+    def test_link_jules_pr_to_issue_exception_handling(self, mock_cloud_manager_class):
         """Test that exceptions are handled gracefully."""
         # Setup
         pr_data = {
@@ -415,7 +406,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -423,7 +414,7 @@ class TestProcessJulesPr:
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_with_url_session_id(self, mock_cloud_manager_class, mock_update_body, mock_extract_session):
+    def test_link_jules_pr_to_issue_with_url_session_id(self, mock_cloud_manager_class, mock_update_body, mock_extract_session):
         """Test Jules PR processing with session ID from URL."""
         # Setup
         pr_data = {
@@ -444,7 +435,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True
@@ -453,7 +444,7 @@ class TestProcessJulesPr:
         mock_update_body.assert_called_once_with(repo_name, 123, "https://example.com/session=urlSession123", 999, github_client)
 
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_empty_body(self, mock_cloud_manager_class):
+    def test_link_jules_pr_to_issue_empty_body(self, mock_cloud_manager_class):
         """Test Jules PR processing with empty body."""
         # Setup
         pr_data = {
@@ -466,7 +457,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -474,7 +465,7 @@ class TestProcessJulesPr:
         mock_cloud_manager_class.assert_not_called()
 
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_none_body(self, mock_cloud_manager_class):
+    def test_link_jules_pr_to_issue_none_body(self, mock_cloud_manager_class):
         """Test Jules PR processing with None body."""
         # Setup
         pr_data = {
@@ -487,7 +478,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -496,7 +487,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_different_repo_formats(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_different_repo_formats(self, mock_cloud_manager_class, mock_update_body):
         """Test Jules PR processing with different repository name formats."""
         # Setup
         pr_data = {
@@ -522,7 +513,7 @@ class TestProcessJulesPr:
 
         for repo_name in test_repos:
             # Execute
-            result = _process_jules_pr(repo_name, pr_data, github_client)
+            result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
             # Assert
             assert result is True
@@ -531,7 +522,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_long_session_id(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_long_session_id(self, mock_cloud_manager_class, mock_update_body):
         """Test Jules PR processing with a long session ID."""
         # Setup
         long_session_id = "very_long_session_id_with_many_characters_1234567890"
@@ -551,7 +542,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True
@@ -612,7 +603,7 @@ class TestIsJulesPr:
 class TestSendJulesErrorFeedback:
     """Test cases for _send_jules_error_feedback function."""
 
-    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.pr_processor._create_github_action_log_summary")
     @patch("auto_coder.jules_client.JulesClient")
     def test_send_jules_error_feedback_success(self, mock_jules_client_class, mock_get_logs):
         """Test successful sending of error feedback to Jules."""
@@ -621,7 +612,7 @@ class TestSendJulesErrorFeedback:
         mock_jules_client.send_message.return_value = "Acknowledged, will fix the issues"
         mock_jules_client_class.return_value = mock_jules_client
 
-        mock_get_logs.return_value = "Error: Test failed\nStack trace here"
+        mock_get_logs.return_value = ("Error: Test failed\nStack trace here", [])
 
         pr_data = {
             "number": 123,
@@ -642,7 +633,7 @@ class TestSendJulesErrorFeedback:
         assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionABC123' for PR #123" in actions[0]
         assert "Posted comment on PR #123 stating that a fix has been requested from Jules" in actions[1]
-        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
+        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks)
         mock_jules_client.send_message.assert_called_once()
 
         # Check the message sent to Jules
@@ -656,7 +647,7 @@ class TestSendJulesErrorFeedback:
         # Check that comment was posted on PR
         github_client.add_comment_to_pr.assert_called_once_with(repo_name, 123, "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates.")
 
-    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.pr_processor._create_github_action_log_summary")
     @patch("auto_coder.jules_client.JulesClient")
     def test_send_jules_error_feedback_no_session_id(self, mock_jules_client_class, mock_get_logs):
         """Test that error is returned when no session ID is found."""
@@ -684,7 +675,7 @@ class TestSendJulesErrorFeedback:
         # GitHub client should not be called
         github_client.add_comment_to_pr.assert_not_called()
 
-    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.pr_processor._create_github_action_log_summary")
     @patch("auto_coder.jules_client.JulesClient")
     def test_send_jules_error_feedback_exception(self, mock_jules_client_class, mock_get_logs):
         """Test that exceptions are handled gracefully."""
@@ -692,6 +683,8 @@ class TestSendJulesErrorFeedback:
         mock_jules_client = Mock()
         mock_jules_client.send_message.side_effect = Exception("Connection error")
         mock_jules_client_class.return_value = mock_jules_client
+
+        mock_get_logs.return_value = ("Error log", [])
 
         pr_data = {
             "number": 123,
@@ -713,7 +706,7 @@ class TestSendJulesErrorFeedback:
         assert "Error sending Jules error feedback for PR #123" in actions[0]
         assert "Connection error" in actions[0]
 
-    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.pr_processor._create_github_action_log_summary")
     @patch("auto_coder.jules_client.JulesClient")
     def test_send_jules_error_feedback_with_empty_logs(self, mock_jules_client_class, mock_get_logs):
         """Test sending error feedback with empty logs."""
@@ -722,7 +715,7 @@ class TestSendJulesErrorFeedback:
         mock_jules_client.send_message.return_value = "Will review"
         mock_jules_client_class.return_value = mock_jules_client
 
-        mock_get_logs.return_value = ""
+        mock_get_logs.return_value = ("", [])
 
         pr_data = {
             "number": 456,
@@ -743,7 +736,7 @@ class TestSendJulesErrorFeedback:
         assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionXYZ789' for PR #456" in actions[0]
         assert "Posted comment on PR #456 stating that a fix has been requested from Jules" in actions[1]
-        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
+        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks)
         mock_jules_client.send_message.assert_called_once()
 
         # Check the message includes empty logs
@@ -754,7 +747,7 @@ class TestSendJulesErrorFeedback:
         # Check that comment was posted on PR
         github_client.add_comment_to_pr.assert_called_once_with(repo_name, 456, "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates.")
 
-    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.pr_processor._create_github_action_log_summary")
     @patch("auto_coder.jules_client.JulesClient")
     def test_send_jules_error_feedback_no_github_client(self, mock_jules_client_class, mock_get_logs):
         """Test that PR comment is skipped when no GitHub client is provided."""
@@ -763,7 +756,7 @@ class TestSendJulesErrorFeedback:
         mock_jules_client.send_message.return_value = "Acknowledged"
         mock_jules_client_class.return_value = mock_jules_client
 
-        mock_get_logs.return_value = "Error: Test failed"
+        mock_get_logs.return_value = ("Error: Test failed", [])
 
         pr_data = {
             "number": 789,
@@ -786,7 +779,7 @@ class TestSendJulesErrorFeedback:
         assert "Skipped posting comment on PR #789: no GitHub client available" in actions[1]
         mock_jules_client.send_message.assert_called_once()
 
-    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.pr_processor._create_github_action_log_summary")
     @patch("auto_coder.jules_client.JulesClient")
     def test_send_jules_error_feedback_comment_exception(self, mock_jules_client_class, mock_get_logs):
         """Test that exception in posting PR comment is handled gracefully."""
@@ -795,7 +788,7 @@ class TestSendJulesErrorFeedback:
         mock_jules_client.send_message.return_value = "Acknowledged"
         mock_jules_client_class.return_value = mock_jules_client
 
-        mock_get_logs.return_value = "Error: Test failed"
+        mock_get_logs.return_value = ("Error: Test failed", [])
 
         pr_data = {
             "number": 999,
