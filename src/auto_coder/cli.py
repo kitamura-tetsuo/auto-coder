@@ -10,7 +10,6 @@ print(f"DEBUG: sys.executable = {sys.executable}", file=sys.stderr)
 
 import click
 
-
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -29,12 +28,12 @@ except ImportError:
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_config import config_group
+from .cli_commands_debug import debug
 from .cli_commands_graphrag import graphrag_group
 from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
-from .cli_commands_debug import debug
 from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
 from .lock_manager import LockManager
@@ -46,7 +45,7 @@ load_dotenv()
 
 class ForceAwareGroup(click.Group):
     """Custom Group to handle global --force flag positioned after subcommand."""
-    
+
     def invoke(self, ctx):
         if "--force" in ctx.args:
             try:
@@ -54,7 +53,7 @@ class ForceAwareGroup(click.Group):
                 # Note: ctx.protected_args contains the command name when invoke_without_command=True
                 check_args = ctx.protected_args + ctx.args
                 cmd_name, cmd, _ = self.resolve_command(ctx, check_args)
-                
+
                 if cmd:
                     # Check if the command supports --force
                     supports_force = False
@@ -67,7 +66,7 @@ class ForceAwareGroup(click.Group):
                         if "--force" in getattr(param, "opts", []):
                             supports_force = True
                             break
-                    
+
                     if not supports_force:
                         # Command doesn't support --force, so it must be intended for the main group
                         # Strip it from args to prevent "No such option" error
@@ -78,7 +77,7 @@ class ForceAwareGroup(click.Group):
             except Exception:
                 # If resolution fails, let standard click mechanics handle the error
                 pass
-                
+
         return super().invoke(ctx)
 
 

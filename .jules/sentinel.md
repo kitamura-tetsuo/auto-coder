@@ -27,3 +27,8 @@
 **Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
 **Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
 **Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.
+
+## 2026-01-20 - Insecure File Permissions for MCP Config Files
+**Vulnerability:** `CodexClient`, `ClaudeClient`, and `CodexMCPClient` created configuration files (`~/.codex/config.json`, `~/.claude/config.json`) containing MCP server settings using standard `open()`. This created files with default permissions (often world-readable), potentially exposing command execution configurations.
+**Learning:** Configuration files that define executable commands (like MCP servers) are as sensitive as files containing secrets and must be protected.
+**Prevention:** Used `os.open` with `os.O_WRONLY | os.O_CREAT | os.O_TRUNC` and mode `0o600` to ensure these files are created with restricted permissions atomically.
