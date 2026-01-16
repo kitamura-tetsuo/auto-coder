@@ -402,7 +402,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         log_action(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
 
-        # Step 1: Get PR details to determine the base branch
+        # Step 1: Get PR details to determine the base branch and head branch
         try:
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
@@ -410,24 +410,32 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             
             pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
             base_branch = pr_details.get("base", {}).get("ref", "main")
+            head_branch = pr_details.get("head", {}).get("ref")
+            
+            if not head_branch:
+                error_msg = f"Failed to determine head branch for PR #{pr_number} (head.ref is missing)"
+                actions.append(error_msg)
+                log_action(error_msg, False)
+                return actions
+                
         except Exception as e:
             error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
 
-        actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
+        actions.append(f"Determined base branch: {base_branch}, head branch: {head_branch} for PR #{pr_number}")
 
         # Step 2: Ensure PR branch exists and is up to date, then use BranchManager
         # Create minimal PR data for checkout function
-        pr_branch_name = f"pr-{pr_number}"
+        pr_branch_name = head_branch
         pr_data_for_checkout = {"number": pr_number, "head": {"ref": pr_branch_name}}
         
         # Ensure branch exists and is fetched, but don't switch yet
         prepare_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig(), perform_checkout=False)
 
         if not prepare_success:
-            error_msg = f"Failed to prepare PR #{pr_number} branch"
+            error_msg = f"Failed to prepare PR #{pr_number} branch ({pr_branch_name})"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
