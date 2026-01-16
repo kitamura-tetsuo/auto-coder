@@ -2,12 +2,16 @@
 UI helper functions for the CLI.
 """
 
+import math
 import os
 import sys
 import time
 from typing import Any, Dict, Optional, TextIO
 
 import click
+
+SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
@@ -84,11 +88,22 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         return
 
     no_color = "NO_COLOR" in os.environ
+    spinner_frames = SPINNER_FRAMES_ASCII if no_color else SPINNER_FRAMES_UNICODE
+    spinner_idx = 0
+
+    end_time = time.time() + seconds
 
     try:
-        for remaining in range(seconds, 0, -1):
+        while True:
+            remaining = end_time - time.time()
+            if remaining <= 0:
+                break
+
+            # Use ceil to avoid showing 0s prematurely and match human expectation
+            display_seconds = int(math.ceil(remaining))
+
             # Format time nicely
-            hours, remainder = divmod(remaining, 3600)
+            hours, remainder = divmod(display_seconds, 3600)
             minutes, secs = divmod(remainder, 60)
 
             if hours > 0:
@@ -98,15 +113,22 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
             else:
                 time_str = f"{secs}s"
 
-            message = f"Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
+            spinner = spinner_frames[spinner_idx % len(spinner_frames)]
+
+            # Add space after spinner
+            message = f"{spinner} Sleeping... {time_str} remaining (Ctrl+C to interrupt)"
 
             if not no_color:
                 # Dim the text (bright_black is usually dark gray)
+                # Keep spinner colored or plain? Let's style the whole message for consistency with previous
                 message = click.style(message, fg="bright_black")
 
             stream.write(f"\r{message}")
             stream.flush()
-            time.sleep(1)
+
+            # Update at 10Hz
+            time.sleep(0.1)
+            spinner_idx += 1
 
         # Clear the line after done
         # We need to clear enough space for the longest message
