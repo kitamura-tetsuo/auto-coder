@@ -2261,15 +2261,11 @@ def _fix_pr_issues_with_local_testing(
     attempt_history: List[Dict[str, Any]] = []
 
     try:
-        # Step 1: Initial fix using GitHub Actions logs
-        if skip_github_actions_fix:
-            msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
-            logger.info(msg)
-            actions.append(msg)
-        else:
-            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-            actions.extend(initial_fix_actions)
+        # This function is called only when skip_github_actions_fix=True
+        # (i.e., we're resuming work on the PR branch)
+        msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
+        logger.info(msg)
+        actions.append(msg)
 
         # Step 2: Local testing and iterative fixing loop
         attempts_limit = config.MAX_FIX_ATTEMPTS
