@@ -1,9 +1,11 @@
 import threading
 import time
 from unittest.mock import MagicMock, patch
+
 import pytest
+
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _handle_pr_merge, _active_monitors
+from src.auto_coder.pr_processor import _active_monitors, _handle_pr_merge
 
 
 class TestPRMonitorDeduplication:

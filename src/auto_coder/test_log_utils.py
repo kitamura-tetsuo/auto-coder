@@ -9,8 +9,8 @@ import os
 import re
 from typing import List, Optional
 
-from .test_result import TestResult
 from .logger_config import get_logger
+from .test_result import TestResult
 
 logger = get_logger(__name__)
 

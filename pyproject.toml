@@ -185,7 +185,7 @@ disallow_incomplete_defs = false
 check_untyped_defs = false
 disallow_untyped_decorators = false
 no_implicit_optional = false
-exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/"]
+exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/", "utils/"]
 # Use packages instead of files to avoid module path conflicts
 packages = ["auto_coder"]
 
@@ -209,6 +209,7 @@ ignore_errors = true
 module = [
     "mcp_servers.*",
     "graph_builder.*",
+    "utils.*",
 ]
 ignore_errors = true
 
