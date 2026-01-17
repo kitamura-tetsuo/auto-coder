@@ -590,13 +590,32 @@ def change_fraction(old: str, new: str) -> float:
         def tail_window(s: str) -> str:
             if not s:
                 return ""
-            # Trailing 20 lines
-            lines = s.splitlines()
-            tail_by_lines = "\n".join(lines[-20:])
-            # Trailing 1000 characters
-            tail_by_chars = s[-1000:]
-            # Use the shorter one
-            return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
+
+            limit_chars = 1000
+            # Buffer size sufficient to cover 20 lines (assuming < 200 chars/line average).
+            # If lines are longer, the last 20 lines would exceed limit_chars anyway.
+            buffer_size = 4000
+
+            # Work on a suffix to avoid processing massive strings
+            suffix = s[-buffer_size:]
+            lines = suffix.splitlines()
+
+            if len(lines) >= 20:
+                # We have enough lines in the buffer
+                tail_by_lines = "\n".join(lines[-20:])
+                tail_by_chars = suffix[-limit_chars:]
+                return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
+            elif len(s) <= buffer_size:
+                # String is small; we have all lines
+                tail_by_lines = "\n".join(lines)
+                tail_by_chars = suffix[-limit_chars:]
+                return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
+            else:
+                # String is large but we found < 20 lines in the last 4000 chars.
+                # This implies the last 20 lines span more than 4000 chars.
+                # So len(tail_by_lines) > 4000 > 1000 (limit_chars).
+                # Thus we prefer the character limit.
+                return s[-limit_chars:]
 
         old_s = old or ""
         new_s = new or ""
