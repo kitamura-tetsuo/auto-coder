@@ -1537,18 +1537,14 @@ def _update_jules_pr_body(
 
         # Update PR body via GitHub Client
         # Try github_client methods first, fall back to ghapi if needed
-        from unittest.mock import Mock
-
         try:
             repo = github_client.get_repository(repo_name)
-            # Check if repo is a real repo object (not a Mock)
-            if not isinstance(repo, Mock):
-                pr = repo.get_pull(pr_number)
-                pr.edit(body=new_body)
+            pr = repo.get_pull(pr_number)
+            pr.edit(body=new_body)
 
-                logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
-                log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
-                return True
+            logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
+            log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
+            return True
         except Exception:
             pass  # Fall through to ghapi fallback
 
@@ -1556,7 +1552,7 @@ def _update_jules_pr_body(
         from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 
         token = getattr(github_client, "token", None)
-        if not token or isinstance(token, Mock) or not isinstance(token, str):
+        if not token or not isinstance(token, str):
             try:
                 token = GitHubClient.get_instance().token
             except Exception:
