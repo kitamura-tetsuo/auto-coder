@@ -21,6 +21,7 @@ class TestParentIssueDetection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
         # No sub-issues, no parent
         github_client.get_all_sub_issues.return_value = []
         github_client.get_parent_issue_details.return_value = None
@@ -44,6 +45,7 @@ class TestParentIssueDetection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
         # Has sub-issues, no parent, but has open sub-issues
         github_client.get_all_sub_issues.return_value = [101, 102, 103]
         github_client.get_parent_issue_details.return_value = None
@@ -67,6 +69,7 @@ class TestParentIssueDetection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
         # No sub-issues, but has a parent
         github_client.get_all_sub_issues.return_value = []
         github_client.get_parent_issue_details.return_value = {"number": 100, "title": "Parent Issue"}
@@ -90,6 +93,7 @@ class TestParentIssueDetection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
         # Has sub-issues, no parent, all sub-issues closed
         github_client.get_all_sub_issues.return_value = [101, 102, 103, 104]
         github_client.get_parent_issue_details.return_value = None
@@ -113,6 +117,7 @@ class TestParentIssueDetection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
         github_client.get_all_sub_issues.return_value = [201, 202]
         github_client.get_parent_issue_details.return_value = None
         github_client.get_open_sub_issues.return_value = []
@@ -212,7 +217,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     def test_create_pr_for_parent_issue_new_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with new branch."""
         repo_name = "owner/repo"
@@ -228,6 +233,7 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
 
         # Mock git commands - branch doesn't exist
         mock_cmd.run_command.side_effect = [
@@ -259,7 +265,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     def test_create_pr_for_parent_issue_existing_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with existing branch."""
         repo_name = "owner/repo"
@@ -275,6 +281,7 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
 
         # Mock git commands - branch exists
         mock_cmd.run_command.side_effect = [
@@ -303,7 +310,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     @patch("src.auto_coder.git_branch.git_commit_with_retry")
     def test_create_pr_for_parent_issue_with_changes(self, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR with changes to commit."""
@@ -320,6 +327,7 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
 
         # Mock git commands
         mock_cmd.run_command.side_effect = [
@@ -368,6 +376,7 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
 
         # Mock git commands - first call checks if branch exists (doesn't)
         # second call tries to create branch and fails
@@ -382,7 +391,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test error handling when PR creation fails."""
         repo_name = "owner/repo"
@@ -398,6 +407,7 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
 
         # Mock git commands
         mock_cmd.run_command.side_effect = [
@@ -418,7 +428,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Ensure attempt-specific branch is used when attempts exist."""
         repo_name = "owner/repo"
@@ -479,6 +489,7 @@ class TestParentIssueContextInjection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
         # Sub-issue has a parent
         github_client.get_parent_issue_details.return_value = {
             "number": 200,
