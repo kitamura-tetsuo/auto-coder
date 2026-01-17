@@ -489,6 +489,9 @@ class AutomationConfig:
     # Configurable via [jules].failure_threshold in config.toml
     JULES_FAILURE_THRESHOLD: int = 10
 
+    # Label for auto-coder operations
+    AUTO_CODER_LABEL: str = "@auto-coder"
+
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)
     FORCE_CLEAN_BEFORE_CHECKOUT: bool = False

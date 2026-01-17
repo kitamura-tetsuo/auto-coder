@@ -2150,7 +2150,7 @@ def _fix_pr_issues_with_testing(
         failed_tests = extract_all_failed_tests(github_logs)
 
     if skip_github_actions_fix:
-        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
+        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests, skip_github_actions_fix=True)
     else:
         return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
 
@@ -2186,13 +2186,13 @@ def _fix_pr_issues_with_github_actions_testing(
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests)
+            test_result = run_local_tests(config, test_file=failed_tests[0])
 
             # Check if we should use local fix strategy (1-3 failed tests)
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+            while not test_result.get("success") and 1 <= len(failed_tests) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic
@@ -2213,7 +2213,7 @@ def _fix_pr_issues_with_github_actions_testing(
                     )
                     actions.extend(local_fix_actions)
 
-                test_result = run_local_tests(config, test_file=failed_tests)
+                test_result = run_local_tests(config, test_file=failed_tests[0])
 
         # 3. Commit and Push
         # Check if any changes were made
@@ -2248,6 +2248,7 @@ def _fix_pr_issues_with_local_testing(
     config: AutomationConfig,
     github_logs: str,
     test_files: Optional[List[str]] = None,
+    skip_github_actions_fix: bool = False,
 ) -> List[str]:
     """Fix PR issues using local testing loop."""
     actions = []

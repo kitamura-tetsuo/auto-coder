@@ -602,7 +602,7 @@ class GitHubClient:
             "title": get(issue, "title"),
             "body": get(issue, "body") or "",
             "state": get(issue, "state"),
-            "labels": [get(l, "name") for l in labels],
+            "labels": [get(label, "name") for label in labels],
             "assignees": [get(a, "login") for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
