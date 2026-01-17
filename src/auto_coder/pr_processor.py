@@ -1037,8 +1037,8 @@ def _handle_pr_merge(
                     target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
                     failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                    if failure_count > 10:
-                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
+                    if failure_count > config.JULES_FAILURE_THRESHOLD:
+                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
                         should_fallback = True
                     else:
                         # Check if the last failure comment was more than 2 hour ago
