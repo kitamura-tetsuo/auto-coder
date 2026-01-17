@@ -1572,6 +1572,22 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
         return _extract_error_context(log_content)
 
 
+def _filter_eslint_log(content: str) -> str:
+    """Filter and extract important information from ESLint logs.
+
+    Args:
+        content: ESLint log content
+
+    Returns:
+        Extracted ESLint error context
+    """
+    if not content:
+        return ""
+
+    # Use the existing error context extraction with focus on ESLint patterns
+    return _extract_error_context(content, max_lines=100)
+
+
 def _extract_error_context(content: str, max_lines: int = 500) -> str:
     """Extract important information from error logs.
 
@@ -2343,7 +2359,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(line_item) for line_item in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:
