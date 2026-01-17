@@ -20,8 +20,8 @@ try:
     import rapidfuzz
     from rapidfuzz import fuzz
 except ImportError:
-    rapidfuzz = None
-    fuzz = None
+    rapidfuzz = None  # type: ignore
+    fuzz = None  # type: ignore
 
 from auto_coder.progress_decorators import progress_stage
 
@@ -719,11 +719,11 @@ def get_detailed_checks_from_history(
 
     try:
         # Get detailed checks from the provided run IDs
-        all_checks = []
-        all_failed_checks = []
+        all_checks: List[Dict[str, Any]] = []
+        all_failed_checks: List[Dict[str, Any]] = []
         has_in_progress = False
         any_failed = False
-        processed_run_ids = []
+        processed_run_ids: List[int] = []
 
         for run_id in status_result.ids:
             logger.info(f"Processing run {run_id}")
@@ -935,7 +935,7 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
         return False
 
 
-def get_github_actions_logs_from_url(url: str) -> str:
+def get_github_actions_logs_from_url(url: str, config: Optional[AutomationConfig] = None, failed_checks: Optional[List[Dict[str, Any]]] = None) -> str:
     """Extract error blocks by fetching logs for the given GitHub Actions job URL directly.
 
     Accepted URL format:
@@ -1725,6 +1725,37 @@ def _clean_log_line(line: str) -> str:
     return line
 
 
+def _filter_eslint_log(content: str) -> str:
+    """Filter and extract relevant ESLint error information from log content.
+
+    Args:
+        content: Raw log content from ESLint output
+
+    Returns:
+        Filtered content focusing on error/warning messages
+    """
+    import re
+
+    lines = content.split("\n")
+    filtered_lines = []
+    error_pattern = re.compile(r"^\s*(error|warning)\s+", re.IGNORECASE)
+
+    for line in lines:
+        # Keep lines with error/warning markers
+        if error_pattern.search(line):
+            filtered_lines.append(line)
+        # Keep lines that look like file paths with line numbers
+        elif re.search(r"\.(js|ts|jsx|tsx|mjs|cjs):\d+", line):
+            filtered_lines.append(line)
+
+    # Limit the output size
+    result = "\n".join(filtered_lines)
+    if len(result) > 2000:
+        result = result[:2000] + "\n... (truncated)"
+
+    return result
+
+
 def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> None:
     """
     Preload GitHub Actions status for multiple PRs to avoid N+1 API calls.
@@ -1757,7 +1788,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
         runs = runs_resp.get("workflow_runs", [])
 
         # Group runs by SHA
-        runs_by_sha = {}
+        runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
         for run in runs:
             # API returns snake_case keys (head_sha), gh CLI returned camelCase (headSha)
             # Support both just in case, utilizing the broader check pattern
@@ -2343,7 +2374,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:
@@ -2583,8 +2614,8 @@ def _create_github_action_log_summary(
     # Deduplicate similar logs
     if len(logs) > 1:
         try:
-            final_logs = []
-            kept_logs = []  # Stores only the full logs that were kept
+            final_logs: List[str] = []
+            kept_logs: List[str] = []  # Stores only the full logs that were kept
 
             for i, log in enumerate(logs):
                 # Parse job name for fallback
