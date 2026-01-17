@@ -3,8 +3,8 @@ Tests for GitHub client functionality.
 """
 
 import json
-from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 

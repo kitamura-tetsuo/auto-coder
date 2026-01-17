@@ -19,18 +19,18 @@ from typing import Any, Dict, List, Optional, Tuple
 try:
     import rapidfuzz
     from rapidfuzz import fuzz
-except ImportError:
-    rapidfuzz = None
-    fuzz = None
+
+    fuzz: Any = fuzz  # type: ignore[assignment]
+except (ImportError, AttributeError):
+    rapidfuzz = None  # type: ignore[assignment]
+    fuzz = None  # type: ignore[assignment]
 
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
-
-from .gh_cache import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
-from .gh_cache import get_ghapi_client
+from .gh_cache import GitHubClient, get_ghapi_client
 from .github_cache import get_github_cache
 
 
@@ -721,8 +721,8 @@ def get_detailed_checks_from_history(
 
     try:
         # Get detailed checks from the provided run IDs
-        all_checks = []
-        all_failed_checks = []
+        all_checks: List[Dict[str, Any]] = []
+        all_failed_checks: List[Dict[str, Any]] = []
         has_in_progress = False
         any_failed = False
         processed_run_ids = []
@@ -1076,10 +1076,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     step_name = step_file_label
 
                                     # Extract important error-related information
-                                    if "eslint" in job_name.lower() or "lint" in job_name.lower():
-                                        snippet = _filter_eslint_log(content)
-                                    else:
-                                        snippet = _extract_error_context(content)
+                                    snippet = _extract_error_context(content)
 
                                     # Enhance with expected/received
                                     exp_lines = []
@@ -1307,7 +1304,7 @@ def _search_github_actions_logs_from_history(
                         run_url = run.get("url")
 
                     if run_url:
-                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
+                        logs = get_github_actions_logs_from_url(run_url)
 
                         if logs and "No detailed logs available" not in logs:
                             # Prepend some metadata about where these logs came from
@@ -1759,7 +1756,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
         runs = runs_resp.get("workflow_runs", [])
 
         # Group runs by SHA
-        runs_by_sha = {}
+        runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
         for run in runs:
             # API returns snake_case keys (head_sha), gh CLI returned camelCase (headSha)
             # Support both just in case, utilizing the broader check pattern
@@ -2586,7 +2583,7 @@ def _create_github_action_log_summary(
     if len(logs) > 1:
         try:
             final_logs = []
-            kept_logs = []  # Stores only the full logs that were kept
+            kept_logs: List[str] = []  # Stores only the full logs that were kept
 
             for i, log in enumerate(logs):
                 # Parse job name for fallback

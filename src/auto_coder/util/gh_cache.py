@@ -1,13 +1,13 @@
+import functools
 import json
+import logging
 import subprocess
 import threading
+import time
 import types
-import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-import functools
-import time
 import httpx
 from ghapi.all import GhApi
 from hishel import SyncSqliteStorage
@@ -60,7 +60,7 @@ def get_ghapi_client(token: str) -> GhApi:
     """
 
     class CachedGhApi(GhApi):
-        def __call__(self, path: str, verb: str = None, headers: dict = None, route: dict = None, query: dict = None, data=None, timeout=None, decode=True):
+        def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
             # Use the shared caching client
             client = get_caching_client()
 
@@ -912,7 +912,7 @@ class GitHubClient:
             logger.debug(f"No closing PR found for issue #{issue_number}")
             return None
 
-        except GithubException as e:
+        except Exception as e:
             logger.error(f"Failed to find closing PR for issue #{issue_number}: {e}")
             return None
 
@@ -985,6 +985,8 @@ class GitHubClient:
                 return None
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
+
+        return None
 
     def get_parent_issue_body(self, repo_name: str, issue_number: int) -> Optional[str]:
         """Get parent issue body content for a given issue using REST API.

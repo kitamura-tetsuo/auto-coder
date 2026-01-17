@@ -28,12 +28,12 @@ except ImportError:
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_config import config_group
+from .cli_commands_debug import debug
 from .cli_commands_graphrag import graphrag_group
 from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
-from .cli_commands_debug import debug
 from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
 from .lock_manager import LockManager
@@ -41,6 +41,44 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 
 # Load environment variables
 load_dotenv()
+
+
+class ForceAwareGroup(click.Group):
+    """Custom Group to handle global --force flag positioned after subcommand."""
+
+    def invoke(self, ctx):
+        if "--force" in ctx.args:
+            try:
+                # Determine which command would be invoked
+                # Note: ctx.protected_args contains the command name when invoke_without_command=True
+                check_args = ctx.protected_args + ctx.args
+                cmd_name, cmd, _ = self.resolve_command(ctx, check_args)
+
+                if cmd:
+                    # Check if the command supports --force
+                    supports_force = False
+                    for param in cmd.params:
+                        if final_name := getattr(param, "name", None):
+                            if final_name == "force":
+                                supports_force = True
+                                break
+                        # Also check opts just in case
+                        if "--force" in getattr(param, "opts", []):
+                            supports_force = True
+                            break
+
+                    if not supports_force:
+                        # Command doesn't support --force, so it must be intended for the main group
+                        # Strip it from args to prevent "No such option" error
+                        if "--force" in ctx.args:
+                            ctx.args.remove("--force")
+                            # Enable force on the main group context
+                            ctx.params["force"] = True
+            except Exception:
+                # If resolution fails, let standard click mechanics handle the error
+                pass
+
+        return super().invoke(ctx)
 
 
 @contextlib.contextmanager
@@ -56,6 +94,7 @@ def lock_manager_context(force: bool = False):
 
 
 @click.group(
+    cls=ForceAwareGroup,
     invoke_without_command=True,
     help="Auto-Coder: Automated application development using Gemini CLI and GitHub integration.",
 )

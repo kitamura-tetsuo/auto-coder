@@ -19,17 +19,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
+from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
-from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
+from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
-
-from .branch_manager import BranchManager
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
@@ -39,10 +37,10 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test, extract_all_failed_tests, extract_important_errors
+from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
-from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 from .util.github_action import _create_github_action_log_summary
+from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -402,7 +400,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         log_action(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
 
-        # Step 1: Get PR details to determine the base branch
+        # Step 1: Get PR details to determine the base branch and head branch
         try:
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
@@ -410,24 +408,32 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
             pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
             base_branch = pr_details.get("base", {}).get("ref", "main")
+            head_branch = pr_details.get("head", {}).get("ref")
+
+            if not head_branch:
+                error_msg = f"Failed to determine head branch for PR #{pr_number} (head.ref is missing)"
+                actions.append(error_msg)
+                log_action(error_msg, False)
+                return actions
+
         except Exception as e:
             error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
 
-        actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
+        actions.append(f"Determined base branch: {base_branch}, head branch: {head_branch} for PR #{pr_number}")
 
         # Step 2: Ensure PR branch exists and is up to date, then use BranchManager
         # Create minimal PR data for checkout function
-        pr_branch_name = f"pr-{pr_number}"
+        pr_branch_name = head_branch
         pr_data_for_checkout = {"number": pr_number, "head": {"ref": pr_branch_name}}
 
         # Ensure branch exists and is fetched, but don't switch yet
         prepare_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig(), perform_checkout=False)
 
         if not prepare_success:
-            error_msg = f"Failed to prepare PR #{pr_number} branch"
+            error_msg = f"Failed to prepare PR #{pr_number} branch ({pr_branch_name})"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
@@ -1026,8 +1032,8 @@ def _handle_pr_merge(
                     target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
                     failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                    if failure_count > 10:
-                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
+                    if failure_count > config.JULES_FAILURE_THRESHOLD:
+                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
                         should_fallback = True
                     else:
                         # Check if the last failure comment was more than 2 hour ago
@@ -1538,7 +1544,7 @@ def _update_jules_pr_body(
 
         # Update PR body via GitHub Client (GhApi)
         try:
-            from auto_coder.util.gh_cache import get_ghapi_client, GitHubClient
+            from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 
             # Use token from client if available, else get from singleton
             token = getattr(github_client, "token", None)
@@ -1613,13 +1619,6 @@ def _link_jules_pr_to_issue(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
-        # Check for special Jules PRs that don't need issue linking
-        pr_title = pr_data.get("title", "")
-        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
-        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
-            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
-            return True
-
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
         if not session_id:
@@ -1630,6 +1629,13 @@ def _link_jules_pr_to_issue(
 
         # Step 2: Store session_id in pr_data for later use in the feedback loop
         pr_data["_jules_session_id"] = session_id
+
+        # Check for special Jules PRs that don't need issue linking
+        pr_title = pr_data.get("title", "")
+        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
+            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
+            return True
 
         # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)
@@ -2180,13 +2186,14 @@ def _fix_pr_issues_with_github_actions_testing(
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests)
+            test_file_str = " ".join(failed_tests)
+            test_result = run_local_tests(config, test_file=test_file_str)
 
             # Check if we should use local fix strategy (1-3 failed tests)
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+            while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic
@@ -2207,7 +2214,7 @@ def _fix_pr_issues_with_github_actions_testing(
                     )
                     actions.extend(local_fix_actions)
 
-                test_result = run_local_tests(config, test_file=failed_tests)
+                test_result = run_local_tests(config, test_file=test_file_str)
 
         # 3. Commit and Push
         # Check if any changes were made
@@ -2242,6 +2249,7 @@ def _fix_pr_issues_with_local_testing(
     config: AutomationConfig,
     github_logs: str,
     test_files: Optional[List[str]] = None,
+    skip_github_actions_fix: bool = False,
 ) -> List[str]:
     """Fix PR issues using local testing loop."""
     actions = []
