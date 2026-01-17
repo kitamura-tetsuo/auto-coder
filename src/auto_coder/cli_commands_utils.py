@@ -63,7 +63,7 @@ def get_actions_logs(actions_url: str, github_token: Optional[str]) -> None:
     # Route log output to stderr to avoid polluting stdout which is piped to file
     setup_logger(stream=sys.stderr)
     github_token_final = get_github_token_or_fail(github_token)
-    logs = get_github_actions_logs_from_url(actions_url)
+    logs = get_github_actions_logs_from_url(actions_url, github_token_final)
     click.echo(logs)
 
 

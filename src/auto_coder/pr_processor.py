@@ -1264,19 +1264,6 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
                 cmd.run_command(["git", "branch", "-f", branch_name, "FETCH_HEAD"])
             return True
 
-        checkout_result = cmd.run_command(["git", "checkout", branch_name])
-        if not checkout_result.success:
-            # If branch doesn't exist locally, checkout from fetched ref
-            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
-
-            if not checkout_result.success:
-                log_action(
-                    f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
-                    False,
-                    checkout_result.stderr,
-                )
-                return False
-
         log_action(f"Successfully manually checked out PR #{pr_number}")
         return True
 
@@ -2192,7 +2179,7 @@ def _fix_pr_issues_with_github_actions_testing(
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+            while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic

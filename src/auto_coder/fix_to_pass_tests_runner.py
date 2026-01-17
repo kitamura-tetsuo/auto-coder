@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from .automation_config import AutomationConfig
 from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
@@ -208,7 +208,7 @@ def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
         logger.warning(f"Failed to remove {path}: {exc}")
 
 
-def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -> Dict[str, Any]:
+def run_local_tests(config: AutomationConfig, test_file: Optional[str | List[str]] = None) -> Dict[str, Any]:
     """Run local tests using configured script or pytest fallback.
 
     If test_file is specified, only that test file will be run.
@@ -274,9 +274,14 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
     try:
         # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
         if test_file:
-            with ProgressStage(f"Running only the specified test file via script: {test_file}"):
-                logger.info(f"Running only the specified test file via script: {test_file}")
-                cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
+            # Handle both str and List[str]
+            if isinstance(test_file, list):
+                test_file_str = " ".join(test_file)
+            else:
+                test_file_str = test_file
+            with ProgressStage(f"Running only the specified test file via script: {test_file_str}"):
+                logger.info(f"Running only the specified test file via script: {test_file_str}")
+                cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file_str]
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 return {
                     "success": result.success,

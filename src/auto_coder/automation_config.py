@@ -19,6 +19,9 @@ class AutomationConfig:
     REPORTS_DIR: str = "reports"
     TEST_SCRIPT_PATH: str = "scripts/test.sh"
 
+    # Labels
+    AUTO_CODER_LABEL: str = "@auto-coder"
+
     # Label prompt mappings for label-based issue/PR processing
     # Maps labels to prompt template keys
     label_prompt_mappings: Dict[str, str] = field(
