@@ -38,13 +38,10 @@ class TestGhCacheRedirect:
         token = "secret-token"
         api = get_ghapi_client(token)
 
-        # Call API (which triggers httpx_adapter)
-        # gh_cache.py signature: httpx_adapter(self, path, verb, headers, route, query, data)
-        # We must match this signature for the manual call in the test
-
+        # Call API using __call__ interface (the public method)
+        # gh_cache.py signature: __call__(self, path, verb, headers, route, query, data, timeout, decode)
         path = "/repos/owner/repo/actions/runs/123/logs"
-        # path, verb, headers, route, query, data
-        api._call(path, "GET", {"authorization": f"token {token}", "x-test": "keep"}, None, {"foo": "bar"}, None)
+        api(path, "GET", {"authorization": f"token {token}", "x-test": "keep"}, None, {"foo": "bar"}, None)
 
         # Verify calls
         assert mock_client_instance.request.call_count == 2
@@ -95,8 +92,8 @@ class TestGhCacheRedirect:
         api = get_ghapi_client(token)
         path = "/repos/owner/repo/path"
 
-        # path, verb, headers, route, query, data
-        api._call(path, "GET", {"Authorization": f"token {token}"}, None, {}, None)
+        # Call API using __call__ interface (the public method)
+        api(path, "GET", {"Authorization": f"token {token}"}, None, {}, None)
 
         assert mock_client_instance.request.call_count == 2
 

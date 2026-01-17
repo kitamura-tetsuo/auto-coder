@@ -2114,8 +2114,10 @@ class TestBranchContext:
             with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
                     with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+                        # Make run_command return a proper CommandResult with success=True
+                        # This prevents the error handling path in switch_to_branch
+                        mock_result = CommandResult(success=True, stdout="feature", stderr="", returncode=0)
+                        mock_executor.return_value.run_command.return_value = mock_result
 
                         # Initially on main
                         mock_get_branch.side_effect = ["main", "feature", "main"]
@@ -2144,8 +2146,9 @@ class TestBranchContext:
             with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
                     with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+                        # Make run_command return a proper CommandResult with success=True
+                        mock_result = CommandResult(success=True, stdout="feature", stderr="", returncode=0)
+                        mock_executor.return_value.run_command.return_value = mock_result
 
                         # Initially on main
                         mock_get_branch.side_effect = ["main", "feature", "main"]
@@ -2169,8 +2172,9 @@ class TestBranchContext:
             with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
                     with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+                        # Make run_command return a proper CommandResult with success=True
+                        mock_result = CommandResult(success=True, stdout="new-feature", stderr="", returncode=0)
+                        mock_executor.return_value.run_command.return_value = mock_result
 
                         # Initially on main
                         mock_get_branch.side_effect = ["main", "new-feature", "main"]
@@ -2197,8 +2201,9 @@ class TestBranchContext:
             with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
                     with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+                        # Make run_command return a proper CommandResult with success=True
+                        mock_result = CommandResult(success=True, stdout="feature", stderr="", returncode=0)
+                        mock_executor.return_value.run_command.return_value = mock_result
 
                         # Initially on main
                         mock_get_branch.side_effect = ["main", "feature", "main"]
@@ -2219,8 +2224,9 @@ class TestBranchContext:
             with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
                     with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+                        # Make run_command return a proper CommandResult with success=True
+                        mock_result = CommandResult(success=True, stdout="feature", stderr="", returncode=0)
+                        mock_executor.return_value.run_command.return_value = mock_result
 
                         # Already on the target branch
                         mock_get_branch.side_effect = ["feature", "feature"]
@@ -2240,8 +2246,9 @@ class TestBranchContext:
             with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
                     with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+                        # Make run_command return a proper CommandResult with success=True
+                        mock_result = CommandResult(success=True, stdout="feature", stderr="", returncode=0)
+                        mock_executor.return_value.run_command.return_value = mock_result
 
                         # Initially on main
                         mock_get_branch.side_effect = ["main", "feature"]

@@ -1,9 +1,17 @@
 import importlib
+import os
 import subprocess
 import sys
 
 
 def test_cli_get_actions_logs_strips_prelude_and_is_compact(_use_real_home, _use_real_commands):
+    # Skip if no valid GitHub token is available
+    github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not github_token:
+        import pytest
+
+        pytest.skip("GITHUB_TOKEN or GH_TOKEN not set")
+
     importlib.reload(subprocess)
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
     # Run CLI and capture output; pass dummy token to avoid auth prompt
@@ -32,7 +40,7 @@ sys.exit(0)
             "--url",
             url,
             "--github-token",
-            "dummy",
+            github_token,
         ],
         capture_output=True,
         text=True,
