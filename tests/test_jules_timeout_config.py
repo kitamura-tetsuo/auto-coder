@@ -1,10 +1,12 @@
 import os
 import tempfile
 import tomllib
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
-from src.auto_coder.llm_backend_config import get_jules_wait_timeout_hours_from_config
+
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.llm_backend_config import get_jules_wait_timeout_hours_from_config
 
 
 class TestJulesTimeoutConfig:

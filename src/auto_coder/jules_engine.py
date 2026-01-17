@@ -4,15 +4,15 @@ Jules engine module for managing Jules sessions.
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 from dateutil import parser
 
-from .util.gh_cache import GitHubClient
 from .jules_client import JulesClient
-from .logger_config import get_logger
 from .llm_backend_config import get_jules_session_expiration_days_from_config
+from .logger_config import get_logger
+from .util.gh_cache import GitHubClient
 
 logger = get_logger(__name__)
 
@@ -216,7 +216,7 @@ def check_and_resume_or_archive_sessions() -> None:
                         # Check PR status
                         pr = github_client.get_pull_request(repo_name, pr_number)
 
-                        if pr.get("state") == "closed":
+                        if pr and pr.get("state") == "closed":
                             action = "merged" if pr.get("merged") else "closed"
                             logger.info(f"PR #{pr_number} is {action}. Archiving Jules session: {session_id}")
                             if jules_client.archive_session(session_id):
