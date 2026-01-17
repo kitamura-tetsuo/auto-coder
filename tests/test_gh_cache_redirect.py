@@ -1,7 +1,9 @@
-import pytest
 from unittest.mock import Mock, patch
-from src.auto_coder.util.gh_cache import get_ghapi_client
+
 import httpx
+import pytest
+
+from src.auto_coder.util.gh_cache import get_ghapi_client
 
 
 class TestGhCacheRedirect:

@@ -19,17 +19,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
+from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
-from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
+from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
-
-from .branch_manager import BranchManager
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
@@ -39,10 +37,10 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test, extract_all_failed_tests, extract_important_errors
+from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
-from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 from .util.github_action import _create_github_action_log_summary
+from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -1546,7 +1544,7 @@ def _update_jules_pr_body(
 
         # Update PR body via GitHub Client (GhApi)
         try:
-            from auto_coder.util.gh_cache import get_ghapi_client, GitHubClient
+            from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 
             # Use token from client if available, else get from singleton
             token = getattr(github_client, "token", None)
