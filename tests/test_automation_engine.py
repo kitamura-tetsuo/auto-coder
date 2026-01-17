@@ -696,32 +696,40 @@ class TestAutomationEngine:
         assert result.success is True
         assert result.ids == []
 
-    @patch("auto_coder.pr_processor.cmd.run_command")
-    def test_checkout_pr_branch_success(self, mock_run_command, mock_github_client, mock_gemini_client):
+    def test_checkout_pr_branch_success(self, mock_github_client, mock_gemini_client, _use_real_commands):
         """Test successful PR branch checkout without force clean (default behavior)."""
         # Setup
-        # Mock cmd.run_command for git fetch and checkout
-        git_results = [
-            Mock(success=True, stdout="", stderr="", returncode=0),  # git fetch
-            Mock(success=True, stdout="", stderr="", returncode=0),  # git checkout
-        ]
-        mock_run_command.side_effect = git_results
-
+        # We use _use_real_commands fixture to skip stub_git_and_gh_commands
+        # because it patches subprocess.run which conflicts with our cmd.run_command mock
         from auto_coder import pr_processor
 
-        pr_data = {"number": 123}
+        # Mock cmd.run_command for all git commands called by _force_checkout_pr_manually
+        # The function calls: merge --abort, reset --hard, clean -fd, fetch (branch:branch, then pull/N/head),
+        # checkout (may fail), checkout -b branch FETCH_HEAD
+        git_results = [
+            Mock(success=True, stdout="", stderr="", returncode=0),  # git merge --abort
+            Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD
+            Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd
+            Mock(success=False, stdout="", stderr="", returncode=1),  # git fetch origin pr-123:pr-123 (fails)
+            Mock(success=True, stdout="", stderr="", returncode=0),  # git fetch origin pull/123/head
+            Mock(success=False, stdout="", stderr="", returncode=1),  # git checkout pr-123 (fails - branch doesn't exist)
+            Mock(success=True, stdout="Switched to branch 'pr-123'", stderr="", returncode=0),  # git checkout -b pr-123 FETCH_HEAD
+        ]
 
-        # Execute
-        result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
+        with patch.object(pr_processor.cmd, "run_command") as mock_run_command:
+            mock_run_command.side_effect = git_results
 
-        # Assert
-        assert result is True
-        assert mock_run_command.call_count == 2
+            pr_data = {"number": 123, "head_branch": "pr-123"}
 
-        # Verify the sequence of commands
-        calls = [call[0][0] for call in mock_run_command.call_args_list]
-        assert calls[0] == ["git", "fetch", "origin", "pull/123/head"]
-        assert calls[1] == ["git", "checkout", "-B", "pr-123", "FETCH_HEAD"]
+            # Execute
+            result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
+
+            # Assert
+            assert result is True
+            # Verify the sequence of commands includes the expected fetch and checkout
+            calls = [call[0][0] for call in mock_run_command.call_args_list]
+            assert ["git", "fetch", "origin", "pull/123/head"] in calls
+            assert ["git", "checkout", "-b", "pr-123", "FETCH_HEAD"] in calls
 
     @pytest.mark.skip(reason="Timeout in loguru writer thread - requires further investigation")
     @patch.dict("os.environ", {"GH_LOGGING_DISABLED": "1"})
@@ -948,7 +956,7 @@ class TestAutomationEngineExtended:
             assert mock_test.call_count == 2
             mock_local_fix.assert_called_once()
 
-    def test_checkout_pr_branch_force_cleanup(self, mock_github_client, mock_gemini_client):
+    def test_checkout_pr_branch_force_cleanup(self, mock_github_client, mock_gemini_client, _use_real_commands):
         """Test PR branch checkout with force cleanup enabled."""
         # Setup
         from auto_coder import pr_processor
@@ -956,18 +964,23 @@ class TestAutomationEngineExtended:
         config = AutomationConfig()
         # Enable force clean before checkout
         config.FORCE_CLEAN_BEFORE_CHECKOUT = True
-        pr_data = {"number": 123, "title": "Test PR"}
+        pr_data = {"number": 123, "title": "Test PR", "head_branch": "pr-123"}
 
         # We need to mock cmd.run_command (for git commands) and gh_logger (for gh commands)
         # Use patch.object to mock the method on the cmd instance
         with patch.object(pr_processor.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
-            # Mock cmd.run_command for git reset, clean, fetch, and checkout
-            # It returns a CommandResult with success attribute
+            # Mock cmd.run_command for all git commands called by _force_checkout_pr_manually
+            # When FORCE_CLEAN_BEFORE_CHECKOUT is True, _checkout_pr_branch also calls reset and clean before calling _force_checkout_pr_manually
             git_results = [
-                Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD
-                Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD (in _checkout_pr_branch)
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd (in _checkout_pr_branch)
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git merge --abort (in _force_checkout_pr_manually)
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD (in _force_checkout_pr_manually)
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd (in _force_checkout_pr_manually)
+                Mock(success=False, stdout="", stderr="", returncode=1),  # git fetch origin pr-123:pr-123 (fails)
                 Mock(success=True, stdout="", stderr="", returncode=0),  # git fetch origin pull/123/head
-                Mock(success=True, stdout="", stderr="", returncode=0),  # git checkout -B pr-123 FETCH_HEAD
+                Mock(success=False, stdout="", stderr="", returncode=1),  # git checkout pr-123 (fails - branch doesn't exist)
+                Mock(success=True, stdout="Switched to branch 'pr-123'", stderr="", returncode=0),  # git checkout -b pr-123 FETCH_HEAD
             ]
             mock_run_command.side_effect = git_results
 
@@ -977,18 +990,17 @@ class TestAutomationEngineExtended:
             # Assert
             assert result is True
             # Verify git commands were called
-            assert mock_run_command.call_count == 4
             git_calls = [call[0][0] for call in mock_run_command.call_args_list]
             assert ["git", "reset", "--hard", "HEAD"] in git_calls
             assert ["git", "clean", "-fd"] in git_calls
             # Verify fetch and checkout logic
             assert ["git", "fetch", "origin", "pull/123/head"] in git_calls
-            assert ["git", "checkout", "-B", "pr-123", "FETCH_HEAD"] in git_calls
+            assert ["git", "checkout", "-b", "pr-123", "FETCH_HEAD"] in git_calls
 
             # Verify gh command was NOT called
             assert mock_gh_subprocess.call_count == 0
 
-    def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client):
+    def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client, _use_real_commands):
         """Test PR branch checkout without force clean (default behavior)."""
         # Setup
         from auto_coder import pr_processor
@@ -996,15 +1008,20 @@ class TestAutomationEngineExtended:
         config = AutomationConfig()
         # Explicitly set to False (default)
         config.FORCE_CLEAN_BEFORE_CHECKOUT = False
-        pr_data = {"number": 123, "title": "Test PR"}
+        pr_data = {"number": 123, "title": "Test PR", "head_branch": "pr-123"}
 
         # Mock cmd.run_command (invoked by pr_processor.cmd)
         # Use patch.object to mock the method on the cmd instance
         with patch.object(pr_processor.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
-            # Mock cmd.run_command for git fetch and checkout
+            # Mock cmd.run_command for all git commands called by _force_checkout_pr_manually
             git_results = [
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git merge --abort
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd
+                Mock(success=False, stdout="", stderr="", returncode=1),  # git fetch origin pr-123:pr-123 (fails)
                 Mock(success=True, stdout="", stderr="", returncode=0),  # git fetch origin pull/123/head
-                Mock(success=True, stdout="", stderr="", returncode=0),  # git checkout -B pr-123 FETCH_HEAD
+                Mock(success=False, stdout="", stderr="", returncode=1),  # git checkout pr-123 (fails - branch doesn't exist)
+                Mock(success=True, stdout="Switched to branch 'pr-123'", stderr="", returncode=0),  # git checkout -b pr-123 FETCH_HEAD
             ]
             mock_run_command.side_effect = git_results
 
@@ -1013,10 +1030,9 @@ class TestAutomationEngineExtended:
 
             # Assert
             assert result is True
-            assert mock_run_command.call_count == 2
             git_calls = [call[0][0] for call in mock_run_command.call_args_list]
             assert ["git", "fetch", "origin", "pull/123/head"] in git_calls
-            assert ["git", "checkout", "-B", "pr-123", "FETCH_HEAD"] in git_calls
+            assert ["git", "checkout", "-b", "pr-123", "FETCH_HEAD"] in git_calls
 
             # Verify gh command was NOT called
             assert mock_gh_subprocess.call_count == 0
