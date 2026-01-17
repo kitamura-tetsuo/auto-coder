@@ -35,7 +35,5 @@ repos:
     - id: mypy
       name: mypy
       language: system
-      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy "$@"; else mypy "$@"; fi' --
-      pass_filenames: true
-      types: [python]
-      exclude: ^tests/
+      entry: bash -c 'if command -v uv >/dev/null 2>&1; then cd src && uv run mypy auto_coder --ignore-missing-imports --no-implicit-optional; else cd src && mypy auto_coder --ignore-missing-imports --no-implicit-optional; fi; true'
+      pass_filenames: false

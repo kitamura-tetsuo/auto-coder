@@ -735,7 +735,6 @@ def _get_config_value(
     return default
 
 
-
 def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
     """Check if Jules is enabled via [jules].enabled in config.toml.
 
