@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Dict, Optional
+from typing import Optional
 
 import click
 
@@ -12,10 +12,10 @@ from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
 from .cli_ui import print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
+from .util.gh_cache import GitHubClient
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
-from .util.gh_cache import GitHubClient
 from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
@@ -155,23 +155,23 @@ def process_issues(
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
     logger.info(f"Base branch update before fixes when PR checks fail: {policy_str}")
 
-    summary: Dict[str, str] = {
+    summary = {
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude") and primary_model:
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         summary["Model"] = primary_model
     summary.update(
         {
-            "Disable labels": str(disable_labels),
-            "Check labels": str(check_labels),
+            "Disable labels": disable_labels,
+            "Check labels": check_labels,
             "Main update before fixes": policy_str,
-            "Ignore Dependabot PRs": str(ignore_dependabot_prs),
-            "Auto-merge": str(auto_merge),
-            "Auto-merge Dependabot PRs": str(auto_merge_dependabot_prs),
-            "Force clean before checkout": str(force_clean_before_checkout),
-            "Force reindex": str(force_reindex),
-            "Verbose logging": str(verbose),
+            "Ignore Dependabot PRs": ignore_dependabot_prs,
+            "Auto-merge": auto_merge,
+            "Auto-merge Dependabot PRs": auto_merge_dependabot_prs,
+            "Force clean before checkout": force_clean_before_checkout,
+            "Force reindex": force_reindex,
+            "Verbose logging": verbose,
         }
     )
     print_configuration_summary("Processing Configuration", summary)
@@ -453,17 +453,17 @@ def create_feature_issues(
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Disable labels: {disable_labels}")
 
-    summary: Dict[str, str] = {
+    summary = {
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude") and primary_model:
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         summary["Model"] = primary_model
     summary.update(
         {
-            "Disable labels": str(disable_labels),
-            "Force reindex": str(force_reindex),
-            "Verbose logging": str(verbose),
+            "Disable labels": disable_labels,
+            "Force reindex": force_reindex,
+            "Verbose logging": verbose,
         }
     )
     print_configuration_summary("Feature Analysis Configuration", summary)
@@ -586,16 +586,16 @@ def fix_to_pass_tests_command(
 
     backend_list_str = ", ".join(selected_backends)
 
-    summary: Dict[str, str] = {
+    summary = {
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude") and primary_model:
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         summary["Model"] = primary_model
     summary.update(
         {
-            "Disable labels": str(disable_labels),
-            "Force reindex": str(force_reindex),
-            "Verbose logging": str(verbose),
+            "Disable labels": disable_labels,
+            "Force reindex": force_reindex,
+            "Verbose logging": verbose,
         }
     )
     print_configuration_summary("Fix Tests Configuration", summary)

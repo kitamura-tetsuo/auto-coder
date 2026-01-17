@@ -20,15 +20,17 @@ try:
     import rapidfuzz
     from rapidfuzz import fuzz
 except ImportError:
-    rapidfuzz = None  # type: ignore
-    fuzz = None  # type: ignore
+    rapidfuzz = None
+    fuzz = None
 
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
+
+from .gh_cache import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
-from .gh_cache import GitHubClient, get_ghapi_client
+from .gh_cache import get_ghapi_client
 from .github_cache import get_github_cache
 
 
@@ -719,11 +721,11 @@ def get_detailed_checks_from_history(
 
     try:
         # Get detailed checks from the provided run IDs
-        all_checks: List[Dict[str, Any]] = []
-        all_failed_checks: List[Dict[str, Any]] = []
+        all_checks = []
+        all_failed_checks = []
         has_in_progress = False
         any_failed = False
-        processed_run_ids: List[int] = []
+        processed_run_ids = []
 
         for run_id in status_result.ids:
             logger.info(f"Processing run {run_id}")
@@ -1073,56 +1075,6 @@ def get_github_actions_logs_from_url(url: str) -> str:
 
                                     step_name = step_file_label
 
-                                    def _filter_eslint_log(content: str) -> str:
-                                        """Filter ESLint log content to extract relevant error information.
-
-                                        Args:
-                                            content: Raw log content
-
-                                        Returns:
-                                            Filtered ESLint log content
-                                        """
-                                        if not content:
-                                            return ""
-
-                                        lines = content.split("\n")
-                                        result_lines = []
-                                        error_patterns = [
-                                            r"error",
-                                            r"warning",
-                                            r"✖",
-                                            r"×",
-                                            r"Failed:",
-                                            r"Problem pattern",
-                                        ]
-
-                                        in_error_block = False
-                                        error_start = 0
-
-                                        for i, line in enumerate(lines):
-                                            line_lower = line.lower()
-                                            # Detect start of error output
-                                            if "eslint" in line_lower and (">" in line or "run" in line_lower):
-                                                in_error_block = True
-                                                error_start = i
-                                            # Capture lines in error block
-                                            if in_error_block:
-                                                result_lines.append(line)
-                                                # Detect end of error block
-                                                if "✖" in line or "×" in line:
-                                                    in_error_block = False
-                                                    # Include a few more lines for context
-                                                    break
-
-                                        # If no error block found, fall back to extracting lines with errors/warnings
-                                        if not result_lines:
-                                            for line in lines:
-                                                line_lower = line.lower()
-                                                if any(re.search(p, line_lower) for p in error_patterns):
-                                                    result_lines.append(line)
-
-                                        return "\n".join(result_lines[:200])  # Limit to 200 lines
-
                                     # Extract important error-related information
                                     if "eslint" in job_name.lower() or "lint" in job_name.lower():
                                         snippet = _filter_eslint_log(content)
@@ -1355,7 +1307,7 @@ def _search_github_actions_logs_from_history(
                         run_url = run.get("url")
 
                     if run_url:
-                        logs = get_github_actions_logs_from_url(run_url)
+                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
 
                         if logs and "No detailed logs available" not in logs:
                             # Prepend some metadata about where these logs came from
@@ -1622,6 +1574,15 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
         return _extract_error_context(log_content)
 
 
+def _filter_eslint_log(content: str) -> str:
+    """Filter log content for ESLint errors."""
+    filtered_lines = []
+    for line in content.split("\n"):
+        if "error" in line.lower() or "warning" in line.lower():
+            filtered_lines.append(line)
+    return "\n".join(filtered_lines)
+
+
 def _extract_error_context(content: str, max_lines: int = 500) -> str:
     """Extract important information from error logs.
 
@@ -1807,7 +1768,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
         runs = runs_resp.get("workflow_runs", [])
 
         # Group runs by SHA
-        runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
+        runs_by_sha = {}
         for run in runs:
             # API returns snake_case keys (head_sha), gh CLI returned camelCase (headSha)
             # Support both just in case, utilizing the broader check pattern
@@ -2393,7 +2354,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:
@@ -2633,8 +2594,8 @@ def _create_github_action_log_summary(
     # Deduplicate similar logs
     if len(logs) > 1:
         try:
-            final_logs: List[str] = []
-            kept_logs: List[str] = []  # Stores only the full logs that were kept
+            final_logs = []
+            kept_logs = []  # Stores only the full logs that were kept
 
             for i, log in enumerate(logs):
                 # Parse job name for fallback

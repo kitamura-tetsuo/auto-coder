@@ -5,11 +5,11 @@ restoring the original state, similar to how LabelManager handles labels.
 """
 
 import threading
-from typing import Any, Optional
+from typing import Optional, Any
 
 from .git_branch import switch_to_branch
-from .git_commit import ensure_pushed
 from .git_info import get_current_branch, is_git_repository
+from .git_commit import ensure_pushed
 from .logger_config import get_logger
 
 logger = get_logger(__name__)

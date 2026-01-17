@@ -13,10 +13,10 @@ from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
+from .util.gh_cache import GitHubClient
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
 logger = get_logger(__name__)

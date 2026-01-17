@@ -15,8 +15,8 @@ from typing import Any, Dict, Generator, List, Optional, Union
 from github.GithubException import GithubException
 
 from .automation_config import AutomationConfig
-from .logger_config import get_logger
 from .util.gh_cache import GitHubClient
+from .logger_config import get_logger
 
 logger = get_logger(__name__)
 

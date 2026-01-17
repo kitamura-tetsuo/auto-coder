@@ -19,15 +19,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
-from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
-from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
+
+from .branch_manager import BranchManager
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
@@ -37,10 +39,10 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
+from .test_log_utils import extract_first_failed_test, extract_all_failed_tests, extract_important_errors
 from .test_result import TestResult
-from .util.github_action import _create_github_action_log_summary
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
+from .util.github_action import _create_github_action_log_summary
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -1032,8 +1034,8 @@ def _handle_pr_merge(
                     target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
                     failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                    if failure_count > config.JULES_FAILURE_THRESHOLD:
-                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
+                    if failure_count > 10:
+                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
                         should_fallback = True
                     else:
                         # Check if the last failure comment was more than 2 hour ago
@@ -1544,7 +1546,7 @@ def _update_jules_pr_body(
 
         # Update PR body via GitHub Client (GhApi)
         try:
-            from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
+            from auto_coder.util.gh_cache import get_ghapi_client, GitHubClient
 
             # Use token from client if available, else get from singleton
             token = getattr(github_client, "token", None)
@@ -2192,7 +2194,7 @@ def _fix_pr_issues_with_github_actions_testing(
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3 and attempt < attempts_limit:
+            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic
@@ -2248,6 +2250,7 @@ def _fix_pr_issues_with_local_testing(
     config: AutomationConfig,
     github_logs: str,
     test_files: Optional[List[str]] = None,
+    skip_github_actions_fix: bool = False,
 ) -> List[str]:
     """Fix PR issues using local testing loop."""
     actions = []
@@ -2262,9 +2265,14 @@ def _fix_pr_issues_with_local_testing(
 
     try:
         # Step 1: Initial fix using GitHub Actions logs
-        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-        actions.extend(initial_fix_actions)
+        if skip_github_actions_fix:
+            msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
+            logger.info(msg)
+            actions.append(msg)
+        else:
+            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+            actions.extend(initial_fix_actions)
 
         # Step 2: Local testing and iterative fixing loop
         attempts_limit = config.MAX_FIX_ATTEMPTS

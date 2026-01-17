@@ -1,7 +1,5 @@
-from unittest.mock import MagicMock, patch
-
 import pytest
-
+from unittest.mock import MagicMock, patch
 from auto_coder.util.gh_cache import GitHubClient
 
 
