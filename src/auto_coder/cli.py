@@ -46,7 +46,7 @@ load_dotenv()
 
 class ForceAwareGroup(click.Group):
     """Custom Group to handle global --force flag positioned after subcommand."""
-    
+
     def invoke(self, ctx):
         if "--force" in ctx.args:
             try:
@@ -54,7 +54,7 @@ class ForceAwareGroup(click.Group):
                 # Note: ctx.protected_args contains the command name when invoke_without_command=True
                 check_args = ctx.protected_args + ctx.args
                 cmd_name, cmd, _ = self.resolve_command(ctx, check_args)
-                
+
                 if cmd:
                     # Check if the command supports --force
                     supports_force = False
@@ -67,7 +67,7 @@ class ForceAwareGroup(click.Group):
                         if "--force" in getattr(param, "opts", []):
                             supports_force = True
                             break
-                    
+
                     if not supports_force:
                         # Command doesn't support --force, so it must be intended for the main group
                         # Strip it from args to prevent "No such option" error
@@ -78,7 +78,7 @@ class ForceAwareGroup(click.Group):
             except Exception:
                 # If resolution fails, let standard click mechanics handle the error
                 pass
-                
+
         return super().invoke(ctx)
 
 

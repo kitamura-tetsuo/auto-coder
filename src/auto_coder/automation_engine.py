@@ -196,7 +196,7 @@ class AutomationEngine:
                         token = self.github.token
                         api = get_ghapi_client(token)
                         node_id = pr_data.get("node_id")
-                        
+
                         if not node_id:
                             logger.info(f"Node ID missing for PR #{pr_number}, fetching details...")
                             try:
@@ -314,21 +314,21 @@ class AutomationEngine:
                         # Check reviews
                         reviews = self.github.get_pr_reviews(repo_name, pr_number)
                         for review in reviews:
-                            user = review.get('user')
-                            if user and user.get('login') != "jules":
-                                submitted_at = review.get('submitted_at')
+                            user = review.get("user")
+                            if user and user.get("login") != "jules":
+                                submitted_at = review.get("submitted_at")
                                 if submitted_at:
                                     dt = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
                                     if last_interaction_time is None or dt > last_interaction_time:
                                         last_interaction_time = dt
-                                        last_interaction_type = review.get('state')
+                                        last_interaction_type = review.get("state")
 
                         # Check comments
                         comments = self.github.get_pr_comments(repo_name, pr_number)
                         for comment in comments:
-                            user = comment.get('user')
-                            if user and user.get('login') != "jules":
-                                created_at = comment.get('created_at')
+                            user = comment.get("user")
+                            if user and user.get("login") != "jules":
+                                created_at = comment.get("created_at")
                                 if created_at:
                                     dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                                     if last_interaction_time is None or dt > last_interaction_time:
@@ -342,13 +342,13 @@ class AutomationEngine:
                             if commits:
                                 for commit_data in reversed(commits):
                                     # Check commit date
-                                    committer = commit_data.get('commit', {}).get('committer', {})
-                                    commit_date_str = committer.get('date')
+                                    committer = commit_data.get("commit", {}).get("committer", {})
+                                    commit_date_str = committer.get("date")
                                     if commit_date_str:
                                         commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
                                         if commit_date > last_interaction_time:
-                                            author = commit_data.get('author')
-                                            if author and author.get('login') == "jules":
+                                            author = commit_data.get("author")
+                                            if author and author.get("login") == "jules":
                                                 jules_responded = True
                                                 break
                                         else:
@@ -1482,10 +1482,8 @@ class AutomationEngine:
                     token = self.github.token
                     api = get_ghapi_client(token)
                     owner, repo = repo_name.split("/")
-                    
-                    runs_resp = api.actions.list_workflow_runs_for_repo(
-                        owner, repo, head_sha=commit_hash, per_page=1
-                    )
+
+                    runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, head_sha=commit_hash, per_page=1)
                     runs = runs_resp.get("workflow_runs", [])
 
                     if not runs:
