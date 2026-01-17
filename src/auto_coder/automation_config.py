@@ -148,7 +148,7 @@ class AutomationConfig:
         object.__setattr__(self, "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL", True)
         object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", True)
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
-        
+
         # Load Jules wait timeout from config
         # Load Jules wait timeout from config
         from .llm_backend_config import (
