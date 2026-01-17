@@ -1175,8 +1175,9 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
         # Get PR branch information from PR data
         branch_name = pr_data.get("head_branch") or pr_data.get("head", {}).get("ref")
         if not branch_name:
-            log_action(f"Cannot determine branch name for PR #{pr_number}", False, "No head.ref in PR data")
-            return False
+            # Use default branch name pattern when head.ref is not available
+            branch_name = f"pr-{pr_number}"
+            log_action(f"Using default branch name '{branch_name}' for PR #{pr_number} (head.ref not in PR data)")
 
         log_action(f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}")
 
