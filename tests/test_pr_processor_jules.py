@@ -8,7 +8,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
     _extract_session_id_from_pr_body,
     _is_jules_pr,
-    _process_jules_pr,
+    _link_jules_pr_to_issue,
     _send_jules_error_feedback,
     _update_jules_pr_body,
 )
@@ -280,9 +280,9 @@ class TestUpdateJulesPrBody:
 
 
 class TestProcessJulesPr:
-    """Test cases for _process_jules_pr function."""
+    """Test cases for _link_jules_pr_to_issue function."""
 
-    def test_process_jules_pr_not_author(self):
+    def test_link_jules_pr_to_issue_not_author(self):
         """Test that non-Jules PRs without session ID are skipped."""
         pr_data = {
             "number": 123,
@@ -293,14 +293,14 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True  # Not an error, just not a Jules PR
         # CloudManager should not be called
         # gh command should not be called
 
-    def test_process_jules_pr_no_session_id(self):
+    def test_link_jules_pr_to_issue_no_session_id(self):
         """Test that PRs without session ID return False."""
         pr_data = {
             "number": 123,
@@ -311,13 +311,13 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
         # CloudManager.get_issue_by_session should not be called
 
-    def test_process_jules_pr_no_matching_issue(self):
+    def test_link_jules_pr_to_issue_no_matching_issue(self):
         """Test that PRs with no matching issue return False."""
         # Setup
         pr_data = {
@@ -335,7 +335,7 @@ class TestProcessJulesPr:
             repo_name = "owner/repo"
 
             # Execute
-            result = _process_jules_pr(repo_name, pr_data, github_client)
+            result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
             # Assert
             assert result is False
@@ -343,7 +343,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_success(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_success(self, mock_cloud_manager_class, mock_update_body):
         """Test successful Jules PR processing."""
         # Setup
         pr_data = {
@@ -362,7 +362,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True
@@ -371,7 +371,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_update_failure(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_update_failure(self, mock_cloud_manager_class, mock_update_body):
         """Test that PR body update failure is handled correctly."""
         # Setup
         pr_data = {
@@ -390,7 +390,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -398,7 +398,7 @@ class TestProcessJulesPr:
         mock_update_body.assert_called_once_with(repo_name, 123, "Session ID: sessionXYZ789", 789, github_client)
 
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_exception_handling(self, mock_cloud_manager_class):
+    def test_link_jules_pr_to_issue_exception_handling(self, mock_cloud_manager_class):
         """Test that exceptions are handled gracefully."""
         # Setup
         pr_data = {
@@ -415,7 +415,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -423,7 +423,7 @@ class TestProcessJulesPr:
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_with_url_session_id(self, mock_cloud_manager_class, mock_update_body, mock_extract_session):
+    def test_link_jules_pr_to_issue_with_url_session_id(self, mock_cloud_manager_class, mock_update_body, mock_extract_session):
         """Test Jules PR processing with session ID from URL."""
         # Setup
         pr_data = {
@@ -444,7 +444,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True
@@ -453,7 +453,7 @@ class TestProcessJulesPr:
         mock_update_body.assert_called_once_with(repo_name, 123, "https://example.com/session=urlSession123", 999, github_client)
 
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_empty_body(self, mock_cloud_manager_class):
+    def test_link_jules_pr_to_issue_empty_body(self, mock_cloud_manager_class):
         """Test Jules PR processing with empty body."""
         # Setup
         pr_data = {
@@ -466,7 +466,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -474,7 +474,7 @@ class TestProcessJulesPr:
         mock_cloud_manager_class.assert_not_called()
 
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_none_body(self, mock_cloud_manager_class):
+    def test_link_jules_pr_to_issue_none_body(self, mock_cloud_manager_class):
         """Test Jules PR processing with None body."""
         # Setup
         pr_data = {
@@ -487,7 +487,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is False
@@ -496,7 +496,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_different_repo_formats(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_different_repo_formats(self, mock_cloud_manager_class, mock_update_body):
         """Test Jules PR processing with different repository name formats."""
         # Setup
         pr_data = {
@@ -522,7 +522,7 @@ class TestProcessJulesPr:
 
         for repo_name in test_repos:
             # Execute
-            result = _process_jules_pr(repo_name, pr_data, github_client)
+            result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
             # Assert
             assert result is True
@@ -531,7 +531,7 @@ class TestProcessJulesPr:
 
     @patch("auto_coder.pr_processor._update_jules_pr_body")
     @patch("auto_coder.pr_processor.CloudManager")
-    def test_process_jules_pr_long_session_id(self, mock_cloud_manager_class, mock_update_body):
+    def test_link_jules_pr_to_issue_long_session_id(self, mock_cloud_manager_class, mock_update_body):
         """Test Jules PR processing with a long session ID."""
         # Setup
         long_session_id = "very_long_session_id_with_many_characters_1234567890"
@@ -551,7 +551,7 @@ class TestProcessJulesPr:
         repo_name = "owner/repo"
 
         # Execute
-        result = _process_jules_pr(repo_name, pr_data, github_client)
+        result = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
 
         # Assert
         assert result is True
