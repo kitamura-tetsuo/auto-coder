@@ -73,12 +73,13 @@ class BranchManager:
             logger.debug(f">>> Already active on branch {self.branch_name} in this thread")
             return self
 
-        BranchManager._active_branches.add(branch_key)
-
         # Store original branch
         self.original_branch = get_current_branch(cwd=self.cwd)
         if not self.original_branch:
             raise RuntimeError("Failed to get current branch before switching")
+
+        # Track active branch after successful branch detection
+        BranchManager._active_branches.add(branch_key)
 
         # specific optimization: if we are already on the target branch (and not creating new for reset purposes)
         if self.original_branch == self.branch_name and not self.create_new:
