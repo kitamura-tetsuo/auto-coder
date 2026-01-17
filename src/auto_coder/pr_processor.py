@@ -33,7 +33,7 @@ from .git_commit import commit_and_push_changes, git_push, save_commit_failure_h
 from .git_info import get_commit_log
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .label_manager import LabelManager, LabelOperationError
-from .logger_config import get_logger
+from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
@@ -1542,29 +1542,46 @@ def _update_jules_pr_body(
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
         new_body = f"{pr_body}{separator}{close_statement}\n\nRelated issue: {issue_link}"
 
-        # Update PR body via GitHub Client (GhApi)
+        # Update PR body via GitHub Client
         try:
             from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 
-            # Use token from client if available, else get from singleton
+            # Use github_client for API call if it's a real client with valid token
+            # and has the necessary methods. Otherwise, use get_ghapi_client.
             token = getattr(github_client, "token", None)
-            if not token:
+
+            # Prefer get_ghapi_client when a valid string token is provided
+            if isinstance(token, str):
+                api = get_ghapi_client(token)
+                owner, repo_name_split = repo_name.split("/")
+                api.pulls.update(owner, repo_name_split, pr_number, body=new_body)
+            elif hasattr(github_client, "get_repository"):
+                # Fallback to direct client methods
+                repo = github_client.get_repository(repo_name)
+                pr = repo.get_pull(pr_number)
+                pr.edit(body=new_body)
+            else:
+                # Last resort: try singleton token
                 token = GitHubClient.get_instance().token
-
-            api = get_ghapi_client(token)
-            owner, repo = repo_name.split("/")
-
-            api.pulls.update(owner, repo, pr_number, body=new_body)
+                api = get_ghapi_client(token)
+                owner, repo_name_split = repo_name.split("/")
+                api.pulls.update(owner, repo_name_split, pr_number, body=new_body)
 
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
             log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
             return True
         except Exception as e:
-            logger.error(f"Failed to update PR #{pr_number} body: {e}")
+            try:
+                logger.error(f"Failed to update PR #{pr_number} body: {str(e)}")
+            except Exception:
+                pass  # Prevent logging failures from affecting the result
             return False
 
     except Exception as e:
-        logger.error(f"Error updating Jules PR #{pr_number} body: {e}")
+        try:
+            logger.error(f"Error updating Jules PR #{pr_number} body: {str(e)}")
+        except Exception:
+            pass  # Prevent logging failures from affecting the result
         return False
 
 
@@ -1619,6 +1636,13 @@ def _link_jules_pr_to_issue(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
+        # Check for special Jules PRs that don't need issue linking
+        pr_title = pr_data.get("title", "")
+        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
+            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
+            return True
+
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
         if not session_id:
@@ -1629,13 +1653,6 @@ def _link_jules_pr_to_issue(
 
         # Step 2: Store session_id in pr_data for later use in the feedback loop
         pr_data["_jules_session_id"] = session_id
-
-        # Check for special Jules PRs that don't need issue linking
-        pr_title = pr_data.get("title", "")
-        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
-        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
-            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
-            return True
 
         # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)
@@ -1664,6 +1681,10 @@ def _link_jules_pr_to_issue(
     except Exception as e:
         logger.error(f"Error processing Jules PR {pr_data.get('number', 'unknown')}: {e}")
         return False
+
+
+# Alias for backwards compatibility with tests
+_process_jules_pr = _link_jules_pr_to_issue
 
 
 def _close_linked_issues(repo_name: str, pr_number: int) -> None:
@@ -1797,11 +1818,14 @@ def _send_jules_error_feedback(
         session_id = pr_data.get("_jules_session_id")
         if not session_id:
             actions.append(f"Cannot send error feedback to Jules for PR #{pr_number}: no session ID found")
-            logger.error(f"No session ID found in PR #{pr_number} data for Jules error feedback")
+            try:
+                logger.error(f"No session ID found in PR #{pr_number} data for Jules error feedback")
+            except Exception:
+                pass  # Prevent logging failures from affecting the result
             return actions
 
         # Get GitHub Actions error logs
-        github_logs, _ = _create_github_action_log_summary(repo_name, config, failed_checks)
+        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
@@ -1823,7 +1847,10 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         response = jules_client.send_message(session_id, message)
 
         actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
-        logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
+        try:
+            logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
+        except Exception:
+            pass  # Prevent logging failures from affecting the result
 
         # Post a comment on the PR stating that a fix has been requested
         if github_client:
@@ -1833,14 +1860,20 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
                 actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
             except Exception as e:
                 error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
-                logger.error(error_msg)
+                try:
+                    logger.error(error_msg)
+                except Exception:
+                    pass  # Prevent logging failures from affecting the result
                 actions.append(error_msg)
         else:
             actions.append(f"Skipped posting comment on PR #{pr_number}: no GitHub client available")
 
     except Exception as e:
         error_msg = f"Error sending Jules error feedback for PR #{pr_number}: {e}"
-        logger.error(error_msg)
+        try:
+            logger.error(error_msg)
+        except Exception:
+            pass  # Prevent logging failures from affecting the result
         actions.append(error_msg)
 
     return actions
