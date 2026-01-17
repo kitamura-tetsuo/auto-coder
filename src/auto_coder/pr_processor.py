@@ -1032,8 +1032,8 @@ def _handle_pr_merge(
                     target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
                     failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                    if failure_count > config.JULES_FAILURE_THRESHOLD:
-                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
+                    if failure_count > 10:
+                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
                         should_fallback = True
                     else:
                         # Check if the last failure comment was more than 2 hour ago
@@ -2186,13 +2186,13 @@ def _fix_pr_issues_with_github_actions_testing(
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests[0])
+            test_result = run_local_tests(config, test_file=failed_tests)
 
             # Check if we should use local fix strategy (1-3 failed tests)
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result["failed_tests"] and 1 <= len(test_result["failed_tests"]) <= 3 and attempt < attempts_limit:
+            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic
@@ -2213,7 +2213,7 @@ def _fix_pr_issues_with_github_actions_testing(
                     )
                     actions.extend(local_fix_actions)
 
-                test_result = run_local_tests(config, test_file=test_result["failed_tests"][0])
+                test_result = run_local_tests(config, test_file=failed_tests)
 
         # 3. Commit and Push
         # Check if any changes were made

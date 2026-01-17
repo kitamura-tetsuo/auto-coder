@@ -150,15 +150,10 @@ class AutomationConfig:
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
 
         # Load Jules wait timeout from config
-        from .llm_backend_config import (
-            get_dependabot_wait_interval_hours_from_config,
-            get_jules_failure_threshold_from_config,
-            get_jules_wait_timeout_hours_from_config,
-        )
+        from .llm_backend_config import get_dependabot_wait_interval_hours_from_config, get_jules_wait_timeout_hours_from_config
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
         object.__setattr__(self, "DEPENDABOT_WAIT_INTERVAL_HOURS", get_dependabot_wait_interval_hours_from_config())
-        object.__setattr__(self, "JULES_FAILURE_THRESHOLD", get_jules_failure_threshold_from_config())
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
@@ -449,9 +444,6 @@ class AutomationConfig:
         reports_path = Path.home() / ".auto-coder" / safe_repo_name
         return str(reports_path)
 
-    # Auto-coder label for GitHub operations
-    AUTO_CODER_LABEL: str = "@auto-coder"
-
     # Limits
     MAX_PR_DIFF_SIZE: int = 2000
     MAX_PROMPT_SIZE: int = 1000
@@ -486,10 +478,6 @@ class AutomationConfig:
     # Dependabot wait interval in hours (default: 24)
     # Configurable via [dependabot].wait_interval_hours in config.toml
     DEPENDABOT_WAIT_INTERVAL_HOURS: int = 24
-
-    # Jules failure threshold (default: 10)
-    # Configurable via [jules].failure_threshold in config.toml
-    JULES_FAILURE_THRESHOLD: int = 10
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)
