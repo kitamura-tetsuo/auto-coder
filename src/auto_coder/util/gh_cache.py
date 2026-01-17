@@ -1,13 +1,13 @@
-import functools
 import json
-import logging
 import subprocess
 import threading
-import time
 import types
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import functools
+import time
 import httpx
 from ghapi.all import GhApi
 from hishel import SyncSqliteStorage
@@ -60,7 +60,7 @@ def get_ghapi_client(token: str) -> GhApi:
     """
 
     class CachedGhApi(GhApi):
-        def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
+        def __call__(self, path: str, verb: str = None, headers: dict = None, route: dict = None, query: dict = None, data=None, timeout=None, decode=True):
             # Use the shared caching client
             client = get_caching_client()
 
@@ -601,7 +601,7 @@ class GitHubClient:
             "title": get(issue, "title"),
             "body": get(issue, "body") or "",
             "state": get(issue, "state"),
-            "labels": [get(l, "name") for l in labels],
+            "labels": [get(lbl, "name") for lbl in labels],
             "assignees": [get(a, "login") for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
@@ -641,7 +641,7 @@ class GitHubClient:
             "title": get(pr, "title"),
             "body": get(pr, "body") or "",
             "state": get(pr, "state"),
-            "labels": [get(l, "name") for l in labels],
+            "labels": [get(lbl, "name") for lbl in labels],
             "assignees": [get(a, "login") for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
@@ -985,8 +985,6 @@ class GitHubClient:
                 return None
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
-
-        return None
 
     def get_parent_issue_body(self, repo_name: str, issue_number: int) -> Optional[str]:
         """Get parent issue body content for a given issue using REST API.
@@ -1374,7 +1372,7 @@ class GitHubClient:
 
             # Use basic get issue to check current labels
             issue_data = api.issues.get(owner, repo, issue_number)
-            current_labels = [l["name"] for l in issue_data.get("labels", [])]
+            current_labels = [lbl["name"] for lbl in issue_data.get("labels", [])]
 
             existing_labels = [lbl for lbl in labels if lbl in current_labels]
             if existing_labels:

@@ -1,23 +1,21 @@
 {
-	"folders": [
-		{
-			"name": "auto-coder",
-			"path": ".."
-		},
-		{
-			"name": ".auto-coder",
-			"path": "../../../.auto-coder"
-		},
-		{
-			"name": "workspace",
-			"path": "../../../../../workspace"
-		},
-		{
-			"name": "auto-coder-test",
-			"path": "../../auto-coder-test"
-		}
-	],
-	"settings": {
-		"window.title": "auto-coder${separator}${activeEditorShort}${separator}${remoteName}/src"
-	}
+    "folders": [
+        {
+            "name": "workspace",
+            "path": "/home/node/src/auto-coder"
+        },
+        {
+            "path": "/home/node/.auto-coder"
+        }
+    ],
+    "settings": {
+        "window.title": "auto-coder${separator}${activeEditorShort}${separator}${remoteName}/src",
+        "[typescript]": {
+            "editor.defaultFormatter": "vscode.typescript-language-features",
+            "editor.formatOnSave": true,
+            "editor.codeActionsOnSave": {
+                "source.organizeImports": "never"
+            }
+        },
+    }
 }

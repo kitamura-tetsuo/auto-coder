@@ -1,8 +1,6 @@
-from unittest.mock import ANY, MagicMock, patch
-
 import pytest
-
-from auto_coder.pr_processor import _find_issue_by_session_id_in_comments, _link_jules_pr_to_issue, _update_jules_pr_body
+from unittest.mock import MagicMock, patch, ANY
+from auto_coder.pr_processor import _update_jules_pr_body, _find_issue_by_session_id_in_comments, _link_jules_pr_to_issue
 
 
 class TestJulesPRProcessor:

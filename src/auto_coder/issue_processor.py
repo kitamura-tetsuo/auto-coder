@@ -7,23 +7,24 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict, cast
 
-from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .backend_manager import get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
-from .branch_manager import BranchManager
 from .cloud_manager import CloudManager
+
+from .branch_manager import BranchManager
 from .git_branch import extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
+from .util.gh_cache import GitHubClient
 from .jules_client import JulesClient
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
-from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)

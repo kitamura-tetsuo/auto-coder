@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 from src.auto_coder.util.gh_cache import GitHubClient
+from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 
 
 class TestLabelManager:
@@ -1146,8 +1146,8 @@ class TestLabelManagerProcessorIntegration:
 
     def test_pr_processor_calls_keep_label_on_successful_merge(self):
         """Test that pr_processor calls keep_label() when PR is successfully merged."""
-        from src.auto_coder.pr_processor import _process_pr_for_merge
         from src.auto_coder.util.gh_cache import GitHubClient
+        from src.auto_coder.pr_processor import _process_pr_for_merge
 
         # Setup mocks
         mock_github_client = Mock(spec=GitHubClient)
@@ -1182,8 +1182,8 @@ class TestLabelManagerProcessorIntegration:
 
     def test_pr_processor_does_not_call_keep_label_on_merge_failure(self):
         """Test that pr_processor does not call keep_label() when merge fails."""
-        from src.auto_coder.pr_processor import _process_pr_for_merge
         from src.auto_coder.util.gh_cache import GitHubClient
+        from src.auto_coder.pr_processor import _process_pr_for_merge
 
         # Setup mocks
         mock_github_client = Mock(spec=GitHubClient)
