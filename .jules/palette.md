@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2026-01-20 - Micro-Wait Perception in CLI
+**Learning:** A static 1-second countdown for short sleeps feels unresponsive and "laggy". Increasing the update frequency to 10Hz with a spinner animation makes the wait feel intentional and active rather than frozen.
+**Action:** For any blocking wait/countdown in the CLI, use a high-frequency (10Hz) update loop with visual activity (spinner) to maintain user confidence.
