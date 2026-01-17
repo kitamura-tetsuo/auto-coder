@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.branch_manager import BranchManager
 from src.auto_coder.pr_processor import _handle_pr_merge
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -21,8 +22,12 @@ class TestPRProcessorLocalOverride:
     @patch("src.auto_coder.pr_processor._checkout_pr_branch")
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch.object(BranchManager, "__enter__")
+    @patch.object(BranchManager, "__exit__")
     def test_jules_pr_local_override(
         self,
+        mock_manager_exit,
+        mock_manager_enter,
         mock_get_logs,
         mock_update,
         mock_checkout,
@@ -61,6 +66,10 @@ class TestPRProcessorLocalOverride:
 
         # Mock checkout success
         mock_checkout.return_value = True
+
+        # Mock BranchManager to do nothing
+        mock_manager_enter.return_value = MagicMock()
+        mock_manager_exit.return_value = None
 
         # Mock logs
         mock_get_logs.return_value = "Error logs"
