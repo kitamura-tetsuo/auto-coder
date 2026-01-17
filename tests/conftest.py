@@ -61,6 +61,16 @@ def _reset_llm_config_singleton():
     reset_llm_config()
 
 
+@pytest.fixture
+def _use_custom_subprocess_mock():
+    """Indicate that this test uses custom subprocess mocking.
+
+    When this fixture is used, the stub_git_and_gh_commands fixture will skip
+    patching subprocess.run, allowing the test to use its own mock.
+    """
+    pass
+
+
 @pytest.fixture(autouse=True)
 def _cleanup_loguru_handlers():
     """Clean up loguru handlers after each test to prevent queue hangs."""
@@ -329,6 +339,14 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     if not skip_stub:
         CommandExecutor._should_stream_output = staticmethod(patched_should_stream)
+    else:
+        # Restore original if it was previously patched
+        CommandExecutor._should_stream_output = staticmethod(orig_should_stream)
+
+    if skip_stub:
+        # Don't patch subprocess.run - let the test use its own mock
+        yield
+        return
 
     orig_run = subprocess.run
     orig_popen = subprocess.Popen
