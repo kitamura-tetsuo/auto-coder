@@ -1,22 +1,22 @@
-
+import os
 import subprocess
 import unittest
-import os
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 
 # Import the function to test
 # We need to mock the imports that might fail in the test environment
-with patch('src.auto_coder.logger_config.get_logger', return_value=MagicMock()):
+with patch("src.auto_coder.logger_config.get_logger", return_value=MagicMock()):
     from src.auto_coder.cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+
 
 class TestGraphRAGSetupSecurity(unittest.TestCase):
 
-    @patch('src.auto_coder.cli_commands_graphrag.subprocess.run')
-    @patch('src.auto_coder.cli_commands_graphrag.Path')
-    @patch('src.auto_coder.cli_commands_graphrag.shutil')
-    @patch('src.auto_coder.cli_commands_graphrag.os')
-    @patch('urllib.request.urlopen')
-    @patch('tempfile.NamedTemporaryFile')
+    @patch("src.auto_coder.cli_commands_graphrag.subprocess.run")
+    @patch("src.auto_coder.cli_commands_graphrag.Path")
+    @patch("src.auto_coder.cli_commands_graphrag.shutil")
+    @patch("src.auto_coder.cli_commands_graphrag.os")
+    @patch("urllib.request.urlopen")
+    @patch("tempfile.NamedTemporaryFile")
     def test_uv_installation_avoids_shell_true(self, mock_tempfile, mock_urlopen, mock_os, mock_shutil, mock_path, mock_subprocess_run):
         # Setup mocks to trigger the uv installation path
 
@@ -56,8 +56,8 @@ class TestGraphRAGSetupSecurity(unittest.TestCase):
             if isinstance(cmd, list) and "/tmp/mock_installer.sh" in cmd and cmd[0] == "sh":
                 script_exec_found = True
                 # Ensure shell=True is NOT passed (default is False)
-                if not kwargs.get('shell'):
-                     shell_false_verified = True
+                if not kwargs.get("shell"):
+                    shell_false_verified = True
 
         if not script_exec_found:
             print("Test failed: Executed script call not found in subprocess calls.")
@@ -72,5 +72,6 @@ class TestGraphRAGSetupSecurity(unittest.TestCase):
         # Verify cleanup
         mock_os.unlink.assert_called_with("/tmp/mock_installer.sh")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
