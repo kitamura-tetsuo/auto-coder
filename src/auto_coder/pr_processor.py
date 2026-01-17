@@ -400,7 +400,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         log_action(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
 
-        # Step 1: Get PR details to determine the base branch
+        # Step 1: Get PR details to determine the base branch and head branch
         try:
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
@@ -408,24 +408,32 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
             pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
             base_branch = pr_details.get("base", {}).get("ref", "main")
+            head_branch = pr_details.get("head", {}).get("ref")
+
+            if not head_branch:
+                error_msg = f"Failed to determine head branch for PR #{pr_number} (head.ref is missing)"
+                actions.append(error_msg)
+                log_action(error_msg, False)
+                return actions
+
         except Exception as e:
             error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
 
-        actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
+        actions.append(f"Determined base branch: {base_branch}, head branch: {head_branch} for PR #{pr_number}")
 
         # Step 2: Ensure PR branch exists and is up to date, then use BranchManager
         # Create minimal PR data for checkout function
-        pr_branch_name = f"pr-{pr_number}"
+        pr_branch_name = head_branch
         pr_data_for_checkout = {"number": pr_number, "head": {"ref": pr_branch_name}}
 
         # Ensure branch exists and is fetched, but don't switch yet
         prepare_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig(), perform_checkout=False)
 
         if not prepare_success:
-            error_msg = f"Failed to prepare PR #{pr_number} branch"
+            error_msg = f"Failed to prepare PR #{pr_number} branch ({pr_branch_name})"
             actions.append(error_msg)
             log_action(error_msg, False)
             return actions
@@ -1024,8 +1032,8 @@ def _handle_pr_merge(
                     target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
                     failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                    if failure_count > 10:
-                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
+                    if failure_count > config.JULES_FAILURE_THRESHOLD:
+                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
                         should_fallback = True
                     else:
                         # Check if the last failure comment was more than 2 hour ago
@@ -1645,13 +1653,6 @@ def _link_jules_pr_to_issue(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
-        # Check for special Jules PRs that don't need issue linking
-        pr_title = pr_data.get("title", "")
-        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
-        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
-            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
-            return True
-
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
         if not session_id:
@@ -1662,6 +1663,13 @@ def _link_jules_pr_to_issue(
 
         # Step 2: Store session_id in pr_data for later use in the feedback loop
         pr_data["_jules_session_id"] = session_id
+
+        # Check for special Jules PRs that don't need issue linking
+        pr_title = pr_data.get("title", "")
+        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
+            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
+            return True
 
         # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)
@@ -2212,13 +2220,14 @@ def _fix_pr_issues_with_github_actions_testing(
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests)
+            test_file_str = " ".join(failed_tests)
+            test_result = run_local_tests(config, test_file=test_file_str)
 
             # Check if we should use local fix strategy (1-3 failed tests)
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+            while not test_result.get("success", True) and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic
@@ -2239,7 +2248,7 @@ def _fix_pr_issues_with_github_actions_testing(
                     )
                     actions.extend(local_fix_actions)
 
-                test_result = run_local_tests(config, test_file=failed_tests)
+                test_result = run_local_tests(config, test_file=test_file_str)
 
         # 3. Commit and Push
         # Check if any changes were made

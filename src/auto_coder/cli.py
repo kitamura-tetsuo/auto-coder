@@ -43,6 +43,44 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 load_dotenv()
 
 
+class ForceAwareGroup(click.Group):
+    """Custom Group to handle global --force flag positioned after subcommand."""
+
+    def invoke(self, ctx):
+        if "--force" in ctx.args:
+            try:
+                # Determine which command would be invoked
+                # Note: ctx.protected_args contains the command name when invoke_without_command=True
+                check_args = ctx.protected_args + ctx.args
+                cmd_name, cmd, _ = self.resolve_command(ctx, check_args)
+
+                if cmd:
+                    # Check if the command supports --force
+                    supports_force = False
+                    for param in cmd.params:
+                        if final_name := getattr(param, "name", None):
+                            if final_name == "force":
+                                supports_force = True
+                                break
+                        # Also check opts just in case
+                        if "--force" in getattr(param, "opts", []):
+                            supports_force = True
+                            break
+
+                    if not supports_force:
+                        # Command doesn't support --force, so it must be intended for the main group
+                        # Strip it from args to prevent "No such option" error
+                        if "--force" in ctx.args:
+                            ctx.args.remove("--force")
+                            # Enable force on the main group context
+                            ctx.params["force"] = True
+            except Exception:
+                # If resolution fails, let standard click mechanics handle the error
+                pass
+
+        return super().invoke(ctx)
+
+
 @contextlib.contextmanager
 def lock_manager_context(force: bool = False):
     """Context manager wrapper for LockManager that handles force flag."""
@@ -56,6 +94,7 @@ def lock_manager_context(force: bool = False):
 
 
 @click.group(
+    cls=ForceAwareGroup,
     invoke_without_command=True,
     help="Auto-Coder: Automated application development using Gemini CLI and GitHub integration.",
 )

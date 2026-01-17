@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2026.1.14.11+g3a882af8"
+version = "2026.1.17+gb530763b"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -66,6 +66,7 @@ dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.1.0",
     "types-toml>=0.10.8.20240310",
+    "types-python-dateutil>=2.9.0.20240315",
 ]
 
 [tool.setuptools.packages.find]
