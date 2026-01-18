@@ -77,8 +77,7 @@ class TestParentIssueProcessing:
             assert "Successfully created PR for parent issue" in result
 
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_pr_creation_on_success_verification(self, mock_gh_logger, mock_cmd):
+    def test_pr_creation_on_success_verification(self, mock_cmd):
         """Test that PR is successfully created when verification succeeds.
 
         This test verifies the PR creation flow specifically when all conditions are met:
@@ -108,12 +107,8 @@ class TestParentIssueProcessing:
             MagicMock(returncode=0, stdout=""),  # Switch to branch
             MagicMock(returncode=0, stdout=""),  # Git status (no changes)
             MagicMock(returncode=0),  # Test if completion file exists (doesn't)
+            MagicMock(returncode=0, stdout="https://github.com/owner/repo/pull/500"),  # PR create success
         ]
-
-        # Mock gh_logger - successful PR creation
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/500")
-        mock_gh_logger.return_value = mock_gh_instance
 
         result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 

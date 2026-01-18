@@ -219,30 +219,21 @@ class TestPRLabelCopyingIntegration:
             # Return semantic labels to be copied
             mock_resolve.return_value = ["urgent"]
 
-            # Mock gh pr create
-            with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-                mock_gh_logger_instance = Mock()
-                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(
-                    success=True,
-                    stdout=f"https://github.com/{repo_name}/pull/{pr_number}",
-                )
-                mock_gh_logger.return_value = mock_gh_logger_instance
+            # Create PR
+            result = _create_pr_for_issue(
+                repo_name,
+                issue_data,
+                work_branch,
+                base_branch,
+                llm_response,
+                mock_github_client_for_pr,
+                config_with_pr_label_copying,
+            )
 
-                # Create PR
-                result = _create_pr_for_issue(
-                    repo_name,
-                    issue_data,
-                    work_branch,
-                    base_branch,
-                    llm_response,
-                    mock_github_client_for_pr,
-                    config_with_pr_label_copying,
-                )
-
-                # Verify PR was created
-                assert f"Successfully created PR for issue #{issue_number}" in result
-                # Verify resolve_pr_labels_with_priority was called
-                assert mock_resolve.called
+            # Verify PR was created
+            assert f"Successfully created PR for issue #{issue_number}" in result
+            # Verify resolve_pr_labels_with_priority was called
+            assert mock_resolve.called
 
     def test_create_pr_with_label_copying_disabled(self, mock_github_client_for_pr):
         """Test PR creation skips label copying when disabled."""
@@ -278,27 +269,21 @@ class TestPRLabelCopyingIntegration:
 
         mock_github_client_for_pr.add_labels = track_labels
 
-        # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Create PR
+        result = _create_pr_for_issue(
+            repo_name,
+            issue_data,
+            work_branch,
+            base_branch,
+            llm_response,
+            mock_github_client_for_pr,
+            config,
+        )
 
-            # Create PR
-            result = _create_pr_for_issue(
-                repo_name,
-                issue_data,
-                work_branch,
-                base_branch,
-                llm_response,
-                mock_github_client_for_pr,
-                config,
-            )
-
-            # Verify PR was created
-            assert f"Successfully created PR for issue #{issue_number}" in result
-            # No semantic label operations (only @auto-coder label might be added)
-            # But we shouldn't have semantic label copying
+        # Verify PR was created
+        assert f"Successfully created PR for issue #{issue_number}" in result
+        # No semantic label operations (only @auto-coder label might be added)
+        # But we shouldn't have semantic label copying
 
     def test_create_pr_with_no_semantic_labels(self, config_with_pr_label_copying, mock_github_client_for_pr):
         """Test PR creation handles issues with no semantic labels."""
@@ -318,25 +303,19 @@ class TestPRLabelCopyingIntegration:
         # Mock PR closing issues
         mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
 
-        # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Create PR
+        result = _create_pr_for_issue(
+            repo_name,
+            issue_data,
+            work_branch,
+            base_branch,
+            llm_response,
+            mock_github_client_for_pr,
+            config_with_pr_label_copying,
+        )
 
-            # Create PR
-            result = _create_pr_for_issue(
-                repo_name,
-                issue_data,
-                work_branch,
-                base_branch,
-                llm_response,
-                mock_github_client_for_pr,
-                config_with_pr_label_copying,
-            )
-
-            # Verify PR was created
-            assert f"Successfully created PR for issue #{issue_number}" in result
+        # Verify PR was created
+        assert f"Successfully created PR for issue #{issue_number}" in result
 
     def test_create_pr_with_label_copying_graceful_error_handling(self, config_with_pr_label_copying, mock_github_client_for_pr):
         """Test that PR creation continues even if label copying fails."""
@@ -359,25 +338,19 @@ class TestPRLabelCopyingIntegration:
         # Make label operations fail
         mock_github_client_for_pr.add_labels.side_effect = Exception("GitHub API error")
 
-        # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Create PR - should not raise despite label error
+        result = _create_pr_for_issue(
+            repo_name,
+            issue_data,
+            work_branch,
+            base_branch,
+            llm_response,
+            mock_github_client_for_pr,
+            config_with_pr_label_copying,
+        )
 
-            # Create PR - should not raise despite label error
-            result = _create_pr_for_issue(
-                repo_name,
-                issue_data,
-                work_branch,
-                base_branch,
-                llm_response,
-                mock_github_client_for_pr,
-                config_with_pr_label_copying,
-            )
-
-            # Verify PR was still created successfully
-            assert f"Successfully created PR for issue #{issue_number}" in result
+        # Verify PR was still created successfully
+        assert f"Successfully created PR for issue #{issue_number}" in result
 
     def test_pr_label_priority_integration(self, config_with_pr_label_copying):
         """Test that PR label priorities are correctly applied in integration."""
@@ -470,27 +443,18 @@ class TestPRLabelCopyingIntegration:
         with patch("src.auto_coder.issue_processor.resolve_pr_labels_with_priority") as mock_resolve:
             mock_resolve.return_value = ["urgent"]  # Simulate label resolution
 
-            # Mock gh pr create
-            with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-                mock_gh_logger_instance = Mock()
-                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(
-                    success=True,
-                    stdout=f"https://github.com/{repo_name}/pull/{pr_number}",
-                )
-                mock_gh_logger.return_value = mock_gh_logger_instance
+            # Create PR with comprehensive test
+            result = _create_pr_for_issue(
+                repo_name,
+                issue_data,
+                work_branch,
+                base_branch,
+                llm_response,
+                mock_github_client_for_pr,
+                config_with_pr_label_copying,
+            )
 
-                # Create PR with comprehensive test
-                result = _create_pr_for_issue(
-                    repo_name,
-                    issue_data,
-                    work_branch,
-                    base_branch,
-                    llm_response,
-                    mock_github_client_for_pr,
-                    config_with_pr_label_copying,
-                )
-
-                # Verify PR was created
-                assert f"Successfully created PR for issue #{issue_number}" in result
-                # Verify resolve was called
-                assert mock_resolve.called
+            # Verify PR was created
+            assert f"Successfully created PR for issue #{issue_number}" in result
+            # Verify resolve was called
+            assert mock_resolve.called

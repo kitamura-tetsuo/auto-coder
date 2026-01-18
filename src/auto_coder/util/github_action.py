@@ -1332,7 +1332,7 @@ def _get_github_actions_logs(
     *args: Any,
     search_history: Optional[bool] = None,
     **kwargs: Any,
-) -> str:
+) -> List[str]:
     """Get GitHub Actions failed job logs via gh api and return extracted error locations.
 
     Args:
@@ -1346,7 +1346,7 @@ def _get_github_actions_logs(
         **kwargs: Additional keyword arguments (for future use)
 
     Returns:
-        String containing GitHub Actions logs
+        List of strings containing GitHub Actions logs
 
     Call compatibility:
     - _get_github_actions_logs(repo, config, failed_checks)
@@ -1370,14 +1370,14 @@ def _get_github_actions_logs(
 
         if not failed_checks:
             # No failed_checks provided
-            return "No detailed logs available"
+            return ["No detailed logs available"]
 
         # Try historical search first
         historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=10)
 
         if historical_logs:
             logger.info("Historical search succeeded: Found logs from commit history")
-            return historical_logs
+            return [historical_logs]
 
         logger.info("Historical search failed or found no logs, falling back to current behavior")
 
@@ -1394,7 +1394,7 @@ def _get_github_actions_logs(
         pr_data = args[1]
     if not failed_checks:
         # Unknown call
-        return "No detailed logs available"
+        return ["No detailed logs available"]
 
     logs: List[str] = []
 
@@ -1491,7 +1491,7 @@ def _get_github_actions_logs(
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
 
-    return "\n\n".join(logs) if logs else "No detailed logs available"
+    return logs if logs else ["No detailed logs available"]
 
 
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:

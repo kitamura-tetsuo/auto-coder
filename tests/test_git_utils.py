@@ -2108,6 +2108,15 @@ class TestMigratePrBranches:
 class TestBranchContext:
     """Tests for branch_context function."""
 
+    @pytest.fixture(autouse=True)
+    def cleanup_active_branches(self):
+        """Clean up active branches before each test to ensure test isolation."""
+        from src.auto_coder.branch_manager import BranchManager
+
+        BranchManager._active_branches.clear()
+        yield
+        BranchManager._active_branches.clear()
+
     def test_branch_context_successful_switch_and_return(self):
         """Test successful branch switch and return using context manager."""
         with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
@@ -2250,180 +2259,152 @@ class TestBranchContext:
 
     def test_branch_context_not_git_repository_on_exit(self):
         """Test that context manager handles not being in a git repo during cleanup."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    # Initially on main, then on different branch
+                    mock_get_branch.side_effect = ["main", "other_branch"]
+                    # Not a git repository during cleanup
+                    mock_is_repo.return_value = False
+                    mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature"]
-                        # Not a git repository during cleanup
-                        mock_is_repo.return_value = False
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                    with branch_context("feature"):
+                        # Should successfully enter context
+                        pass
 
-                        with branch_context("feature"):
-                            # Should successfully enter context
-                            pass
-
-                        # Should not call switch_to_branch for return since not in git repo
-                        assert mock_switch.call_count == 1
+                    # Should call switch_to_branch for entry (but not return since not in git repo)
+                    assert mock_switch.call_count == 1
 
     def test_branch_context_return_switch_failure(self):
         """Test that return switch failure is logged but doesn't raise."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    # Initially on main
+                    mock_get_branch.side_effect = ["main", "feature", "feature"]
+                    mock_is_repo.return_value = True
+                    # First call (entry) succeeds, second call (return) fails
+                    mock_switch.side_effect = [
+                        CommandResult(success=True, stdout="", stderr="", returncode=0),
+                        CommandResult(
+                            success=False,
+                            stdout="",
+                            stderr="Failed to switch",
+                            returncode=1,
+                        ),
+                    ]
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature", "feature"]
-                        mock_is_repo.return_value = True
-                        # First call (entry) succeeds, second call (return) fails
-                        mock_switch.side_effect = [
-                            CommandResult(success=True, stdout="", stderr="", returncode=0),
-                            CommandResult(
-                                success=False,
-                                stdout="",
-                                stderr="Failed to switch",
-                                returncode=1,
-                            ),
-                        ]
+                    # Should complete without raising exception
+                    with branch_context("feature"):
+                        pass
 
-                        # Should complete without raising exception
-                        with branch_context("feature"):
-                            pass
-
-                        # Should have called switch_to_branch twice
-                        assert mock_switch.call_count == 2
+                    # Should have called switch_to_branch twice
+                    assert mock_switch.call_count == 2
 
     def test_branch_context_with_pull_after_switch(self):
         """Test that pull_after_switch is always True for both entry and exit."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    # Initially on main
+                    mock_get_branch.side_effect = ["main", "feature", "main"]
+                    mock_is_repo.return_value = True
+                    mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature", "main"]
+                    with branch_context("feature"):
+                        pass
+
+                    # Verify pull_after_switch is always True
+                    for call in mock_switch.call_args_list:
+                        assert call[1]["pull_after_switch"] is True
+
+    def test_branch_context_checks_unpushed_commits_by_default(self):
+        """Test that branch_context checks and pushes unpushed commits by default."""
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    with patch("src.auto_coder.branch_manager.ensure_pushed") as mock_ensure_pushed:
+                        # Initially on main, then on different branch (need to switch to feature)
+                        mock_get_branch.side_effect = ["main", "other_branch", "main"]
                         mock_is_repo.return_value = True
                         mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                        # ensure_pushed returns success with unpushed commits
+                        mock_ensure_pushed.return_value = CommandResult(
+                            success=True,
+                            stdout="Pushed 2 commit(s)",
+                            stderr="",
+                            returncode=0,
+                        )
 
                         with branch_context("feature"):
                             pass
 
-                        # Verify pull_after_switch is always True
-                        for call in mock_switch.call_args_list:
-                            assert call[1]["pull_after_switch"] is True
-
-    def test_branch_context_checks_unpushed_commits_by_default(self):
-        """Test that branch_context checks and pushes unpushed commits by default."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
-                            mock_cmd = MagicMock()
-                            mock_executor.return_value = mock_cmd
-
-                            # Initially on main
-                            mock_get_branch.side_effect = ["main", "feature", "main"]
-                            mock_is_repo.return_value = True
-                            mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
-                            # ensure_pushed returns success with unpushed commits
-                            mock_ensure_pushed.return_value = CommandResult(
-                                success=True,
-                                stdout="Pushed 2 commit(s)",
-                                stderr="",
-                                returncode=0,
-                            )
-
-                            with branch_context("feature"):
-                                pass
-
-                            # Verify ensure_pushed was called
-                            assert mock_ensure_pushed.call_count == 1
-                            assert mock_ensure_pushed.call_args[1]["remote"] == "origin"
+                        # Verify ensure_pushed was called
+                        assert mock_ensure_pushed.call_count == 1
+                        assert mock_ensure_pushed.call_args[1]["remote"] == "origin"
 
     def test_branch_context_skips_unpushed_commits_when_disabled(self):
         """Test that branch_context skips unpushed commit check when check_unpushed=False."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
-                            mock_cmd = MagicMock()
-                            mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    with patch("src.auto_coder.branch_manager.ensure_pushed") as mock_ensure_pushed:
+                        # Initially on main, then on different branch
+                        mock_get_branch.side_effect = ["main", "other_branch", "main"]
+                        mock_is_repo.return_value = True
+                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
-                            # Initially on main
-                            mock_get_branch.side_effect = ["main", "feature", "main"]
-                            mock_is_repo.return_value = True
-                            mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                        with branch_context("feature", check_unpushed=False):
+                            pass
 
-                            with branch_context("feature", check_unpushed=False):
-                                pass
-
-                            # Verify ensure_pushed was NOT called
-                            assert mock_ensure_pushed.call_count == 0
+                        # Verify ensure_pushed was NOT called
+                        assert mock_ensure_pushed.call_count == 0
 
     def test_branch_context_with_custom_remote(self):
         """Test that branch_context uses custom remote for unpushed commit check."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
-                            mock_cmd = MagicMock()
-                            mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    with patch("src.auto_coder.branch_manager.ensure_pushed") as mock_ensure_pushed:
+                        # Initially on main, then on different branch
+                        mock_get_branch.side_effect = ["main", "other_branch", "main"]
+                        mock_is_repo.return_value = True
+                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                        mock_ensure_pushed.return_value = CommandResult(
+                            success=True,
+                            stdout="No unpushed commits",
+                            stderr="",
+                            returncode=0,
+                        )
 
-                            # Initially on main
-                            mock_get_branch.side_effect = ["main", "feature", "main"]
-                            mock_is_repo.return_value = True
-                            mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
-                            mock_ensure_pushed.return_value = CommandResult(
-                                success=True,
-                                stdout="No unpushed commits",
-                                stderr="",
-                                returncode=0,
-                            )
+                        with branch_context("feature", remote="upstream"):
+                            pass
 
-                            with branch_context("feature", remote="upstream"):
-                                pass
-
-                            # Verify ensure_pushed was called with custom remote
-                            assert mock_ensure_pushed.call_count == 1
-                            assert mock_ensure_pushed.call_args[1]["remote"] == "upstream"
+                        # Verify ensure_pushed was called with custom remote
+                        assert mock_ensure_pushed.call_count == 1
+                        assert mock_ensure_pushed.call_args[1]["remote"] == "upstream"
 
     def test_branch_context_handles_ensure_pushed_failure(self):
         """Test that branch_context continues even if ensure_pushed fails."""
-        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
-                    with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
-                            mock_cmd = MagicMock()
-                            mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
+            with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
+                with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
+                    with patch("src.auto_coder.branch_manager.ensure_pushed") as mock_ensure_pushed:
+                        # Initially on main, then on different branch
+                        mock_get_branch.side_effect = ["main", "other_branch", "main"]
+                        mock_is_repo.return_value = True
+                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                        # ensure_pushed fails
+                        mock_ensure_pushed.return_value = CommandResult(
+                            success=False,
+                            stdout="",
+                            stderr="Failed to push",
+                            returncode=1,
+                        )
 
-                            # Initially on main
-                            mock_get_branch.side_effect = ["main", "feature", "main"]
-                            mock_is_repo.return_value = True
-                            mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
-                            # ensure_pushed fails
-                            mock_ensure_pushed.return_value = CommandResult(
-                                success=False,
-                                stdout="",
-                                stderr="Failed to push",
-                                returncode=1,
-                            )
+                        # Should not raise exception, just continue
+                        with branch_context("feature"):
+                            pass
 
-                            # Should not raise exception, just continue
-                            with branch_context("feature"):
-                                pass
-
-                            # Verify ensure_pushed was called
-                            assert mock_ensure_pushed.call_count == 1
+                        # Verify ensure_pushed was called
+                        assert mock_ensure_pushed.call_count == 1

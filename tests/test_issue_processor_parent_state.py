@@ -35,7 +35,7 @@ def mock_config():
 
 @patch("auto_coder.issue_processor.cmd")
 @patch("auto_coder.issue_processor.get_current_attempt")
-@patch("auto_coder.issue_processor.branch_context")
+@patch("auto_coder.git_branch.branch_context")
 @patch("auto_coder.issue_processor.get_llm_backend_manager")
 @patch("auto_coder.git_info.CommandExecutor")
 def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_branch_context, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
@@ -81,7 +81,7 @@ def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_
 
 @patch("auto_coder.issue_processor.cmd")
 @patch("auto_coder.issue_processor.get_current_attempt")
-@patch("auto_coder.issue_processor.branch_context")
+@patch("auto_coder.git_branch.branch_context")
 @patch("auto_coder.issue_processor.get_llm_backend_manager")
 @patch("auto_coder.git_info.CommandExecutor")
 def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_branch_context, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
