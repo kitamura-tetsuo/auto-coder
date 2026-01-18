@@ -75,7 +75,9 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
+        # Pass failed_tests directly to bypass extract_all_failed_tests() which requires
+        # actual pytest output format and existing files
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py", failed_tests=["test_foo.py"])
 
         # Assert
         # Check calls to _apply_local_test_fix
@@ -135,7 +137,9 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
+        # Pass failed_tests directly to bypass extract_all_failed_tests() which requires
+        # actual pytest output format and existing files
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py", failed_tests=["test_foo.py"])
 
         # Assert
         # Should NOT have called _apply_local_test_fix since test passed
@@ -205,7 +209,9 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
+        # Pass failed_tests directly to bypass extract_all_failed_tests() which requires
+        # actual pytest output format and existing files
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py", failed_tests=["test1.py"])
 
         # Assert
         # Check calls to _apply_local_test_fix
@@ -267,7 +273,9 @@ class TestPRProcessorBackendSwitching:
         mock_github_actions_fix.return_value = []
 
         # Execute
-        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py")
+        # Pass failed_tests directly to bypass extract_all_failed_tests() which requires
+        # actual pytest output format and existing files
+        actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "FAILED tests/test_foo.py", failed_tests=["test1.py"])
 
         # Assert
         # Check calls to _apply_local_test_fix
