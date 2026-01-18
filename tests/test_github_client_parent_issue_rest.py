@@ -63,27 +63,21 @@ class TestGitHubClientParentIssueREST:
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_no_parent(self, mock_get_ghapi, mock_github_token):
-        """Test get_parent_issue_details returns None when no parent exists (404 on both)."""
+        """Test get_parent_issue_details returns None when dedicated endpoint raises 404."""
         # Setup
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
 
-        # 1. dedicated api() raises 404
-        # 2. fallback api.issues.get() returns issue without parent
-
+        # dedicated api() raises 404
         mock_api.side_effect = Exception("HTTP 404: Not Found")
-        mock_api.issues.get.return_value = {"number": 100, "title": "No Parent Issue"}
 
         client = GitHubClient.get_instance("token")
 
         # Execute
         result = client.get_parent_issue_details("owner/repo", 100)
 
-        # Assert
+        # Assert - when 404 is raised, it should return None
         assert result is None
-
-        # Verify fallback was tried
-        mock_api.issues.get.assert_called_once()
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_wrapped(self, mock_get_ghapi, mock_github_token):
@@ -115,56 +109,53 @@ class TestGitHubClientParentIssueREST:
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
 
-        # 1. dedicated api() raises error
-        # 2. fallback api.issues.get() raises error
-
-        mock_api.side_effect = Exception("Some other error")
-        mock_api.issues.get.side_effect = Exception("Fallback Error")
+        # dedicated api() raises unexpected error
+        mock_api.side_effect = Exception("Some unexpected error")
 
         client = GitHubClient.get_instance("token")
 
         # Execute
         result = client.get_parent_issue_details("owner/repo", 100)
 
-        # Assert
+        # Assert - unexpected errors should return None
         assert result is None
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
-    def test_get_parent_issue_fallback(self, mock_get_ghapi, mock_github_token):
-        """Test get_parent_issue_details falls back to issue details on 404 from dedicated endpoint."""
+    def test_get_parent_issue_returns_404_status(self, mock_get_ghapi, mock_github_token):
+        """Test get_parent_issue_details returns None when response has 404 status."""
         # Setup
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
 
         # Dedicated endpoint returns 404 dict
-        # Since the code checks parent_issue.get("status") == "404"
-        mock_response_dedicated = {"message": "Not Found", "status": "404"}
+        mock_response_404 = {"message": "Not Found", "status": "404"}
 
-        # Fallback (issue details) returns issue with 'parent'
-        mock_issue_details = {"number": 100, "title": "Child", "parent": {"number": 50, "title": "Fallback Parent"}}
-
-        # Configure calls
-        # 1. Dedicated endpoint call -> returns 404 response
-        # 2. api.issues.get() call -> returns issue details
-
-        # We Mock side_effect for api() call.
-        # But api.issues.get needs to be configured BEFORE the calls start?
-        # Actually, when api() is called, it returns the mock_response_dedicated.
-        # Then the code catches the 404 condition and calls api.issues.get().
-
-        mock_api.side_effect = [mock_response_dedicated]
-        mock_api.issues.get.return_value = mock_issue_details
+        mock_api.return_value = mock_response_404
 
         client = GitHubClient.get_instance("token")
 
         # Execute
         result = client.get_parent_issue_details("owner/repo", 100)
 
-        # Assert
-        assert result is not None
-        assert result["number"] == 50
-        assert result["title"] == "Fallback Parent"
+        # Assert - 404 status in response should return None
+        assert result is None
 
-        # Verify both were called
-        mock_api.assert_called()
-        mock_api.issues.get.assert_called_once()
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_parent_issue_missing_number(self, mock_get_ghapi, mock_github_token):
+        """Test get_parent_issue_details returns None when response has no number."""
+        # Setup
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        # Response missing number field
+        mock_response = {"title": "Response without number"}
+
+        mock_api.return_value = mock_response
+
+        client = GitHubClient.get_instance("token")
+
+        # Execute
+        result = client.get_parent_issue_details("owner/repo", 100)
+
+        # Assert - response without number should return None
+        assert result is None

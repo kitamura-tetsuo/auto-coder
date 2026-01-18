@@ -45,7 +45,7 @@ class TestGitHubClientComplexityFix:
             }
         }
 
-        with patch("src.auto_coder.util.gh_cache.Github"), patch("src.auto_coder.util.gh_cache.get_caching_client"):
+        with patch("src.auto_coder.util.gh_cache.get_caching_client"):
 
             GitHubClient.reset_singleton()
             client = GitHubClient.get_instance("fake-token")
