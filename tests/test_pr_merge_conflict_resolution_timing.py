@@ -1,6 +1,6 @@
 """Tests for PR merge conflict resolution timing and mergeability polling."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -19,20 +19,23 @@ class TestPollPrMergeable:
         config.MAIN_BRANCH = "main"
         return config
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_poll_returns_true_when_mergeable(self, mock_get_gh_logger, config):
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_poll_returns_true_when_mergeable(self, mock_get_ghapi_client, mock_github_client_class, config):
         """Test that polling returns True when PR becomes mergeable."""
         # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
+        mock_github_client = MagicMock()
+        mock_github_client.token = "test-token"
+        mock_github_client_class.get_instance.return_value = mock_github_client
+
+        # Mock API
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
 
         # Simulate GitHub returning mergeable=true after 2 attempts
-        mock_logger.execute_with_logging.side_effect = [
-            Mock(
-                success=True,
-                stdout='{"mergeable": null, "mergeStateStatus": "UNKNOWN"}',
-            ),  # First attempt
-            Mock(success=True, stdout='{"mergeable": true, "mergeStateStatus": "CLEAN"}'),  # Second attempt - becomes mergeable
+        mock_api.pulls.get.side_effect = [
+            {"mergeable": None, "mergeStateStatus": "UNKNOWN"},  # First attempt
+            {"mergeable": True, "mergeStateStatus": "CLEAN"},  # Second attempt - becomes mergeable
         ]
 
         # Execute
@@ -40,52 +43,64 @@ class TestPollPrMergeable:
 
         # Verify
         assert result is True
-        # Should have called execute_with_logging twice (once null, once true)
-        assert mock_logger.execute_with_logging.call_count == 2
+        # Should have called pulls.get twice (once null, once true)
+        assert mock_api.pulls.get.call_count == 2
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_poll_returns_false_on_timeout(self, mock_get_gh_logger, config):
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_poll_returns_false_on_timeout(self, mock_get_ghapi_client, mock_github_client_class, config):
         """Test that polling returns False when timeout is reached."""
         # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
+        mock_github_client = MagicMock()
+        mock_github_client.token = "test-token"
+        mock_github_client_class.get_instance.return_value = mock_github_client
 
-        # Simulate GitHub never returning mergeable=true
-        mock_logger.execute_with_logging.return_value = Mock(success=True, stdout='{"mergeable": null, "mergeStateStatus": "UNKNOWN"}')
+        # Mock API - always return null mergeable
+        mock_api = MagicMock()
+        mock_api.pulls.get.return_value = {"mergeable": None, "mergeStateStatus": "UNKNOWN"}
+        mock_get_ghapi_client.return_value = mock_api
 
         # Execute with very short timeout
-        result = _poll_pr_mergeable("owner/repo", 123, config, timeout_seconds=2, interval=1)
+        result = _poll_pr_mergeable("owner/repo", 123, config, timeout_seconds=3, interval=1)
 
         # Verify
         assert result is False
         # Should have made multiple attempts within timeout
-        assert mock_logger.execute_with_logging.call_count >= 2
+        assert mock_api.pulls.get.call_count >= 2
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_poll_handles_api_errors_gracefully(self, mock_get_gh_logger, config):
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_poll_handles_api_errors_gracefully(self, mock_get_ghapi_client, mock_github_client_class, config):
         """Test that polling handles API errors gracefully and returns False."""
         # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
+        mock_github_client = MagicMock()
+        mock_github_client.token = "test-token"
+        mock_github_client_class.get_instance.return_value = mock_github_client
 
-        # Simulate API error
-        mock_logger.execute_with_logging.return_value = Mock(success=False, stdout="", stderr="API error")
+        # Mock API to raise exception
+        mock_api = MagicMock()
+        mock_api.pulls.get.side_effect = Exception("API error")
+        mock_get_ghapi_client.return_value = mock_api
 
         # Execute
-        result = _poll_pr_mergeable("owner/repo", 123, config, timeout_seconds=2, interval=1)
+        result = _poll_pr_mergeable("owner/repo", 123, config, timeout_seconds=3, interval=1)
 
         # Verify
         assert result is False
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_poll_immediately_returns_true_if_already_mergeable(self, mock_get_gh_logger, config):
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_poll_immediately_returns_true_if_already_mergeable(self, mock_get_ghapi_client, mock_github_client_class, config):
         """Test that polling returns True immediately if PR is already mergeable."""
         # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
+        mock_github_client = MagicMock()
+        mock_github_client.token = "test-token"
+        mock_github_client_class.get_instance.return_value = mock_github_client
 
-        # Simulate GitHub returning mergeable=true on first attempt
-        mock_logger.execute_with_logging.return_value = Mock(success=True, stdout='{"mergeable": true, "mergeStateStatus": "CLEAN"}')
+        # Mock API - return mergeable=true on first attempt
+        mock_api = MagicMock()
+        mock_api.pulls.get.return_value = {"mergeable": True, "mergeStateStatus": "CLEAN"}
+        mock_get_ghapi_client.return_value = mock_api
 
         # Execute
         result = _poll_pr_mergeable("owner/repo", 123, config, timeout_seconds=60, interval=5)
@@ -93,4 +108,4 @@ class TestPollPrMergeable:
         # Verify
         assert result is True
         # Should only call once since it succeeded immediately
-        assert mock_logger.execute_with_logging.call_count == 1
+        assert mock_api.pulls.get.call_count == 1

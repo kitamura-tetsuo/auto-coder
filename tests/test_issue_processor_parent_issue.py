@@ -213,7 +213,8 @@ class TestCreatePRForParentIssue:
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
     @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_new_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.git_branch.git_commit_with_retry")
+    def test_create_pr_for_parent_issue_new_branch(self, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with new branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -228,23 +229,29 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None
+        github_client.token = "fake-token"  # Required for GhApi
 
         # Mock git commands - branch doesn't exist
         mock_cmd.run_command.side_effect = [
-            MagicMock(returncode=1),  # Branch doesn't exist
+            MagicMock(returncode=1),  # Branch check (doesn't exist)
             MagicMock(returncode=0, stdout=""),  # Create branch
             MagicMock(returncode=0, stdout=""),  # Push branch
             MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=0),  # gh pr create
-            MagicMock(returncode=0, stdout="https://github.com/owner/repo/pull/123"),
+            MagicMock(returncode=1),  # Check if completion file exists (doesn't)
+            MagicMock(returncode=0),  # Write completion file
+            MagicMock(returncode=0, stdout=""),  # Git add
+            MagicMock(returncode=0, stdout=""),  # Git push
         ]
 
-        # Mock gh_logger
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
-        mock_gh_logger.return_value = mock_gh_instance
+        # Mock git_commit_with_retry
+        mock_git_commit.return_value = MagicMock(success=True)
 
-        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+        # Mock get_ghapi_client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {"number": 123, "html_url": "https://github.com/owner/repo/pull/123"}
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
         # Should create branch
         assert mock_cmd.run_command.call_count >= 2
@@ -260,7 +267,8 @@ class TestCreatePRForParentIssue:
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
     @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_existing_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.git_branch.git_commit_with_retry")
+    def test_create_pr_for_parent_issue_existing_branch(self, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with existing branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -275,22 +283,28 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None
+        github_client.token = "fake-token"  # Required for GhApi
 
         # Mock git commands - branch exists
         mock_cmd.run_command.side_effect = [
-            MagicMock(returncode=0, stdout=""),  # Branch exists
+            MagicMock(returncode=0, stdout=""),  # Branch check (exists)
             MagicMock(returncode=0, stdout=""),  # Switch to branch
             MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=0),  # gh pr create
-            MagicMock(returncode=0, stdout="https://github.com/owner/repo/pull/123"),
+            MagicMock(returncode=1),  # Check if completion file exists (doesn't)
+            MagicMock(returncode=0),  # Write completion file
+            MagicMock(returncode=0, stdout=""),  # Git add
+            MagicMock(returncode=0, stdout=""),  # Git push
         ]
 
-        # Mock gh_logger
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
-        mock_gh_logger.return_value = mock_gh_instance
+        # Mock git_commit_with_retry
+        mock_git_commit.return_value = MagicMock(success=True)
 
-        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+        # Mock get_ghapi_client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {"number": 123, "html_url": "https://github.com/owner/repo/pull/123"}
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
         # Should switch to existing branch
         assert mock_cmd.run_command.call_count >= 2
@@ -320,28 +334,28 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None
+        github_client.token = "fake-token"  # Required for GhApi
 
         # Mock git commands
         mock_cmd.run_command.side_effect = [
             MagicMock(returncode=0, stdout=""),  # Branch exists
             MagicMock(returncode=0, stdout=""),  # Switch to branch
             MagicMock(returncode=0, stdout="M file.py"),  # Git status (has changes)
-            MagicMock(returncode=0),  # Create completion file
+            MagicMock(returncode=1),  # Check if completion file exists (doesn't)
+            MagicMock(returncode=0),  # Write completion file
             MagicMock(returncode=0, stdout=""),  # Git add
             MagicMock(returncode=0, stdout=""),  # Git push
-            MagicMock(returncode=0),  # gh pr create
-            MagicMock(returncode=0, stdout="https://github.com/owner/repo/pull/123"),
         ]
 
         # Mock commit
         mock_git_commit.return_value = MagicMock(success=True)
 
-        # Mock gh_logger
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
-        mock_gh_logger.return_value = mock_gh_instance
-
-        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+        # Mock get_ghapi_client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {"number": 123, "html_url": "https://github.com/owner/repo/pull/123"}
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
         # Should commit changes
         mock_git_commit.assert_called_once()
@@ -382,8 +396,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_cmd, mock_get_attempt):
         """Test error handling when PR creation fails."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -398,6 +411,8 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None
+        github_client.token = "fake-token"  # Required for GhApi
 
         # Mock git commands
         mock_cmd.run_command.side_effect = [
@@ -406,20 +421,19 @@ class TestCreatePRForParentIssue:
             MagicMock(returncode=0, stdout=""),  # Git status (no changes)
         ]
 
-        # Mock gh_logger - PR creation fails
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=False, stderr="Error: resource not accessible by integration")
-        mock_gh_logger.return_value = mock_gh_instance
-
-        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+        # Mock get_ghapi_client - PR creation fails
+        mock_api = MagicMock()
+        mock_api.pulls.create.side_effect = Exception("Error: resource not accessible by integration")
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
         # Should return error message
         assert "Error creating PR" in result
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.git_branch.git_commit_with_retry")
+    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_git_commit, mock_cmd, mock_get_attempt):
         """Ensure attempt-specific branch is used when attempts exist."""
         repo_name = "owner/repo"
         issue_number = 150
@@ -433,20 +447,28 @@ class TestCreatePRForParentIssue:
         reasoning = "All sub-issues closed and verified"
 
         github_client = MagicMock()
+        github_client.find_pr_by_head_branch.return_value = None
+        github_client.token = "fake-token"  # Required for GhApi
 
         mock_cmd.run_command.side_effect = [
-            MagicMock(returncode=1),  # Branch doesn't exist
+            MagicMock(returncode=1),  # Branch check (doesn't exist)
             MagicMock(returncode=0, stdout=""),  # Create branch
             MagicMock(returncode=0, stdout=""),  # Push branch
             MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=0),  # Completion file exists
+            MagicMock(returncode=1),  # Check if completion file exists (doesn't)
+            MagicMock(returncode=0),  # Write completion file
+            MagicMock(returncode=0, stdout=""),  # Git add
+            MagicMock(returncode=0, stdout=""),  # Git push
         ]
 
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/999")
-        mock_gh_logger.return_value = mock_gh_instance
+        # Mock git_commit_with_retry
+        mock_git_commit.return_value = MagicMock(success=True)
 
-        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+        # Mock get_ghapi_client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {"number": 999, "html_url": "https://github.com/owner/repo/pull/999"}
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
         expected_branch = "issue-150_attempt-2"
 
@@ -454,9 +476,10 @@ class TestCreatePRForParentIssue:
         create_branch_call = mock_cmd.run_command.call_args_list[1][0][0]
         assert expected_branch in create_branch_call
 
-        # PR creation should use attempt-specific head branch
-        pr_call_args = mock_gh_instance.execute_with_logging.call_args[0][0]
-        assert expected_branch in pr_call_args
+        # Verify PR was created with attempt-specific head branch
+        mock_api.pulls.create.assert_called_once()
+        pr_call_kwargs = mock_api.pulls.create.call_args.kwargs
+        assert expected_branch in pr_call_kwargs["head"]
         assert "Successfully created PR for parent issue" in result
 
 

@@ -52,11 +52,10 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock the test results - fail first, pass on third
-        # Mock the test results - fail first, pass on third
-        # We need objects (TestResult), not dicts, because the code accesses .failed_tests
-        fail_result_1 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed", errors="Error details")
-        fail_result_2 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed again", errors="More errors")
-        pass_result = Mock(failed_tests=[], success=True, output="All tests passed", errors="")
+        # Use dicts with .get() method since the code uses test_result.get("success")
+        fail_result_1 = {"failed_tests": ["test_foo.py"], "success": False, "output": "Test failed", "errors": "Error details"}
+        fail_result_2 = {"failed_tests": ["test_foo.py"], "success": False, "output": "Test failed again", "errors": "More errors"}
+        pass_result = {"failed_tests": [], "success": True, "output": "All tests passed", "errors": ""}
 
         mock_run_tests.side_effect = [
             fail_result_1,  # attempt 1
@@ -174,11 +173,11 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - fail multiple times
-        # Mock test results - fail multiple times
-        fail_1 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 1")
-        fail_2 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 2")
-        fail_3 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 3")
-        pass_res = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
+        # Use dicts with .get() method since the code uses test_result.get("success")
+        fail_1 = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Error 1"}
+        fail_2 = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Error 2"}
+        fail_3 = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Error 3"}
+        pass_res = {"failed_tests": [], "success": True, "output": "Tests passed", "errors": ""}
 
         mock_run_tests.side_effect = [
             fail_1,  # attempt 1
@@ -244,7 +243,8 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - always fail
-        mock_run_tests.return_value = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Errors")
+        # Use dict with .get() method since the code uses test_result.get("success")
+        mock_run_tests.return_value = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Errors"}
 
         # Mock local fix to return empty actions and no response
         mock_apply_local_fix.return_value = ([], "")
