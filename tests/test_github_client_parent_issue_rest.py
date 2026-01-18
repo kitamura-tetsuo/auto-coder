@@ -63,13 +63,16 @@ class TestGitHubClientParentIssueREST:
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_no_parent(self, mock_get_ghapi, mock_github_token):
-        """Test get_parent_issue_details returns None when no parent exists (dedicated endpoint fails)."""
+        """Test get_parent_issue_details returns None when no parent exists (404 on both)."""
         # Setup
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
 
-        # dedicated api() raises 404 - the new implementation returns None without fallback
+        # 1. dedicated api() raises 404
+        # 2. fallback api.issues.get() returns issue without parent
+
         mock_api.side_effect = Exception("HTTP 404: Not Found")
+        mock_api.issues.get.return_value = {"number": 100, "title": "No Parent Issue"}
 
         client = GitHubClient.get_instance("token")
 
@@ -79,8 +82,8 @@ class TestGitHubClientParentIssueREST:
         # Assert
         assert result is None
 
-        # Verify the dedicated endpoint was called
-        mock_api.assert_called_once()
+        # Verify fallback was tried
+        mock_api.issues.get.assert_called_once()
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_wrapped(self, mock_get_ghapi, mock_github_token):
@@ -128,20 +131,29 @@ class TestGitHubClientParentIssueREST:
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_fallback(self, mock_get_ghapi, mock_github_token):
-        """Test get_parent_issue_details returns None when dedicated endpoint returns 404 response.
-
-        Note: The new implementation does not fallback to api.issues.get(). It simply returns None
-        when the dedicated parent endpoint indicates no parent exists.
-        """
+        """Test get_parent_issue_details falls back to issue details on 404 from dedicated endpoint."""
         # Setup
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
 
         # Dedicated endpoint returns 404 dict
-        # The new implementation logs a warning and returns None
+        # Since the code checks parent_issue.get("status") == "404"
         mock_response_dedicated = {"message": "Not Found", "status": "404"}
 
-        mock_api.return_value = mock_response_dedicated
+        # Fallback (issue details) returns issue with 'parent'
+        mock_issue_details = {"number": 100, "title": "Child", "parent": {"number": 50, "title": "Fallback Parent"}}
+
+        # Configure calls
+        # 1. Dedicated endpoint call -> returns 404 response
+        # 2. api.issues.get() call -> returns issue details
+
+        # We Mock side_effect for api() call.
+        # But api.issues.get needs to be configured BEFORE the calls start?
+        # Actually, when api() is called, it returns the mock_response_dedicated.
+        # Then the code catches the 404 condition and calls api.issues.get().
+
+        mock_api.side_effect = [mock_response_dedicated]
+        mock_api.issues.get.return_value = mock_issue_details
 
         client = GitHubClient.get_instance("token")
 
@@ -149,8 +161,10 @@ class TestGitHubClientParentIssueREST:
         result = client.get_parent_issue_details("owner/repo", 100)
 
         # Assert
-        # The new implementation returns None when there's no parent
-        assert result is None
+        assert result is not None
+        assert result["number"] == 50
+        assert result["title"] == "Fallback Parent"
 
-        # Verify dedicated endpoint was called
+        # Verify both were called
         mock_api.assert_called()
+        mock_api.issues.get.assert_called_once()

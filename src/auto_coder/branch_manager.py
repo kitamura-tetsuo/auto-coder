@@ -78,8 +78,6 @@ class BranchManager:
         # Store original branch
         self.original_branch = get_current_branch(cwd=self.cwd)
         if not self.original_branch:
-            # Clean up tracking before raising
-            BranchManager._active_branches.discard(branch_key)
             raise RuntimeError("Failed to get current branch before switching")
 
         # specific optimization: if we are already on the target branch (and not creating new for reset purposes)

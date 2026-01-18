@@ -43,8 +43,8 @@ class TestGhCacheRedirect:
         # We must match this signature for the manual call in the test
 
         path = "/repos/owner/repo/actions/runs/123/logs"
-        # Call API using __call__ method (the magic method that makes the object callable)
-        api(path, "GET", {"authorization": f"token {token}", "x-test": "keep"}, None, {"foo": "bar"}, None)
+        # path, verb, headers, route, query, data
+        api._call(path, "GET", {"authorization": f"token {token}", "x-test": "keep"}, None, {"foo": "bar"}, None)
 
         # Verify calls
         assert mock_client_instance.request.call_count == 2
@@ -95,8 +95,8 @@ class TestGhCacheRedirect:
         api = get_ghapi_client(token)
         path = "/repos/owner/repo/path"
 
-        # Call API using __call__ method (the magic method that makes the object callable)
-        api(path, "GET", {"Authorization": f"token {token}"}, None, {}, None)
+        # path, verb, headers, route, query, data
+        api._call(path, "GET", {"Authorization": f"token {token}"}, None, {}, None)
 
         assert mock_client_instance.request.call_count == 2
 

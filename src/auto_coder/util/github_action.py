@@ -14,17 +14,14 @@ import tempfile
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from types import ModuleType
 from typing import Any, Dict, List, Optional, Tuple
 
-rapidfuzz: Optional[ModuleType] = None
-fuzz: Optional[ModuleType] = None
-
 try:
-    import rapidfuzz  # type: ignore[no-redef]
-    from rapidfuzz import fuzz  # type: ignore[no-redef]
+    import rapidfuzz
+    from rapidfuzz import fuzz
 except ImportError:
-    pass
+    rapidfuzz = None
+    fuzz = None
 
 from auto_coder.progress_decorators import progress_stage
 
@@ -722,8 +719,8 @@ def get_detailed_checks_from_history(
 
     try:
         # Get detailed checks from the provided run IDs
-        all_checks: List[Dict[str, Any]] = []
-        all_failed_checks: List[Dict[str, Any]] = []
+        all_checks = []
+        all_failed_checks = []
         has_in_progress = False
         any_failed = False
         processed_run_ids = []
@@ -938,15 +935,11 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
         return False
 
 
-def get_github_actions_logs_from_url(url: str, token: Optional[str] = None) -> str:
+def get_github_actions_logs_from_url(url: str) -> str:
     """Extract error blocks by fetching logs for the given GitHub Actions job URL directly.
 
     Accepted URL format:
     https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
-
-    Args:
-        url: The GitHub Actions job URL
-        token: Optional GitHub API token for authentication
     """
     try:
         m = re.match(
@@ -968,7 +961,7 @@ def get_github_actions_logs_from_url(url: str, token: Optional[str] = None) -> s
 
                 # Fetch jobs to find failed ones
                 try:
-                    github_client = GitHubClient.get_instance(token)
+                    token = GitHubClient.get_instance().token
                     api = get_ghapi_client(token)
 
                     jobs_res = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
@@ -984,7 +977,7 @@ def get_github_actions_logs_from_url(url: str, token: Optional[str] = None) -> s
                             if j_id:
                                 # specific job url
                                 j_url = f"https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{j_id}"
-                                logs_list.append(get_github_actions_logs_from_url(j_url, token))
+                                logs_list.append(get_github_actions_logs_from_url(j_url))
 
                         if logs_list:
                             return "\n\n".join(logs_list)
@@ -1000,7 +993,7 @@ def get_github_actions_logs_from_url(url: str, token: Optional[str] = None) -> s
             return "Invalid GitHub Actions job URL"
 
         # Prepare GhApi
-        github_client = GitHubClient.get_instance(token)
+        token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
 
         # 1) Get job details to get name and identifying failing steps
@@ -1312,7 +1305,7 @@ def _search_github_actions_logs_from_history(
                         run_url = run.get("url")
 
                     if run_url:
-                        logs = get_github_actions_logs_from_url(run_url)
+                        logs = get_github_actions_logs_from_url(run_url, config, failed_checks)
 
                         if logs and "No detailed logs available" not in logs:
                             # Prepend some metadata about where these logs came from
@@ -1777,7 +1770,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
         runs = runs_resp.get("workflow_runs", [])
 
         # Group runs by SHA
-        runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
+        runs_by_sha = {}
         for run in runs:
             # API returns snake_case keys (head_sha), gh CLI returned camelCase (headSha)
             # Support both just in case, utilizing the broader check pattern
@@ -2603,8 +2596,8 @@ def _create_github_action_log_summary(
     # Deduplicate similar logs
     if len(logs) > 1:
         try:
-            final_logs: List[str] = []
-            kept_logs: List[str] = []  # Stores only the full logs that were kept
+            final_logs = []
+            kept_logs = []  # Stores only the full logs that were kept
 
             for i, log in enumerate(logs):
                 # Parse job name for fallback

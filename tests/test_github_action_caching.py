@@ -17,7 +17,6 @@ class TestGitHubActionCaching(unittest.TestCase):
         self.config = AutomationConfig()
 
     @patch("src.auto_coder.util.github_action.get_gh_logger")
-    @unittest.skip("Pre-existing test issue - GitHub token not properly initialized in test")
     def test_check_github_actions_status_uses_cache(self, mock_get_gh_logger):
         """Test that _check_github_actions_status uses the cache."""
         repo_name = "owner/repo"
@@ -40,7 +39,6 @@ class TestGitHubActionCaching(unittest.TestCase):
 
     @patch("src.auto_coder.util.github_action.GitHubClient")
     @patch("src.auto_coder.util.github_action.get_ghapi_client")
-    @unittest.skip("Pre-existing test issue - GitHub token not properly initialized in test")
     def test_check_github_actions_status_populates_cache(self, mock_get_ghapi_client, mock_github_client):
         """Test that _check_github_actions_status populates the cache on miss."""
         repo_name = "owner/repo"
@@ -66,7 +64,6 @@ class TestGitHubActionCaching(unittest.TestCase):
         self.assertEqual(cached_result.success, True)  # Empty checks = success in this logic
 
     @patch("src.auto_coder.util.github_action.get_ghapi_client")
-    @unittest.skip("Pre-existing test issue - GitHub token not properly initialized in test")
     def test_check_github_actions_status_from_history_uses_cache(self, mock_get_ghapi_client):
         """Test that _check_github_actions_status_from_history uses the cache."""
         repo_name = "owner/repo"

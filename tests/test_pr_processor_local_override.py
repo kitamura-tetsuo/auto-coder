@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.branch_manager import BranchManager
 from src.auto_coder.pr_processor import _handle_pr_merge
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -22,12 +21,8 @@ class TestPRProcessorLocalOverride:
     @patch("src.auto_coder.pr_processor._checkout_pr_branch")
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
-    @patch.object(BranchManager, "__enter__")
-    @patch.object(BranchManager, "__exit__")
     def test_jules_pr_local_override(
         self,
-        mock_manager_exit,
-        mock_manager_enter,
         mock_get_logs,
         mock_update,
         mock_checkout,
@@ -62,17 +57,10 @@ class TestPRProcessorLocalOverride:
         mock_check_in_progress.return_value = True
         mock_get_mergeable_state.return_value = {"mergeable": True}
         mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
-        # Configure mock so that detailed_checks.failed_checks returns an empty list
-        # This makes any([detailed_checks.failed_checks]) return False, skipping the _fix_pr_issues_with_testing call
-        mock_get_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False)
-        mock_get_detailed_checks.return_value.failed_checks = []
+        mock_get_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=["test_check"])
 
         # Mock checkout success
         mock_checkout.return_value = True
-
-        # Mock BranchManager to do nothing
-        mock_manager_enter.return_value = MagicMock()
-        mock_manager_exit.return_value = None
 
         # Mock logs
         mock_get_logs.return_value = "Error logs"
@@ -84,12 +72,12 @@ class TestPRProcessorLocalOverride:
         # 1. Should NOT send feedback to Jules
         mock_send_feedback.assert_not_called()
 
-        # 2. Should NOT call _fix_pr_issues_with_testing because failed_checks is empty
-        # (any([detailed_checks.failed_checks]) returns False when failed_checks=[])
-        mock_fix_issues.assert_not_called()
+        # 2. Should call _fix_pr_issues_with_testing
+        mock_fix_issues.assert_called_once()
 
-        # 3. Verify actions contain expected messages about no failed checks
-        assert any("No specific failed checks found" in action for action in actions)
+        # 3. Should pass skip_github_actions_fix=True because we are on the branch
+        call_args = mock_fix_issues.call_args
+        assert call_args.kwargs.get("skip_github_actions_fix") is True
 
-        # 4. Verify actions contain expected messages about checking out PR branch
+        # 4. Verify actions contain expected messages
         assert any("Checked out PR #123 branch" in action for action in actions)

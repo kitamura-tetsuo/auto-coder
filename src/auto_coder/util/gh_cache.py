@@ -54,13 +54,13 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
     return decorator
 
 
-def get_ghapi_client(token: Optional[str] = None) -> GhApi:
+def get_ghapi_client(token: str) -> GhApi:
     """
     Returns a GhApi instance configured with hishel caching for GET requests.
     """
 
     class CachedGhApi(GhApi):
-        def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
+        def __call__(self, path: str, verb: str = None, headers: dict = None, route: dict = None, query: dict = None, data=None, timeout=None, decode=True):
             # Use the shared caching client
             client = get_caching_client()
 
@@ -99,38 +99,7 @@ def get_ghapi_client(token: Optional[str] = None) -> GhApi:
                     content_data = data
 
             # Use params=query for GET params
-            # Don't follow redirects automatically - we need to strip auth headers on cross-origin redirects
-            resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=False, timeout=timeout)
-
-            # Handle redirects manually to strip Authorization header on cross-origin redirects
-            if resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location")
-                if location:
-                    # Check if this is a cross-origin redirect
-                    from urllib.parse import urlparse
-
-                    origparsed = urlparse(url)
-                    locparsed = urlparse(location)
-
-                    # Determine if redirect is cross-origin
-                    # For relative paths, treat as same-origin
-                    redirect_netloc = locparsed.netloc or origparsed.netloc
-                    is_cross_origin = origparsed.netloc != redirect_netloc
-
-                    # Strip Authorization header for cross-origin redirects
-                    if is_cross_origin:
-                        # Create a new headers dict without authorization headers
-                        headers_without_auth = {k: v for k, v in headers.items() if k.lower() != "authorization"}
-                        headers = headers_without_auth
-                        # Also strip query params for cross-origin redirects
-                        query = {}
-
-                    # For same-origin redirects with relative paths, prepend the host
-                    if not locparsed.netloc:
-                        location = f"{origparsed.scheme}://{origparsed.netloc}{location}"
-
-                    # Follow the redirect
-                    resp = client.request(method=verb, url=location, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=False, timeout=timeout)
+            resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout)
 
             # Raise for status to ensure errors are caught (e.g. 404, 422)
             resp.raise_for_status()
@@ -1016,9 +985,6 @@ class GitHubClient:
                 return None
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
-
-        # No parent issue found
-        return None
 
     def get_parent_issue_body(self, repo_name: str, issue_number: int) -> Optional[str]:
         """Get parent issue body content for a given issue using REST API.
