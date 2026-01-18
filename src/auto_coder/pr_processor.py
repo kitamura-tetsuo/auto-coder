@@ -19,16 +19,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.gh_logger import get_gh_logger
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
-from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
-from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
+
+from .branch_manager import BranchManager
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
@@ -38,10 +39,10 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
+from .test_log_utils import extract_first_failed_test, extract_all_failed_tests, extract_important_errors
 from .test_result import TestResult
-from .util.github_action import _create_github_action_log_summary
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
+from .util.github_action import _create_github_action_log_summary
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -1175,9 +1176,8 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
         # Get PR branch information from PR data
         branch_name = pr_data.get("head_branch") or pr_data.get("head", {}).get("ref")
         if not branch_name:
-            # Use default branch name pattern when head.ref is not available
-            branch_name = f"pr-{pr_number}"
-            log_action(f"Using default branch name '{branch_name}' for PR #{pr_number} (head.ref not in PR data)")
+            log_action(f"Cannot determine branch name for PR #{pr_number}", False, "No head.ref in PR data")
+            return False
 
         log_action(f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}")
 
@@ -1536,38 +1536,26 @@ def _update_jules_pr_body(
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
         new_body = f"{pr_body}{separator}{close_statement}\n\nRelated issue: {issue_link}"
 
-        # Update PR body via GitHub Client
-        # Try github_client methods first, fall back to ghapi if needed
+        # Update PR body via GitHub Client (GhApi)
         try:
-            repo = github_client.get_repository(repo_name)
-            pr = repo.get_pull(pr_number)
-            pr.edit(body=new_body)
+            from auto_coder.util.gh_cache import get_ghapi_client, GitHubClient
+
+            # Use token from client if available, else get from singleton
+            token = getattr(github_client, "token", None)
+            if not token:
+                token = GitHubClient.get_instance().token
+
+            api = get_ghapi_client(token)
+            owner, repo = repo_name.split("/")
+
+            api.pulls.update(owner, repo, pr_number, body=new_body)
 
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
             log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
             return True
-        except Exception:
-            pass  # Fall through to ghapi fallback
-
-        # Fallback: use ghapi client
-        from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
-
-        token = getattr(github_client, "token", None)
-        if not token or not isinstance(token, str):
-            try:
-                token = GitHubClient.get_instance().token
-            except Exception:
-                logger.error(f"Cannot update PR #{pr_number}: no GitHub token available")
-                return False
-
-        api = get_ghapi_client(token)
-        owner, repo = repo_name.split("/")
-
-        api.pulls.update(owner, repo, pr_number, body=new_body)
-
-        logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
-        log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
-        return True
+        except Exception as e:
+            logger.error(f"Failed to update PR #{pr_number} body: {e}")
+            return False
 
     except Exception as e:
         logger.error(f"Error updating Jules PR #{pr_number} body: {e}")
@@ -1670,10 +1658,6 @@ def _link_jules_pr_to_issue(
     except Exception as e:
         logger.error(f"Error processing Jules PR {pr_data.get('number', 'unknown')}: {e}")
         return False
-
-
-# Alias for backwards compatibility with tests
-_process_jules_pr = _link_jules_pr_to_issue
 
 
 def _close_linked_issues(repo_name: str, pr_number: int) -> None:
@@ -1811,7 +1795,7 @@ def _send_jules_error_feedback(
             return actions
 
         # Get GitHub Actions error logs
-        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+        github_logs, _ = _create_github_action_log_summary(repo_name, config, failed_checks)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
@@ -2372,6 +2356,25 @@ def _apply_github_actions_fix(
         # Get commit log since branch creation
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
+        # Extract important error information from GitHub Actions logs using extract_important_errors
+        github_test_result = TestResult(
+            success=False,
+            output=github_logs or "",
+            errors="",
+            return_code=1,
+            command="github_actions_logs",
+            test_file=None,
+            stability_issue=False,
+            extraction_context={},
+            framework_type="github_actions",
+        )
+
+        # Use extract_important_errors to extract failed log file names and error details
+        extracted_errors = extract_important_errors(github_test_result)
+
+        if not extracted_errors:
+            extracted_errors = github_logs[:500] if github_logs else "No error information available"
+
         logger.info(f"Extracted important errors from GitHub Actions logs for PR #{pr_number}")
 
         # Extract linked issues context
@@ -2383,7 +2386,7 @@ def _apply_github_actions_fix(
             pr_number=pr_number,
             repo_name=repo_name,
             pr_title=pr_data.get("title", "Unknown"),
-            extracted_errors=github_logs,
+            extracted_errors=extracted_errors,
             commit_log=commit_log or "(No commit history)",
             linked_issues_context=linked_issues_context,
             # Structured additions (safe if None)

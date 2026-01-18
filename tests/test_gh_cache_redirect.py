@@ -1,9 +1,7 @@
-from unittest.mock import Mock, patch
-
-import httpx
 import pytest
-
+from unittest.mock import Mock, patch
 from src.auto_coder.util.gh_cache import get_ghapi_client
+import httpx
 
 
 class TestGhCacheRedirect:
@@ -44,7 +42,7 @@ class TestGhCacheRedirect:
 
         path = "/repos/owner/repo/actions/runs/123/logs"
         # path, verb, headers, route, query, data
-        api(path, "GET", {"authorization": f"token {token}", "x-test": "keep"}, None, {"foo": "bar"}, None)
+        api._call(path, "GET", {"authorization": f"token {token}", "x-test": "keep"}, None, {"foo": "bar"}, None)
 
         # Verify calls
         assert mock_client_instance.request.call_count == 2
@@ -96,7 +94,7 @@ class TestGhCacheRedirect:
         path = "/repos/owner/repo/path"
 
         # path, verb, headers, route, query, data
-        api(path, "GET", {"Authorization": f"token {token}"}, None, {}, None)
+        api._call(path, "GET", {"Authorization": f"token {token}"}, None, {}, None)
 
         assert mock_client_instance.request.call_count == 2
 

@@ -1,13 +1,13 @@
-import functools
 import json
-import logging
 import subprocess
 import threading
-import time
 import types
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import functools
+import time
 import httpx
 from ghapi.all import GhApi
 from hishel import SyncSqliteStorage
@@ -99,44 +99,7 @@ def get_ghapi_client(token: str) -> GhApi:
                     content_data = data
 
             # Use params=query for GET params
-            resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=False, timeout=timeout)
-
-            # Handle redirects manually to strip auth headers on cross-origin redirect
-            while resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location")
-                if not location:
-                    break
-
-                # Determine if this is a cross-origin redirect
-                from urllib.parse import urlparse
-
-                original_domain = urlparse(url).netloc
-                redirect_location_parsed = urlparse(location)
-                redirect_domain = redirect_location_parsed.netloc
-
-                # A relative path (no netloc) means same-origin redirect
-                is_cross_origin = redirect_domain and original_domain != redirect_domain
-
-                # Strip auth headers on cross-origin redirect only
-                if is_cross_origin:
-                    # Create new headers without authorization for cross-origin
-                    headers = {k: v for k, v in headers.items() if k.lower() not in ("authorization", "proxy-authorization")}
-                    # Also strip query params for security
-                    if "?" in location:
-                        location = location.split("?")[0]
-                # For same-origin redirects (including relative paths), keep headers as-is
-
-                # Construct the new URL
-                if location.startswith("http"):
-                    url = location
-                elif location.startswith("/"):
-                    # Relative to the original URL's origin
-                    url = f"{urlparse(url).scheme}://{original_domain}{location}"
-                else:
-                    # Relative path - combine with current URL's directory
-                    url = f"{self.gh_host}/{location}"
-
-                resp = client.request(method=verb, url=url, headers=headers, params={}, follow_redirects=False, timeout=timeout)
+            resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout)
 
             # Raise for status to ensure errors are caught (e.g. 404, 422)
             resp.raise_for_status()

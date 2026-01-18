@@ -79,10 +79,8 @@ class TestHandlePrMergeJulesFallback:
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
     @patch("src.auto_coder.pr_processor.cmd")
-    @patch("src.auto_coder.pr_processor.BranchManager")
     def test_handle_pr_merge_jules_fallback_flow(
         self,
-        mock_branch_manager,
         mock_cmd,
         mock_fix_issues,
         mock_get_logs,
@@ -100,7 +98,6 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
-        config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
         github_client = Mock()
 
         # Mock checks failure
@@ -120,9 +117,6 @@ class TestHandlePrMergeJulesFallback:
         # Mock checkout success
         mock_checkout.return_value = True
         mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
-
-        # Mock BranchManager context manager
-        mock_branch_manager.return_value.__enter__.return_value = Mock()
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
@@ -152,10 +146,8 @@ class TestHandlePrMergeJulesFallback:
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
     @patch("src.auto_coder.pr_processor.cmd")
-    @patch("src.auto_coder.pr_processor.BranchManager")
     def test_handle_pr_merge_jules_fallback_time_flow(
         self,
-        mock_branch_manager,
         mock_cmd,
         mock_fix_issues,
         mock_get_logs,
@@ -173,7 +165,6 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
-        config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
         github_client = Mock()
 
         # Mock checks failure
@@ -194,9 +185,6 @@ class TestHandlePrMergeJulesFallback:
         # Mock checkout success
         mock_checkout.return_value = True
         mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
-
-        # Mock BranchManager context manager
-        mock_branch_manager.return_value.__enter__.return_value = Mock()
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]

@@ -26,9 +26,11 @@ except ImportError:
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
+
+from .gh_cache import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
-from .gh_cache import GitHubClient, get_ghapi_client
+from .gh_cache import get_ghapi_client
 from .github_cache import get_github_cache
 
 
@@ -2092,12 +2094,6 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional
             name = artifact.get("name", "")
             if name.startswith("e2e-artifacts-") and not artifact.get("expired", False):
                 target_artifacts.append(artifact)
-
-        # Filter: if "basic" job exists (e2e-artifacts-basic), ignore others
-        basic_artifacts = [a for a in target_artifacts if a.get("name") == "e2e-artifacts-basic"]
-        if basic_artifacts:
-            logger.info("Found 'basic' job artifact (e2e-artifacts-basic). Ignoring other Playwright artifacts.")
-            target_artifacts = basic_artifacts
 
         if not target_artifacts:
             logger.info("No active e2e-artifacts-* found for this run.")

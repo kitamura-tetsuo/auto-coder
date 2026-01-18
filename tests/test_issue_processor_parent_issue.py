@@ -212,7 +212,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_gh_logger")
     def test_create_pr_for_parent_issue_new_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with new branch."""
         repo_name = "owner/repo"
@@ -259,7 +259,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_gh_logger")
     def test_create_pr_for_parent_issue_existing_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with existing branch."""
         repo_name = "owner/repo"
@@ -303,7 +303,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_gh_logger")
     @patch("src.auto_coder.git_branch.git_commit_with_retry")
     def test_create_pr_for_parent_issue_with_changes(self, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR with changes to commit."""
@@ -382,7 +382,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_gh_logger")
     def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test error handling when PR creation fails."""
         repo_name = "owner/repo"
@@ -418,7 +418,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_gh_logger")
     def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Ensure attempt-specific branch is used when attempts exist."""
         repo_name = "owner/repo"

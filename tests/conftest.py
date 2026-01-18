@@ -19,8 +19,8 @@ if str(_src_path) not in sys.path:
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
 from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.llm_backend_config import reset_llm_config
 from src.auto_coder.util.gh_cache import GitHubClient
+from src.auto_coder.llm_backend_config import reset_llm_config
 
 
 # Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)
@@ -59,16 +59,6 @@ def _reset_llm_config_singleton():
     reset_llm_config()
     yield
     reset_llm_config()
-
-
-@pytest.fixture
-def _use_custom_subprocess_mock():
-    """Indicate that this test uses custom subprocess mocking.
-
-    When this fixture is used, the stub_git_and_gh_commands fixture will skip
-    patching subprocess.run, allowing the test to use its own mock.
-    """
-    pass
 
 
 @pytest.fixture(autouse=True)
@@ -339,14 +329,6 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     if not skip_stub:
         CommandExecutor._should_stream_output = staticmethod(patched_should_stream)
-    else:
-        # Restore original if it was previously patched
-        CommandExecutor._should_stream_output = staticmethod(orig_should_stream)
-
-    if skip_stub:
-        # Don't patch subprocess.run - let the test use its own mock
-        yield
-        return
 
     orig_run = subprocess.run
     orig_popen = subprocess.Popen

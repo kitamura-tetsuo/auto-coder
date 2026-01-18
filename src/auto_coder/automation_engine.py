@@ -11,9 +11,11 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
+
 from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
 from .git_info import get_current_branch
+from .util.gh_cache import GitHubClient
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_engine import check_and_resume_or_archive_sessions
@@ -24,11 +26,11 @@ from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_important_errors
 from .test_result import TestResult
+from .test_log_utils import extract_important_errors
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import GitHubClient, get_ghapi_client
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
+from .util.gh_cache import get_ghapi_client
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 

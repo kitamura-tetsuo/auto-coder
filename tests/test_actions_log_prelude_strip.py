@@ -42,21 +42,15 @@ sys.exit(0)
     assert result.returncode == 0
     # Standard output should start with Job header (no logger prelude)
     head = (result.stdout.splitlines() + [""])[:3]
-    # Check for the new format "=== Job: job-xxx ===" or old format "=== Job xxx ==="
-    assert head and (head[0].startswith("=== Job: ") or head[0].startswith("=== Job "))
+    assert head and head[0].startswith("=== Job ")
     # Body should be compact due to slicing
     assert len(result.stdout.splitlines()) < 1000
     # If failure summary lines are present, they should be placed under a Summary block
-    # Only check for actual test failure patterns, not API error messages
-    # The "No detailed logs available" message should NOT trigger the Summary check
     if any(
         x in result.stdout.lower()
         for x in [
-            "1 failed",
-            "failed tests",
-            "failed test",
-            "tests failed",
-            "[x] failed",  # pytest-style failure marker
+            " failed",
+            "did not run",
             "error was not a part of any test",
             "command failed with exit code",
             "process completed with exit code",
