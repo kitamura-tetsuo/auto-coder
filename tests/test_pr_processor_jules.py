@@ -115,37 +115,31 @@ class TestExtractSessionIdFromPrBody:
 class TestUpdateJulesPrBody:
     """Test cases for _update_jules_pr_body function."""
 
-    def test_update_jules_pr_body_success(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_success(self, mock_get_ghapi_client):
         """Test successfully updating PR body."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
         github_client = Mock()
         github_client.token = "dummy_token"  # Needs to be a string
-        github_client.get_repository.return_value = mock_repo
+
+        # Mock the API client
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        github_client.get_repository.assert_called_once_with(repo_name)
-        mock_repo.get_pull.assert_called_once_with(pr_number)
-        mock_pr.edit.assert_called_once()
-        # Verify the body contains the close statement and issue link
-        call_kwargs = mock_pr.edit.call_args[1]
-        body_content = call_kwargs["body"]
-        assert "close #456" in body_content
-        assert "https://github.com/owner/repo/issues/456" in body_content
-        assert "Original PR body content." in body_content
+        # Verify API was called correctly
+        mock_get_ghapi_client.assert_called_once_with("dummy_token")
+        mock_api.pulls.update.assert_called_once_with("owner", "repo", 123, body=f"{pr_body}\n\nclose #{issue_number}\n\nRelated issue: https://github.com/{repo_name}/issues/{issue_number}")
 
-    @patch("auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_already_has_close(self, mock_gh_logger):
+    def test_update_jules_pr_body_already_has_close(self):
         """Test that PR body update is skipped if already has close reference."""
         repo_name = "owner/repo"
         pr_number = 123
@@ -166,8 +160,7 @@ class TestUpdateJulesPrBody:
         # edit should not be called if close reference already exists
         mock_pr.edit.assert_not_called()
 
-    @patch("auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_already_has_closes(self, mock_gh_logger):
+    def test_update_jules_pr_body_already_has_closes(self):
         """Test that PR body update is skipped if already has closes reference."""
         repo_name = "owner/repo"
         pr_number = 123
@@ -188,8 +181,7 @@ class TestUpdateJulesPrBody:
         # edit should not be called if closes reference already exists
         mock_pr.edit.assert_not_called()
 
-    @patch("auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_case_insensitive_check(self, mock_gh_logger):
+    def test_update_jules_pr_body_case_insensitive_check(self):
         """Test that close reference check is case insensitive."""
         repo_name = "owner/repo"
         pr_number = 123
@@ -231,51 +223,58 @@ class TestUpdateJulesPrBody:
         # Assert
         assert result is False
 
-    def test_update_jules_pr_body_empty_original(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_empty_original(self, mock_get_ghapi_client):
         """Test updating PR body when original body is empty."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = ""
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
         github_client = Mock()
         github_client.token = "dummy_token"  # Needs to be a string
-        github_client.get_repository.return_value = mock_repo
+
+        # Mock the API client
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # Verify body is properly formatted even when original is empty
-        call_kwargs = mock_pr.edit.call_args[1]
+        # Verify API was called correctly
+        mock_get_ghapi_client.assert_called_once_with("dummy_token")
+        mock_api.pulls.update.assert_called_once()
+        call_kwargs = mock_api.pulls.update.call_args[1]
         body_content = call_kwargs["body"]
         assert "close #456" in body_content
         assert "https://github.com/owner/repo/issues/456" in body_content
 
-    def test_update_jules_pr_body_with_newline_ending(self):
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_update_jules_pr_body_with_newline_ending(self, mock_get_ghapi_client):
         """Test updating PR body when original body ends with newline."""
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content.\n"
         issue_number = 456
 
-        mock_pr = Mock()
-        mock_repo = Mock()
-        mock_repo.get_pull.return_value = mock_pr
         github_client = Mock()
-        github_client.get_repository.return_value = mock_repo
+        github_client.token = "dummy_token"  # Needs to be a string
+
+        # Mock the API client
+        mock_api = Mock()
+        mock_get_ghapi_client.return_value = mock_api
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # Verify body is properly formatted
-        call_kwargs = mock_pr.edit.call_args[1]
+        # Verify API was called correctly
+        mock_get_ghapi_client.assert_called_once_with("dummy_token")
+        mock_api.pulls.update.assert_called_once()
+        call_kwargs = mock_api.pulls.update.call_args[1]
         body_content = call_kwargs["body"]
         assert "close #456" in body_content
         assert "https://github.com/owner/repo/issues/456" in body_content
