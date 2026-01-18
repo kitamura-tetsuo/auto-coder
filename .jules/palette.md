@@ -17,3 +17,7 @@
 ## 2025-12-19 - Information Density in CLI Startup
 **Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
 **Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.
+
+## 2026-01-20 - Perceived Responsiveness in Countdowns
+**Learning:** Countdowns that only update once per second can feel sluggish or unresponsive. Increasing the update frequency (e.g., to 10Hz) and adding a spinner animation maintains a sense of activity, making the wait feel shorter.
+**Action:** For CLI countdowns, use a high-frequency loop to drive animations, even if the numeric countdown only updates every second.
