@@ -262,16 +262,52 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
     mock_logger.logged_subprocess = Mock(side_effect=fake_logged_subprocess)
     mock_logger.log_command = Mock()
 
-    with patch("src.auto_coder.gh_logger.get_gh_logger", return_value=mock_logger):
-        with patch("src.auto_coder.util.github_action.get_gh_logger", return_value=mock_logger):
-            with patch(
-                "src.auto_coder.util.github_action.cmd.run_command",
-                side_effect=fake_cmd_run_command,
-            ):
-                result = get_github_actions_logs_from_url(url)
+    # Create a mock GitHubClient
+    mock_github_client = Mock()
+    mock_github_client.token = "test_token"
 
-    # Verify that job information is included
-    assert "53715705095" in result
+    # Create a mock API client
+    mock_api = Mock()
+    # Set up the job detail response
+    mock_api.actions.get_job_for_workflow_run.return_value = {
+        "name": "CI / e2e tests",
+        "conclusion": "failure",
+        "steps": [
+            {"name": "Set up job", "status": "completed", "conclusion": "success"},
+            {"name": "Run actions/checkout@v4", "status": "completed", "conclusion": "success"},
+            {"name": "Run npm ci", "status": "completed", "conclusion": "success"},
+            {"name": "Run npm test", "status": "completed", "conclusion": "failure"},
+        ],
+    }
+    # Set up the download logs response (bytes - ZIP file content)
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, "w") as zf:
+        zf.writestr("1_Set up job.txt", "Setting up job...\nJob setup complete.")
+        zf.writestr(
+            "2_Run actions checkout@v4.txt",
+            "Checking out code...\nCheckout complete.",
+        )
+        zf.writestr(
+            "3_Run npm ci.txt",
+            "Installing dependencies...\nadded 1234 packages in 45s",
+        )
+        zf.writestr("4_Run npm test.txt", realistic_step_log)
+    mock_api.actions.download_job_logs_for_workflow_run.return_value = bio.getvalue()
+
+    with (
+        patch("src.auto_coder.gh_logger.get_gh_logger", return_value=mock_logger),
+        patch("src.auto_coder.util.github_action.GitHubClient") as mock_gh_client_class,
+        patch("src.auto_coder.util.github_action.get_ghapi_client", return_value=mock_api),
+        patch(
+            "src.auto_coder.util.github_action.cmd.run_command",
+            side_effect=fake_cmd_run_command,
+        ),
+    ):
+        mock_gh_client_class.get_instance.return_value = mock_github_client
+        result = get_github_actions_logs_from_url(url)
+
+    # Verify that job information is included (check for job name from API)
+    assert "CI / e2e tests" in result
 
     # Verify that error information is included
     assert "Error: expect(received).toContain(expected)" in result

@@ -52,11 +52,15 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock the test results - fail first, pass on third
-        # Mock the test results - fail first, pass on third
-        # We need objects (TestResult), not dicts, because the code accesses .failed_tests
+        # Need to configure get() method to return failed_tests for dict-style access
         fail_result_1 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed", errors="Error details")
+        fail_result_1.get = lambda key: getattr(fail_result_1, key, [])
+
         fail_result_2 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed again", errors="More errors")
+        fail_result_2.get = lambda key: getattr(fail_result_2, key, [])
+
         pass_result = Mock(failed_tests=[], success=True, output="All tests passed", errors="")
+        pass_result.get = lambda key: getattr(pass_result, key, [])
 
         mock_run_tests.side_effect = [
             fail_result_1,  # attempt 1
@@ -174,11 +178,18 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - fail multiple times
-        # Mock test results - fail multiple times
+        # Need to configure get() method to return failed_tests for dict-style access
         fail_1 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 1")
+        fail_1.get = lambda key: getattr(fail_1, key, [])
+
         fail_2 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 2")
+        fail_2.get = lambda key: getattr(fail_2, key, [])
+
         fail_3 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 3")
+        fail_3.get = lambda key: getattr(fail_3, key, [])
+
         pass_res = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
+        pass_res.get = lambda key: getattr(pass_res, key, [])
 
         mock_run_tests.side_effect = [
             fail_1,  # attempt 1
@@ -244,7 +255,10 @@ class TestPRProcessorBackendSwitching:
         mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - always fail
-        mock_run_tests.return_value = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Errors")
+        # Need to configure get() method to return failed_tests for dict-style access
+        fail_result = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Errors")
+        fail_result.get = lambda key: getattr(fail_result, key, [])
+        mock_run_tests.return_value = fail_result
 
         # Mock local fix to return empty actions and no response
         mock_apply_local_fix.return_value = ([], "")
