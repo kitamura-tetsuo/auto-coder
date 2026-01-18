@@ -300,12 +300,12 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
 
         # Check cache first
         # Caching removed to ensure fresh status is always retrieved
-        # cache = get_github_cache()
-        # cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
-        # cached_result = cache.get(cache_key)
-        # if cached_result:
-        #     logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
-        #     return cached_result
+        cache = get_github_cache()
+        cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
+            return cached_result
 
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
@@ -338,7 +338,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 ids=[],
                 in_progress=False,
             )
-            # cache.set(cache_key, gh_status_result)
+            cache.set(cache_key, gh_status_result)
             return gh_status_result
 
         # Map API response matching_checks to the expected format
@@ -415,7 +415,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         )
 
         # Cache the result
-        # cache.set(cache_key, gh_status_result)
+        cache.set(cache_key, gh_status_result)
 
         return gh_status_result
 
@@ -533,13 +533,13 @@ def _check_github_actions_status_from_history(
         # Check cache first (using head_branch as part of key since we might not have exact SHA yet,
         # but ideally we should use SHA if possible. However, this function is a fallback when we might lack info.
         # Let's use a composite key including head_branch.)
-        # cache = get_github_cache()
+        cache = get_github_cache()
         # Note: Historical check is more expensive, but relying on cache causes stale status issues.
-        # cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
-        # cached_result = cache.get(cache_key)
-        # if cached_result:
-        #     logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
-        #     return cached_result
+        cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
+            return cached_result
 
         # 1. Get all PR commits/oid
         # 1. Get all PR commits/oid

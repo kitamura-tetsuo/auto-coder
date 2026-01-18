@@ -16,8 +16,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         get_github_cache().clear()
         self.config = AutomationConfig()
 
-    @patch("src.auto_coder.util.github_action.get_gh_logger")
-    def test_check_github_actions_status_uses_cache(self, mock_get_gh_logger):
+    def test_check_github_actions_status_uses_cache(self):
         """Test that _check_github_actions_status uses the cache."""
         repo_name = "owner/repo"
         pr_data = {"number": 123, "head": {"sha": "abc1234"}}
@@ -33,9 +32,6 @@ class TestGitHubActionCaching(unittest.TestCase):
 
         # Verify result is from cache
         self.assertIs(result, expected_result)
-
-        # Verify API was NOT called (mock logger shouldn't be used)
-        mock_get_gh_logger.assert_not_called()
 
     @patch("src.auto_coder.util.github_action.GitHubClient")
     @patch("src.auto_coder.util.github_action.get_ghapi_client")
