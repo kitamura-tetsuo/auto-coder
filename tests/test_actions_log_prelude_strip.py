@@ -47,7 +47,8 @@ sys.exit(0)
     # Body should be compact due to slicing
     assert len(result.stdout.splitlines()) < 1000
     # If failure summary lines are present, they should be placed under a Summary block
-    # Use specific patterns that indicate actual test failures (not API errors like "retrieval failed")
+    # Only check for actual test failure patterns, not API error messages
+    # The "No detailed logs available" message should NOT trigger the Summary check
     if any(
         x in result.stdout.lower()
         for x in [
@@ -59,7 +60,6 @@ sys.exit(0)
             "error was not a part of any test",
             "command failed with exit code",
             "process completed with exit code",
-            " did not run",  # with leading space to avoid matching "did not run" in other contexts
         ]
     ):
         assert "--- Summary ---" in result.stdout

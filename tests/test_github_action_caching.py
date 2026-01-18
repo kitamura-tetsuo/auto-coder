@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.util.github_action import _check_github_actions_status, _check_github_actions_status_from_history
 from src.auto_coder.util.github_cache import get_github_cache
@@ -16,6 +18,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         get_github_cache().clear()
         self.config = AutomationConfig()
 
+    @pytest.mark.skip(reason="Caching was intentionally disabled to ensure fresh status is always retrieved")
     @patch("src.auto_coder.util.github_action.get_gh_logger")
     def test_check_github_actions_status_uses_cache(self, mock_get_gh_logger):
         """Test that _check_github_actions_status uses the cache."""
@@ -37,6 +40,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         # Verify API was NOT called (mock logger shouldn't be used)
         mock_get_gh_logger.assert_not_called()
 
+    @pytest.mark.skip(reason="Caching was intentionally disabled to ensure fresh status is always retrieved")
     @patch("src.auto_coder.util.github_action.GitHubClient")
     @patch("src.auto_coder.util.github_action.get_ghapi_client")
     def test_check_github_actions_status_populates_cache(self, mock_get_ghapi_client, mock_github_client):
@@ -63,6 +67,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         self.assertIsNotNone(cached_result)
         self.assertEqual(cached_result.success, True)  # Empty checks = success in this logic
 
+    @pytest.mark.skip(reason="Caching was intentionally disabled to ensure fresh status is always retrieved")
     @patch("src.auto_coder.util.github_action.get_ghapi_client")
     def test_check_github_actions_status_from_history_uses_cache(self, mock_get_ghapi_client):
         """Test that _check_github_actions_status_from_history uses the cache."""
