@@ -47,7 +47,7 @@ class TestGitHubClientSubIssues:
 
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.json.return_value = rest_response
+        mock_response.json.side_effect = lambda: list(rest_response)  # Return a new list each time
         mock_response.raise_for_status = Mock()
 
         mock_caching_client = Mock()
@@ -87,7 +87,7 @@ class TestGitHubClientSubIssues:
 
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.json.return_value = rest_response
+        mock_response.json.side_effect = lambda: list(rest_response)
         mock_response.raise_for_status = Mock()
 
         mock_caching_client = Mock()

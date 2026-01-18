@@ -212,9 +212,8 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
     @patch("src.auto_coder.issue_processor.get_ghapi_client")
-    def test_create_pr_for_parent_issue_new_branch(self, mock_get_ghapi_client, mock_gh_logger, mock_cmd, mock_get_attempt):
+    def test_create_pr_for_parent_issue_new_branch(self, mock_get_ghapi_client, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with new branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -248,9 +247,9 @@ class TestCreatePRForParentIssue:
         ]
 
         # Mock gh_logger
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
-        mock_gh_logger.return_value = mock_gh_instance
+        # mock_gh_instance = MagicMock()
+        # mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
+        # mock_gh_logger.return_value = mock_gh_instance
 
         result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
@@ -267,9 +266,8 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
     @patch("src.auto_coder.issue_processor.get_ghapi_client")
-    def test_create_pr_for_parent_issue_existing_branch(self, mock_get_ghapi_client, mock_gh_logger, mock_cmd, mock_get_attempt):
+    def test_create_pr_for_parent_issue_existing_branch(self, mock_get_ghapi_client, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with existing branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -302,9 +300,9 @@ class TestCreatePRForParentIssue:
         ]
 
         # Mock gh_logger
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
-        mock_gh_logger.return_value = mock_gh_instance
+        # mock_gh_instance = MagicMock()
+        # mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
+        # mock_gh_logger.return_value = mock_gh_instance
 
         result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
@@ -319,10 +317,9 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
     @patch("src.auto_coder.git_branch.git_commit_with_retry")
     @patch("src.auto_coder.issue_processor.get_ghapi_client")
-    def test_create_pr_for_parent_issue_with_changes(self, mock_get_ghapi_client, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
+    def test_create_pr_for_parent_issue_with_changes(self, mock_get_ghapi_client, mock_git_commit, mock_cmd, mock_get_attempt):
         """Test creating PR with changes to commit."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -359,11 +356,6 @@ class TestCreatePRForParentIssue:
 
         # Mock commit
         mock_git_commit.return_value = MagicMock(success=True)
-
-        # Mock gh_logger
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/123")
-        mock_gh_logger.return_value = mock_gh_instance
 
         result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
@@ -406,8 +398,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
-    def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_cmd, mock_get_attempt):
         """Test error handling when PR creation fails."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -430,21 +421,32 @@ class TestCreatePRForParentIssue:
             MagicMock(returncode=0, stdout=""),  # Git status (no changes)
         ]
 
-        # Mock gh_logger - PR creation fails
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=False, stderr="Error: resource not accessible by integration")
-        mock_gh_logger.return_value = mock_gh_instance
+        # Mock GhApi client failure
+        # The code uses github_client.token to get api, then calls api.pulls.create
+        # We need to mock that failure.
+        # But wait, this test didn't patch get_ghapi_client!
+        # It seems the original test relied on get_gh_logger to fail.
+        # Now we need to make api.pulls.create fail.
+        # But we haven't patched get_ghapi_client in this test method.
+        # We need to add the patch or use with patch context.
 
-        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+        with patch("src.auto_coder.issue_processor.get_ghapi_client") as mock_get_ghapi_client:
+            mock_api = MagicMock()
+            mock_api.pulls.create.side_effect = Exception("Error creating PR")
+            mock_get_ghapi_client.return_value = mock_api
+
+            # We also need github_client.token
+            github_client.token = "token"
+
+            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 
         # Should return error message
         assert "Error creating PR" in result
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
     @patch("src.auto_coder.issue_processor.get_ghapi_client")
-    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_get_ghapi_client, mock_gh_logger, mock_cmd, mock_get_attempt):
+    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_get_ghapi_client, mock_cmd, mock_get_attempt):
         """Ensure attempt-specific branch is used when attempts exist."""
         repo_name = "owner/repo"
         issue_number = 150
@@ -474,9 +476,9 @@ class TestCreatePRForParentIssue:
             MagicMock(returncode=0),  # Completion file exists
         ]
 
-        mock_gh_instance = MagicMock()
-        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/999")
-        mock_gh_logger.return_value = mock_gh_instance
+        # mock_gh_instance = MagicMock()
+        # mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/999")
+        # mock_gh_logger.return_value = mock_gh_instance
 
         result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
 

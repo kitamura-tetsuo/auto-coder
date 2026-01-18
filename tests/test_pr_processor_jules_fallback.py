@@ -121,7 +121,19 @@ class TestHandlePrMergeJulesFallback:
 
         # Ensure we are NOT already on the branch, so Jules check logic runs
         # If we are already on branch, it skips Jules check and goes directly to fix.
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
+        # mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
+
+        # We need to simulate:
+        # 1. First check (for already_on_pr_branch): returns "main"
+        # 2. BranchManager check (after checkout): returns "feature-branch"
+        def run_command_side_effect(cmd, **kwargs):
+            if cmd == ["git", "branch", "--show-current"]:
+                return Mock(success=True, stdout="main")
+            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                return Mock(success=True, stdout="feature-branch")
+            return Mock(success=True, stdout="")
+
+        mock_cmd.run_command.side_effect = run_command_side_effect
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
@@ -194,7 +206,16 @@ class TestHandlePrMergeJulesFallback:
         mock_checkout.return_value = True
 
         # Ensure we are NOT already on the branch
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
+        # mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
+
+        def run_command_side_effect(cmd, **kwargs):
+            if cmd == ["git", "branch", "--show-current"]:
+                return Mock(success=True, stdout="main")
+            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                return Mock(success=True, stdout="feature-branch")
+            return Mock(success=True, stdout="")
+
+        mock_cmd.run_command.side_effect = run_command_side_effect
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
