@@ -2093,6 +2093,12 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional
             if name.startswith("e2e-artifacts-") and not artifact.get("expired", False):
                 target_artifacts.append(artifact)
 
+        # Filter: if "basic" job exists (e2e-artifacts-basic), ignore others
+        basic_artifacts = [a for a in target_artifacts if a.get("name") == "e2e-artifacts-basic"]
+        if basic_artifacts:
+            logger.info("Found 'basic' job artifact (e2e-artifacts-basic). Ignoring other Playwright artifacts.")
+            target_artifacts = basic_artifacts
+
         if not target_artifacts:
             logger.info("No active e2e-artifacts-* found for this run.")
             return None, None

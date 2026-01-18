@@ -2372,25 +2372,6 @@ def _apply_github_actions_fix(
         # Get commit log since branch creation
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
-        # Extract important error information from GitHub Actions logs using extract_important_errors
-        github_test_result = TestResult(
-            success=False,
-            output=github_logs or "",
-            errors="",
-            return_code=1,
-            command="github_actions_logs",
-            test_file=None,
-            stability_issue=False,
-            extraction_context={},
-            framework_type="github_actions",
-        )
-
-        # Use extract_important_errors to extract failed log file names and error details
-        extracted_errors = extract_important_errors(github_test_result)
-
-        if not extracted_errors:
-            extracted_errors = github_logs[:500] if github_logs else "No error information available"
-
         logger.info(f"Extracted important errors from GitHub Actions logs for PR #{pr_number}")
 
         # Extract linked issues context
@@ -2402,7 +2383,7 @@ def _apply_github_actions_fix(
             pr_number=pr_number,
             repo_name=repo_name,
             pr_title=pr_data.get("title", "Unknown"),
-            extracted_errors=extracted_errors,
+            extracted_errors=github_logs,
             commit_log=commit_log or "(No commit history)",
             linked_issues_context=linked_issues_context,
             # Structured additions (safe if None)
