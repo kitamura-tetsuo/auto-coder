@@ -93,6 +93,7 @@ class TestJulesPRProcessor:
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._is_jules_pr")
     def test_process_jules_pr_skips_special_prefixes(self, mock_is_jules, mock_extract_session):
+        """Test that special Jules PRs are skipped after session extraction."""
         # Setup
         repo_name = "owner/repo"
         mock_client = MagicMock()
@@ -108,9 +109,10 @@ class TestJulesPRProcessor:
             result = _link_jules_pr_to_issue(repo_name, pr_data, mock_client)
 
             # Verify
+            # Should call extract session first (since that's always done for Jules PRs)
+            # Then skip the rest due to special prefix
             assert result is True
-            # Should NOT call extract session or proceed
-            mock_extract_session.assert_not_called()
+            mock_extract_session.assert_called_with("Some body")
 
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._is_jules_pr")
