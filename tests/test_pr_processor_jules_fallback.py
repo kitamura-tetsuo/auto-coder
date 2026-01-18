@@ -78,10 +78,8 @@ class TestHandlePrMergeJulesFallback:
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
-    @patch("src.auto_coder.pr_processor.cmd")
     def test_handle_pr_merge_jules_fallback_flow(
         self,
-        mock_cmd,
         mock_fix_issues,
         mock_get_logs,
         mock_update_base,
@@ -116,7 +114,6 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock checkout success
         mock_checkout.return_value = True
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
@@ -145,10 +142,8 @@ class TestHandlePrMergeJulesFallback:
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
-    @patch("src.auto_coder.pr_processor.cmd")
     def test_handle_pr_merge_jules_fallback_time_flow(
         self,
-        mock_cmd,
         mock_fix_issues,
         mock_get_logs,
         mock_update_base,
@@ -184,7 +179,6 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock checkout success
         mock_checkout.return_value = True
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]

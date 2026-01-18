@@ -20,7 +20,7 @@ from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .jules_client import JulesClient
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
-from .logger_config import get_logger
+from .logger_config import get_gh_logger, get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
 from .util.gh_cache import GitHubClient
