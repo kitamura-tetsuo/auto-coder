@@ -263,12 +263,11 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
     mock_logger.log_command = Mock()
 
     with patch("src.auto_coder.gh_logger.get_gh_logger", return_value=mock_logger):
-        with patch("src.auto_coder.util.github_action.get_gh_logger", return_value=mock_logger):
-            with patch(
-                "src.auto_coder.util.github_action.cmd.run_command",
-                side_effect=fake_cmd_run_command,
-            ):
-                result = get_github_actions_logs_from_url(url)
+        with patch(
+            "src.auto_coder.util.github_action.cmd.run_command",
+            side_effect=fake_cmd_run_command,
+        ):
+            result = get_github_actions_logs_from_url(url)
 
     # Verify that job information is included
     assert "53715705095" in result
