@@ -4,15 +4,15 @@ Jules engine module for managing Jules sessions.
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 from dateutil import parser
 
-from .util.gh_cache import GitHubClient
 from .jules_client import JulesClient
-from .logger_config import get_logger
 from .llm_backend_config import get_jules_session_expiration_days_from_config
+from .logger_config import get_logger
+from .util.gh_cache import GitHubClient
 
 logger = get_logger(__name__)
 

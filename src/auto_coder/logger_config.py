@@ -225,6 +225,16 @@ def get_logger(name: str) -> Any:
     return logger.bind(name=name)
 
 
+def get_gh_logger() -> Any:
+    """
+    Get a logger instance for GitHub Actions logging.
+
+    Returns:
+        Logger instance
+    """
+    return logger
+
+
 def _format_args(func: Callable, args: tuple, kwargs: dict, max_len: int = 120) -> str:
     """Build a compact call signature string for logging."""
     bound = signature(func).bind_partial(*args, **kwargs)

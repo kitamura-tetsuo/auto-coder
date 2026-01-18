@@ -19,30 +19,28 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
+from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
-from auto_coder.util.gh_cache import get_ghapi_client
 
 from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
+from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
-
-from .branch_manager import BranchManager
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
 from .label_manager import LabelManager, LabelOperationError
-from .logger_config import get_logger
+from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test, extract_all_failed_tests, extract_important_errors
+from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
-from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 from .util.github_action import _create_github_action_log_summary
+from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -366,7 +364,7 @@ def _get_mergeable_state(
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
             owner, repo = repo_name.split("/")
-            
+
             # API: api.pulls.get(owner, repo, pull_number)
             pr_details = api.pulls.get(owner, repo, pull_number=pr_data.get("number"))
             mergeable = pr_details.get("mergeable", mergeable)
@@ -407,17 +405,17 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
             owner, repo = repo_name.split("/")
-            
+
             pr_details = api.pulls.get(owner, repo, pull_number=pr_number)
             base_branch = pr_details.get("base", {}).get("ref", "main")
             head_branch = pr_details.get("head", {}).get("ref")
-            
+
             if not head_branch:
                 error_msg = f"Failed to determine head branch for PR #{pr_number} (head.ref is missing)"
                 actions.append(error_msg)
                 log_action(error_msg, False)
                 return actions
-                
+
         except Exception as e:
             error_msg = f"Failed to get PR #{pr_number} details via GhApi: {e}"
             actions.append(error_msg)
@@ -430,7 +428,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         # Create minimal PR data for checkout function
         pr_branch_name = head_branch
         pr_data_for_checkout = {"number": pr_number, "head": {"ref": pr_branch_name}}
-        
+
         # Ensure branch exists and is fetched, but don't switch yet
         prepare_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig(), perform_checkout=False)
 
@@ -451,7 +449,6 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # - Pushing updated branch with retry
             update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
             actions.extend(update_actions)
-
 
             # Step 4: Check for degrading merge detection
         if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
@@ -913,9 +910,7 @@ def _handle_pr_merge(
                         head_sha = pr_data.get("head", {}).get("sha")
 
                         try:
-                            monitor_thread = threading.Thread(
-                                target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True
-                            )
+                            monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
                             monitor_thread.start()
                             actions.append(f"Started async monitor for {workflow_id}")
                         except Exception as e:
@@ -924,7 +919,7 @@ def _handle_pr_merge(
                                 _active_monitors.discard(pr_number)
                             logger.error(f"Failed to start monitor thread for PR #{pr_number}: {e}")
                             actions.append(f"Failed to start monitor for {workflow_id}: {e}")
-                        
+
                         # Keep the label so async monitor can remove it later
                         lm.keep_label()
                         return actions
@@ -959,26 +954,26 @@ def _handle_pr_merge(
                 try:
                     is_jules = _is_jules_pr(pr_data)
                     session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
-                    
+
                     if is_jules and session_id:
                         # Find other open PRs that reference this session ID
                         # Note: search_issues returns Issue objects which can be PRs
                         query = f'repo:{repo_name} is:pr is:open "Session ID: {session_id}"'
                         logger.info(f"Searching for other PRs with session ID {session_id} to clean up: {query}")
-                        
+
                         related_issues = github_client.search_issues(query)
-                        
+
                         count = 0
                         for issue in related_issues:
                             # Skip the current PR (which is closed now effectively, or about to be)
                             if issue.number == pr_number:
                                 continue
-                                
+
                             # Check if the issue object is actually a PR (search_issues returns issues/PRs)
                             # is:pr in query helps, but PyGithub object might need check?
                             # GitHubClient.search_issues returns list(self.github.search_issues(...))
                             # which are Issue objects.
-                            
+
                             # Remove @auto-coder label
                             if config.AUTO_CODER_LABEL:
                                 try:
@@ -987,10 +982,10 @@ def _handle_pr_merge(
                                     count += 1
                                 except Exception as e:
                                     logger.error(f"Failed to remove label from related PR #{issue.number}: {e}")
-                        
+
                         if count > 0:
                             actions.append(f"Cleaned up {count} related PR(s) for session {session_id}")
-                            
+
                 except Exception as e:
                     logger.error(f"Error cleaning up related PRs for PR #{pr_number}: {e}")
                     # Don't fail the whole process for cleanup error
@@ -1065,7 +1060,7 @@ def _handle_pr_merge(
 
         # Step 5: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
-        
+
         # Prepare branch (ensure fetched)
         prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
         if not prepare_ok:
@@ -1082,7 +1077,7 @@ def _handle_pr_merge(
                 # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
                     github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1104,7 +1099,7 @@ def _handle_pr_merge(
                         close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
                         client.close_pr(repo_name, pr_number, close_comment)
                         actions.append(f"Closed PR #{pr_number} without merging")
-                        
+
                         # BranchManager handles return to original branch
                     except Exception as e:
                         logger.error(f"Failed to close PR #{pr_number}: {e}")
@@ -1236,51 +1231,51 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
             # If not checking out, ensure the branch exists/updates from the fetched head
             # If we fetched to branch_name:branch_name, it's already updated.
             # If we fetched to FETCH_HEAD (fallback), we need to update/create the local branch.
-            if not fetch_result.success and "FETCH_HEAD" in str(fetch_result.stdout or ""): 
-                 # This logic is tricky because we rely on previous fetch_result variable which might be from branch:branch attempt.
-                 pass
-            
+            if not fetch_result.success and "FETCH_HEAD" in str(fetch_result.stdout or ""):
+                # This logic is tricky because we rely on previous fetch_result variable which might be from branch:branch attempt.
+                pass
+
             # The structure above tries branch:branch first.
             # checks: fetch_result = ... branch:branch
             # if not fetch_result.success: fetch_result = ... pull/N/head
-            
+
             # Re-evaluating fetch logic to account for perform_checkout=False
             pass
-        
+
         # NOTE: The block above was complex. Re-implementing clearer logic for finish.
-        
+
         if not perform_checkout:
-             # Logic to ensure branch ref exists if we fetched to FETCH_HEAD
-             # If branch:branch succeeded, the branch ref is updated.
-             # If pull/N/head succeeded, we need to create/update local branch ptr.
-             
-             # We can't easily know which path succeeded without checking return codes or logic flow.
-             # But we know at least one Fetch Succeeded if we reached here (wait, we didn't check success properly in original code flow? 
-             # Original code: if not fetch (branch:branch): if not fetch (pull): return False. 
-             # So if we are here, we fetched successfully.
-             
-             # If branch:branch failed, we used pull/N/head.
-             # So we verify if branch exists?
-             
-             verify = cmd.run_command(["git", "rev-parse", "--verify", branch_name])
-             if not verify.success:
-                 # It must have been the FETCH_HEAD case or branch didn't exist before.
-                 # Create/Update it.
-                 cmd.run_command(["git", "branch", "-f", branch_name, "FETCH_HEAD"])
-             return True
+            # Logic to ensure branch ref exists if we fetched to FETCH_HEAD
+            # If branch:branch succeeded, the branch ref is updated.
+            # If pull/N/head succeeded, we need to create/update local branch ptr.
+
+            # We can't easily know which path succeeded without checking return codes or logic flow.
+            # But we know at least one Fetch Succeeded if we reached here (wait, we didn't check success properly in original code flow?
+            # Original code: if not fetch (branch:branch): if not fetch (pull): return False.
+            # So if we are here, we fetched successfully.
+
+            # If branch:branch failed, we used pull/N/head.
+            # So we verify if branch exists?
+
+            verify = cmd.run_command(["git", "rev-parse", "--verify", branch_name])
+            if not verify.success:
+                # It must have been the FETCH_HEAD case or branch didn't exist before.
+                # Create/Update it.
+                cmd.run_command(["git", "branch", "-f", branch_name, "FETCH_HEAD"])
+            return True
 
         checkout_result = cmd.run_command(["git", "checkout", branch_name])
         if not checkout_result.success:
-             # If branch doesn't exist locally, checkout from fetched ref
-             checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
+            # If branch doesn't exist locally, checkout from fetched ref
+            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
 
-             if not checkout_result.success:
-                 log_action(
-                     f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
-                     False,
-                     checkout_result.stderr,
-                 )
-                 return False
+            if not checkout_result.success:
+                log_action(
+                    f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
+                    False,
+                    checkout_result.stderr,
+                )
+                return False
 
         log_action(f"Successfully manually checked out PR #{pr_number}")
         return True
@@ -1486,8 +1481,8 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
             def get_attr(obj, attr):
                 return getattr(obj, attr, None) or (obj.get(attr) if isinstance(obj, dict) else None)
 
-            issue_number = get_attr(issue, 'number')
-            issue_body = get_attr(issue, 'body')
+            issue_number = get_attr(issue, "number")
+            issue_body = get_attr(issue, "body")
 
             # Double check if session_id is actually in body or comments to be sure
             # Search API might return loose matches, although exact string match usually ranks high
@@ -1500,7 +1495,7 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
             try:
                 comments = github_client.get_issue_comments(repo_name, issue_number)
                 for comment in comments:
-                    comment_body = comment.get('body')
+                    comment_body = comment.get("body")
                     if comment_body and session_id in comment_body:
                         logger.info(f"Found session ID '{session_id}' in comment of issue #{issue_number}")
                         return issue_number
@@ -1547,29 +1542,46 @@ def _update_jules_pr_body(
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
         new_body = f"{pr_body}{separator}{close_statement}\n\nRelated issue: {issue_link}"
 
-        # Update PR body via GitHub Client (GhApi)
+        # Update PR body via GitHub Client
         try:
-            from auto_coder.util.gh_cache import get_ghapi_client, GitHubClient
-            
-            # Use token from client if available, else get from singleton
-            token = getattr(github_client, 'token', None)
-            if not token:
-                 token = GitHubClient.get_instance().token
-            
-            api = get_ghapi_client(token)
-            owner, repo = repo_name.split("/")
-            
-            api.pulls.update(owner, repo, pr_number, body=new_body)
+            from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
+
+            # Use github_client for API call if it's a real client with valid token
+            # and has the necessary methods. Otherwise, use get_ghapi_client.
+            token = getattr(github_client, "token", None)
+
+            # Prefer get_ghapi_client when a valid string token is provided
+            if isinstance(token, str):
+                api = get_ghapi_client(token)
+                owner, repo_name_split = repo_name.split("/")
+                api.pulls.update(owner, repo_name_split, pr_number, body=new_body)
+            elif hasattr(github_client, "get_repository"):
+                # Fallback to direct client methods
+                repo = github_client.get_repository(repo_name)
+                pr = repo.get_pull(pr_number)
+                pr.edit(body=new_body)
+            else:
+                # Last resort: try singleton token
+                token = GitHubClient.get_instance().token
+                api = get_ghapi_client(token)
+                owner, repo_name_split = repo_name.split("/")
+                api.pulls.update(owner, repo_name_split, pr_number, body=new_body)
 
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
             log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
             return True
         except Exception as e:
-            logger.error(f"Failed to update PR #{pr_number} body: {e}")
+            try:
+                logger.error(f"Failed to update PR #{pr_number} body: {str(e)}")
+            except Exception:
+                pass  # Prevent logging failures from affecting the result
             return False
 
     except Exception as e:
-        logger.error(f"Error updating Jules PR #{pr_number} body: {e}")
+        try:
+            logger.error(f"Error updating Jules PR #{pr_number} body: {str(e)}")
+        except Exception:
+            pass  # Prevent logging failures from affecting the result
         return False
 
 
@@ -1624,6 +1636,13 @@ def _link_jules_pr_to_issue(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
+        # Check for special Jules PRs that don't need issue linking
+        pr_title = pr_data.get("title", "")
+        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
+        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
+            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
+            return True
+
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
         if not session_id:
@@ -1634,13 +1653,6 @@ def _link_jules_pr_to_issue(
 
         # Step 2: Store session_id in pr_data for later use in the feedback loop
         pr_data["_jules_session_id"] = session_id
-
-        # Check for special Jules PRs that don't need issue linking
-        pr_title = pr_data.get("title", "")
-        special_prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
-        if any(pr_title.startswith(prefix) for prefix in special_prefixes):
-            logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
-            return True
 
         # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)
@@ -1671,6 +1683,10 @@ def _link_jules_pr_to_issue(
         return False
 
 
+# Alias for backwards compatibility with tests
+_process_jules_pr = _link_jules_pr_to_issue
+
+
 def _close_linked_issues(repo_name: str, pr_number: int) -> None:
     """Close issues linked in the PR body after successful merge.
 
@@ -1680,6 +1696,7 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
     """
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
@@ -1704,18 +1721,13 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
             try:
                 # Add comment
                 try:
-                    api.issues.create_comment(
-                        owner, 
-                        repo, 
-                        issue_num, 
-                        body=f"Closed by PR #{pr_number}"
-                    )
+                    api.issues.create_comment(owner, repo, issue_num, body=f"Closed by PR #{pr_number}")
                 except Exception as e:
                     logger.warning(f"Failed to comment on issue #{issue_num}: {e}")
 
                 # Close issue
                 api.issues.update(owner, repo, issue_num, state="closed")
-                
+
                 logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
                 log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
             except Exception as e:
@@ -1734,6 +1746,7 @@ def _archive_jules_session(repo_name: str, pr_number: int) -> None:
     """
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
@@ -1805,11 +1818,14 @@ def _send_jules_error_feedback(
         session_id = pr_data.get("_jules_session_id")
         if not session_id:
             actions.append(f"Cannot send error feedback to Jules for PR #{pr_number}: no session ID found")
-            logger.error(f"No session ID found in PR #{pr_number} data for Jules error feedback")
+            try:
+                logger.error(f"No session ID found in PR #{pr_number} data for Jules error feedback")
+            except Exception:
+                pass  # Prevent logging failures from affecting the result
             return actions
 
         # Get GitHub Actions error logs
-        github_logs, _ = _create_github_action_log_summary(repo_name, config, failed_checks)
+        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
 
         # Format the message to send to Jules
         message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
@@ -1831,7 +1847,10 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         response = jules_client.send_message(session_id, message)
 
         actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
-        logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
+        try:
+            logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
+        except Exception:
+            pass  # Prevent logging failures from affecting the result
 
         # Post a comment on the PR stating that a fix has been requested
         if github_client:
@@ -1841,14 +1860,20 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
                 actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
             except Exception as e:
                 error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
-                logger.error(error_msg)
+                try:
+                    logger.error(error_msg)
+                except Exception:
+                    pass  # Prevent logging failures from affecting the result
                 actions.append(error_msg)
         else:
             actions.append(f"Skipped posting comment on PR #{pr_number}: no GitHub client available")
 
     except Exception as e:
         error_msg = f"Error sending Jules error feedback for PR #{pr_number}: {e}"
-        logger.error(error_msg)
+        try:
+            logger.error(error_msg)
+        except Exception:
+            pass  # Prevent logging failures from affecting the result
         actions.append(error_msg)
 
     return actions
@@ -1872,6 +1897,7 @@ def _merge_pr(
     """
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
@@ -1896,7 +1922,7 @@ def _merge_pr(
         # Attempt merge with configured method
         if _attempt_api_merge(config.MERGE_METHOD):
             return True
-            
+
         # If failed, check if it was due to conflicts (check mergeable state)
         is_conflict = False
         try:
@@ -1917,11 +1943,11 @@ def _merge_pr(
                 log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
 
                 polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
-                
+
                 if polling_succeeded:
-                   logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
+                    logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
                 else:
-                   logger.warning(f"Polling timed out for PR #{pr_number}, attempting merge anyway")
+                    logger.warning(f"Polling timed out for PR #{pr_number}, attempting merge anyway")
 
                 # Retry merge
                 if _attempt_api_merge(config.MERGE_METHOD):
@@ -1930,7 +1956,7 @@ def _merge_pr(
                 else:
                     logger.warning(f"Merge failed for PR #{pr_number} even after conflict resolution")
                     log_action(f"Failed to merge PR #{pr_number} after conflict resolution", False, "Merge API failed")
-                    
+
                     # Try alternative merge methods
                     allowed = _get_allowed_merge_methods(repo_name)
                     methods_order = [config.MERGE_METHOD] + [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
@@ -1942,30 +1968,30 @@ def _merge_pr(
 
                     # Trigger fallback
                     try:
-                         pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-                         _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
+                        pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+                        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
                     except Exception:
-                         pass
+                        pass
                     return False
             else:
-                 log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
-                 try:
-                     pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-                     _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
-                 except Exception:
-                     pass
-                 return False
-        
+                log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                try:
+                    pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+                    _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
+                except Exception:
+                    pass
+                return False
+
         else:
-             # Not a conflict, but merge failed (maybe checks pending or not approved?)
-             log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
-             try:
-                 pr_info = api.pulls.get(owner, repo, pr_number)
-                 pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-                 _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
-             except Exception:
-                 pass
-             return False
+            # Not a conflict, but merge failed (maybe checks pending or not approved?)
+            log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
+            try:
+                pr_info = api.pulls.get(owner, repo, pr_number)
+                pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+                _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
+            except Exception:
+                pass
+            return False
 
     except Exception as e:
         logger.error(f"Error merging PR #{pr_number}: {e}")
@@ -1984,6 +2010,7 @@ def _poll_pr_mergeable(
     """
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
@@ -1996,7 +2023,7 @@ def _poll_pr_mergeable(
                     return True
             except Exception:
                 pass
-            
+
             # Sleep before next poll
             time.sleep(max(1, interval))
         return False
@@ -2012,19 +2039,20 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
     try:
         # Use GhApi to get allowed merge methods
         from auto_coder.util.gh_cache import get_ghapi_client
+
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
-        
+
         repo_data = api.repos.get(owner, repo)
-        
+
         if repo_data.get("allow_squash_merge"):
             allowed.append("--squash")
         if repo_data.get("allow_merge_commit"):
             allowed.append("--merge")
         if repo_data.get("allow_rebase_merge"):
             allowed.append("--rebase")
-            
+
         return allowed
     except Exception as e:
         logger.warning(f"Failed to get allowed merge methods via GhApi: {e}")
@@ -2065,10 +2093,11 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
         # Step 1.5: Get PR details to determine the target base branch
         try:
             from auto_coder.util.gh_cache import get_ghapi_client
+
             token = GitHubClient.get_instance().token
             api = get_ghapi_client(token)
             owner, repo = repo_name.split("/")
-            
+
             pr_data = api.pulls.get(owner, repo, pr_number)
             base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
         except Exception as e:
@@ -2152,11 +2181,12 @@ def _fix_pr_issues_with_testing(
     # Extract failed tests from GitHub Actions logs
     if failed_tests is None:
         failed_tests = extract_all_failed_tests(github_logs)
-    
+
     if skip_github_actions_fix:
-        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests)
+        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests, skip_github_actions_fix=True)
     else:
         return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
+
 
 def _fix_pr_issues_with_github_actions_testing(
     repo_name: str,
@@ -2166,7 +2196,7 @@ def _fix_pr_issues_with_github_actions_testing(
     failed_tests: Optional[List[str]] = None,
 ) -> List[str]:
     """Fix PR issues using GitHub Actions logs, with intelligent routing.
-    
+
     If 1-3 tests failed: Run local testing/fixing loop (targeted).
     If 4+ or 0 tests: Apply GHA log fix, commit, and push (trigger new run).
     """
@@ -2176,7 +2206,7 @@ def _fix_pr_issues_with_github_actions_testing(
     # Initialize backend managers
     current_backend_manager = get_llm_backend_manager()
     high_score_backend_manager = create_high_score_backend_manager()
-    
+
     # Track history
     attempt_history: List[Dict[str, Any]] = []
 
@@ -2189,34 +2219,34 @@ def _fix_pr_issues_with_github_actions_testing(
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests)
+            test_result = run_local_tests(config, test_file=failed_tests[0])
 
             # Check if we should use local fix strategy (1-3 failed tests)
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
-            
-            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+
+            while not test_result.get("success") and 1 <= len(failed_tests) <= 3 and attempt < attempts_limit:
                 attempt += 1
-                
+
                 # Backend switching logic
                 if attempt >= 2 and high_score_backend_manager:
                     if current_backend_manager != high_score_backend_manager:
                         logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
                         current_backend_manager = high_score_backend_manager
                         actions.append(f"Switched to fallback backend for PR #{pr_number}")
-                
+
                 with ProgressStage(f"Low-failure fix attempt {attempt}"):
                     local_fix_actions, llm_response = _apply_local_test_fix(
-                                        repo_name,
-                                        pr_data,
-                                        config,
-                                    test_result,
-                                    attempt_history,
-                                    backend_manager=current_backend_manager,
-                                )
+                        repo_name,
+                        pr_data,
+                        config,
+                        test_result,
+                        attempt_history,
+                        backend_manager=current_backend_manager,
+                    )
                     actions.extend(local_fix_actions)
-                
-                test_result = run_local_tests(config, test_file=failed_tests)
+
+                test_result = run_local_tests(config, test_file=failed_tests[0])
 
         # 3. Commit and Push
         # Check if any changes were made
@@ -2224,7 +2254,7 @@ def _fix_pr_issues_with_github_actions_testing(
         if result.success and result.stdout.strip():
             # Stage changes before committing
             cmd.run_command(["git", "add", "."])
-            
+
             commit_msg = f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})"
             c_res = git_commit_with_retry(commit_msg)
             if c_res.success:
@@ -2251,6 +2281,7 @@ def _fix_pr_issues_with_local_testing(
     config: AutomationConfig,
     github_logs: str,
     test_files: Optional[List[str]] = None,
+    skip_github_actions_fix: bool = False,
 ) -> List[str]:
     """Fix PR issues using local testing loop."""
     actions = []

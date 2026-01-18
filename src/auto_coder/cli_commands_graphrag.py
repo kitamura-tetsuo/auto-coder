@@ -73,12 +73,31 @@ def run_graphrag_setup_mcp_programmatically(
             if not silent:
                 logger.warning("uv not found. Attempting automatic installation...")
 
+            import tempfile
+            import urllib.request
+
+            installer_path = None
             try:
-                # Install uv using the official installer
-                install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+                # Download uv installer securely
+                url = "https://astral.sh/uv/install.sh"
+                if not silent:
+                    logger.info(f"Downloading uv installer from {url}...")
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".sh") as tmp_file:
+                    installer_path = tmp_file.name
+                    with urllib.request.urlopen(url, timeout=30) as response:
+                        shutil.copyfileobj(response, tmp_file)
+
+                # Make executable
+                os.chmod(installer_path, 0o700)
+
+                # Run installer without shell=True
+                if not silent:
+                    logger.info("Running uv installer...")
+
+                # Use explicit shell to be more robust across environments
                 result = subprocess.run(
-                    install_cmd,
-                    shell=True,
+                    ["sh", installer_path],
                     capture_output=True,
                     text=True,
                     timeout=300,  # 5 minutes timeout for installation
@@ -90,6 +109,19 @@ def run_graphrag_setup_mcp_programmatically(
                     logger.error("Please install manually: https://docs.astral.sh/uv/")
                     return False
 
+            except Exception as e:
+                logger.error(f"Error occurred during uv installation: {e}")
+                logger.error("Please install manually: https://docs.astral.sh/uv/")
+                return False
+            finally:
+                # Cleanup temporary file
+                if installer_path and os.path.exists(installer_path):
+                    try:
+                        os.unlink(installer_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove temporary installer file: {e}")
+
+            try:
                 # Verify installation
                 # Add common uv installation paths to PATH for this session
                 uv_bin_paths = [

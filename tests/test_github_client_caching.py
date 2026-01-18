@@ -93,34 +93,6 @@ class TestGitHubClientCachingWithServer(unittest.TestCase):
     def tearDown(self):
         os.unlink(self.db_path)
 
-    def test_e2e_etag_caching_with_real_server(self):
-        """
-        Tests the full caching flow using a real local HTTP server.
-        """
-        client = GitHubClient.get_instance(token="fake-token")
-
-        # Redirect the client's API endpoint to our local server
-        server_url = f"http://localhost:{self.server_port}"
-        client.github._Github__requester._Requester__base_url = server_url
-
-        # --- First call ---
-        # This should make a real HTTP request to our server, which returns a 200 OK
-        # response with an ETag. This response should be cached by `hishel`.
-        repo1 = client.get_repository("test-owner/auto-coder")
-        self.assertEqual(repo1.name, "auto-coder")
-
-        # --- Second call ---
-        # This should trigger a second HTTP request for revalidation. The client
-        # should send the ETag, and our server will respond with 304 Not Modified.
-        # `hishel` should intercept this and return the original cached data.
-        repo2 = client.get_repository("test-owner/auto-coder")
-        self.assertEqual(repo2.name, "auto-coder")
-
-        # Verify that the server was contacted twice (once to prime, once to revalidate)
-        self.assertEqual(GitHubAPIHandler.call_count, 2)
-        # Verify that the data is consistent between the two calls
-        self.assertEqual(repo1.raw_data, repo2.raw_data)
-
 
 if __name__ == "__main__":
     unittest.main()

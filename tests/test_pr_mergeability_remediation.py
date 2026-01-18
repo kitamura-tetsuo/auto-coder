@@ -137,7 +137,6 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
     mock_check_status.assert_not_called()
 
 
-
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
 def test_get_mergeable_state_uses_existing_data(mock_github_client, mock_get_ghapi_client):
@@ -209,7 +208,7 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
     mock_github_client.get_instance.return_value.token = "token"
-    
+
     # Mock PR details retrieval
     mock_api.pulls.get.return_value = {"base": {"ref": "develop"}, "head": {"ref": "feature-branch"}}
 
@@ -327,7 +326,7 @@ def test_start_mergeability_remediation_parses_base_branch_fallback(mock_github_
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
     mock_github_client.get_instance.return_value.token = "token"
-    
+
     # Mock API failure for PR details
     mock_api.pulls.get.side_effect = Exception("API error")
 
@@ -346,7 +345,7 @@ def test_start_mergeability_remediation_missing_head_ref(mock_github_client, moc
     mock_api = Mock()
     mock_get_ghapi_client.return_value = mock_api
     mock_github_client.get_instance.return_value.token = "token"
-    
+
     # Mock PR details with missing head ref
     mock_api.pulls.get.return_value = {"base": {"ref": "main"}, "head": {}}
 
@@ -354,5 +353,3 @@ def test_start_mergeability_remediation_missing_head_ref(mock_github_client, moc
 
     assert any("Failed to determine head branch for PR #206" in action for action in actions)
     assert "ACTION_FLAG:SKIP_ANALYSIS" not in actions
-
-

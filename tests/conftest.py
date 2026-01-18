@@ -19,8 +19,8 @@ if str(_src_path) not in sys.path:
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
 from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.llm_backend_config import reset_llm_config
+from src.auto_coder.util.gh_cache import GitHubClient
 
 
 # Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)

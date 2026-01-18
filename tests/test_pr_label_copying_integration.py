@@ -219,14 +219,15 @@ class TestPRLabelCopyingIntegration:
             # Return semantic labels to be copied
             mock_resolve.return_value = ["urgent"]
 
-            # Mock gh pr create
-            with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-                mock_gh_logger_instance = Mock()
-                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(
-                    success=True,
-                    stdout=f"https://github.com/{repo_name}/pull/{pr_number}",
-                )
-                mock_gh_logger.return_value = mock_gh_logger_instance
+            # Mock get_ghapi_client for PR creation
+            mock_api = MagicMock()
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+            }
+            with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+                # Mock find_pr_by_head_branch to return None
+                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
                 # Create PR
                 result = _create_pr_for_issue(
@@ -278,11 +279,15 @@ class TestPRLabelCopyingIntegration:
 
         mock_github_client_for_pr.add_labels = track_labels
 
-        # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Mock get_ghapi_client for PR creation
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {
+            "number": pr_number,
+            "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+        }
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            # Mock find_pr_by_head_branch to return None
+            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
             # Create PR
             result = _create_pr_for_issue(
@@ -297,8 +302,6 @@ class TestPRLabelCopyingIntegration:
 
             # Verify PR was created
             assert f"Successfully created PR for issue #{issue_number}" in result
-            # No semantic label operations (only @auto-coder label might be added)
-            # But we shouldn't have semantic label copying
 
     def test_create_pr_with_no_semantic_labels(self, config_with_pr_label_copying, mock_github_client_for_pr):
         """Test PR creation handles issues with no semantic labels."""
@@ -318,11 +321,15 @@ class TestPRLabelCopyingIntegration:
         # Mock PR closing issues
         mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
 
-        # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Mock get_ghapi_client for PR creation
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {
+            "number": pr_number,
+            "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+        }
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            # Mock find_pr_by_head_branch to return None
+            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
             # Create PR
             result = _create_pr_for_issue(
@@ -359,11 +366,15 @@ class TestPRLabelCopyingIntegration:
         # Make label operations fail
         mock_github_client_for_pr.add_labels.side_effect = Exception("GitHub API error")
 
-        # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-            mock_gh_logger_instance = Mock()
-            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
-            mock_gh_logger.return_value = mock_gh_logger_instance
+        # Mock get_ghapi_client for PR creation
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {
+            "number": pr_number,
+            "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+        }
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            # Mock find_pr_by_head_branch to return None
+            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
             # Create PR - should not raise despite label error
             result = _create_pr_for_issue(
@@ -470,14 +481,15 @@ class TestPRLabelCopyingIntegration:
         with patch("src.auto_coder.issue_processor.resolve_pr_labels_with_priority") as mock_resolve:
             mock_resolve.return_value = ["urgent"]  # Simulate label resolution
 
-            # Mock gh pr create
-            with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
-                mock_gh_logger_instance = Mock()
-                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(
-                    success=True,
-                    stdout=f"https://github.com/{repo_name}/pull/{pr_number}",
-                )
-                mock_gh_logger.return_value = mock_gh_logger_instance
+            # Mock get_ghapi_client for PR creation
+            mock_api = MagicMock()
+            mock_api.pulls.create.return_value = {
+                "number": pr_number,
+                "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+            }
+            with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+                # Mock find_pr_by_head_branch to return None
+                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
                 # Create PR with comprehensive test
                 result = _create_pr_for_issue(

@@ -4,7 +4,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _handle_pr_merge
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
+from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 
 class TestPRProcessorLocalOverride:
@@ -20,10 +20,12 @@ class TestPRProcessorLocalOverride:
     @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
     @patch("src.auto_coder.pr_processor._checkout_pr_branch")
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     def test_jules_pr_local_override(
         self,
         mock_get_logs,
+        mock_branch_manager,
         mock_update,
         mock_checkout,
         mock_fix_issues,
@@ -50,6 +52,9 @@ class TestPRProcessorLocalOverride:
         # Mock Jules PR
         mock_is_jules_pr.return_value = True
 
+        # Mock BranchManager
+        mock_branch_manager.return_value.__enter__.return_value = MagicMock()
+
         # Mock current branch to match PR branch (Simulate being on the branch)
         mock_run_command.return_value = MagicMock(success=True, stdout=f"{pr_branch}\n")
 
@@ -57,7 +62,7 @@ class TestPRProcessorLocalOverride:
         mock_check_in_progress.return_value = True
         mock_get_mergeable_state.return_value = {"mergeable": True}
         mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
-        mock_get_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=["test_check"])
+        mock_get_detailed_checks.return_value = MagicMock(spec=DetailedChecksResult, success=False, failed_checks=["test_check"])
 
         # Mock checkout success
         mock_checkout.return_value = True

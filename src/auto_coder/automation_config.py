@@ -148,13 +148,13 @@ class AutomationConfig:
         object.__setattr__(self, "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL", True)
         object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", True)
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
-        
+
         # Load Jules wait timeout from config
         # Load Jules wait timeout from config
         from .llm_backend_config import (
-            get_jules_wait_timeout_hours_from_config,
             get_dependabot_wait_interval_hours_from_config,
             get_jules_failure_threshold_from_config,
+            get_jules_wait_timeout_hours_from_config,
         )
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
@@ -488,6 +488,9 @@ class AutomationConfig:
     # Jules failure threshold (default: 10)
     # Configurable via [jules].failure_threshold in config.toml
     JULES_FAILURE_THRESHOLD: int = 10
+
+    # Label for auto-coder operations
+    AUTO_CODER_LABEL: str = "@auto-coder"
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)
