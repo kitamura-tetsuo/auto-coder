@@ -100,6 +100,7 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
         github_client = Mock()
 
         # Mock checks failure
@@ -172,6 +173,7 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
         github_client = Mock()
 
         # Mock checks failure
