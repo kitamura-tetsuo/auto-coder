@@ -54,6 +54,7 @@ except ImportError:
     pass  # Record will be used as a forward reference
 
 from .config import settings
+from .security_utils import redact_string
 
 # Determine the base directory that should be removed from log paths.  When the
 # package is installed this resolves to ``.../site-packages``.  When running
@@ -239,7 +240,7 @@ def _format_args(func: Callable, args: tuple, kwargs: dict, max_len: int = 120) 
     """Build a compact call signature string for logging."""
     bound = signature(func).bind_partial(*args, **kwargs)
     bound.apply_defaults()
-    s = ", ".join(f"{k}={bound.arguments[k]!r}" for k in bound.arguments)
+    s = ", ".join(f"{k}={redact_string(repr(bound.arguments[k]))}" for k in bound.arguments)
     if len(s) > max_len:
         s = s[:max_len] + "…"
     return s
@@ -257,7 +258,7 @@ def log_calls(func: Callable[..., Any]) -> Callable[..., Any]:
         async def wrapper(*args, **kwargs):  # type: ignore
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = await func(*args, **kwargs)
-            logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
+            logger.opt(depth=1).debug(f"RET  {where} -> {redact_string(repr(result))}")
             return result
 
         return wrapper
@@ -267,7 +268,7 @@ def log_calls(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapper(*args, **kwargs):  # type: ignore
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = func(*args, **kwargs)
-            logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
+            logger.opt(depth=1).debug(f"RET  {where} -> {redact_string(repr(result))}")
             return result
 
         return wrapper

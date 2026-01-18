@@ -27,3 +27,8 @@
 **Vulnerability:** `llm_config.toml` containing API keys was created with default permissions (often world-readable).
 **Learning:** Any file that might contain secrets (like config files) must be created with restricted permissions from the start. Race conditions in `open()` then `chmod()` are a risk.
 **Prevention:** Use the same `os.open` with `0o600` pattern for all configuration files that might store sensitive data.
+
+## 2026-01-21 - Unredacted Function Arguments in Logs
+**Vulnerability:** The `@log_calls` decorator logged function arguments and return values using `repr()` without any redaction, exposing sensitive data (like tokens passed to backend clients) in debug logs.
+**Learning:** Decorators used for tracing or debugging must implement the same security sanitization as explicit logging calls. It's easy to overlook "internal" tracing tools as sources of leakage.
+**Prevention:** Apply `security_utils.redact_string` to all logged arguments and return values in tracing decorators.
