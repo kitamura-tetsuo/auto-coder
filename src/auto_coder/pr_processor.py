@@ -975,10 +975,10 @@ def _handle_pr_merge(
                             # which are Issue objects.
 
                             # Remove @auto-coder label
-                            if config.AUTO_CODER_LABEL:
+                            if not config.DISABLE_LABELS:
                                 try:
-                                    github_client.remove_labels(repo_name, issue.number, [config.AUTO_CODER_LABEL], item_type="pr")
-                                    actions.append(f"Removed {config.AUTO_CODER_LABEL} label from related PR #{issue.number} (Session ID: {session_id})")
+                                    github_client.remove_labels(repo_name, issue.number, ["@auto-coder"], item_type="pr")
+                                    actions.append(f"Removed @auto-coder label from related PR #{issue.number} (Session ID: {session_id})")
                                     count += 1
                                 except Exception as e:
                                     logger.error(f"Failed to remove label from related PR #{issue.number}: {e}")
@@ -1077,7 +1077,8 @@ def _handle_pr_merge(
                 # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
                     github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
+                    # Skip GitHub Actions fix when already on the PR branch (local testing mode)
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -2186,13 +2187,13 @@ def _fix_pr_issues_with_github_actions_testing(
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests)
+            test_result = run_local_tests(config)
 
             # Check if we should use local fix strategy (1-3 failed tests)
             attempts_limit = config.MAX_FIX_ATTEMPTS
             attempt = 0
 
-            while test_result.failed_tests and 1 <= len(test_result.failed_tests) <= 3 and attempt < attempts_limit:
+            while test_result.get("failed_tests") and 1 <= len(test_result.get("failed_tests", [])) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
                 # Backend switching logic
@@ -2213,7 +2214,7 @@ def _fix_pr_issues_with_github_actions_testing(
                     )
                     actions.extend(local_fix_actions)
 
-                test_result = run_local_tests(config, test_file=failed_tests)
+                test_result = run_local_tests(config)
 
         # 3. Commit and Push
         # Check if any changes were made
