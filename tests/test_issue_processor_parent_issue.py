@@ -212,8 +212,9 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_new_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_ghapi_client")
+    def test_create_pr_for_parent_issue_new_branch(self, mock_get_ghapi_client, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with new branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -228,6 +229,13 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.token = "fake-token"
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = MagicMock(html_url="https://github.com/owner/repo/pull/123", number=123)
+        mock_get_ghapi_client.return_value = mock_api
 
         # Mock git commands - branch doesn't exist
         mock_cmd.run_command.side_effect = [
@@ -259,8 +267,9 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_existing_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_ghapi_client")
+    def test_create_pr_for_parent_issue_existing_branch(self, mock_get_ghapi_client, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with existing branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -275,6 +284,13 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.token = "fake-token"
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = MagicMock(html_url="https://github.com/owner/repo/pull/123", number=123)
+        mock_get_ghapi_client.return_value = mock_api
 
         # Mock git commands - branch exists
         mock_cmd.run_command.side_effect = [
@@ -303,9 +319,10 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     @patch("src.auto_coder.git_branch.git_commit_with_retry")
-    def test_create_pr_for_parent_issue_with_changes(self, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.issue_processor.get_ghapi_client")
+    def test_create_pr_for_parent_issue_with_changes(self, mock_get_ghapi_client, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR with changes to commit."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -320,6 +337,13 @@ class TestCreatePRForParentIssue:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.token = "fake-token"
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = MagicMock(html_url="https://github.com/owner/repo/pull/123", number=123)
+        mock_get_ghapi_client.return_value = mock_api
 
         # Mock git commands
         mock_cmd.run_command.side_effect = [
@@ -382,7 +406,7 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
     def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test error handling when PR creation fails."""
         repo_name = "owner/repo"
@@ -418,8 +442,9 @@ class TestCreatePRForParentIssue:
 
     @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2)
     @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+    @patch("src.auto_coder.gh_logger.get_gh_logger")
+    @patch("src.auto_coder.issue_processor.get_ghapi_client")
+    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_get_ghapi_client, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Ensure attempt-specific branch is used when attempts exist."""
         repo_name = "owner/repo"
         issue_number = 150
@@ -433,6 +458,13 @@ class TestCreatePRForParentIssue:
         reasoning = "All sub-issues closed and verified"
 
         github_client = MagicMock()
+        github_client.token = "fake-token"
+        github_client.find_pr_by_head_branch.return_value = None  # No existing PR
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = MagicMock(html_url="https://github.com/owner/repo/pull/123", number=123)
+        mock_get_ghapi_client.return_value = mock_api
 
         mock_cmd.run_command.side_effect = [
             MagicMock(returncode=1),  # Branch doesn't exist
@@ -455,8 +487,9 @@ class TestCreatePRForParentIssue:
         assert expected_branch in create_branch_call
 
         # PR creation should use attempt-specific head branch
-        pr_call_args = mock_gh_instance.execute_with_logging.call_args[0][0]
-        assert expected_branch in pr_call_args
+        mock_api.pulls.create.assert_called_once()
+        create_kwargs = mock_api.pulls.create.call_args[1]
+        assert create_kwargs["head"] == expected_branch
         assert "Successfully created PR for parent issue" in result
 
 
@@ -479,6 +512,7 @@ class TestParentIssueContextInjection:
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.token = "fake-token"
         # Sub-issue has a parent
         github_client.get_parent_issue_details.return_value = {
             "number": 200,
@@ -506,7 +540,7 @@ class TestParentIssueContextInjection:
                         mock_create_pr.return_value = "Created PR"
 
                         # Mock branch_context
-                        with patch("src.auto_coder.issue_processor.branch_context"):
+                        with patch("src.auto_coder.git_branch.branch_context"):
                             # Mock LabelManager
                             with patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr:
                                 mock_label_mgr.return_value.__enter__.return_value = True
@@ -538,6 +572,7 @@ class TestParentIssueContextInjection:
 
         # Mock GitHub client - no parent
         github_client = MagicMock()
+        github_client.token = "fake-token"
         github_client.get_parent_issue_details.return_value = None
         github_client.get_parent_issue_body.return_value = None  # Should not be called
 
@@ -560,7 +595,7 @@ class TestParentIssueContextInjection:
                         mock_create_pr.return_value = "Created PR"
 
                         # Mock branch_context
-                        with patch("src.auto_coder.issue_processor.branch_context"):
+                        with patch("src.auto_coder.git_branch.branch_context"):
                             # Mock LabelManager
                             with patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr:
                                 mock_label_mgr.return_value.__enter__.return_value = True
@@ -591,6 +626,7 @@ class TestParentIssueContextInjection:
 
         # Mock GitHub client - has parent but body is None
         github_client = MagicMock()
+        github_client.token = "fake-token"
         github_client.get_parent_issue_details.return_value = {
             "number": 200,
             "title": "Parent Issue",
@@ -617,7 +653,7 @@ class TestParentIssueContextInjection:
                         mock_create_pr.return_value = "Created PR"
 
                         # Mock branch_context
-                        with patch("src.auto_coder.issue_processor.branch_context"):
+                        with patch("src.auto_coder.git_branch.branch_context"):
                             # Mock LabelManager
                             with patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr:
                                 mock_label_mgr.return_value.__enter__.return_value = True

@@ -68,6 +68,7 @@ class TestHandlePrMergeJulesFallback:
         mock_checkout.assert_not_called()
         mock_fix_issues.assert_not_called()
 
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
@@ -92,6 +93,7 @@ class TestHandlePrMergeJulesFallback:
         mock_check_status,
         mock_send_feedback,
         mock_is_jules,
+        mock_branch_manager,
     ):
         """Test that fallback flow is used when failure count > 10."""
         # Setup
@@ -116,7 +118,10 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock checkout success
         mock_checkout.return_value = True
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
+
+        # Ensure we are NOT already on the branch, so Jules check logic runs
+        # If we are already on branch, it skips Jules check and goes directly to fix.
+        mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
@@ -130,11 +135,13 @@ class TestHandlePrMergeJulesFallback:
 
         # Should proceed to checkout and fix
         mock_checkout.assert_called_once()
+        mock_branch_manager.assert_called_once()  # Verify BranchManager context was used
         mock_fix_issues.assert_called_once()
 
         # Verify actions contain local fix info
         assert any("Fixed issues locally" in action for action in actions)
 
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
@@ -159,6 +166,7 @@ class TestHandlePrMergeJulesFallback:
         mock_check_status,
         mock_send_feedback,
         mock_is_jules,
+        mock_branch_manager,
     ):
         """Test that fallback flow is used when waiting > 1 hour."""
         # Setup
@@ -184,7 +192,9 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock checkout success
         mock_checkout.return_value = True
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
+
+        # Ensure we are NOT already on the branch
+        mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
