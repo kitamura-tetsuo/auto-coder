@@ -54,13 +54,13 @@ class TestPRProcessorBackendSwitching:
         # Mock the test results - fail first, pass on third
         # Need to configure get() method to return failed_tests for dict-style access
         fail_result_1 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed", errors="Error details")
-        fail_result_1.get = lambda key: getattr(fail_result_1, key, [])
+        fail_result_1.get = lambda key, default=None: getattr(fail_result_1, key, default)
 
         fail_result_2 = Mock(failed_tests=["test_foo.py"], success=False, output="Test failed again", errors="More errors")
-        fail_result_2.get = lambda key: getattr(fail_result_2, key, [])
+        fail_result_2.get = lambda key, default=None: getattr(fail_result_2, key, default)
 
         pass_result = Mock(failed_tests=[], success=True, output="All tests passed", errors="")
-        pass_result.get = lambda key: getattr(pass_result, key, [])
+        pass_result.get = lambda key, default=None: getattr(pass_result, key, default)
 
         mock_run_tests.side_effect = [
             fail_result_1,  # attempt 1
@@ -180,16 +180,16 @@ class TestPRProcessorBackendSwitching:
         # Mock test results - fail multiple times
         # Need to configure get() method to return failed_tests for dict-style access
         fail_1 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 1")
-        fail_1.get = lambda key: getattr(fail_1, key, [])
+        fail_1.get = lambda key, default=None: getattr(fail_1, key, default)
 
         fail_2 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 2")
-        fail_2.get = lambda key: getattr(fail_2, key, [])
+        fail_2.get = lambda key, default=None: getattr(fail_2, key, default)
 
         fail_3 = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Error 3")
-        fail_3.get = lambda key: getattr(fail_3, key, [])
+        fail_3.get = lambda key, default=None: getattr(fail_3, key, default)
 
         pass_res = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
-        pass_res.get = lambda key: getattr(pass_res, key, [])
+        pass_res.get = lambda key, default=None: getattr(pass_res, key, default)
 
         mock_run_tests.side_effect = [
             fail_1,  # attempt 1
@@ -257,7 +257,7 @@ class TestPRProcessorBackendSwitching:
         # Mock test results - always fail
         # Need to configure get() method to return failed_tests for dict-style access
         fail_result = Mock(failed_tests=["test1.py"], success=False, output="Test failed", errors="Errors")
-        fail_result.get = lambda key: getattr(fail_result, key, [])
+        fail_result.get = lambda key, default=None: getattr(fail_result, key, default)
         mock_run_tests.return_value = fail_result
 
         # Mock local fix to return empty actions and no response
