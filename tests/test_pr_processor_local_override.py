@@ -4,7 +4,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _handle_pr_merge
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
+from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 
 class TestPRProcessorLocalOverride:
@@ -62,7 +62,7 @@ class TestPRProcessorLocalOverride:
         mock_check_in_progress.return_value = True
         mock_get_mergeable_state.return_value = {"mergeable": True}
         mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
-        mock_get_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=["test_check"])
+        mock_get_detailed_checks.return_value = MagicMock(spec=DetailedChecksResult, success=False, failed_checks=["test_check"])
 
         # Mock checkout success
         mock_checkout.return_value = True

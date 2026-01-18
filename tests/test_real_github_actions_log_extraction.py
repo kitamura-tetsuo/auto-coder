@@ -172,105 +172,69 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 2025-10-27T03:26:39.0000000Z   151 did not run
 """
 
-    def fake_execute_with_logging(cmd, repo=None, timeout=60, capture_output=True, **kwargs):
-        # Get job name
-        if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
-            jobs_obj = {
-                "jobs": [
-                    {
-                        "databaseId": 53715705095,
-                        "name": "CI / e2e tests",
-                        "conclusion": "failure",
-                    }
-                ]
-            }
-            return Mock(returncode=0, stdout=json.dumps(jobs_obj), stderr="", success=True)
-
-        # Fallback text logs
-        if cmd[:4] == ["gh", "run", "view", "18828609259"] and "--log" in cmd:
-            # Return the same realistic_step_log in text format
-            return Mock(returncode=0, stdout=realistic_step_log, stderr="", success=True)
-
-        # Job details (step information)
-        if cmd[:2] == ["gh", "api"] and "actions/jobs/53715705095" in cmd[2] and not cmd[2].endswith("/logs"):
-            job_obj = {
-                "id": 53715705095,
-                "name": "CI / e2e tests",
+    # Mock job details
+    job_details = {
+        "id": 53715705095,
+        "name": "CI / e2e tests",
+        "conclusion": "failure",
+        "steps": [
+            {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Run actions/checkout@v4",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Run npm ci",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Run npm test",
+                "status": "completed",
                 "conclusion": "failure",
-                "steps": [
-                    {
-                        "name": "Set up job",
-                        "status": "completed",
-                        "conclusion": "success",
-                    },
-                    {
-                        "name": "Run actions/checkout@v4",
-                        "status": "completed",
-                        "conclusion": "success",
-                    },
-                    {
-                        "name": "Run npm ci",
-                        "status": "completed",
-                        "conclusion": "success",
-                    },
-                    {
-                        "name": "Run npm test",
-                        "status": "completed",
-                        "conclusion": "failure",
-                    },
-                ],
-            }
-            return Mock(returncode=0, stdout=json.dumps(job_obj), stderr="", success=True)
+            },
+        ],
+    }
 
-        return Mock(returncode=1, stdout="", stderr="unknown", success=False)
+    # Create ZIP content
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, "w") as zf:
+        zf.writestr("1_Set up job.txt", "Setting up job...\nJob setup complete.")
+        zf.writestr(
+            "2_Run actions checkout@v4.txt",
+            "Checking out code...\nCheckout complete.",
+        )
+        zf.writestr(
+            "3_Run npm ci.txt",
+            "Installing dependencies...\nadded 1234 packages in 45s",
+        )
+        zf.writestr("4_Run npm test.txt", realistic_step_log)
+    zip_content = bio.getvalue()
 
-    def fake_logged_subprocess(cmd, repo=None, capture_output=True, timeout=120, **kwargs):
-        # job ZIP -> success
-        if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/logs"):
-            bio = io.BytesIO()
-            with zipfile.ZipFile(bio, "w") as zf:
-                zf.writestr("1_Set up job.txt", "Setting up job...\nJob setup complete.")
-                zf.writestr(
-                    "2_Run actions checkout@v4.txt",
-                    "Checking out code...\nCheckout complete.",
-                )
-                zf.writestr(
-                    "3_Run npm ci.txt",
-                    "Installing dependencies...\nadded 1234 packages in 45s",
-                )
-                zf.writestr("4_Run npm test.txt", realistic_step_log)
-            result = Mock(returncode=0, stdout=bio.getvalue(), stderr=b"")
-            # Return a context manager
-            from contextlib import nullcontext
+    with patch("src.auto_coder.util.github_action.GitHubClient") as mock_github_client:
+        with patch("src.auto_coder.util.github_action.get_ghapi_client") as mock_get_ghapi_client:
+            # Configure mocks
+            mock_github_client.get_instance.return_value.token = "dummy_token"
 
-            return nullcontext(result)
+            mock_api = Mock()
+            mock_get_ghapi_client.return_value = mock_api
 
-        result = Mock(returncode=1, stdout=b"", stderr=b"unknown")
-        from contextlib import nullcontext
+            # Mock get_job_for_workflow_run
+            mock_api.actions.get_job_for_workflow_run.return_value = job_details
 
-        return nullcontext(result)
+            # Mock download_job_logs_for_workflow_run
+            mock_api.actions.download_job_logs_for_workflow_run.return_value = zip_content
 
-    def fake_cmd_run_command(cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True):
-        # This function should not be used, but defined just in case
-        from src.auto_coder.utils import CommandResult
-
-        return CommandResult(success=False, returncode=1, stdout="", stderr="not used")
-
-    # Create a mock logger
-    mock_logger = Mock()
-    mock_logger.execute_with_logging = Mock(side_effect=fake_execute_with_logging)
-    mock_logger.logged_subprocess = Mock(side_effect=fake_logged_subprocess)
-    mock_logger.log_command = Mock()
-
-    with patch("src.auto_coder.gh_logger.get_gh_logger", return_value=mock_logger):
-        with patch(
-            "src.auto_coder.util.github_action.cmd.run_command",
-            side_effect=fake_cmd_run_command,
-        ):
             result = get_github_actions_logs_from_url(url)
 
-    # Verify that job information is included
-    assert "53715705095" in result
+            # Verification
+            mock_api.actions.get_job_for_workflow_run.assert_called_with(owner="kitamura-tetsuo", repo="outliner", job_id="53715705095")
+            mock_api.actions.download_job_logs_for_workflow_run.assert_called_with(owner="kitamura-tetsuo", repo="outliner", job_id="53715705095")
 
     # Verify that error information is included
     assert "Error: expect(received).toContain(expected)" in result
@@ -279,6 +243,9 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
     assert "Received string:" in result
 
     # Verify that successful steps are excluded
+    # Note: Using the zip method, the logs include "Step Set up job" headers if matched or errors found.
+    # The current implementation of get_github_actions_logs_from_url with zip extraction
+    # filters by failing steps. "Set up job" is success, so it should be skipped.
     assert "Set up job" not in result  # Successful steps should be excluded
     assert "Checking out code" not in result  # Successful steps should be excluded
     assert "Installing dependencies" not in result  # Successful steps should be excluded
