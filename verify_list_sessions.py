@@ -1,6 +1,7 @@
+
 import logging
-import os
 import sys
+import os
 
 # Add src to path
 sys.path.append(os.path.join(os.getcwd(), "src"))
@@ -11,7 +12,6 @@ from auto_coder.logger_config import get_logger
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = get_logger(__name__)
-
 
 def verify_list_sessions():
     try:
@@ -34,7 +34,6 @@ def verify_list_sessions():
     except Exception as e:
         logger.error(f"Verification failed: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     verify_list_sessions()

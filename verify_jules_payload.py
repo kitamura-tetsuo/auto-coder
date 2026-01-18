@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 def test_jules_client_payload():
     print("Testing JulesClient payload construction...")
 
@@ -63,7 +62,6 @@ def test_jules_client_payload():
             sys.exit(1)
 
         print("SUCCESS: Payload constructed correctly.")
-
 
 if __name__ == "__main__":
     try:

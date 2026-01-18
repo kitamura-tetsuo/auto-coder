@@ -4,17 +4,16 @@ Test script to verify the pull conflict resolution fix.
 """
 
 import os
-import shutil
 import sys
 import tempfile
+import shutil
 from pathlib import Path
 
 # Add the src directory to the path so we can import the modules
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from auto_coder.git_branch import resolve_pull_conflicts, switch_to_branch
+from auto_coder.git_branch import switch_to_branch, resolve_pull_conflicts
 from auto_coder.utils import CommandExecutor
-
 
 def test_resolve_pull_conflicts():
     """Test the resolve_pull_conflicts function with mock scenarios."""
@@ -32,13 +31,12 @@ def test_resolve_pull_conflicts():
 
     return True
 
-
 def test_diverging_branch_detection():
     """Test that diverging branch error is properly detected."""
     print("\nTesting diverging branch error detection...")
 
     # Mock stderr that should trigger the diverging branches handling
-    mock_stderr = 'fatal: Not possible to fast-forward, aborting.\nhint: Diverging branches can\'t be fast-forwarded, you need to either:\nhint:\nhint:   git merge --no-ff\nhint:\nhint: or:\nhint:\nhint:   git rebase\nhint:\nhint: Disable this message with "git config set advice.diverging false"'
+    mock_stderr = "fatal: Not possible to fast-forward, aborting.\nhint: Diverging branches can't be fast-forwarded, you need to either:\nhint:\nhint:   git merge --no-ff\nhint:\nhint: or:\nhint:\nhint:   git rebase\nhint:\nhint: Disable this message with \"git config set advice.diverging false\""
 
     # Test that our error detection logic works
     if "diverging branches" in mock_stderr or "not possible to fast-forward" in mock_stderr:
@@ -47,7 +45,6 @@ def test_diverging_branch_detection():
     else:
         print("✗ Diverging branch error detection failed")
         return False
-
 
 def main():
     """Run all tests."""
@@ -70,7 +67,6 @@ def main():
     else:
         print("✗ Some tests failed. Please check the implementation.")
         return 1
-
 
 if __name__ == "__main__":
     exit_code = main()

@@ -1,9 +1,7 @@
-from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-
-from auto_coder.pr_processor import _find_issue_by_session_id_in_comments, _link_jules_pr_to_issue, _update_jules_pr_body
-
+from unittest.mock import MagicMock, patch, ANY
+from auto_coder.pr_processor import _update_jules_pr_body, _find_issue_by_session_id_in_comments, _link_jules_pr_to_issue
 
 class TestJulesPRProcessor:
 
@@ -81,7 +79,10 @@ class TestJulesPRProcessor:
         mock_client.search_issues.return_value = [issue1]
 
         # Mock get_issue_comments
-        mock_client.get_issue_comments.return_value = [{"body": "Just a comment"}, {"body": f"Here is the session: {session_id}"}]
+        mock_client.get_issue_comments.return_value = [
+            {"body": "Just a comment"},
+            {"body": f"Here is the session: {session_id}"}
+        ]
 
         # Execute
         result = _find_issue_by_session_id_in_comments(repo_name, session_id, mock_client)
@@ -93,7 +94,6 @@ class TestJulesPRProcessor:
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._is_jules_pr")
     def test_process_jules_pr_skips_special_prefixes(self, mock_is_jules, mock_extract_session):
-        """Test that special Jules PRs are skipped after session extraction."""
         # Setup
         repo_name = "owner/repo"
         mock_client = MagicMock()
@@ -103,16 +103,20 @@ class TestJulesPRProcessor:
         prefixes = ["🛡️ Sentinel: ", "🎨 Palette: ", "⚡ Bolt: "]
 
         for prefix in prefixes:
-            pr_data = {"number": 123, "title": f"{prefix} Some Title", "body": "Some body", "user": {"login": "google-labs-jules"}}
+            pr_data = {
+                "number": 123,
+                "title": f"{prefix} Some Title",
+                "body": "Some body",
+                "user": {"login": "google-labs-jules"}
+            }
 
             # Execute
             result = _link_jules_pr_to_issue(repo_name, pr_data, mock_client)
 
             # Verify
-            # Should call extract session first (since that's always done for Jules PRs)
-            # Then skip the rest due to special prefix
             assert result is True
-            mock_extract_session.assert_called_with("Some body")
+            # Should NOT call extract session or proceed
+            mock_extract_session.assert_not_called()
 
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._is_jules_pr")
@@ -122,9 +126,14 @@ class TestJulesPRProcessor:
         repo_name = "owner/repo"
         mock_client = MagicMock()
         mock_is_jules.return_value = True
-        mock_extract_session.return_value = None  # Stop early after extraction
+        mock_extract_session.return_value = None # Stop early after extraction
 
-        pr_data = {"number": 124, "title": "Normal Title", "body": "Some body", "user": {"login": "google-labs-jules"}}
+        pr_data = {
+            "number": 124,
+            "title": "Normal Title",
+            "body": "Some body",
+            "user": {"login": "google-labs-jules"}
+        }
 
         # Execute
         result = _link_jules_pr_to_issue(repo_name, pr_data, mock_client)

@@ -12,10 +12,10 @@ from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
 from .cli_ui import print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
+from .util.gh_cache import GitHubClient
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
-from .util.gh_cache import GitHubClient
 from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)

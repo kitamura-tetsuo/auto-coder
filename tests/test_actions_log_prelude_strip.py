@@ -1,5 +1,4 @@
 import importlib
-import os
 import subprocess
 import sys
 
@@ -24,14 +23,11 @@ sys.exit(0)
     )
     print(f"Check script output: {check_result.stdout}", file=sys.stderr)
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = "src" + os.pathsep + env.get("PYTHONPATH", "")
-
     result = subprocess.run(
         [
             sys.executable,
             "-m",
-            "auto_coder.cli",
+            "src.auto_coder.cli",
             "get-actions-logs",
             "--url",
             url,
@@ -41,19 +37,16 @@ sys.exit(0)
         capture_output=True,
         text=True,
         timeout=300,
-        env=env,
     )
     print(f"CLI stderr: {result.stderr}", file=sys.stderr)
     assert result.returncode == 0
     # Standard output should start with Job header (no logger prelude)
     head = (result.stdout.splitlines() + [""])[:3]
-    assert head and head[0].startswith("=== Job:")
+    assert head and head[0].startswith("=== Job ")
     # Body should be compact due to slicing
     assert len(result.stdout.splitlines()) < 1000
     # If failure summary lines are present, they should be placed under a Summary block
-    if "No detailed logs available" in result.stdout:
-        pass  # Expected when GitHub API fails
-    elif any(
+    if any(
         x in result.stdout.lower()
         for x in [
             " failed",

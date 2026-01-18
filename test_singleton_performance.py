@@ -6,14 +6,13 @@ This test demonstrates the performance improvements of using singleton patterns
 for GitHubClient and LLMBackendManager.
 """
 
-import threading
 import time
+import threading
 from unittest.mock import Mock
-
-from auto_coder.backend_manager import LLMBackendManager
 
 # Import the singleton classes
 from auto_coder.github_client import GitHubClient
+from auto_coder.backend_manager import LLMBackendManager
 
 
 def test_github_client_singleton_performance():

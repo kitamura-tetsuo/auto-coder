@@ -21,12 +21,8 @@ class TestPRProcessorLocalOverride:
     @patch("src.auto_coder.pr_processor._checkout_pr_branch")
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
-    @patch("src.auto_coder.pr_processor.BranchManager")
-    @patch("src.auto_coder.util.gh_cache.GitHubClient")
     def test_jules_pr_local_override(
         self,
-        mock_github_client,
-        mock_branch_manager,
         mock_get_logs,
         mock_update,
         mock_checkout,
@@ -68,14 +64,6 @@ class TestPRProcessorLocalOverride:
 
         # Mock logs
         mock_get_logs.return_value = "Error logs"
-
-        # Configure BranchManager mock to work as a context manager
-        mock_branch_manager.return_value.__enter__ = MagicMock(return_value=mock_branch_manager.return_value)
-        mock_branch_manager.return_value.__exit__ = MagicMock(return_value=False)
-
-        # Setup mock GitHubClient token
-        mock_github_client.return_value.token = "dummy_token"
-        mock_github_client.get_instance.return_value.token = "dummy_token"
 
         # Execute
         actions = _handle_pr_merge(MagicMock(), repo_name, pr_data, config, {})

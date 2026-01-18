@@ -1,20 +1,20 @@
+
 import logging
 import os
 import sys
-
 from dotenv import load_dotenv
 
 # Add src to path to ensure we can import auto_coder modules if not installed
 sys.path.append(os.path.join(os.getcwd(), "src"))
 
-from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import trigger_workflow_dispatch
+from auto_coder.util.gh_cache import GitHubClient
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
-load_dotenv("/home/node/src/auto-coder/.env")  # Try loading from standard location if present
+load_dotenv("/home/node/src/auto-coder/.env") # Try loading from standard location if present
 
 import subprocess
 

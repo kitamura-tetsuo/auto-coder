@@ -61,7 +61,7 @@ class TestPRProcessorBackendSwitching:
         mock_run_tests.side_effect = [
             fail_result_1,  # attempt 1
             fail_result_2,  # attempt 2
-            pass_result,  # attempt 3
+            pass_result,    # attempt 3
         ]
 
         # Mock local fix to return empty actions and no response

@@ -1,8 +1,9 @@
-from unittest.mock import MagicMock, patch
 
 import pytest
-
+from unittest.mock import MagicMock, patch
 from src.auto_coder.util.gh_cache import GitHubClient
+
+
 
 
 class TestGitHubClientParentIssueREST:
@@ -30,10 +31,17 @@ class TestGitHubClientParentIssueREST:
         assert result["title"] == "Parent Issue"
 
         # Verify Call
-        mock_api.assert_called_once_with("/repos/owner/repo/issues/100/parent", verb="GET", headers={"X-GitHub-Api-Version": "2022-11-28", "Accept": "application/vnd.github+json"})
+        mock_api.assert_called_once_with(
+            "/repos/owner/repo/issues/100/parent",
+            verb='GET',
+            headers={
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Accept": "application/vnd.github+json"
+            }
+        )
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
-    @patch.object(GitHubClient, "get_issue")
+    @patch.object(GitHubClient, 'get_issue')
     def test_get_parent_issue_body_rest(self, mock_get_issue, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_body uses REST calls."""
         # Setup
@@ -85,6 +93,7 @@ class TestGitHubClientParentIssueREST:
         # Verify fallback was tried
         mock_api.issues.get.assert_called_once()
 
+
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_wrapped(self, mock_get_ghapi, mock_github_token):
         """Test get_parent_issue_details handles wrapped nested response."""
@@ -107,6 +116,7 @@ class TestGitHubClientParentIssueREST:
         assert result is not None
         assert result["number"] == 50
         assert result["title"] == "Wrapper Parent"
+
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_parent_issue_error(self, mock_get_ghapi, mock_github_token):

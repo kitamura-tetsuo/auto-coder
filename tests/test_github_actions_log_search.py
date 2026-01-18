@@ -489,7 +489,7 @@ class TestGetGitHubActionsLogs:
             mock_get_logs.side_effect = ["Logs from job 200", "Logs from job 300"]
             result = _get_github_actions_logs("test/repo", config, failed_checks)
             assert "Logs from job 200" in result[0]
-            assert "Logs from job 300" in result[1]
+            assert "Logs from job 300" in result[0]
             assert mock_get_logs.call_count == 2
 
     def test_error_handling_with_invalid_failed_checks(self):

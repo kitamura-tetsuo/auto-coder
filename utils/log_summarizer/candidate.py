@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Type
 
-
 class BaseSummarizer(ABC):
     @abstractmethod
     def summarize(self, log_content: str) -> str:
@@ -16,7 +15,6 @@ class BaseSummarizer(ABC):
         """
         pass
 
-
 class BaselineSummarizer(BaseSummarizer):
     def summarize(self, log_content: str) -> str:
         """
@@ -24,7 +22,11 @@ class BaselineSummarizer(BaseSummarizer):
         """
         # Baseline implementation: Extract lines containing "Error" or "Exception"
         lines = log_content.splitlines()
-        error_lines = [line.strip() for line in lines if "error" in line.lower() or "exception" in line.lower() or "fail" in line.lower()]
+        error_lines = [
+            line.strip()
+            for line in lines
+            if "error" in line.lower() or "exception" in line.lower() or "fail" in line.lower()
+        ]
 
         if not error_lines:
             return "No obvious error lines found in the log."
@@ -39,7 +41,6 @@ class BaselineSummarizer(BaseSummarizer):
 
         # Limit to top 10 lines for brevity in baseline
         return "\n".join(unique_errors[:10])
-
 
 # Registry for algorithms
 ALGORITHM_REGISTRY: Dict[str, Type[BaseSummarizer]] = {

@@ -4,30 +4,65 @@ GraphRAG MCP Server Test Client
 """
 
 import json
-import subprocess
 import sys
+import subprocess
 import time
-from typing import Any, Dict
-
+from typing import Dict, Any
 
 def test_graphrag_mcp():
     """Test GraphRAG MCP server"""
 
     # MCP initialization message
-    init_message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "graphrag-test-client", "version": "1.0.0"}}}
+    init_message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "graphrag-test-client",
+                "version": "1.0.0"
+            }
+        }
+    }
 
     # ping
-    ping_request = {"jsonrpc": "2.0", "id": 2, "method": "ping"}
+    ping_request = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "ping"
+    }
 
     # tools/list
-    tools_request = {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}
+    tools_request = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/list"
+    }
 
     # find_symbol test
-    find_symbol_request = {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "find_symbol", "arguments": {"fqname": "src/auto_coder/mcp_servers/graphrag_mcp/server.py::main"}}}
+    find_symbol_request = {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "find_symbol",
+            "arguments": {
+                "fqname": "src/auto_coder/mcp_servers/graphrag_mcp/server.py::main"
+            }
+        }
+    }
 
     try:
         print("Starting GraphRAG MCP server...")
-        process = subprocess.Popen([sys.executable, "src/auto_coder/mcp_servers/graphrag_mcp/server.py"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            [sys.executable, "src/auto_coder/mcp_servers/graphrag_mcp/server.py"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
 
         responses = []
 
@@ -70,14 +105,14 @@ def test_graphrag_mcp():
         # Read remaining responses
         remaining_output = process.stdout.read()
         if remaining_output:
-            lines = remaining_output.strip().split("\n")
+            lines = remaining_output.strip().split('\n')
             for line in lines:
                 if line.strip():
                     try:
                         response = json.loads(line)
                         responses.append(response)
-                        if "tools" in response.get("result", {}):
-                            tools = response["result"]["tools"]
+                        if 'tools' in response.get('result', {}):
+                            tools = response['result']['tools']
                             print(f"Received: tools/list -> {len(tools)} tools")
                             for tool in tools:
                                 print(f"  - {tool.get('name', 'Unknown')}: {tool.get('description', 'No description')[:100]}")
@@ -96,8 +131,8 @@ def test_graphrag_mcp():
         if line:
             try:
                 response = json.loads(line)
-                if "result" in response:
-                    symbol = response["result"].get("symbol")
+                if 'result' in response:
+                    symbol = response['result'].get('symbol')
                     if symbol:
                         print(f"Received: find_symbol -> Success")
                         print(f"  -fqname: {symbol.get('fqname')}")
@@ -114,14 +149,16 @@ def test_graphrag_mcp():
         process.stdin.close()
         process.wait(timeout=5)
 
-        return {"success": True, "responses": responses}
+        return {
+            "success": True,
+            "responses": responses
+        }
 
     except subprocess.TimeoutExpired:
         process.kill()
         return {"success": False, "error": "Timeout"}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
 
 if __name__ == "__main__":
     print("=== GraphRAG MCP Server Operation Check ===")

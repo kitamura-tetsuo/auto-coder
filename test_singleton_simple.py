@@ -6,8 +6,8 @@ Simple performance verification for singleton patterns.
 import time
 from unittest.mock import Mock
 
-from auto_coder.backend_manager import LLMBackendManager
 from auto_coder.github_client import GitHubClient
+from auto_coder.backend_manager import LLMBackendManager
 
 print("=" * 60)
 print("Singleton Pattern Verification")

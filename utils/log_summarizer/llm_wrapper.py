@@ -7,14 +7,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../s
 
 try:
     from dotenv import load_dotenv
-
     load_dotenv()
 except ImportError:
     pass
 
 from auto_coder.cli_helpers import build_backend_manager_from_config
 from auto_coder.llm_backend_config import get_llm_config
-
 
 class LLMWrapper:
     def __init__(self, backend_name: Optional[str] = None):
@@ -28,7 +26,10 @@ class LLMWrapper:
         cli_backends = [backend_name] if backend_name else None
 
         # Build backend manager using the helper that mirrors the main CLI logic
-        self.backend_manager = build_backend_manager_from_config(cli_backends=cli_backends, enable_graphrag=False)  # Not needed for simple summarization
+        self.backend_manager = build_backend_manager_from_config(
+            cli_backends=cli_backends,
+            enable_graphrag=False # Not needed for simple summarization
+        )
         # Prevent session resumption which causes context window issues by including previous chat history
         self.backend_manager._last_session_id = None
         # Ensure we don't start with a 'last backend' that triggers resume logic

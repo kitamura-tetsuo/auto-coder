@@ -4,24 +4,45 @@ Test client for checking MCP server operation
 """
 
 import json
-import subprocess
 import sys
+import subprocess
 import time
-from typing import Any, Dict
-
+from typing import Dict, Any
 
 def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
     """Test MCP server by initializing and getting tool list"""
 
     # MCP initialization message
-    init_message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test-client", "version": "1.0.0"}}}
+    init_message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "test-client",
+                "version": "1.0.0"
+            }
+        }
+    }
 
     # tools/list request message
-    tools_request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+    tools_request = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }
 
     # Start server process
     try:
-        process = subprocess.Popen([sys.executable, server_script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            [sys.executable, server_script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
 
         # Send initialization message
         init_json = json.dumps(init_message) + "\n"
@@ -35,7 +56,7 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
         stdout, stderr = process.communicate(timeout=10)
 
         # Parse responses
-        lines = stdout.strip().split("\n")
+        lines = stdout.strip().split('\n')
         responses = []
         for line in lines:
             if line.strip():
@@ -45,7 +66,12 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
                 except json.JSONDecodeError:
                     pass
 
-        return {"success": True, "responses": responses, "stdout": stdout, "stderr": stderr}
+        return {
+            "success": True,
+            "responses": responses,
+            "stdout": stdout,
+            "stderr": stderr
+        }
 
     except subprocess.TimeoutExpired:
         process.kill()
@@ -53,10 +79,12 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-
 def main():
     # Servers to test
-    servers = ["src/auto_coder/mcp_servers/test_watcher/server.py", "src/auto_coder/mcp_servers/graphrag_mcp/server.py"]
+    servers = [
+        "src/auto_coder/mcp_servers/test_watcher/server.py",
+        "src/auto_coder/mcp_servers/graphrag_mcp/server.py"
+    ]
 
     for server in servers:
         print(f"\n=== Testing: {server} ===")
@@ -76,7 +104,6 @@ def main():
                     print(f"Error: {response['error']}")
         else:
             print(f"✗ Server startup failed: {result.get('error', 'Unknown error')}")
-
 
 if __name__ == "__main__":
     main()

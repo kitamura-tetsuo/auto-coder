@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Script to fetch actual GitHub Actions logs"""
 
-import io
 import subprocess
 import sys
 import zipfile
-
+import io
 
 def fetch_job_logs(job_id: str):
     """Fetch logs for the specified job_id"""
@@ -20,7 +19,7 @@ def fetch_job_logs(job_id: str):
 
         # First try to parse as a ZIP file
         try:
-            with zipfile.ZipFile(io.BytesIO(result.stdout), "r") as zf:
+            with zipfile.ZipFile(io.BytesIO(result.stdout), 'r') as zf:
                 print(f"ZIP contains {len(zf.namelist())} files:")
                 for name in zf.namelist():
                     info = zf.getinfo(name)
@@ -28,36 +27,36 @@ def fetch_job_logs(job_id: str):
 
                 # Display contents of each file
                 for name in zf.namelist():
-                    if name.lower().endswith(".txt"):
+                    if name.lower().endswith('.txt'):
                         print(f"\n{'='*80}")
                         print(f"File: {name}")
-                        print("=" * 80)
-                        with zf.open(name, "r") as fp:
-                            content = fp.read().decode("utf-8", errors="ignore")
+                        print('='*80)
+                        with zf.open(name, 'r') as fp:
+                            content = fp.read().decode('utf-8', errors='ignore')
                             # Display first 100 lines and last 100 lines
-                            lines = content.split("\n")
+                            lines = content.split('\n')
                             if len(lines) <= 200:
                                 print(content)
                             else:
-                                print("\n".join(lines[:100]))
+                                print('\n'.join(lines[:100]))
                                 print(f"\n... ({len(lines) - 200} lines omitted) ...\n")
-                                print("\n".join(lines[-100:]))
+                                print('\n'.join(lines[-100:]))
 
                 return result.stdout
         except zipfile.BadZipFile:
             # If not ZIP, treat as text
             print("Response is plain text, not ZIP")
-            content = result.stdout.decode("utf-8", errors="ignore")
-            lines = content.split("\n")
+            content = result.stdout.decode('utf-8', errors='ignore')
+            lines = content.split('\n')
             print(f"Total lines: {len(lines)}")
 
             # Display first 100 lines and last 100 lines
             if len(lines) <= 200:
                 print(content)
             else:
-                print("\n".join(lines[:100]))
+                print('\n'.join(lines[:100]))
                 print(f"\n... ({len(lines) - 200} lines omitted) ...\n")
-                print("\n".join(lines[-100:]))
+                print('\n'.join(lines[-100:]))
 
             return result.stdout
 
@@ -67,7 +66,6 @@ def fetch_job_logs(job_id: str):
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return None
-
 
 if __name__ == "__main__":
     job_id = "53715705095"

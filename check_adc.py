@@ -1,11 +1,9 @@
-import logging
-import os
-
 import google.auth
+import os
+import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 def check_auth():
     print("Checking Google Auth Environment...")
@@ -22,14 +20,12 @@ def check_auth():
 
         # Try to refresh to ensure they are valid
         from google.auth.transport.requests import Request
-
         credentials.refresh(Request())
         print("Credentials refreshed successfully.")
         print(f"Token: {credentials.token[:10]}..." if credentials.token else "No token yet")
 
     except Exception as e:
         print(f"FAILURE: ADC not found or invalid: {e}")
-
 
 if __name__ == "__main__":
     check_auth()

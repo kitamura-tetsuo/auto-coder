@@ -1,9 +1,7 @@
-from unittest.mock import MagicMock, patch
 
 import pytest
-
+from unittest.mock import MagicMock, patch
 from src.auto_coder.util.gh_cache import GitHubClient
-
 
 class TestGitHubClientTimelineREST:
     @patch("src.auto_coder.util.gh_cache.get_caching_client")
@@ -19,17 +17,33 @@ class TestGitHubClientTimelineREST:
         mock_response.status_code = 200
         mock_response.json.return_value = [
             {"event": "commented", "id": 1},
-            {"event": "connected", "source": {"issue": {"number": 101, "pull_request": {"url": "..."}}}},
-            {"event": "cross-referenced", "source": {"issue": {"number": 102, "pull_request": {"url": "..."}}}},
+            {
+                "event": "connected",
+                "source": {
+                    "issue": {
+                        "number": 101,
+                        "pull_request": {"url": "..."}
+                    }
+                }
+            },
             {
                 "event": "cross-referenced",
                 "source": {
                     "issue": {
-                        "number": 55  # Not a PR (maybe another issue ref)
+                        "number": 102,
+                        "pull_request": {"url": "..."}
+                    }
+                }
+            },
+            {
+                "event": "cross-referenced",
+                "source": {
+                    "issue": {
+                        "number": 55 # Not a PR (maybe another issue ref)
                         # No 'pull_request' key
                     }
-                },
-            },
+                }
+            }
         ]
         mock_client.get.return_value = mock_response
 
@@ -53,7 +67,17 @@ class TestGitHubClientTimelineREST:
         # Mock Response
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = [{"event": "connected", "source": {"issue": {"number": 101, "pull_request": {}}}}]
+        mock_response.json.return_value = [
+            {
+                "event": "connected",
+                "source": {
+                    "issue": {
+                        "number": 101,
+                        "pull_request": {}
+                    }
+                }
+            }
+        ]
         mock_client.get.return_value = mock_response
 
         client = GitHubClient.get_instance("token")

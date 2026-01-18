@@ -1,12 +1,10 @@
+
 import threading
 import time
 from unittest.mock import MagicMock, patch
-
 import pytest
-
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _active_monitors, _handle_pr_merge
-
+from src.auto_coder.pr_processor import _handle_pr_merge, _active_monitors
 
 class TestPRMonitorDeduplication:
     """Test cases for PR monitor deduplication logic."""
@@ -40,7 +38,11 @@ class TestPRMonitorDeduplication:
         # Setup
         repo_name = "test/repo"
         pr_number = 123
-        pr_data = {"number": pr_number, "head": {"sha": "abc1234", "ref": "feature-branch"}, "labels": []}
+        pr_data = {
+            "number": pr_number,
+            "head": {"sha": "abc1234", "ref": "feature-branch"},
+            "labels": []
+        }
         config = AutomationConfig()
 
         # Mocks
@@ -55,6 +57,7 @@ class TestPRMonitorDeduplication:
         # LabelManager mock
         mock_lm_instance = MagicMock()
         mock_label_manager.return_value.__enter__.return_value = mock_lm_instance
+
 
         # Call 1
         # Call 1
@@ -87,7 +90,7 @@ class TestPRMonitorDeduplication:
         assert pr_number in _active_monitors
 
         with patch("src.auto_coder.pr_processor.asyncio.run") as mock_asyncio_run:
-            _run_async_monitor("repo", pr_number, "sha", "workflow")
+             _run_async_monitor("repo", pr_number, "sha", "workflow")
 
         assert pr_number not in _active_monitors
 
@@ -99,10 +102,10 @@ class TestPRMonitorDeduplication:
         _active_monitors.add(pr_number)
 
         with patch("src.auto_coder.pr_processor.asyncio.run") as mock_asyncio_run:
-            mock_asyncio_run.side_effect = Exception("Crash!")
-            try:
-                _run_async_monitor("repo", pr_number, "sha", "workflow")
-            except Exception:
-                pass
+             mock_asyncio_run.side_effect = Exception("Crash!")
+             try:
+                 _run_async_monitor("repo", pr_number, "sha", "workflow")
+             except Exception:
+                 pass
 
         assert pr_number not in _active_monitors

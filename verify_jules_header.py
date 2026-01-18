@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 def test_jules_client_header():
     print("Testing JulesClient header configuration...")
 
@@ -27,17 +26,16 @@ def test_jules_client_header():
         print(f"Headers: {headers}")
 
         if "X-Goog-Api-Key" in headers and headers["X-Goog-Api-Key"] == "test-api-key":
-            print("SUCCESS: X-Goog-Api-Key header is set correctly.")
+             print("SUCCESS: X-Goog-Api-Key header is set correctly.")
         else:
-            print("FAILURE: X-Goog-Api-Key header is NOT set correctly.")
-            sys.exit(1)
+             print("FAILURE: X-Goog-Api-Key header is NOT set correctly.")
+             sys.exit(1)
 
         if "Authorization" in headers:
-            print("WARNING: Authorization header is present. Ensure it is not conflicting.")
-            if headers["Authorization"].startswith("Bearer test-api-key"):
-                print("FAILURE: Authorization header is still set to Bearer token with API key.")
-                sys.exit(1)
-
+             print("WARNING: Authorization header is present. Ensure it is not conflicting.")
+             if headers["Authorization"].startswith("Bearer test-api-key"):
+                 print("FAILURE: Authorization header is still set to Bearer token with API key.")
+                 sys.exit(1)
 
 if __name__ == "__main__":
     try:

@@ -3,8 +3,12 @@ Test file for progress decorators functionality.
 """
 
 import time
-
-from src.auto_coder.progress_decorators import ProgressStageDecorator, progress_context_item, progress_method, progress_stage
+from src.auto_coder.progress_decorators import (
+    progress_stage,
+    progress_method,
+    progress_context_item,
+    ProgressStageDecorator
+)
 from src.auto_coder.progress_footer import clear_progress
 
 

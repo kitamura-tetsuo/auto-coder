@@ -1,9 +1,7 @@
-from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
+from unittest.mock import Mock, patch, MagicMock
 from src.auto_coder.util.gh_cache import GitHubClient
-
 
 class TestGitHubClientREST:
     """Test cases for GitHubClient REST API methods."""
@@ -45,7 +43,7 @@ class TestGitHubClientREST:
             "commits": 5,
             "additions": 10,
             "deletions": 2,
-            "changed_files": 1,
+            "changed_files": 1
         }
 
         mock_api.pulls.get.return_value = mock_pr_detail
@@ -62,10 +60,10 @@ class TestGitHubClientREST:
         assert pr["title"] == "Test PR"
         assert pr["node_id"] == "PR_kw..."
         assert pr["mergeable"] is True
-        assert pr["comments_count"] == 2  # 1 + 1
+        assert pr["comments_count"] == 2 # 1 + 1
         assert pr["commits_count"] == 5
 
-        mock_api.pulls.list.assert_called_once_with("owner", "repo", state="open", per_page=100)
+        mock_api.pulls.list.assert_called_once_with("owner", "repo", state='open', per_page=100)
         mock_api.pulls.get.assert_called_once_with("owner", "repo", 123)
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
@@ -88,11 +86,15 @@ class TestGitHubClientREST:
             "html_url": "http://issue-url",
             "user": {"login": "user"},
             "comments": 3,
-            "parent_issue_url": "https://github.com/owner/repo/issues/999",
+            "parent_issue_url": "https://github.com/owner/repo/issues/999"
             # No 'pull_request' key
         }
 
-        pr_obj = {"number": 789, "pull_request": {}, "title": "PR in disguise"}  # It's a PR
+        pr_obj = {
+            "number": 789,
+            "pull_request": {}, # It's a PR
+            "title": "PR in disguise"
+        }
 
         mock_api.issues.list_for_repo.return_value = [issue_obj, pr_obj]
 
@@ -101,7 +103,8 @@ class TestGitHubClientREST:
         client._open_issues_cache = None
 
         # Mock the helper methods that are called for each issue
-        with patch.object(client, "get_linked_prs", return_value=[1, 2]) as mock_linked, patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub:
+        with patch.object(client, "get_linked_prs", return_value=[1, 2]) as mock_linked, \
+             patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub:
             # Execute
             result = client.get_open_issues_json("owner/repo")
 
@@ -115,7 +118,7 @@ class TestGitHubClientREST:
             assert issue["has_open_sub_issues"] is True
             assert issue["parent_issue_number"] == 999
 
-            mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100)
+            mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state='open', per_page=100)
             mock_linked.assert_called_once_with("owner/repo", 456)
             mock_sub.assert_called_once_with("owner/repo", 456)
 
@@ -151,7 +154,11 @@ class TestGitHubClientREST:
         mock_get_ghapi_client.return_value = mock_api
 
         # Mock Parent Issue Response
-        mock_parent_response = {"number": 123, "title": "Parent Issue", "body": "Parent Body"}
+        mock_parent_response = {
+            "number": 123,
+            "title": "Parent Issue",
+            "body": "Parent Body"
+        }
         mock_api.return_value = mock_parent_response
 
         client = GitHubClient.get_instance(mock_github_token)
@@ -165,4 +172,11 @@ class TestGitHubClientREST:
         assert result["title"] == "Parent Issue"
 
         # Verify call
-        mock_api.assert_called_with("/repos/owner/repo/issues/456/parent", verb="GET", headers={"X-GitHub-Api-Version": "2022-11-28", "Accept": "application/vnd.github+json"})
+        mock_api.assert_called_with(
+            "/repos/owner/repo/issues/456/parent",
+            verb='GET',
+            headers={
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Accept": "application/vnd.github+json"
+            }
+        )

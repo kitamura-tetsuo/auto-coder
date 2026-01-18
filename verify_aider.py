@@ -1,11 +1,10 @@
-import os
 import sys
+import os
 
 # Add src to path
 sys.path.append(os.path.join(os.getcwd(), "src"))
 
 from auto_coder.aider_client import AiderClient
-
 
 def test_aider_client():
     print("Testing AiderClient...")
@@ -35,9 +34,7 @@ def test_aider_client():
     except Exception as e:
         print(f"❌ AiderClient test failed: {e}")
         import traceback
-
         traceback.print_exc()
-
 
 if __name__ == "__main__":
     test_aider_client()

@@ -40,10 +40,14 @@ class StrictTypeChecker:
             return None
 
     @staticmethod
-    def validate_return_type(func_name: str, expected_type: Type, actual_value: Any) -> bool:
+    def validate_return_type(
+        func_name: str, expected_type: Type, actual_value: Any
+    ) -> bool:
         """Validate return type at runtime."""
         if not isinstance(actual_value, expected_type):
-            print(f"Type validation failed for {func_name}: expected {expected_type}, got {type(actual_value)}")
+            print(
+                f"Type validation failed for {func_name}: expected {expected_type}, got {type(actual_value)}"
+            )
             return False
         return True
 

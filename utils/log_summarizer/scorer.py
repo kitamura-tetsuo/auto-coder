@@ -1,5 +1,4 @@
-from typing import Any, Dict, Set
-
+from typing import Set, Dict, Any
 
 class LogScorer:
     def _get_lines(self, text: str) -> Set[str]:
@@ -43,4 +42,12 @@ class LogScorer:
         else:
             f1 = 0.0
 
-        return {"precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4), "matches": true_positives, "candidate_count": len(candidate_lines), "gold_count": len(gold_lines), "matched_lines": list(intersection)}
+        return {
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1": round(f1, 4),
+            "matches": true_positives,
+            "candidate_count": len(candidate_lines),
+            "gold_count": len(gold_lines),
+            "matched_lines": list(intersection)
+        }

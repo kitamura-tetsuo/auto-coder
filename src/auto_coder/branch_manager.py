@@ -5,11 +5,11 @@ restoring the original state, similar to how LabelManager handles labels.
 """
 
 import threading
-from typing import Any, Optional
+from typing import Optional, Any
 
 from .git_branch import switch_to_branch
-from .git_commit import ensure_pushed
 from .git_info import get_current_branch, is_git_repository
+from .git_commit import ensure_pushed
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -78,16 +78,23 @@ class BranchManager:
         # Store original branch
         self.original_branch = get_current_branch(cwd=self.cwd)
         if not self.original_branch:
-            raise RuntimeError("Failed to get current branch before switching")
+             raise RuntimeError("Failed to get current branch before switching")
 
         # specific optimization: if we are already on the target branch (and not creating new for reset purposes)
         if self.original_branch == self.branch_name and not self.create_new:
-            logger.info(f"Already on branch '{self.branch_name}', staying on current branch")
-            return self
+             logger.info(f"Already on branch '{self.branch_name}', staying on current branch")
+             return self
 
         logger.info(f"Switching to branch '{self.branch_name}' (from '{self.original_branch}')")
 
-        switch_result = switch_to_branch(branch_name=self.branch_name, create_new=self.create_new, base_branch=self.base_branch, cwd=self.cwd, publish=True, pull_after_switch=True)
+        switch_result = switch_to_branch(
+            branch_name=self.branch_name,
+            create_new=self.create_new,
+            base_branch=self.base_branch,
+            cwd=self.cwd,
+            publish=True,
+            pull_after_switch=True
+        )
 
         if not switch_result.success:
             # Clean up tracking before raising
@@ -119,20 +126,24 @@ class BranchManager:
             return
 
         if not self.original_branch:
-            # Should not happen if _switched is True
-            return
+             # Should not happen if _switched is True
+             return
 
         if is_git_repository(self.cwd):
             current = get_current_branch(cwd=self.cwd)
             if current != self.original_branch:
                 logger.info(f"Returning to original branch '{self.original_branch}'")
-                result = switch_to_branch(branch_name=self.original_branch, cwd=self.cwd, pull_after_switch=True)
+                result = switch_to_branch(
+                    branch_name=self.original_branch,
+                    cwd=self.cwd,
+                    pull_after_switch=True
+                )
                 if not result.success:
                     logger.warning(f"Failed to return to branch '{self.original_branch}': {result.stderr}")
             else:
-                logger.info(f"Already on original branch '{self.original_branch}'")
+                 logger.info(f"Already on original branch '{self.original_branch}'")
         else:
-            logger.warning("Not in a git repository, cannot switch back to original branch")
+             logger.warning("Not in a git repository, cannot switch back to original branch")
 
     def _check_unpushed_commits(self) -> None:
         """Check for unpushed commits and push them."""

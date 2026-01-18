@@ -1,16 +1,15 @@
-import functools
 import json
-import logging
 import subprocess
 import threading
-import time
 import types
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import functools
+import time
 import httpx
 from ghapi.all import GhApi
-from github.GithubException import GithubException
 from hishel import SyncSqliteStorage
 from hishel.httpx import SyncCacheClient
 
@@ -19,7 +18,6 @@ from ..logger_config import get_logger
 logger = get_logger(__name__)
 
 _local_storage = threading.local()
-
 
 def get_caching_client() -> httpx.Client:
     """
@@ -45,13 +43,11 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
                 except (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
                     if x == retries:
                         raise
-                    sleep = backoff_in_seconds * 2**x
+                    sleep = (backoff_in_seconds * 2 ** x)
                     logger.warning(f"Network error in {func.__name__} ({e}), retrying in {sleep}s...")
                     time.sleep(sleep)
                     x += 1
-
         return wrapper
-
     return decorator
 
 
@@ -61,12 +57,12 @@ def get_ghapi_client(token: str) -> GhApi:
     """
 
     class CachedGhApi(GhApi):
-        def __call__(self, path: str, verb: str = None, headers: dict = None, route: dict = None, query: dict = None, data=None, timeout=None, decode=True):
+        def __call__(self, path: str, verb: str = None, headers: dict = None, route: dict = None, query: dict = None, data = None, timeout = None, decode = True):
             # Use the shared caching client
             client = get_caching_client()
 
             if verb is None:
-                verb = "POST" if data else "GET"
+                verb = 'POST' if data else 'GET'
 
             # Build URL
             if path.startswith("http"):
@@ -79,10 +75,9 @@ def get_ghapi_client(token: str) -> GhApi:
 
             if route:
                 import urllib.parse
-
                 for k, v in route.items():
                     # value quoting
-                    v_str = urllib.parse.quote(str(v), safe="")
+                    v_str = urllib.parse.quote(str(v), safe='')
                     path = path.replace(f"{{{k}}}", v_str)
                 # Re-evaluate URL after path interpolation
                 if not path.startswith("http"):
@@ -94,13 +89,22 @@ def get_ghapi_client(token: str) -> GhApi:
             json_data = None
             content_data = None
             if data is not None:
-                if isinstance(data, dict):
-                    json_data = data
-                else:
-                    content_data = data
+                 if isinstance(data, dict):
+                     json_data = data
+                 else:
+                     content_data = data
 
             # Use params=query for GET params
-            resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout)
+            resp = client.request(
+                method=verb,
+                url=url,
+                headers=headers,
+                content=content_data,
+                json=json_data,
+                params=query,
+                follow_redirects=True,
+                timeout=timeout
+            )
 
             # Raise for status to ensure errors are caught (e.g. 404, 422)
             resp.raise_for_status()
@@ -120,7 +124,7 @@ def get_ghapi_client(token: str) -> GhApi:
 
             if decode:
                 if "application/zip" in content_type or "application/octet-stream" in content_type:
-                    return resp.content
+                     return resp.content
 
                 try:
                     return resp.json()
@@ -357,6 +361,7 @@ class GitHubClient:
             logger.warning(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
             return None
 
+
     @retry_with_backoff()
     def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open pull requests from repository using REST API (cached).
@@ -376,14 +381,14 @@ class GitHubClient:
             # Let's use simple list for now, assuming < 100 PRs usually, or implement paging if needed.
             # limit defaults to 100.
 
-            prs_summary = api.pulls.list(owner, repo, state="open", per_page=limit)
+            prs_summary = api.pulls.list(owner, repo, state='open', per_page=limit)
 
             all_prs: List[Dict[str, Any]] = []
 
             for pr_summary in prs_summary:
                 # Fetch full details for mergeable status, etc.
                 try:
-                    pr_num = pr_summary["number"] if isinstance(pr_summary, dict) else pr_summary.number
+                    pr_num = pr_summary['number'] if isinstance(pr_summary, dict) else pr_summary.number
                     pr_details = api.pulls.get(owner, repo, pr_num)
                 except Exception as e:
                     logger.warning(f"Failed to fetch details for PR #{pr_summary.get('number', 'unknown')}: {e}")
@@ -401,27 +406,27 @@ class GitHubClient:
                 d = pr_details
 
                 pr_data: Dict[str, Any] = {
-                    "number": d["number"],
-                    "title": d["title"],
-                    "node_id": d["node_id"],
-                    "body": d["body"] or "",
-                    "state": d["state"].lower(),
-                    "url": d["html_url"],
-                    "created_at": d["created_at"],
-                    "updated_at": d["updated_at"],
-                    "draft": d["draft"],
-                    "mergeable": d["mergeable"],
-                    "head_branch": d["head"]["ref"],
-                    "head": {"ref": d["head"]["ref"], "sha": d["head"]["sha"]},
-                    "base_branch": d["base"]["ref"],
-                    "author": d["user"]["login"] if d["user"] else None,
-                    "assignees": [a["login"] for a in d["assignees"]],
-                    "labels": [lbl["name"] for lbl in d["labels"]],
-                    "comments_count": d["comments"] + d["review_comments"],
-                    "commits_count": d["commits"],
-                    "additions": d["additions"],
-                    "deletions": d["deletions"],
-                    "changed_files": d["changed_files"],
+                    "number": d['number'],
+                    "title": d['title'],
+                    "node_id": d['node_id'],
+                    "body": d['body'] or "",
+                    "state": d['state'].lower(),
+                    "url": d['html_url'],
+                    "created_at": d['created_at'],
+                    "updated_at": d['updated_at'],
+                    "draft": d['draft'],
+                    "mergeable": d['mergeable'],
+                    "head_branch": d['head']['ref'],
+                    "head": {"ref": d['head']['ref'], "sha": d['head']['sha']},
+                    "base_branch": d['base']['ref'],
+                    "author": d['user']['login'] if d['user'] else None,
+                    "assignees": [a['login'] for a in d['assignees']],
+                    "labels": [lbl['name'] for lbl in d['labels']],
+                    "comments_count": d['comments'] + d['review_comments'],
+                    "commits_count": d['commits'],
+                    "additions": d['additions'],
+                    "deletions": d['deletions'],
+                    "changed_files": d['changed_files'],
                 }
                 all_prs.append(pr_data)
 
@@ -459,6 +464,7 @@ class GitHubClient:
                             logger.debug(f"Updated issue #{issue_number} in cache: {kwargs.keys()}")
                         return
 
+
     @retry_with_backoff()
     def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open issues from repository using REST API (cached).
@@ -480,7 +486,7 @@ class GitHubClient:
 
             # List Issues (state=open)
             # per_page=limit. Note: GitHub treats PRs as Issues, so we must filter them out.
-            issues_summary = api.issues.list_for_repo(owner, repo, state="open", per_page=limit)
+            issues_summary = api.issues.list_for_repo(owner, repo, state='open', per_page=limit)
 
             all_issues: List[Dict[str, Any]] = []
 
@@ -491,7 +497,7 @@ class GitHubClient:
 
                 # Safe access (dict expected)
                 i = issue
-                nb = i["number"]
+                nb = i['number']
 
                 # Fetch extended details via REST (N+1 calls, but cached via ETag)
                 # linked_prs via timeline
@@ -499,8 +505,8 @@ class GitHubClient:
 
                 # open_sub_issue_numbers via sub_issues endpoint
                 # Optimization: Check sub_issues_summary from issue object first
-                sub_issues_summary = i.get("sub_issues_summary")
-                if sub_issues_summary and sub_issues_summary.get("total", 0) == 0:
+                sub_issues_summary = i.get('sub_issues_summary')
+                if sub_issues_summary and sub_issues_summary.get('total', 0) == 0:
                     open_sub_issues_ids = []
                 else:
                     open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
@@ -508,10 +514,10 @@ class GitHubClient:
                 # parent_issue via parent_issue_url
                 # Optimization: Extract from URL if available
                 parent_issue_id = None
-                parent_issue_url = i.get("parent_issue_url")
+                parent_issue_url = i.get('parent_issue_url')
                 if parent_issue_url:
                     try:
-                        parent_issue_id = int(parent_issue_url.split("/")[-1])
+                        parent_issue_id = int(parent_issue_url.split('/')[-1])
                     except (ValueError, IndexError):
                         logger.warning(f"Failed to parse parent issue ID from URL: {parent_issue_url}")
                         # Fallback if parsing fails? Or just leave as None?
@@ -519,16 +525,16 @@ class GitHubClient:
 
                 issue_data: Dict[str, Any] = {
                     "number": nb,
-                    "title": i["title"],
-                    "body": i["body"] or "",
-                    "state": i["state"],
-                    "labels": [lbl["name"] for lbl in i["labels"]],
-                    "assignees": [a["login"] for a in i["assignees"]],
-                    "created_at": i["created_at"],
-                    "updated_at": i["updated_at"],
-                    "url": i["html_url"],
-                    "author": i["user"]["login"] if i["user"] else None,
-                    "comments_count": i["comments"],
+                    "title": i['title'],
+                    "body": i['body'] or "",
+                    "state": i['state'],
+                    "labels": [lbl['name'] for lbl in i['labels']],
+                    "assignees": [a['login'] for a in i['assignees']],
+                    "created_at": i['created_at'],
+                    "updated_at": i['updated_at'],
+                    "url": i['html_url'],
+                    "author": i['user']['login'] if i['user'] else None,
+                    "comments_count": i['comments'],
                     # Extended fields populated via REST
                     "linked_prs": linked_prs_ids,
                     "has_linked_prs": bool(linked_prs_ids),
@@ -558,6 +564,8 @@ class GitHubClient:
             logger.error(f"Failed to get open issues via REST from {repo_name}: {e}")
             raise
 
+
+
     @retry_with_backoff()
     def get_issue(self, repo_name: str, issue_number: int) -> Optional[Any]:
         """Get a single issue by number using REST API (cached).
@@ -579,36 +587,33 @@ class GitHubClient:
         Args:
             issue: GhApi issue object (AttrDict) or dict.
         """
-
         def get(obj, key, default=None):
             return getattr(obj, key, default) if not isinstance(obj, dict) else obj.get(key, default)
 
         # Handle nested objects which might be AttrDicts or dicts
-        user = get(issue, "user")
-        labels = get(issue, "labels") or []
-        assignees = get(issue, "assignees") or []
+        user = get(issue, 'user')
+        labels = get(issue, 'labels') or []
+        assignees = get(issue, 'assignees') or []
 
         # Parse dates if needed, or pass through strings (GhApi returns strings)
-        created_at = get(issue, "created_at")
-        if hasattr(created_at, "isoformat"):
-            created_at = created_at.isoformat()
+        created_at = get(issue, 'created_at')
+        if hasattr(created_at, 'isoformat'): created_at = created_at.isoformat()
 
-        updated_at = get(issue, "updated_at")
-        if hasattr(updated_at, "isoformat"):
-            updated_at = updated_at.isoformat()
+        updated_at = get(issue, 'updated_at')
+        if hasattr(updated_at, 'isoformat'): updated_at = updated_at.isoformat()
 
         return {
-            "number": get(issue, "number"),
-            "title": get(issue, "title"),
-            "body": get(issue, "body") or "",
-            "state": get(issue, "state"),
-            "labels": [get(label, "name") for label in labels],
-            "assignees": [get(a, "login") for a in assignees],
+            "number": get(issue, 'number'),
+            "title": get(issue, 'title'),
+            "body": get(issue, 'body') or "",
+            "state": get(issue, 'state'),
+            "labels": [get(l, 'name') for l in labels],
+            "assignees": [get(a, 'login') for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
-            "url": get(issue, "html_url"),
-            "author": get(user, "login") if user else None,
-            "comments_count": get(issue, "comments"),
+            "url": get(issue, 'html_url'),
+            "author": get(user, 'login') if user else None,
+            "comments_count": get(issue, 'comments'),
         }
 
     def get_pr_details(self, pr: Any) -> Dict[str, Any]:
@@ -617,47 +622,43 @@ class GitHubClient:
         Args:
             pr: GhApi PR object (AttrDict) or dict.
         """
-
         def get(obj, key, default=None):
-            if obj is None:
-                return default
+            if obj is None: return default
             return getattr(obj, key, default) if not isinstance(obj, dict) else obj.get(key, default)
 
-        user = get(pr, "user")
-        labels = get(pr, "labels") or []
-        assignees = get(pr, "assignees") or []
-        head = get(pr, "head")
-        base = get(pr, "base")
+        user = get(pr, 'user')
+        labels = get(pr, 'labels') or []
+        assignees = get(pr, 'assignees') or []
+        head = get(pr, 'head')
+        base = get(pr, 'base')
 
-        created_at = get(pr, "created_at")
-        if hasattr(created_at, "isoformat"):
-            created_at = created_at.isoformat()
+        created_at = get(pr, 'created_at')
+        if hasattr(created_at, 'isoformat'): created_at = created_at.isoformat()
 
-        updated_at = get(pr, "updated_at")
-        if hasattr(updated_at, "isoformat"):
-            updated_at = updated_at.isoformat()
+        updated_at = get(pr, 'updated_at')
+        if hasattr(updated_at, 'isoformat'): updated_at = updated_at.isoformat()
 
         return {
-            "number": get(pr, "number"),
-            "title": get(pr, "title"),
-            "body": get(pr, "body") or "",
-            "state": get(pr, "state"),
-            "labels": [get(label, "name") for label in labels],
-            "assignees": [get(a, "login") for a in assignees],
+            "number": get(pr, 'number'),
+            "title": get(pr, 'title'),
+            "body": get(pr, 'body') or "",
+            "state": get(pr, 'state'),
+            "labels": [get(l, 'name') for l in labels],
+            "assignees": [get(a, 'login') for a in assignees],
             "created_at": created_at,
             "updated_at": updated_at,
-            "url": get(pr, "html_url"),
-            "author": get(user, "login") if user else None,
-            "head_branch": get(head, "ref"),
-            "base_branch": get(base, "ref"),
-            "mergeable": get(pr, "mergeable"),
-            "draft": get(pr, "draft"),
-            "comments_count": get(pr, "comments"),
-            "review_comments_count": get(pr, "review_comments"),
-            "commits_count": get(pr, "commits"),
-            "additions": get(pr, "additions"),
-            "deletions": get(pr, "deletions"),
-            "changed_files": get(pr, "changed_files"),
+            "url": get(pr, 'html_url'),
+            "author": get(user, 'login') if user else None,
+            "head_branch": get(head, 'ref'),
+            "base_branch": get(base, 'ref'),
+            "mergeable": get(pr, 'mergeable'),
+            "draft": get(pr, 'draft'),
+            "comments_count": get(pr, 'comments'),
+            "review_comments_count": get(pr, 'review_comments'),
+            "commits_count": get(pr, 'commits'),
+            "additions": get(pr, 'additions'),
+            "deletions": get(pr, 'deletions'),
+            "changed_files": get(pr, 'changed_files'),
         }
 
     def find_pr_by_head_branch(self, repo_name: str, branch_name: str) -> Optional[Dict[str, Any]]:
@@ -674,10 +675,10 @@ class GitHubClient:
             prs = self.get_open_pull_requests(repo_name)
             for pr in prs:
                 # Handle both AttrDict and dict
-                head_ref = pr.get("head", {}).get("ref") if isinstance(pr, dict) else pr.head.ref
+                head_ref = pr.get('head', {}).get('ref') if isinstance(pr, dict) else pr.head.ref
 
                 if head_ref == branch_name:
-                    pr_number = pr.get("number") if isinstance(pr, dict) else pr.number
+                    pr_number = pr.get('number') if isinstance(pr, dict) else pr.number
                     logger.info(f"Found PR #{pr_number} with head branch '{branch_name}'")
                     return self.get_pr_details(pr)
             logger.debug(f"No open PR found with head branch '{branch_name}'")
@@ -685,6 +686,7 @@ class GitHubClient:
         except Exception as e:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
+
 
     def _get_issue_timeline(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Get timeline for an issue using GitHub REST API.
@@ -740,10 +742,10 @@ class GitHubClient:
                     # It might vary. Let's inspect 'source'.
                     # Usually source -> issue -> number
                     if "issue" in source:
-                        # Check if it is a PR
-                        issue_obj = source["issue"]
-                        if "pull_request" in issue_obj:
-                            pr_numbers.add(issue_obj["number"])
+                         # Check if it is a PR
+                         issue_obj = source["issue"]
+                         if "pull_request" in issue_obj:
+                             pr_numbers.add(issue_obj["number"])
 
                 # NOTE: Timeline logic can be complex.
                 # cross-referenced source might be just the issue object directly in some API versions?
@@ -786,7 +788,11 @@ class GitHubClient:
             }
             """
 
-            variables = {"owner": owner, "name": repo, "number": pr_number}
+            variables = {
+                "owner": owner,
+                "name": repo,
+                "number": pr_number
+            }
 
             response = self.graphql_query(query, variables)
 
@@ -844,8 +850,8 @@ class GitHubClient:
 
             for pr in prs:
                 # pr is AttrDict or dict
-                title = pr.get("title", "")
-                body = pr.get("body", "") or ""
+                title = pr.get('title', '')
+                body = pr.get('body', '') or ''
                 pr_text = f"{title} {body}".lower()
 
                 if any(pattern.lower() in pr_text for pattern in issue_ref_patterns):
@@ -902,8 +908,8 @@ class GitHubClient:
             ]
 
             for pr in prs:
-                title = pr.get("title", "")
-                body = pr.get("body", "") or ""
+                title = pr.get('title', '')
+                body = pr.get('body', '') or ''
                 pr_text = f"{title} {body}".lower()
 
                 if any(pattern.lower() in pr_text for pattern in issue_ref_patterns):
@@ -944,6 +950,7 @@ class GitHubClient:
 
     # Deprecated/Removed: get_pr_closing_issues
 
+
     @retry_with_backoff()
     def get_parent_issue_details(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
         """Get details of the parent issue if it exists using GitHub REST API.
@@ -960,21 +967,28 @@ class GitHubClient:
 
             try:
                 # Use raw path call with GhApi
-                parent_issue = api(f"/repos/{owner}/{repo}/issues/{issue_number}/parent", verb="GET", headers={"X-GitHub-Api-Version": "2022-11-28", "Accept": "application/vnd.github+json"})
+                parent_issue = api(
+                    f"/repos/{owner}/{repo}/issues/{issue_number}/parent",
+                    verb='GET',
+                    headers={
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "Accept": "application/vnd.github+json"
+                    }
+                )
                 if parent_issue:
                     # Check if response is wrapped in 'parent' key
-                    if not parent_issue.get("number") and parent_issue.get("parent"):
-                        parent_issue = parent_issue.get("parent")
+                    if not parent_issue.get('number') and parent_issue.get('parent'):
+                        parent_issue = parent_issue.get('parent')
 
-                    if parent_issue.get("number"):
+                    if parent_issue.get('number'):
                         # Use .get() method to be safe if parent_issue is a dict or AttrDict
                         logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
                         return parent_issue
 
                     if parent_issue.get("status") == "404":
-                        logger.warning(f"Dedicated parent endpoint returned 404 for issue #{issue_number}. Attempting fallback.")
+                         logger.warning(f"Dedicated parent endpoint returned 404 for issue #{issue_number}. Attempting fallback.")
                     else:
-                        logger.warning(f"Parent issue response missing number: {parent_issue}")
+                         logger.warning(f"Parent issue response missing number: {parent_issue}")
 
             except Exception as e:
                 # Log but continue to fallback
@@ -1015,7 +1029,7 @@ class GitHubClient:
             parent_issue = self.get_issue(repo_name, parent_number)
             if parent_issue:
                 # parent_issue might be object or dict depending on get_issue impl (AttrDict usually)
-                body = getattr(parent_issue, "body", None) or parent_issue.get("body")
+                body = getattr(parent_issue, 'body', None) or parent_issue.get('body')
                 if body:
                     logger.info(f"Retrieved body for parent issue #{parent_number} ({len(body) if body else 0} chars)")
                     return body
@@ -1103,6 +1117,7 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to reopen issue #{issue_number}: {e}")
 
+
     def create_commit_status(
         self,
         repo_name: str,
@@ -1127,7 +1142,13 @@ class GitHubClient:
             api = get_ghapi_client(self.token)
 
             # api.repos.create_commit_status(owner, repo, sha, state, target_url, description, context)
-            api.repos.create_commit_status(owner, repo, sha, state=state, target_url=target_url, description=description, context=context)
+            api.repos.create_commit_status(
+                owner, repo, sha,
+                state=state,
+                target_url=target_url,
+                description=description,
+                context=context
+            )
             logger.info(f"Created commit status '{state}' for {sha[:8]} (context: {context})")
 
         except Exception as e:
@@ -1183,13 +1204,17 @@ class GitHubClient:
 
             result = []
             for comment in comments:
-                user = comment.get("user")
-                created_at = comment.get("created_at")
+                user = comment.get('user')
+                created_at = comment.get('created_at')
                 # GhApi returns strings for dates, pass through
-                if hasattr(created_at, "isoformat"):
-                    created_at = created_at.isoformat()
+                if hasattr(created_at, 'isoformat'): created_at = created_at.isoformat()
 
-                result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
+                result.append({
+                    "body": comment.get('body'),
+                    "created_at": created_at,
+                    "user": {"login": user.get('login')} if user else None,
+                    "id": comment.get('id')
+                })
             return result
         except Exception as e:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")
@@ -1202,7 +1227,11 @@ class GitHubClient:
             # Use low-level client to get raw text, bypassing GhApi's json assumption
             client = get_caching_client()
             url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
-            headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3.diff", "X-GitHub-Api-Version": "2022-11-28"}
+            headers = {
+                "Authorization": f"bearer {self.token}",
+                "Accept": "application/vnd.github.v3.diff",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
             response = client.get(url, headers=headers)
             response.raise_for_status()
             return response.text
@@ -1220,13 +1249,22 @@ class GitHubClient:
 
             result = []
             for c in commits:
-                commit_info = c.get("commit", {})
-                committer = commit_info.get("committer", {})
-                date = committer.get("date")
-                if hasattr(date, "isoformat"):
-                    date = date.isoformat()
+                commit_info = c.get('commit', {})
+                committer = commit_info.get('committer', {})
+                date = committer.get('date')
+                if hasattr(date, 'isoformat'): date = date.isoformat()
 
-                result.append({"sha": c.get("sha"), "commit": {"message": commit_info.get("message"), "committer": {"date": date, "name": committer.get("name")}}, "author": {"login": c.get("author", {}).get("login")} if c.get("author") else None})
+                result.append({
+                    "sha": c.get('sha'),
+                    "commit": {
+                        "message": commit_info.get('message'),
+                        "committer": {
+                            "date": date,
+                            "name": committer.get('name')
+                        }
+                    },
+                    "author": {"login": c.get('author', {}).get('login')} if c.get('author') else None
+                })
             return result
         except Exception as e:
             logger.error(f"Failed to get commits for PR #{pr_number}: {e}")
@@ -1242,11 +1280,15 @@ class GitHubClient:
 
             result = []
             for r in reviews:
-                submitted_at = r.get("submitted_at")
-                if hasattr(submitted_at, "isoformat"):
-                    submitted_at = submitted_at.isoformat()
+                submitted_at = r.get('submitted_at')
+                if hasattr(submitted_at, 'isoformat'): submitted_at = submitted_at.isoformat()
 
-                result.append({"state": r.get("state"), "submitted_at": submitted_at, "user": {"login": r.get("user", {}).get("login")} if r.get("user") else None, "id": r.get("id")})
+                result.append({
+                    "state": r.get('state'),
+                    "submitted_at": submitted_at,
+                    "user": {"login": r.get('user', {}).get('login')} if r.get('user') else None,
+                    "id": r.get('id')
+                })
             return result
         except Exception as e:
             logger.error(f"Failed to get reviews for PR #{pr_number}: {e}")
@@ -1277,7 +1319,10 @@ class GitHubClient:
 
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            open_sub_issues = [i["number"] for i in sub_issues_data if i.get("state") == "open"]
+            open_sub_issues = [
+                i['number'] for i in sub_issues_data
+                if i.get('state') == 'open'
+            ]
 
             # Update cache for open sub-issues (compatibility)
             cache_key = (repo_name, issue_number)
@@ -1292,7 +1337,7 @@ class GitHubClient:
         """Get all sub-issues (open and closed) using GitHub REST API."""
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            return [i["number"] for i in sub_issues_data]
+            return [i['number'] for i in sub_issues_data]
         except Exception as e:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
@@ -1308,7 +1353,11 @@ class GitHubClient:
             client = get_caching_client()
 
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues"
-            headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3+json", "X-GitHub-Api-Version": "2022-11-28"}  # As hinted by user docs
+            headers = {
+                "Authorization": f"bearer {self.token}",
+                "Accept": "application/vnd.github.v3+json",
+                "X-GitHub-Api-Version": "2022-11-28" # As hinted by user docs
+            }
 
             response = client.get(url, headers=headers)
 
@@ -1373,7 +1422,7 @@ class GitHubClient:
 
             # Use basic get issue to check current labels
             issue_data = api.issues.get(owner, repo, issue_number)
-            current_labels = [label["name"] for label in issue_data.get("labels", [])]
+            current_labels = [l['name'] for l in issue_data.get('labels', [])]
 
             existing_labels = [lbl for lbl in labels if lbl in current_labels]
             if existing_labels:
@@ -1432,7 +1481,7 @@ class GitHubClient:
             api = get_ghapi_client(self.token)
 
             issue_data = api.issues.get(owner, repo, issue_number)
-            current_labels = [lbl["name"] for lbl in issue_data.get("labels", [])]
+            current_labels = [lbl['name'] for lbl in issue_data.get('labels', [])]
             return label in current_labels
 
         except Exception as e:
@@ -1451,23 +1500,24 @@ class GitHubClient:
             # api.search.issues_and_pull_requests(q, sort, order, ...)
             # returns { 'total_count': ..., 'incomplete_results': ..., 'items': [...] }
             result = api.search.issues_and_pull_requests(q=query, sort=sort, order=order)
-            return result.get("items", [])
+            return result.get('items', [])
 
         except Exception as e:
             logger.error(f"Failed to search issues with query '{query}': {e}")
             return []
 
     def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
-        """Search for an open issue by title using fuzzy matching."""
+        """Search for an open issue by title using fuzzy matching.
+        """
         try:
             issues = self.get_open_issues(repo_name)
             search_title_lower = search_title.lower()
 
             def get_title(issue):
-                return getattr(issue, "title", None) or issue.get("title", "")
+                return getattr(issue, 'title', None) or issue.get('title', '')
 
             def get_number(issue):
-                return getattr(issue, "number", None) or issue.get("number")
+                return getattr(issue, 'number', None) or issue.get('number')
 
             # First try exact match (case-insensitive)
             for issue in issues:

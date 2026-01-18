@@ -1,10 +1,8 @@
-from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
-from auto_coder.automation_engine import AutomationConfig, AutomationEngine
+from unittest.mock import Mock, patch, MagicMock
+from auto_coder.automation_engine import AutomationEngine, AutomationConfig
 from auto_coder.util.gh_cache import GitHubClient
-
 
 class TestJulesPRMarking:
 
@@ -24,7 +22,7 @@ class TestJulesPRMarking:
         pr_data = {
             "number": 123,
             "title": "Jules PR",
-            "body": "I started a Jules session to work on this issue. Session ID: 123",  # Required for _is_jules_pr check
+            "body": "I started a Jules session to work on this issue. Session ID: 123", # Required for _is_jules_pr check
             "draft": True,
             "labels": [],
             "created_at": "2023-01-01T00:00:00Z",
@@ -47,9 +45,11 @@ class TestJulesPRMarking:
         # Python allows calling private methods.
 
         # patch the source modules directly since they are imported inside the function
-        with patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr", return_value=False), patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
+        with patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr", return_value=False), \
+             patch("auto_coder.util.github_action.preload_github_actions_status"), \
+             patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
 
-            candidates = engine._get_candidates("owner/repo")
+             candidates = engine._get_candidates("owner/repo")
 
         # Assertions
 
@@ -59,8 +59,8 @@ class TestJulesPRMarking:
         # 2. Verify GraphQL mutation was called on GitHubClient (Fix verification)
         mock_github_client.graphql_query.assert_called_once()
         args, kwargs = mock_github_client.graphql_query.call_args
-        assert "mutation" in kwargs["query"]
-        assert kwargs["variables"] == {"id": "PR_NODE_ID_123"}
+        assert "mutation" in kwargs['query']
+        assert kwargs['variables'] == {"id": "PR_NODE_ID_123"}
 
         # 3. Verify PR data was updated in place
         assert pr_data["node_id"] == "PR_NODE_ID_123"
@@ -73,13 +73,23 @@ class TestJulesPRMarking:
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
-        pr_data = {"number": 456, "title": "Jules PR", "body": "I started a Jules session...", "draft": True, "node_id": "EXISTING_NODE_ID", "labels": [], "created_at": "2023-01-01T00:00:00Z"}
+        pr_data = {
+            "number": 456,
+            "title": "Jules PR",
+            "body": "I started a Jules session...",
+            "draft": True,
+            "node_id": "EXISTING_NODE_ID",
+            "labels": [],
+            "created_at": "2023-01-01T00:00:00Z"
+        }
 
         mock_github_client.get_open_prs_json.return_value = [pr_data]
 
-        with patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr", return_value=False), patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
+        with patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr", return_value=False), \
+             patch("auto_coder.util.github_action.preload_github_actions_status"), \
+             patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
 
-            engine._get_candidates("owner/repo")
+             engine._get_candidates("owner/repo")
 
         # 1. Verify Fallback Fetch was NOT called
         mock_get_ghapi.return_value.pulls.get.assert_not_called()
@@ -87,4 +97,4 @@ class TestJulesPRMarking:
         # 2. Verify GraphQL mutation called with existing ID
         mock_github_client.graphql_query.assert_called_once()
         args, kwargs = mock_github_client.graphql_query.call_args
-        assert kwargs["variables"] == {"id": "EXISTING_NODE_ID"}
+        assert kwargs['variables'] == {"id": "EXISTING_NODE_ID"}

@@ -137,6 +137,7 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
     mock_check_status.assert_not_called()
 
 
+
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
 def test_get_mergeable_state_uses_existing_data(mock_github_client, mock_get_ghapi_client):

@@ -53,7 +53,9 @@ class ComprehensiveTypeChecker:
                 "success": result.returncode == 0,
                 "output": result.stdout,
                 "stderr": result.stderr,
-                "errors_count": len([line for line in result.stdout.split("\n") if "error:" in line]),
+                "errors_count": len(
+                    [line for line in result.stdout.split("\n") if "error:" in line]
+                ),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -122,14 +124,20 @@ class ComprehensiveTypeChecker:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def _analyze_ast_for_type_issues(self, tree: ast.AST, filename: str) -> List[Dict[str, Any]]:
+    def _analyze_ast_for_type_issues(
+        self, tree: ast.AST, filename: str
+    ) -> List[Dict[str, Any]]:
         """Analyze AST to detect known type issues"""
         errors = []
 
         class TypeIssueVisitor(ast.NodeVisitor):
             def visit_Call(self, node):
                 # Detect calls to .get() method on dictionary-type objects
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "get" and hasattr(node, "lineno"):
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get"
+                    and hasattr(node, "lineno")
+                ):
 
                     # Simple heuristic: be careful if variable name is 'checks' and 'success' is the first argument
                     # Actual implementation would require more detailed type tracking
@@ -164,18 +172,24 @@ def runtime_type_check(func):
         type_hints = sig.return_annotation
 
         # Pre-execution type checking
-        for i, (param_name, param_value) in enumerate(zip(sig.parameters.values(), args)):
+        for i, (param_name, param_value) in enumerate(
+            zip(sig.parameters.values(), args)
+        ):
             if param_name.annotation != param_name.empty:
                 expected_type = param_name.annotation
                 if not isinstance(param_value, expected_type):
-                    print(f"Type error in {func.__name__}: Parameter '{param_name}' should be {expected_type}, but got {type(param_value)}")
+                    print(
+                        f"Type error in {func.__name__}: Parameter '{param_name}' should be {expected_type}, but got {type(param_value)}"
+                    )
 
         result = func(*args, **kwargs)
 
         # Return value check
         if hasattr(type_hints, "__args__") and type_hints is not None:
             if not isinstance(result, type_hints):
-                print(f"Type error in {func.__name__}: Return value should be {type_hints}, but got {type(result)}")
+                print(
+                    f"Type error in {func.__name__}: Return value should be {type_hints}, but got {type(result)}"
+                )
 
         return result
 

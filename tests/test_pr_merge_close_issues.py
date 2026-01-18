@@ -115,8 +115,12 @@ class TestCloseLinkedIssues:
         mock_api.pulls.get.assert_called_once_with("test", "repo", 456)
 
         # Verify issue comment and close
-        mock_api.issues.create_comment.assert_called_once_with("test", "repo", 123, body="Closed by PR #456")
-        mock_api.issues.update.assert_called_once_with("test", "repo", 123, state="closed")
+        mock_api.issues.create_comment.assert_called_once_with(
+            "test", "repo", 123, body="Closed by PR #456"
+        )
+        mock_api.issues.update.assert_called_once_with(
+            "test", "repo", 123, state="closed"
+        )
 
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("src.auto_coder.pr_processor.GitHubClient")

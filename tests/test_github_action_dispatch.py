@@ -1,8 +1,7 @@
+
 import unittest
 from unittest.mock import MagicMock, patch
-
 from auto_coder.util.github_action import trigger_workflow_dispatch
-
 
 class TestTriggerWorkflowDispatch(unittest.TestCase):
     @patch("auto_coder.util.github_action.get_ghapi_client")
@@ -29,11 +28,12 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         self.assertEqual(args[2], "ci.yml")
 
         # Verify 'ref' is passed as keyword argument
-        self.assertIn("ref", kwargs)
-        self.assertEqual(kwargs["ref"], "main")
+        self.assertIn('ref', kwargs)
+        self.assertEqual(kwargs['ref'], "main")
 
         # Ensure it was NOT passed positionally (should only be 3 args)
         self.assertEqual(len(args), 3, "Should not have 4th positional argument")
+
 
     @patch("auto_coder.util.github_action.get_ghapi_client")
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -47,20 +47,25 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         ref = "feature-branch"
 
         # Mock create_workflow_dispatch to raise 422 first, then succeed
-        mock_api.actions.create_workflow_dispatch.side_effect = [Exception("422 Unprocessable Entity"), None]  # First call fails  # Second call succeeds
+        mock_api.actions.create_workflow_dispatch.side_effect = [
+            Exception("422 Unprocessable Entity"),  # First call fails
+            None  # Second call succeeds
+        ]
 
         # Mock get_content to return file without workflow_dispatch
         import base64
-
         # Original content: only 'on: push'
         yaml_content = "name: CI\non:\n  push:\n    branches: [main]\n"
         encoded_content = base64.b64encode(yaml_content.encode("utf-8")).decode("utf-8")
 
-        mock_api.repos.get_content.return_value = {"content": encoded_content, "sha": "sha123"}
+        mock_api.repos.get_content.return_value = {
+            "content": encoded_content,
+            "sha": "sha123"
+        }
 
         # Execute
         with patch("time.sleep"):
-            result = trigger_workflow_dispatch(repo_name, workflow_id, ref)
+             result = trigger_workflow_dispatch(repo_name, workflow_id, ref)
 
         # Verify
         self.assertTrue(result)
@@ -75,13 +80,14 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         mock_api.repos.create_or_update_file_contents.assert_called_once()
         call_kwargs = mock_api.repos.create_or_update_file_contents.call_args[1]
 
-        self.assertEqual(call_kwargs["branch"], ref)
-        self.assertEqual(call_kwargs["message"], f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}")
-        self.assertEqual(call_kwargs["sha"], "sha123")
+        self.assertEqual(call_kwargs['branch'], ref)
+        self.assertEqual(call_kwargs['message'], f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}")
+        self.assertEqual(call_kwargs['sha'], "sha123")
 
         # Verify content has workflow_dispatch
-        new_content_decoded = base64.b64decode(call_kwargs["content"]).decode("utf-8")
+        new_content_decoded = base64.b64decode(call_kwargs['content']).decode("utf-8")
         self.assertIn("workflow_dispatch:", new_content_decoded)
+
 
     @patch("auto_coder.util.github_action.get_ghapi_client")
     @patch("auto_coder.util.github_action.GitHubClient")
@@ -95,20 +101,25 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         ref = "feature-branch"
 
         # Mock create_workflow_dispatch to raise 422 first, then succeed
-        mock_api.actions.create_workflow_dispatch.side_effect = [Exception("422 Unprocessable Entity"), None]  # First call fails  # Second call succeeds
+        mock_api.actions.create_workflow_dispatch.side_effect = [
+            Exception("422 Unprocessable Entity"),  # First call fails
+            None  # Second call succeeds
+        ]
 
         # Mock get_content to return file with duplicate workflow_dispatch
         import base64
-
         # YAML with duplicate workflow_dispatch
         yaml_content = "name: CI\non:\n  workflow_dispatch:\n  workflow_dispatch:\n  push:\n    branches: [main]\n"
         encoded_content = base64.b64encode(yaml_content.encode("utf-8")).decode("utf-8")
 
-        mock_api.repos.get_content.return_value = {"content": encoded_content, "sha": "sha123"}
+        mock_api.repos.get_content.return_value = {
+            "content": encoded_content,
+            "sha": "sha123"
+        }
 
         # Execute
         with patch("time.sleep"):
-            result = trigger_workflow_dispatch(repo_name, workflow_id, ref)
+             result = trigger_workflow_dispatch(repo_name, workflow_id, ref)
 
         # Verify
         self.assertTrue(result)
@@ -118,9 +129,8 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         call_kwargs = mock_api.repos.create_or_update_file_contents.call_args[1]
 
         # Verify content has only one workflow_dispatch
-        new_content_decoded = base64.b64decode(call_kwargs["content"]).decode("utf-8")
+        new_content_decoded = base64.b64decode(call_kwargs['content']).decode("utf-8")
         self.assertEqual(new_content_decoded.count("workflow_dispatch:"), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

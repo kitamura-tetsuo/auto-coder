@@ -33,7 +33,9 @@ VULTURE_LINE = re.compile(
 )
 
 
-def run_vulture(paths: List[str], min_conf: int, exclude: List[str], whitelist: List[str]) -> str:
+def run_vulture(
+    paths: List[str], min_conf: int, exclude: List[str], whitelist: List[str]
+) -> str:
     """Run vulture and return stdout text."""
     cmd = [sys.executable, "-m", "vulture"]
     cmd += paths
@@ -101,7 +103,9 @@ class PerFileRemover(cst.CSTTransformer):
                 return True
         return False
 
-    def leave_FunctionDef(self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef) -> cst.CSTNode:
+    def leave_FunctionDef(
+        self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef
+    ) -> cst.CSTNode:
         if self._should_remove(original_node):
             pos = self.get_metadata(PositionProvider, original_node).start.line
             self.removed.append((original_node.name.value, pos))
@@ -109,7 +113,9 @@ class PerFileRemover(cst.CSTTransformer):
         return updated_node
 
 
-def process_file(path: Path, targets: List[Tuple[str, int]], apply: bool, keep: List[re.Pattern]) -> List[Tuple[str, int]]:
+def process_file(
+    path: Path, targets: List[Tuple[str, int]], apply: bool, keep: List[re.Pattern]
+) -> List[Tuple[str, int]]:
     """Remove targeted functions from a single file. Return removed (name, line)."""
     try:
         code = path.read_text(encoding="utf-8")
@@ -137,7 +143,9 @@ def process_file(path: Path, targets: List[Tuple[str, int]], apply: bool, keep: 
         except Exception as e:
             logger.error("Failed to write {}: {}", path, e)
     else:
-        logger.info("Preview: Would update {} (remove {} functions).", path, len(removed))
+        logger.info(
+            "Preview: Would update {} (remove {} functions).", path, len(removed)
+        )
 
     for name, ln in removed:
         logger.debug("  - removed {} at line {}", name, ln)
@@ -149,9 +157,15 @@ def compile_keep_patterns(exprs: List[str]) -> List[re.Pattern]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Bulk-remove unused functions reported by vulture, via LibCST.")
-    parser.add_argument("paths", nargs="+", help="Code paths to scan (e.g. src/ package/)")
-    parser.add_argument("--apply", action="store_true", help="Actually modify files. Default: preview mode.")
+    parser = argparse.ArgumentParser(
+        description="Bulk-remove unused functions reported by vulture, via LibCST."
+    )
+    parser.add_argument(
+        "paths", nargs="+", help="Code paths to scan (e.g. src/ package/)"
+    )
+    parser.add_argument(
+        "--apply", action="store_true", help="Actually modify files. Default: preview mode."
+    )
     parser.add_argument(
         "--min-confidence",
         type=int,
@@ -222,7 +236,9 @@ def main() -> None:
         total_removed += len(removed)
 
     if args.apply:
-        logger.info("Done. Removed {} functions across {} files.", total_removed, len(hits))
+        logger.info(
+            "Done. Removed {} functions across {} files.", total_removed, len(hits)
+        )
     else:
         logger.info(
             "Preview: Would remove {} functions across {} files. Use --apply to write changes.",

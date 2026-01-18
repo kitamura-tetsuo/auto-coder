@@ -1,8 +1,7 @@
-import json
-import os
-import sys
-
 import click
+import os
+import json
+import sys
 
 # Ensure src is in python path
 # Current file: .../auto-coder/utils/log_summarizer/main.py
@@ -10,24 +9,24 @@ import click
 # Src: .../auto-coder/src
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src")))
 
+from typing import Optional, Iterator
 from pathlib import Path
-from typing import Iterator, Optional
 
 # Universal import block
 if __package__:
-    from .candidate import ALGORITHM_REGISTRY
     from .llm_wrapper import LLMWrapper
+    from .candidate import ALGORITHM_REGISTRY
     from .scorer import LogScorer
 else:
-    from candidate import ALGORITHM_REGISTRY
     from llm_wrapper import LLMWrapper
+    from candidate import ALGORITHM_REGISTRY
     from scorer import LogScorer
-
 
 @click.group()
 def cli():
     """Log Summarization Iterative Refinement Tool."""
     pass
+
 
 
 def find_log_files(path: Path) -> Iterator[Path]:
@@ -36,9 +35,9 @@ def find_log_files(path: Path) -> Iterator[Path]:
     A valid log file must have 'stdout' or 'stderr' and MUST NOT have 'method'.
     """
     if path.is_file():
-        if path.suffix == ".json":
+        if path.suffix == '.json':
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 if ("stdout" in data or "stderr" in data) and "method" not in data:
                     yield path
@@ -48,7 +47,7 @@ def find_log_files(path: Path) -> Iterator[Path]:
 
     for p in path.rglob("*.json"):
         try:
-            with open(p, "r", encoding="utf-8") as f:
+            with open(p, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             # Check if it looks like a raw log (has output but no method summary tag)
             if ("stdout" in data or "stderr" in data) and "method" not in data:
@@ -57,16 +56,13 @@ def find_log_files(path: Path) -> Iterator[Path]:
             # Ignore file read/parse errors
             pass
 
-
 import re
-
 from auto_coder.llm_backend_config import get_llm_config
 
-
 @cli.command()
-@click.option("--log-file", required=True, type=click.Path(exists=True), help="Path to the input log file or directory.")
-@click.option("--output", required=False, type=click.Path(), help="Path to save the JSON output (optional for directory mode).")
-@click.option("--backend", default=None, help="LLM Backend to use (optional).")
+@click.option('--log-file', required=True, type=click.Path(exists=True), help='Path to the input log file or directory.')
+@click.option('--output', required=False, type=click.Path(), help='Path to save the JSON output (optional for directory mode).')
+@click.option('--backend', default=None, help='LLM Backend to use (optional).')
 def generate_gold(log_file: str, output: Optional[str], backend: Optional[str]):
     """
     Generate a 'Gold Standard' summary using the LLM.
@@ -92,7 +88,7 @@ def generate_gold(log_file: str, output: Optional[str], backend: Optional[str]):
             current_backend = "default"
 
     # Sanitize backend name for filename
-    safe_backend = re.sub(r"[^\w\-. ]", "_", current_backend)
+    safe_backend = re.sub(r'[^\w\-. ]', '_', current_backend)
 
     wrapper = LLMWrapper(backend_name=backend)
 
@@ -100,15 +96,15 @@ def generate_gold(log_file: str, output: Optional[str], backend: Optional[str]):
         try:
             # Determine output path first to check existence
             if input_path.is_file() and output:
-                out_path = Path(output)
+                 out_path = Path(output)
             else:
-                # New naming convention: {stem}_gold_{backend}.json
-                out_path = log_path.parent / f"{log_path.stem}_gold_{safe_backend}.json"
+                 # New naming convention: {stem}_gold_{backend}.json
+                 out_path = log_path.parent / f"{log_path.stem}_gold_{safe_backend}.json"
 
             # Check for existing file and skip if it already exists
             if out_path.exists():
                 try:
-                    with open(out_path, "r", encoding="utf-8") as f:
+                    with open(out_path, 'r', encoding='utf-8') as f:
                         existing_data = json.load(f)
 
                     # We trust the filename uniqueness now, but double check content if needed?
@@ -120,7 +116,7 @@ def generate_gold(log_file: str, output: Optional[str], backend: Optional[str]):
                     pass
 
             click.echo(f"Processing {log_path.name}...")
-            with open(log_path, "r", encoding="utf-8") as f:
+            with open(log_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             # Extract content from JSON log structure
@@ -131,9 +127,15 @@ def generate_gold(log_file: str, output: Optional[str], backend: Optional[str]):
 
             summary = wrapper.summarize_log(log_content)
 
-            result = {"source_file": str(log_path), "method": "llm_gold", "llm_backend": current_backend, "summary": summary, "original_data": data}  # Preserve original metadata if needed
+            result = {
+                "source_file": str(log_path),
+                "method": "llm_gold",
+                "llm_backend": current_backend,
+                "summary": summary,
+                "original_data": data  # Preserve original metadata if needed
+            }
 
-            with open(out_path, "w", encoding="utf-8") as f:
+            with open(out_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, indent=2, ensure_ascii=False)
 
             click.echo(f"  Saved to {out_path}")
@@ -142,10 +144,12 @@ def generate_gold(log_file: str, output: Optional[str], backend: Optional[str]):
             click.echo(f"  Error processing {log_path.name}: {e}", err=True)
 
 
+
+
 @cli.command()
-@click.option("--log-file", required=True, type=click.Path(exists=True), help="Path to the input log file or directory.")
-@click.option("--output", required=False, type=click.Path(), help="Path to save the JSON output (optional for directory mode).")
-@click.option("--algorithm", default="baseline", help="Name of the algorithm to run (default: baseline).")
+@click.option('--log-file', required=True, type=click.Path(exists=True), help='Path to the input log file or directory.')
+@click.option('--output', required=False, type=click.Path(), help='Path to save the JSON output (optional for directory mode).')
+@click.option('--algorithm', default="baseline", help='Name of the algorithm to run (default: baseline).')
 def run_candidate(log_file: str, output: Optional[str], algorithm: str):
     """
     Run a specific Candidate Algorithm to generate a summary.
@@ -167,7 +171,7 @@ def run_candidate(log_file: str, output: Optional[str], algorithm: str):
 
     for log_path in target_files:
         try:
-            with open(log_path, "r", encoding="utf-8") as f:
+            with open(log_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             log_content = data.get("stdout", "") or data.get("stderr", "")
@@ -178,15 +182,19 @@ def run_candidate(log_file: str, output: Optional[str], algorithm: str):
             algo = SummarizerClass()
             summary = algo.summarize(log_content)
 
-            result = {"source_file": str(log_path), "method": f"candidate_{algorithm}", "summary": summary}
+            result = {
+                "source_file": str(log_path),
+                "method": f"candidate_{algorithm}",
+                "summary": summary
+            }
 
             # Determine output path
             if input_path.is_file() and output:
-                out_path = Path(output)
+                 out_path = Path(output)
             else:
-                out_path = log_path.parent / f"{log_path.stem}_{algorithm}.json"
+                 out_path = log_path.parent / f"{log_path.stem}_{algorithm}.json"
 
-            with open(out_path, "w", encoding="utf-8") as f:
+            with open(out_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, indent=2, ensure_ascii=False)
 
             click.echo(f"Generated {out_path.name}")
@@ -194,10 +202,9 @@ def run_candidate(log_file: str, output: Optional[str], algorithm: str):
         except Exception as e:
             click.echo(f"Error running candidate algorithm on {log_path.name}: {e}", err=True)
 
-
 @cli.command()
-@click.option("--log-file", required=True, type=click.Path(exists=True), help="Path to the input log file or directory.")
-@click.option("--output-dir", required=False, type=click.Path(exists=True, file_okay=False, dir_okay=True), help="Directory to save results (optional, defaults to source directory).")
+@click.option('--log-file', required=True, type=click.Path(exists=True), help='Path to the input log file or directory.')
+@click.option('--output-dir', required=False, type=click.Path(exists=True, file_okay=False, dir_okay=True), help='Directory to save results (optional, defaults to source directory).')
 def run_all(log_file: str, output_dir: Optional[str]):
     """
     Run ALL registered algorithms on the log file(s).
@@ -215,7 +222,7 @@ def run_all(log_file: str, output_dir: Optional[str]):
 
     for log_path in target_files:
         try:
-            with open(log_path, "r", encoding="utf-8") as f:
+            with open(log_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             log_content = data.get("stdout", "") or data.get("stderr", "")
 
@@ -231,9 +238,13 @@ def run_all(log_file: str, output_dir: Optional[str]):
                     output_filename = f"{log_stem}_{name}.json"
                     output_file = target_out_dir / output_filename
 
-                    result_data = {"source_file": str(log_path), "method": f"candidate_{name}", "summary": summary}
+                    result_data = {
+                        "source_file": str(log_path),
+                        "method": f"candidate_{name}",
+                        "summary": summary
+                    }
 
-                    with open(output_file, "w", encoding="utf-8") as f:
+                    with open(output_file, 'w', encoding='utf-8') as f:
                         json.dump(result_data, f, indent=2, ensure_ascii=False)
 
                     click.echo(f"  Generated {output_filename}")
@@ -242,25 +253,24 @@ def run_all(log_file: str, output_dir: Optional[str]):
                     click.echo(f"  Error running '{name}' on {log_path.name}: {e}", err=True)
 
         except Exception as e:
-            click.echo(f"Error processing {log_path.name}: {e}", err=True)
+             click.echo(f"Error processing {log_path.name}: {e}", err=True)
 
     click.echo("Completed.")
 
-
 @cli.command()
-@click.option("--gold-file", required=True, type=click.Path(exists=True), help="Path to the Gold Standard JSON file.")
-@click.option("--candidate-file", required=True, type=click.Path(exists=True), help="Path to the Candidate JSON file.")
-@click.option("--output", type=click.Path(), help="Path to save the evaluation result JSON (optional).")
+@click.option('--gold-file', required=True, type=click.Path(exists=True), help='Path to the Gold Standard JSON file.')
+@click.option('--candidate-file', required=True, type=click.Path(exists=True), help='Path to the Candidate JSON file.')
+@click.option('--output', type=click.Path(), help='Path to save the evaluation result JSON (optional).')
 def evaluate(gold_file: str, candidate_file: str, output: Optional[str]):
     """
     Evaluate a candidate summary against a gold standard.
     Calculates Precision, Recall, and F1 score based on line matching.
     """
     try:
-        with open(gold_file, "r", encoding="utf-8") as f:
+        with open(gold_file, 'r', encoding='utf-8') as f:
             gold_data = json.load(f)
 
-        with open(candidate_file, "r", encoding="utf-8") as f:
+        with open(candidate_file, 'r', encoding='utf-8') as f:
             candidate_data = json.load(f)
 
         gold_summary = gold_data.get("summary", "")
@@ -277,8 +287,12 @@ def evaluate(gold_file: str, candidate_file: str, output: Optional[str]):
         click.echo(f"  Matches:   {scores['matches']} / {scores['gold_count']} gold lines")
 
         if output:
-            result = {"gold_source": gold_file, "candidate_source": candidate_file, "scores": scores}
-            with open(output, "w", encoding="utf-8") as f:
+            result = {
+                "gold_source": gold_file,
+                "candidate_source": candidate_file,
+                "scores": scores
+            }
+            with open(output, 'w', encoding='utf-8') as f:
                 json.dump(result, f, indent=2, ensure_ascii=False)
             click.echo(f"Evaluation results saved to {output}")
 
@@ -286,11 +300,10 @@ def evaluate(gold_file: str, candidate_file: str, output: Optional[str]):
         click.echo(f"Error evaluating files: {e}", err=True)
         sys.exit(1)
 
-
 @cli.command()
-@click.option("--gold-file", required=False, type=click.Path(exists=True), help="Path to the Gold Standard JSON file. If omitted, searches for ALL *_gold*.json files in candidates-dir.")
-@click.option("--candidates-dir", required=True, type=click.Path(exists=True, file_okay=False, dir_okay=True), help="Directory containing Candidate JSON files.")
-@click.option("--output", type=click.Path(), help="Path to save the aggregated evaluation results JSON (optional).")
+@click.option('--gold-file', required=False, type=click.Path(exists=True), help='Path to the Gold Standard JSON file. If omitted, searches for ALL *_gold*.json files in candidates-dir.')
+@click.option('--candidates-dir', required=True, type=click.Path(exists=True, file_okay=False, dir_okay=True), help='Directory containing Candidate JSON files.')
+@click.option('--output', type=click.Path(), help='Path to save the aggregated evaluation results JSON (optional).')
 def evaluate_all(gold_file: Optional[str], candidates_dir: str, output: Optional[str]):
     """
     Evaluate candidate JSON files against gold standards.
@@ -308,7 +321,7 @@ def evaluate_all(gold_file: Optional[str], candidates_dir: str, output: Optional
         # --- Mode 1: Single Gold File ---
         if gold_file:
             gold_path = Path(gold_file)
-            with open(gold_path, "r", encoding="utf-8") as f:
+            with open(gold_path, 'r', encoding='utf-8') as f:
                 gold_data = json.load(f)
             gold_summary = gold_data.get("summary", "")
 
@@ -316,19 +329,15 @@ def evaluate_all(gold_file: Optional[str], candidates_dir: str, output: Optional
 
             candidate_files = list(candidates_path.glob("*.json"))
             for cand_file in candidate_files:
-                if cand_file.resolve() == gold_path.resolve():
-                    continue
+                if cand_file.resolve() == gold_path.resolve(): continue
                 try:
-                    with open(cand_file, "r", encoding="utf-8") as f:
-                        cand_data = json.load(f)
-                    if "summary" not in cand_data:
-                        continue
+                    with open(cand_file, 'r', encoding='utf-8') as f: cand_data = json.load(f)
+                    if "summary" not in cand_data: continue
 
                     method_name = cand_data.get("method", cand_file.stem)
                     scores = scorer.calculate_score(cand_data.get("summary", ""), gold_summary)
                     results.append({"filename": cand_file.name, "method": method_name, "scores": scores})
-                except Exception:
-                    pass
+                except Exception: pass
 
             # Sort by F1
             results.sort(key=lambda x: x["scores"]["f1"], reverse=True)
@@ -366,7 +375,7 @@ def evaluate_all(gold_file: Optional[str], candidates_dir: str, output: Optional
                 gold_p = file_path
 
                 try:
-                    with open(gold_p, "r", encoding="utf-8") as f:
+                    with open(gold_p, 'r', encoding='utf-8') as f:
                         gold_data = json.load(f)
                     gold_summary = gold_data.get("summary", "")
 
@@ -374,34 +383,29 @@ def evaluate_all(gold_file: Optional[str], candidates_dir: str, output: Optional
                     # candidates are expected to be {stem}_{algo}.json
                     # We need to be careful not to match the gold file itself or other gold files for same stem
                     for sibling in gold_p.parent.glob(f"{stem}_*.json"):
-                        if sibling.resolve() == gold_p.resolve():
-                            continue
+                        if sibling.resolve() == gold_p.resolve(): continue
 
                         # Check if sibling is another gold file
                         if gold_pattern.match(sibling.name):
                             continue
 
                         try:
-                            with open(sibling, "r", encoding="utf-8") as f:
-                                sib_data = json.load(f)
-                            if "summary" not in sib_data:
-                                continue
+                            with open(sibling, 'r', encoding='utf-8') as f: sib_data = json.load(f)
+                            if "summary" not in sib_data: continue
 
                             # Extract Algo Name
                             # filename: stem_algo.json -> algo
                             # sibling.name starts with stem + "_"
                             # suffix = sibling.name[len(stem)+1 : -5]
-                            algo_suffix = sibling.name[len(stem) + 1 : -5]
+                            algo_suffix = sibling.name[len(stem)+1:-5]
                             method_name = sib_data.get("method", algo_suffix)
 
                             scores = scorer.calculate_score(sib_data.get("summary", ""), gold_summary)
 
-                            if method_name not in algo_scores:
-                                algo_scores[method_name] = []
+                            if method_name not in algo_scores: algo_scores[method_name] = []
                             algo_scores[method_name].append(scores)
 
-                        except Exception:
-                            pass
+                        except Exception: pass
                 except Exception as e:
                     click.echo(f"Error processing gold file {gold_p.name}: {e}", err=True)
 
@@ -415,30 +419,36 @@ def evaluate_all(gold_file: Optional[str], candidates_dir: str, output: Optional
             aggregated_results = []
             for algo, score_list in algo_scores.items():
                 count = len(score_list)
-                avg_f1 = sum(s["f1"] for s in score_list) / count
-                avg_prec = sum(s["precision"] for s in score_list) / count
-                avg_rec = sum(s["recall"] for s in score_list) / count
+                avg_f1 = sum(s['f1'] for s in score_list) / count
+                avg_prec = sum(s['precision'] for s in score_list) / count
+                avg_rec = sum(s['recall'] for s in score_list) / count
 
-                aggregated_results.append({"method": algo, "count": count, "scores": {"f1": avg_f1, "precision": avg_prec, "recall": avg_rec}})
+                aggregated_results.append({
+                    "method": algo,
+                    "count": count,
+                    "scores": {
+                        "f1": avg_f1,
+                        "precision": avg_prec,
+                        "recall": avg_rec
+                    }
+                })
 
             aggregated_results.sort(key=lambda x: x["scores"]["f1"], reverse=True)
 
             _print_table(aggregated_results, aggregated=True)
 
             if output:
-                _save_output(output, {"candidates_dir": str(candidates_path), "mode": "hierarchical", "rankings": aggregated_results})
+                 _save_output(output, {"candidates_dir": str(candidates_path), "mode": "hierarchical", "rankings": aggregated_results})
 
     except Exception as e:
         click.echo(f"Error in evaluate-all: {e}", err=True)
         # print stack trace for debug
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
 
-
 def _print_table(results, aggregated=False):
-    click.echo("\n" + "=" * 80)
+    click.echo("\n" + "="*80)
     if aggregated:
         click.echo(f"{'Rank':<5} | {'Method':<30} | {'Count':<6} | {'Avg F1':<8} | {'Avg Prec':<8} | {'Avg Rec':<8}")
     else:
@@ -448,22 +458,19 @@ def _print_table(results, aggregated=False):
     for idx, res in enumerate(results, 1):
         s = res["scores"]
         name = res["method"]
-        if len(name) > 28:
-            name = name[:25] + "..."
+        if len(name) > 28: name = name[:25] + "..."
 
         if aggregated:
             click.echo(f"{idx:<5} | {name:<30} | {res['count']:<6} | {s['f1']:.4f}   | {s['precision']:.4f}   | {s['recall']:.4f}")
         else:
             click.echo(f"{idx:<5} | {name:<30} | {s['f1']:.4f}   | {s['precision']:.4f}   | {s['recall']:.4f}")
 
-    click.echo("=" * 80 + "\n")
-
+    click.echo("="*80 + "\n")
 
 def _save_output(path, data):
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     click.echo(f"Results saved to {path}")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     cli()

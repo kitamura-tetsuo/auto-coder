@@ -26,10 +26,11 @@ except ImportError:
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
-from ..gh_logger import get_gh_logger
+
+from .gh_cache import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
-from .gh_cache import GitHubClient, get_ghapi_client
+from .gh_cache import get_ghapi_client
 from .github_cache import get_github_cache
 
 
@@ -301,12 +302,12 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
 
         # Check cache first
         # Caching removed to ensure fresh status is always retrieved
-        cache = get_github_cache()
-        cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
-            return cached_result
+        # cache = get_github_cache()
+        # cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
+        # cached_result = cache.get(cache_key)
+        # if cached_result:
+        #     logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
+        #     return cached_result
 
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
@@ -339,7 +340,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 ids=[],
                 in_progress=False,
             )
-            cache.set(cache_key, gh_status_result)
+            # cache.set(cache_key, gh_status_result)
             return gh_status_result
 
         # Map API response matching_checks to the expected format
@@ -415,8 +416,9 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             in_progress=has_in_progress,
         )
 
+
         # Cache the result
-        cache.set(cache_key, gh_status_result)
+        # cache.set(cache_key, gh_status_result)
 
         return gh_status_result
 
@@ -534,13 +536,13 @@ def _check_github_actions_status_from_history(
         # Check cache first (using head_branch as part of key since we might not have exact SHA yet,
         # but ideally we should use SHA if possible. However, this function is a fallback when we might lack info.
         # Let's use a composite key including head_branch.)
-        cache = get_github_cache()
+        # cache = get_github_cache()
         # Note: Historical check is more expensive, but relying on cache causes stale status issues.
-        cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
-            return cached_result
+        # cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
+        # cached_result = cache.get(cache_key)
+        # if cached_result:
+        #     logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
+        #     return cached_result
 
         # 1. Get all PR commits/oid
         # 1. Get all PR commits/oid
@@ -774,7 +776,14 @@ def get_detailed_checks_from_history(
         # Deduplicate checks by job_name, keeping only the latest run
         # Sort by completed_at (descending), then started_at (descending), then job_id (descending)
         # We want the most recent run for each job name
-        all_checks.sort(key=lambda x: (x.get("completed_at") or "", x.get("started_at") or "", x.get("job_id") or 0), reverse=True)
+        all_checks.sort(
+            key=lambda x: (
+                x.get("completed_at") or "",
+                x.get("started_at") or "",
+                x.get("job_id") or 0
+            ),
+            reverse=True
+        )
 
         unique_checks = {}
         for check in all_checks:
@@ -861,7 +870,6 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
     except Exception as e:
         # Fallback for 422 error (missing workflow_dispatch trigger)
         import time
-
         try:
             if "422" in str(e):
                 logger.warning(f"Failed to trigger {workflow_id} with 422. Attempting to add workflow_dispatch trigger...")
@@ -875,62 +883,70 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
                     sha = contents_res.get("sha")
 
                     import base64
-
                     content_decoded = base64.b64decode(content_encoded).decode("utf-8")
+
 
                     # Check for duplicate workflow_dispatch
                     dispatch_count = content_decoded.count("workflow_dispatch:")
                     new_content = None
 
                     if dispatch_count > 1:
-                        logger.warning(f"Found {dispatch_count} 'workflow_dispatch' keys in {workflow_id}. Attempting to fix...")
-                        # Remove all occurrences
-                        # This naive replacement assumes 'workflow_dispatch:' is on its own line(s).
-                        # We'll use a regex to remove lines containing 'workflow_dispatch:' and optional surrounding whitespace
-                        # Be careful not to damage structure.
-                        # Safer approach: replace all 'workflow_dispatch:' with nothing, then add one back.
-                        # But we need to handle indentation and context.
+                         logger.warning(f"Found {dispatch_count} 'workflow_dispatch' keys in {workflow_id}. Attempting to fix...")
+                         # Remove all occurrences
+                         # This naive replacement assumes 'workflow_dispatch:' is on its own line(s).
+                         # We'll use a regex to remove lines containing 'workflow_dispatch:' and optional surrounding whitespace
+                         # Be careful not to damage structure.
+                         # Safer approach: replace all 'workflow_dispatch:' with nothing, then add one back.
+                         # But we need to handle indentation and context.
 
-                        # Let's try to remove all of them and then re-add one at the top of 'on:'.
-                        temp_content = re.sub(r"^\s*workflow_dispatch:.*$\n?", "", content_decoded, flags=re.MULTILINE)
+                         # Let's try to remove all of them and then re-add one at the top of 'on:'.
+                         temp_content = re.sub(r"^\s*workflow_dispatch:.*$\n?", "", content_decoded, flags=re.MULTILINE)
 
-                        # Now add it back
-                        if "on:" in temp_content:
-                            new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", temp_content, count=1)
+                         # Now add it back
+                         if "on:" in temp_content:
+                               new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", temp_content, count=1)
 
                     elif dispatch_count == 0:
-                        if "on:" in content_decoded:
-                            # Replaces "on:\n" with "on:\n  workflow_dispatch:\n"
-                            new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", content_decoded, count=1)
+                         if "on:" in content_decoded:
+                               # Replaces "on:\n" with "on:\n  workflow_dispatch:\n"
+                               new_content = re.sub(r"(on:\s*\n)", r"\1  workflow_dispatch:\n", content_decoded, count=1)
 
                     if new_content and new_content != content_decoded:
-                        logger.info(f"Updating {workflow_id} to ensure single workflow_dispatch trigger")
+                         logger.info(f"Updating {workflow_id} to ensure single workflow_dispatch trigger")
 
-                        # Commit changes via API (faster/cleaner than checkout for just one file?)
-                        # Or use existing helpers if we are local?
-                        # automation_engine code usually runs local git.
-                        # But here passing 'ref' implies we might not be checked out to it?
-                        # The caller (pr_processor) usually has local repo.
-                        # BUT, 'trigger_workflow_dispatch' is a utility.
+                         # Commit changes via API (faster/cleaner than checkout for just one file?)
+                         # Or use existing helpers if we are local?
+                         # automation_engine code usually runs local git.
+                         # But here passing 'ref' implies we might not be checked out to it?
+                         # The caller (pr_processor) usually has local repo.
+                         # BUT, 'trigger_workflow_dispatch' is a utility.
 
-                        # Let's use API commit to be safe and independent of local state
-                        message = f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}"
+                         # Let's use API commit to be safe and independent of local state
+                         message = f"Auto-Coder: Add workflow_dispatch trigger to {workflow_id}"
 
-                        api.repos.create_or_update_file_contents(owner=owner, repo=repo, path=file_path, message=message, content=base64.b64encode(new_content.encode("utf-8")).decode("utf-8"), sha=sha, branch=ref)
+                         api.repos.create_or_update_file_contents(
+                              owner=owner,
+                              repo=repo,
+                              path=file_path,
+                              message=message,
+                              content=base64.b64encode(new_content.encode("utf-8")).decode("utf-8"),
+                              sha=sha,
+                              branch=ref
+                         )
 
-                        logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
-                        time.sleep(2)  # Wait for propagation
-                        api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
-                        logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
-                        return True
+                         logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
+                         time.sleep(2) # Wait for propagation
+                         api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
+                         logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
+                         return True
                     else:
-                        logger.warning(f"workflow_dispatch already present in {workflow_id}, 422 might be due to other reasons.")
+                         logger.warning(f"workflow_dispatch already present in {workflow_id}, 422 might be due to other reasons.")
 
                 except Exception as inner_e:
-                    logger.error(f"Failed to apply fallback for {workflow_id}: {inner_e}")
+                     logger.error(f"Failed to apply fallback for {workflow_id}: {inner_e}")
 
         except Exception as retry_e:
-            logger.error(f"Fallback retry failed: {retry_e}")
+             logger.error(f"Fallback retry failed: {retry_e}")
 
         logger.error(f"Error triggering workflow '{workflow_id}': {e}")
         return False
@@ -1040,7 +1056,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
 
             # log_content should be bytes if it's a zip
             if isinstance(log_content, bytes):
-                with tempfile.TemporaryDirectory() as tmpdir:
+                 with tempfile.TemporaryDirectory() as tmpdir:
                     zip_path = os.path.join(tmpdir, "job_logs.zip")
                     with open(zip_path, "wb") as f:
                         f.write(log_content)
@@ -1152,11 +1168,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         snippet_parts.append("--- Additional Error Context ---\n" + error_ctx)
 
                 if snippet_parts:
-                    return f"=== Job: {job_name} ===\n" + "\n\n".join(snippet_parts)
+                     return f"=== Job: {job_name} ===\n" + "\n\n".join(snippet_parts)
                 else:
-                    # If no error context found but we have logs, return tail
-                    snippet = slice_relevant_error_window(log_content)
-                    return f"=== Job: {job_name} ===\n" + snippet
+                     # If no error context found but we have logs, return tail
+                     snippet = slice_relevant_error_window(log_content)
+                     return f"=== Job: {job_name} ===\n" + snippet
         except Exception as e:
             logger.warning(f"Error processing job zip for {job_id}: {e}")
             pass
@@ -1333,7 +1349,7 @@ def _get_github_actions_logs(
     *args: Any,
     search_history: Optional[bool] = None,
     **kwargs: Any,
-) -> List[str]:
+) -> str:
     """Get GitHub Actions failed job logs via gh api and return extracted error locations.
 
     Args:
@@ -1347,7 +1363,7 @@ def _get_github_actions_logs(
         **kwargs: Additional keyword arguments (for future use)
 
     Returns:
-        List of strings containing GitHub Actions logs
+        String containing GitHub Actions logs
 
     Call compatibility:
     - _get_github_actions_logs(repo, config, failed_checks)
@@ -1371,14 +1387,14 @@ def _get_github_actions_logs(
 
         if not failed_checks:
             # No failed_checks provided
-            return ["No detailed logs available"]
+            return "No detailed logs available"
 
         # Try historical search first
         historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=10)
 
         if historical_logs:
             logger.info("Historical search succeeded: Found logs from commit history")
-            return [historical_logs]
+            return historical_logs
 
         logger.info("Historical search failed or found no logs, falling back to current behavior")
 
@@ -1395,7 +1411,7 @@ def _get_github_actions_logs(
         pr_data = args[1]
     if not failed_checks:
         # Unknown call
-        return ["No detailed logs available"]
+        return "No detailed logs available"
 
     logs: List[str] = []
 
@@ -1492,7 +1508,7 @@ def _get_github_actions_logs(
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
 
-    return logs if logs else ["No detailed logs available"]
+    return "\n\n".join(logs) if logs else "No detailed logs available"
 
 
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
@@ -1571,22 +1587,6 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
     else:
         # Use conventional method if step not found
         return _extract_error_context(log_content)
-
-
-def _filter_eslint_log(content: str) -> str:
-    """Filter and extract important information from ESLint logs.
-
-    Args:
-        content: ESLint log content
-
-    Returns:
-        Extracted ESLint error context
-    """
-    if not content:
-        return ""
-
-    # Use the existing error context extraction with focus on ESLint patterns
-    return _extract_error_context(content, max_lines=100)
 
 
 def _extract_error_context(content: str, max_lines: int = 500) -> str:
@@ -1763,7 +1763,6 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
 
     try:
         from ..util.gh_cache import get_ghapi_client
-
         token = GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
@@ -1952,8 +1951,6 @@ def check_and_handle_closed_state(
     except Exception as e:
         logger.warning(f"Failed to check/handle closed item state: {e}")
         return False  # Continue on error
-
-
 def _normalize_gh_path(line: str) -> str:
     """Normalize GitHub Actions absolute paths to relative paths.
 
@@ -1972,7 +1969,6 @@ def _normalize_gh_path(line: str) -> str:
         line = re.sub(r"/home/runner/work/[^/]+/[^/]+/", "", line)
 
     return line
-
 
 def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token: str) -> list:
     """Sort jobs based on the order defined in the workflow file."""
@@ -2050,7 +2046,6 @@ def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token
     except Exception as e:
         logger.warning(f"Warning: Failed to sort jobs by workflow: {e}")
         return jobs
-
 
 def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
     """Download and parse Playwright JSON logs from GitHub Artifacts using direct API calls.
@@ -2360,7 +2355,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     current_failure_block.append(f"Error: {clean_msg}")
 
                                     if stack:
-                                        clean_stack = "\n".join([_clean_log_line(line_item) for line_item in stack.split("\n")][:10])
+                                        clean_stack = "\n".join([_clean_log_line(l) for l in stack.split("\n")][:10])
                                         current_failure_block.append(f"Stack:\n{clean_stack}")
 
                                     if std_out:

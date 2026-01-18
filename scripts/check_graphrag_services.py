@@ -37,20 +37,39 @@ def run_docker_command(args: list[str]) -> subprocess.CompletedProcess:
     """Execute Docker command (use sudo if necessary)"""
     try:
         # Try without sudo first
-        return subprocess.run(["docker"] + args, capture_output=True, text=True, check=True)
+        return subprocess.run(
+            ["docker"] + args,
+            capture_output=True,
+            text=True,
+            check=True
+        )
     except (subprocess.CalledProcessError, PermissionError):
         # Retry with sudo if failed
-        return subprocess.run(["sudo", "docker"] + args, capture_output=True, text=True, check=True)
+        return subprocess.run(
+            ["sudo", "docker"] + args,
+            capture_output=True,
+            text=True,
+            check=True
+        )
 
 
 def get_current_container_network() -> str | None:
     """Get the network that the current container belongs to"""
     try:
         # Get hostname (container ID or container name)
-        hostname = subprocess.run(["hostname"], capture_output=True, text=True, check=True).stdout.strip()
+        hostname = subprocess.run(
+            ["hostname"],
+            capture_output=True,
+            text=True,
+            check=True
+        ).stdout.strip()
 
         # Get container network information
-        result = run_docker_command(["inspect", "-f", "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}", hostname])
+        result = run_docker_command([
+            "inspect", "-f",
+            "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}",
+            hostname
+        ])
         network = result.stdout.strip()
         return network if network else None
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -61,7 +80,11 @@ def ensure_container_on_network(container_name: str, network: str) -> bool:
     """Ensure container is connected to the specified network, connect if necessary"""
     try:
         # Check if container is already connected to the network
-        result = run_docker_command(["inspect", "-f", "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}", container_name])
+        result = run_docker_command([
+            "inspect", "-f",
+            "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}",
+            container_name
+        ])
         networks = result.stdout.strip().split()
 
         if network in networks:
@@ -113,12 +136,10 @@ def check_neo4j_direct():
         uris.append("bolt://auto-coder-neo4j:7687")
 
     # Also try normal localhost access
-    uris.extend(
-        [
-            "bolt://localhost:7687",
-            "bolt://127.0.0.1:7687",
-        ]
-    )
+    uris.extend([
+        "bolt://localhost:7687",
+        "bolt://127.0.0.1:7687",
+    ])
 
     # Also try container name if not in container
     if not in_container:
@@ -180,7 +201,7 @@ def check_neo4j_direct():
                 RETURN p
                 """,
                 name="Test User",
-                role="Developer",
+                role="Developer"
             )
             node = result.single()["p"]
             logger.info(f"✅ Node creation successful: {dict(node)}")
@@ -192,7 +213,7 @@ def check_neo4j_direct():
                 MATCH (p:Person {name: $name})
                 RETURN p
                 """,
-                name="Test User",
+                name="Test User"
             )
             for record in result:
                 logger.info(f"🔍 Search result: {dict(record['p'])}")
@@ -206,7 +227,7 @@ def check_neo4j_direct():
                 RETURN p, r, proj
                 """,
                 name="Test User",
-                project="GraphRAG Integration",
+                project="GraphRAG Integration"
             )
             record = result.single()
             logger.info(f"✅ Relationship creation successful")
@@ -221,7 +242,7 @@ def check_neo4j_direct():
                 WHERE p.name = $name
                 RETURN p.name as person, type(r) as relationship, proj.name as project
                 """,
-                name="Test User",
+                name="Test User"
             )
             for record in result:
                 logger.info(f"🔍 Path: {record['person']} -{record['relationship']}-> {record['project']}")
@@ -233,7 +254,7 @@ def check_neo4j_direct():
                 MATCH (p:Person {name: $name})
                 DETACH DELETE p
                 """,
-                name="Test User",
+                name="Test User"
             )
             logger.info("✅ Test data deletion completed")
 
@@ -244,7 +265,6 @@ def check_neo4j_direct():
     except Exception as e:
         logger.error(f"❌ Neo4j test execution error: {e}")
         import traceback
-
         logger.error(traceback.format_exc())
         if driver:
             driver.close()
@@ -263,7 +283,7 @@ def check_qdrant_direct(test_mode: bool = False):
 
     try:
         from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, PointStruct, VectorParams
+        from qdrant_client.models import Distance, VectorParams, PointStruct
     except ImportError:
         logger.error("qdrant-client package is not installed")
         logger.info("Install: pip install qdrant-client")
@@ -290,12 +310,10 @@ def check_qdrant_direct(test_mode: bool = False):
         urls.append("http://auto-coder-qdrant:6333")
 
     # Also try normal localhost access
-    urls.extend(
-        [
-            "http://localhost:6333",
-            "http://127.0.0.1:6333",
-        ]
-    )
+    urls.extend([
+        "http://localhost:6333",
+        "http://127.0.0.1:6333",
+    ])
 
     # Also try container name if not in container
     if not in_container:
@@ -358,7 +376,12 @@ def check_qdrant_direct(test_mode: bool = False):
                 col_info = client.get_collection("code_embeddings")
                 if col_info.points_count > 0:
                     # Get sample points
-                    sample_points = client.scroll(collection_name="code_embeddings", limit=3, with_payload=True, with_vectors=False)
+                    sample_points = client.scroll(
+                        collection_name="code_embeddings",
+                        limit=3,
+                        with_payload=True,
+                        with_vectors=False
+                    )
 
                     logger.info(f"📊 Sample data (max 3 items):")
                     for point in sample_points[0]:
@@ -391,8 +414,16 @@ def check_qdrant_direct(test_mode: bool = False):
             # 4. Insert vectors (for connection testing)
             logger.info("\n--- Vector Insertion Test ---")
             points = [
-                PointStruct(id=1, vector=[0.1, 0.2, 0.3, 0.4], payload={"name": "Test Document 1", "type": "test"}),
-                PointStruct(id=2, vector=[0.2, 0.3, 0.4, 0.5], payload={"name": "Test Document 2", "type": "test"}),
+                PointStruct(
+                    id=1,
+                    vector=[0.1, 0.2, 0.3, 0.4],
+                    payload={"name": "Test Document 1", "type": "test"}
+                ),
+                PointStruct(
+                    id=2,
+                    vector=[0.2, 0.3, 0.4, 0.5],
+                    payload={"name": "Test Document 2", "type": "test"}
+                ),
             ]
             client.upsert(collection_name=collection_name, points=points)
             logger.info(f"✅ {len(points)} test vectors inserted successfully")
@@ -407,7 +438,11 @@ def check_qdrant_direct(test_mode: bool = False):
             # 6. Similarity search test
             logger.info("\n--- Similarity Search Test ---")
             search_vector = [0.15, 0.25, 0.35, 0.45]
-            search_results = client.search(collection_name=collection_name, query_vector=search_vector, limit=2)
+            search_results = client.search(
+                collection_name=collection_name,
+                query_vector=search_vector,
+                limit=2
+            )
             logger.info(f"🔍 Search vector: {search_vector}")
             logger.info(f"Search results (top {len(search_results)}):")
             for i, result in enumerate(search_results, 1):
@@ -425,7 +460,6 @@ def check_qdrant_direct(test_mode: bool = False):
     except Exception as e:
         logger.error(f"❌ Qdrant test execution error: {e}")
         import traceback
-
         logger.error(traceback.format_exc())
         return False
 
@@ -437,8 +471,8 @@ def check_graphrag_mcp():
     logger.info("=" * 80)
 
     try:
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
         from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
+        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
     except ImportError as e:
         logger.error(f"GraphRAG MCP module import error: {e}")
         return False
@@ -461,7 +495,7 @@ def check_graphrag_mcp():
         logger.info(f"Neo4j: {status['neo4j']}")
         logger.info(f"Qdrant: {status['qdrant']}")
 
-        if status["neo4j"] != "running" or status["qdrant"] != "running":
+        if status['neo4j'] != 'running' or status['qdrant'] != 'running':
             logger.warning("⚠️ Containers are not running. Attempting to start...")
             if not integration.docker_manager.start():
                 logger.error("❌ Failed to start containers")
@@ -483,8 +517,7 @@ def check_graphrag_mcp():
         if is_empty:
             logger.info("📝 Current directory is empty. Creating sample data...")
             sample_file = current_dir / "sample.py"
-            sample_file.write_text(
-                """# Sample Python file for GraphRAG indexing test
+            sample_file.write_text("""# Sample Python file for GraphRAG indexing test
 def hello_world():
     \"\"\"A simple hello world function.\"\"\"
     print("Hello, World!")
@@ -497,8 +530,7 @@ class SampleClass:
     def greet(self):
         \"\"\"Greet with the name.\"\"\"
         return f"Hello, {self.name}!"
-"""
-            )
+""")
             logger.info(f"✅ Created sample file: {sample_file}")
 
         # Check if collections exist
@@ -575,7 +607,12 @@ class SampleClass:
 
                         if col_info.points_count > 0:
                             # Get sample data
-                            sample_points = qdrant_client.scroll(collection_name=col.name, limit=5, with_payload=True, with_vectors=False)
+                            sample_points = qdrant_client.scroll(
+                                collection_name=col.name,
+                                limit=5,
+                                with_payload=True,
+                                with_vectors=False
+                            )
 
                             logger.info(f"   Sample data (max 5 items):")
                             for point in sample_points[0]:
@@ -621,7 +658,6 @@ class SampleClass:
     except Exception as e:
         logger.error(f"❌ GraphRAG MCP error: {e}")
         import traceback
-
         logger.error(traceback.format_exc())
         return False
 
@@ -643,11 +679,23 @@ Examples:
 
   # Test by creating a connection test collection
   python scripts/check_graphrag_services.py --test
-        """,
+        """
     )
-    parser.add_argument("--direct-only", action="store_true", help="Run only direct access tests (Neo4j + Qdrant)")
-    parser.add_argument("--mcp-only", action="store_true", help="Run only GraphRAG MCP tests")
-    parser.add_argument("--test", action="store_true", help="Create and test with a connection test collection")
+    parser.add_argument(
+        "--direct-only",
+        action="store_true",
+        help="Run only direct access tests (Neo4j + Qdrant)"
+    )
+    parser.add_argument(
+        "--mcp-only",
+        action="store_true",
+        help="Run only GraphRAG MCP tests"
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Create and test with a connection test collection"
+    )
 
     args = parser.parse_args()
 
