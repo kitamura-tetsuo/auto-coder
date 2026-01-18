@@ -2110,7 +2110,7 @@ class TestBranchContext:
 
     def test_branch_context_successful_switch_and_return(self):
         """Test successful branch switch and return using context manager."""
-        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                     # Initially on main, switch to feature, then still feature (need to switch back)
@@ -2134,7 +2134,7 @@ class TestBranchContext:
 
     def test_branch_context_with_exception(self):
         """Test that context manager returns to original branch even when exception occurs."""
-        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                     # Initially on main, then feature, then still feature (need to switch back)
@@ -2155,7 +2155,7 @@ class TestBranchContext:
 
     def test_branch_context_create_new_branch(self):
         """Test context manager with create_new parameter."""
-        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                     # Initially on main, then new-feature, then still new-feature (need to switch back)
@@ -2179,7 +2179,7 @@ class TestBranchContext:
 
     def test_branch_context_with_custom_cwd(self):
         """Test context manager with custom working directory."""
-        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                     # Initially on main, then feature, then still feature (need to switch back)
@@ -2198,7 +2198,7 @@ class TestBranchContext:
 
     def test_branch_context_already_on_target_branch(self):
         """Test context manager when already on the target branch."""
-        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                     # Already on the target branch
@@ -2215,7 +2215,7 @@ class TestBranchContext:
 
     def test_branch_context_switch_failure(self):
         """Test that RuntimeError is raised when switch_to_branch fails."""
-        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+        with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
                 with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                     # Initially on main
@@ -2252,7 +2252,7 @@ class TestBranchContext:
         """Test that context manager handles not being in a git repo during cleanup."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         mock_cmd = MagicMock()
                         mock_executor.return_value = mock_cmd
@@ -2274,7 +2274,7 @@ class TestBranchContext:
         """Test that return switch failure is logged but doesn't raise."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         mock_cmd = MagicMock()
                         mock_executor.return_value = mock_cmd
@@ -2304,7 +2304,7 @@ class TestBranchContext:
         """Test that pull_after_switch is always True for both entry and exit."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         mock_cmd = MagicMock()
                         mock_executor.return_value = mock_cmd
@@ -2325,7 +2325,7 @@ class TestBranchContext:
         """Test that branch_context checks and pushes unpushed commits by default."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
@@ -2354,7 +2354,7 @@ class TestBranchContext:
         """Test that branch_context skips unpushed commit check when check_unpushed=False."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
@@ -2375,7 +2375,7 @@ class TestBranchContext:
         """Test that branch_context uses custom remote for unpushed commit check."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
@@ -2403,7 +2403,7 @@ class TestBranchContext:
         """Test that branch_context continues even if ensure_pushed fails."""
         with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             with patch("src.auto_coder.branch_manager.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch:
+                with patch("src.auto_coder.branch_manager.switch_to_branch") as mock_switch, patch("src.auto_coder.git_branch.switch_to_branch", mock_switch), patch("auto_coder.branch_manager.switch_to_branch", mock_switch):
                     with patch("src.auto_coder.branch_manager.is_git_repository") as mock_is_repo:
                         with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()

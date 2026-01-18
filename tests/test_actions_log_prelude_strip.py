@@ -1,4 +1,5 @@
 import importlib
+import os
 import subprocess
 import sys
 
@@ -23,11 +24,14 @@ sys.exit(0)
     )
     print(f"Check script output: {check_result.stdout}", file=sys.stderr)
 
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src" + os.pathsep + env.get("PYTHONPATH", "")
+
     result = subprocess.run(
         [
             sys.executable,
             "-m",
-            "src.auto_coder.cli",
+            "auto_coder.cli",
             "get-actions-logs",
             "--url",
             url,
@@ -37,6 +41,7 @@ sys.exit(0)
         capture_output=True,
         text=True,
         timeout=300,
+        env=env,
     )
     print(f"CLI stderr: {result.stderr}", file=sys.stderr)
     assert result.returncode == 0

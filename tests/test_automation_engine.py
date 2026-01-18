@@ -961,7 +961,7 @@ class TestAutomationEngineExtended:
         config = AutomationConfig()
         # Enable force clean before checkout
         config.FORCE_CLEAN_BEFORE_CHECKOUT = True
-        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "pr-123"}}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "pr-123"}, "head_branch": "pr-123"}
 
         # We need to mock cmd.run_command (for git commands) and gh_logger (for gh commands)
         # Use patch.object to mock the method on the cmd instance
@@ -1002,7 +1002,7 @@ class TestAutomationEngineExtended:
         config = AutomationConfig()
         # Explicitly set to False (default)
         config.FORCE_CLEAN_BEFORE_CHECKOUT = False
-        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "pr-123"}}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "pr-123"}, "head_branch": "pr-123"}
 
         # Mock cmd.run_command (invoked by pr_processor.cmd)
         # Use patch.object to mock the method on the cmd instance
