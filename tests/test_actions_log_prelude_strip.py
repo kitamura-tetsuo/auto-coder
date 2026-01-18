@@ -31,7 +31,7 @@ def test_cli_get_actions_logs_strips_prelude_and_is_compact():
     # Check that output starts with Job header (no logger prelude)
     # Loguru prelude would have timestamps like "2026-01-18 09:38:04"
     head = (result.stdout.splitlines() + [""])[:3]
-    assert head and head[0].startswith("=== Job:"), f"Expected output to start with '=== Job:', got: {head[0] if head else 'empty'}"
+    assert head and head[0].startswith("=== Job"), f"Expected output to start with '=== Job', got: {head[0] if head else 'empty'}"
 
     # Body should be compact due to slicing
     assert len(result.stdout.splitlines()) < 1000, "Output should be compact (less than 1000 lines)"

@@ -1077,7 +1077,7 @@ def _handle_pr_merge(
                 # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
                     github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")

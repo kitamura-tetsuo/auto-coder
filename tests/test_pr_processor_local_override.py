@@ -20,10 +20,12 @@ class TestPRProcessorLocalOverride:
     @patch("src.auto_coder.pr_processor._fix_pr_issues_with_testing")
     @patch("src.auto_coder.pr_processor._checkout_pr_branch")
     @patch("src.auto_coder.pr_processor._update_with_base_branch")
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     def test_jules_pr_local_override(
         self,
         mock_get_logs,
+        mock_branch_manager,
         mock_update,
         mock_checkout,
         mock_fix_issues,
@@ -49,6 +51,9 @@ class TestPRProcessorLocalOverride:
 
         # Mock Jules PR
         mock_is_jules_pr.return_value = True
+
+        # Mock BranchManager
+        mock_branch_manager.return_value.__enter__.return_value = MagicMock()
 
         # Mock current branch to match PR branch (Simulate being on the branch)
         mock_run_command.return_value = MagicMock(success=True, stdout=f"{pr_branch}\n")
