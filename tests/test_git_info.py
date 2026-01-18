@@ -240,6 +240,26 @@ class TestGetCommitLog:
             log_call = mock_cmd.run_command.call_args_list[1][0][0]
             assert "--max-count=5" in log_call
 
+    def test_get_commit_log_duplicates(self):
+        """Test getting commit log removes duplicate lines."""
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
+                CommandResult(
+                    success=True,
+                    stdout="Duplicate message\nUnique message\nDuplicate message\nAnother unique\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git log
+            ]
+
+            result = get_commit_log(base_branch="main")
+
+            # Should keep first occurrence of duplicates
+            assert result == "Duplicate message\nUnique message\nAnother unique"
+
 
 class TestIsGitRepository:
     """Tests for is_git_repository function."""
