@@ -309,7 +309,8 @@ class CodexClient(LLMClientBase):
             config["mcpServers"][server_name] = {"command": command, "args": args}
 
             # Write config
-            with open(config_path, "w", encoding="utf-8") as f:
+            fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
 
             logger.info(f"Added MCP server '{server_name}' to {config_path}")

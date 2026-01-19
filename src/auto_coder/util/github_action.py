@@ -24,10 +24,10 @@ except ImportError:
     fuzz = None  # type: ignore
 
 from auto_coder.progress_decorators import progress_stage
-from ..test_log_utils import generate_merged_playwright_report
 
 from ..automation_config import AutomationConfig
 from ..logger_config import get_logger
+from ..test_log_utils import generate_merged_playwright_report
 from ..utils import CommandExecutor, log_action
 from .gh_cache import GitHubClient, get_ghapi_client
 from .github_cache import get_github_cache
@@ -1703,8 +1703,6 @@ def slice_relevant_error_window(text: str) -> str:
     return "\n".join(sliced)
 
 
-
-
 def _filter_eslint_log(content: str) -> str:
     """Filter and extract relevant ESLint error information from log content.
 
@@ -1948,8 +1946,6 @@ def check_and_handle_closed_state(
         return False  # Continue on error
 
 
-
-
 def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token: str) -> list:
     """Sort jobs based on the order defined in the workflow file."""
     try:
@@ -2181,8 +2177,6 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional
             raise e
         logger.warning(f"Error handling Playwright artifacts: {e}")
         return f"Error downloading/parsing Playwright artifacts: {e}", None
-
-
 
 
 def parse_playwright_json_report(report: Dict[str, Any]) -> str:
