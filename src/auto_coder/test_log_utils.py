@@ -5,18 +5,18 @@ This module provides functionality to parse test output from various testing fra
 (pytest, Playwright, Vitest) and extract information about failed tests.
 """
 
-import os
-import re
-from typing import List, Optional, Dict, Any
-
-from .logger_config import get_logger
-from .test_result import TestResult
+import glob
 
 # Dependencies for Playwright report generation
 import json
-import glob
+import os
+import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from .logger_config import get_logger
+from .test_result import TestResult
 
 logger = get_logger(__name__)
 
@@ -601,7 +601,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
             if "specs" in suite:
                 for spec in suite["specs"]:
                     title = spec.get("title", "Unknown Test")
-                    
+
                     is_flaky = False
                     is_failed = False
                     is_skipped = False
@@ -640,15 +640,19 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                         # Check if *all* results are skipped
                         all_skipped_local = True
                         has_results = False
+                        is_interrupted_local = False
                         for test in spec.get("tests", []):
                             for res in test.get("results", []):
                                 has_results = True
+                                if res.get("status") == "interrupted":
+                                    is_interrupted_local = True
                                 if res.get("status") != "skipped":
                                     all_skipped_local = False
-                                    break
-                        
+
                         if has_results and all_skipped_local:
                             total_skipped += 1
+                        elif is_interrupted_local:
+                            total_interrupted += 1
                         else:
                             total_failures += 1
 
@@ -658,7 +662,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                             for result in test.get("results", []):
                                 if result.get("status") not in ["failed", "timedOut", "interrupted"]:
                                     continue
-                                
+
                                 errors = result.get("errors", [])
                                 if not errors and result.get("status") == "timedOut":
                                     errors = [{"message": f"Test timed out ({result.get('duration', '?')}ms)"}]
@@ -703,13 +707,13 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                         if stack:
                                             clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
                                             current_failure_block.append(f"Stack:\n{clean_stack}")
-                                        
+
                                         std_out = []
                                         if "stdout" in test:
                                             std_out.extend([f"STDOUT: {item.get('text', '')}" for item in test.get("stdout", []) if item.get("text")])
                                         if "stderr" in test:
                                             std_out.extend([f"STDERR: {item.get('text', '')}" for item in test.get("stderr", []) if item.get("text")])
-                                        
+
                                         if std_out:
                                             log_text = "\n".join(std_out)
                                             if len(log_text) > 1000:

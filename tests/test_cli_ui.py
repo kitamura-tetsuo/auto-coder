@@ -75,6 +75,7 @@ def test_sleep_with_countdown_zero_seconds(mock_sleep):
     mock_sleep.assert_not_called()
     mock_stream.write.assert_not_called()
 
+
 def test_print_lock_error_formatting():
     """Test that print_lock_error formats output correctly."""
     lock_info = MagicMock()

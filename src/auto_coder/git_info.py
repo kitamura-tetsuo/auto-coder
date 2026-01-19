@@ -217,9 +217,9 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
             return ""
 
         # Deduplicate lines while preserving order
-        lines = commit_messages.split('\n')
+        lines = commit_messages.split("\n")
         unique_lines = list(dict.fromkeys(lines))
-        return '\n'.join(unique_lines)
+        return "\n".join(unique_lines)
 
     except Exception as e:
         logger.warning(f"Error getting commit log: {e}")
