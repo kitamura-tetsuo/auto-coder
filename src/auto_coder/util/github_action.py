@@ -33,6 +33,19 @@ from .gh_cache import GitHubClient, get_ghapi_client
 from .github_cache import get_github_cache
 
 
+def _clean_log_line(line: str) -> str:
+    """Clean log line by removing ANSI escape sequences and timestamps."""
+    # Remove ANSI escape sequences
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    line = ansi_escape.sub("", line)
+
+    # Remove timestamps (e.g. 2023-01-01T12:00:00.000Z)
+    # Simple pattern for ISO-like timestamps at start of line
+    line = re.sub(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+", "", line)
+
+    return line.strip()
+
+
 def _get_repo_name_from_git(cwd: Optional[str] = None) -> Optional[str]:
     """Get repository name (owner/repo) from git config."""
     try:

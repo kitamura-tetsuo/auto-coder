@@ -68,6 +68,59 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
     click.echo("")  # Add spacing after summary
 
 
+def print_lock_error(lock_info: Any, is_running: bool) -> None:
+    """
+    Prints a formatted error message when the application is locked.
+
+    Args:
+        lock_info: Object containing lock details (pid, hostname, started_at).
+        is_running: Boolean indicating if the process is still active.
+    """
+    no_color = "NO_COLOR" in os.environ
+
+    # Header
+    if not no_color:
+        click.secho("\n🔒 auto-coder is already running!", fg="red", bold=True, err=True)
+    else:
+        click.echo("\nError: auto-coder is already running!", err=True)
+
+    click.echo("", err=True)
+
+    # Lock Info Box
+    if not no_color:
+        click.secho("  Lock Information:", fg="yellow", bold=True, err=True)
+        click.echo(f"  {'PID':<12}: {click.style(str(lock_info.pid), fg='cyan')}", err=True)
+        click.echo(f"  {'Hostname':<12}: {click.style(lock_info.hostname, fg='cyan')}", err=True)
+        click.echo(f"  {'Started at':<12}: {click.style(lock_info.started_at, fg='cyan')}", err=True)
+    else:
+        click.echo("  Lock Information:", err=True)
+        click.echo(f"  PID         : {lock_info.pid}", err=True)
+        click.echo(f"  Hostname    : {lock_info.hostname}", err=True)
+        click.echo(f"  Started at  : {lock_info.started_at}", err=True)
+
+    click.echo("", err=True)
+
+    # Status & Action
+    if is_running:
+        msg = "The process is still running. Please wait for it to complete."
+        if not no_color:
+            click.secho(f"  ⚠️  {msg}", fg="yellow", err=True)
+        else:
+            click.echo(msg, err=True)
+    else:
+        status_msg = "The process is no longer running (stale lock)."
+        action_msg = "You can use '--force' to override or run 'auto-coder unlock' to remove the lock."
+
+        if not no_color:
+            click.secho(f"  ❌ {status_msg}", fg="red", err=True)
+            click.echo(f"  💡 {action_msg}", err=True)
+        else:
+            click.echo(status_msg, err=True)
+            click.echo(action_msg, err=True)
+
+    click.echo("", err=True)
+
+
 def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
     """
     Sleep for a specified number of seconds, displaying a countdown.
