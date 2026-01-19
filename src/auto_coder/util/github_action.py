@@ -24,6 +24,7 @@ except ImportError:
     fuzz = None  # type: ignore
 
 from auto_coder.progress_decorators import progress_stage
+from ..test_log_utils import generate_merged_playwright_report
 
 from ..automation_config import AutomationConfig
 from ..logger_config import get_logger
@@ -1702,27 +1703,6 @@ def slice_relevant_error_window(text: str) -> str:
     return "\n".join(sliced)
 
 
-def _clean_log_line(line: str) -> str:
-    """Remove ANSI escape sequences and timestamps from a log line.
-
-    Args:
-        line: Log line
-
-    Returns:
-        Cleaned log line
-    """
-    import re
-
-    # Remove ANSI escape sequences
-    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-    line = ansi_escape.sub("", line)
-
-    # Remove timestamp (example: 2025-10-27T03:26:24.5806020Z)
-    # Also remove potential prefix like "test\tBuild client\t"
-    timestamp_pattern = re.compile(r"^.*?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s")
-    line = timestamp_pattern.sub("", line)
-
-    return line
 
 
 def _filter_eslint_log(content: str) -> str:
@@ -1968,24 +1948,6 @@ def check_and_handle_closed_state(
         return False  # Continue on error
 
 
-def _normalize_gh_path(line: str) -> str:
-    """Normalize GitHub Actions absolute paths to relative paths.
-
-    Converts:
-    - /__w/repo/repo/file -> file
-    - /home/runner/work/repo/repo/file -> file
-    """
-    import re
-
-    if "/__w/" in line:
-        line = re.sub(r"^/__w/[^/]+/[^/]+/", "", line)
-        line = re.sub(r"/__w/[^/]+/[^/]+/", "", line)
-
-    if "/home/runner/work/" in line:
-        line = re.sub(r"^/home/runner/work/[^/]+/[^/]+/", "", line)
-        line = re.sub(r"/home/runner/work/[^/]+/[^/]+/", "", line)
-
-    return line
 
 
 def _sort_jobs_by_workflow(jobs: list, owner: str, repo: str, run_id: int, token: str) -> list:
@@ -2221,218 +2183,6 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional
         return f"Error downloading/parsing Playwright artifacts: {e}", None
 
 
-def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
-    """Merge, summarize, and format multiple Playwright JSON reports.
-
-    Includes deduplication of error logs based on location and optionally includes
-    stdout/stderr logs if available.
-    Also counts skipped, passed, flaky, and interrupted tests.
-    """
-
-    total_failures = 0
-    total_passed = 0
-    total_skipped = 0
-    total_flaky = 0
-    total_interrupted = 0
-
-    # Map: file_path -> List of failure descriptions
-    failed_specs: Dict[str, List[str]] = {}
-    detailed_output = []
-
-    # Track unique error locations to avoid duplicates in detailed output
-    visited_locations: set = set()
-
-    has_unknown_location = False
-
-    # Helper to traverse
-    def _recurse_suites(suites: List[Dict[str, Any]]):
-        nonlocal total_failures, total_passed, total_skipped, total_flaky, total_interrupted, has_unknown_location
-        for suite in suites:
-            if "suites" in suite:
-                _recurse_suites(suite["suites"])
-
-            # Try to determine file context
-            suite_file = suite.get("file")
-
-            for spec in suite.get("specs", []):
-                title = spec.get("title", "Unknown Test")
-                spec_file = spec.get("file", suite_file or "Unknown File")
-
-                # Check for flaky at spec level if available or verify via results
-                # Playwright JSON often marks specs as flaky if retries occurred and eventually passed
-                # But we'll count via results or check standard properties
-
-                for test in spec.get("tests", []):
-                    # Expected status
-                    expected = test.get("expectedStatus", "passed")
-
-                    # Check outcome of the test
-                    # "outcome": "unexpected", "flaky", "expected", "skipped"
-                    outcome = test.get("outcome")
-
-                    if outcome == "skipped":
-                        total_skipped += 1
-                        continue
-                    elif outcome == "flaky":
-                        total_flaky += 1
-                        # Flaky usually means it eventually passed, so we might not want to treat as failure
-                        # But we want to count it.
-                        continue
-                    elif outcome == "expected" and expected == "passed":
-                        total_passed += 1
-                        continue
-
-                    # If we are here, likely failure or unexpected
-                    # But let's rely on individual results for precise error extraction
-
-                    # Logic: one test can have multiple results (retries)
-                    # If ANY result is failed, we might want to log it, unless it's flaky (handled above).
-                    # If outcome is unexpected, it's a failure.
-
-                    if outcome == "unexpected":
-                        # Iterate results to find the failures
-                        for result in test.get("results", []):
-                            status = result.get("status")
-                            if status in ["failed", "timedOut", "interrupted"]:
-                                if status == "interrupted":
-                                    total_interrupted += 1
-
-                                # It is a failure
-                                # We count it towards total failures IF it's the final result?
-                                # Or counts per result?
-                                # Usually "unexpected" implies the Test Unit failed.
-                                # Let's count it once per Test if possible, but extracting errors from all results is ok.
-                                # Let's increment total_failures per Error Block we generate to be consistent with previous logic,
-                                # OR we should increment per Test.
-                                # Let's increment per Test for the stats, but list all errors.
-                                pass  # We will increment in the error loop below if distinct?
-                                # Actually, simpler:
-                                # total_failures refers to number of Failing Tests or number of Errors?
-                                # User asks for "counts". Usually "X tests failed".
-                                pass
-
-                    # Re-iterate for exact error extraction logic (similar to before)
-                    # We use the previous logic to find failed results and extract errors.
-
-                    # Extract stdout/stderr once per test
-                    std_out = []
-                    if "stdout" in test:
-                        std_out = [f"STDOUT: {entry.get('text', '')}" for entry in test.get("stdout", []) if entry.get("text")]
-                    if "stderr" in test:
-                        std_out.extend([f"STDERR: {entry.get('text', '')}" for entry in test.get("stderr", []) if entry.get("text")])
-
-                    test_failed = False
-
-                    for result in test.get("results", []):
-                        if result.get("status") in ["failed", "timedOut", "interrupted"]:
-                            test_failed = True
-
-                            errors = result.get("errors", [])
-                            if not errors and result.get("status") == "timedOut":
-                                errors = [{"message": f"Test timed out ({result.get('duration', '?')}ms)"}]
-
-                            current_failure_block = []
-
-                            for error in errors:
-                                msg = error.get("message", "")
-                                stack = error.get("stack", "")
-
-                                # Location
-                                location = error.get("location", {})
-                                loc_file = location.get("file", spec_file)
-                                loc_file = _normalize_gh_path(loc_file)
-                                loc_line = location.get("line", "?")
-                                loc_col = location.get("column", "?")
-
-                                if loc_line == "?" or loc_col == "?":
-                                    has_unknown_location = True
-
-                                loc_str = f"{loc_file}:{loc_line}:{loc_col}"
-
-                                # Determine if this location has been reported
-                                is_duplicate = loc_str in visited_locations
-
-                                if not is_duplicate:
-                                    visited_locations.add(loc_str)
-
-                                # Update failed_specs for summary (always count for stats)
-                                # We use spec_file (the test file) rather than loc_file (where error happened)
-                                # because we want to know which TEST file failed.
-                                clean_spec_file = _normalize_gh_path(spec_file)
-                                if clean_spec_file not in failed_specs:
-                                    failed_specs[clean_spec_file] = []
-                                failed_specs[clean_spec_file].append(title)
-
-                                # Only add details if not duplicate
-                                if not is_duplicate:
-                                    clean_msg = _clean_log_line(msg)
-
-                                    # Use spec location for the File: field as requested
-                                    spec_line = spec.get("line", "")
-                                    spec_col = spec.get("column", "")
-                                    if spec_line and spec_col:
-                                        display_loc = f"{_normalize_gh_path(spec_file)}:{spec_line}:{spec_col}"
-                                    else:
-                                        display_loc = _normalize_gh_path(spec_file)
-
-                                    current_failure_block.append(f"FAILED: {title}")
-                                    current_failure_block.append(f"File: {display_loc}")
-                                    current_failure_block.append(f"Error: {clean_msg}")
-
-                                    if stack:
-                                        clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
-                                        current_failure_block.append(f"Stack:\n{clean_stack}")
-
-                                    if std_out:
-                                        log_text = "\n".join(std_out)
-                                        if len(log_text) > 1000:
-                                            log_text = log_text[:1000] + "... (truncated)"
-
-                                        current_failure_block.append("Logs:")
-                                        current_failure_block.append(log_text)
-
-                                    current_failure_block.append("-")
-
-                            if current_failure_block:
-                                detailed_output.extend(current_failure_block)
-
-                    if test_failed:
-                        total_failures += 1
-
-    for report in reports:
-        _recurse_suites(report.get("suites", []))
-
-    if total_failures == 0 and total_flaky == 0 and total_interrupted == 0 and total_passed > 0 and total_skipped == 0:
-        return f"All {total_passed} Playwright tests passed."
-
-    # Build Summary
-    summary_lines = []
-    summary_lines.append(f"Total Playwright Failures: {total_failures}")
-    if total_passed > 0:
-        summary_lines.append(f"Passed: {total_passed}")
-    if total_skipped > 0:
-        summary_lines.append(f"Skipped: {total_skipped}")
-    if total_flaky > 0:
-        summary_lines.append(f"Flaky: {total_flaky}")
-    if total_interrupted > 0:
-        summary_lines.append(f"Interrupted: {total_interrupted}")
-
-    if failed_specs:
-        summary_lines.append("Failed Files:")
-        sorted_files = sorted(failed_specs.keys())
-        for f in sorted_files:
-            titles = failed_specs[f]
-            count = len(titles)
-            summary_lines.append(f"- {f} ({count} failures)")
-
-    summary_lines.append("\n--- Details ---")
-
-    output_str = "\n".join(summary_lines) + "\n" + "\n".join(detailed_output)
-
-    if has_unknown_location:
-        output_str += "\n\nNote: Failures without specific location are likely the same as other failures in the same context."
-
-    return output_str
 
 
 def parse_playwright_json_report(report: Dict[str, Any]) -> str:

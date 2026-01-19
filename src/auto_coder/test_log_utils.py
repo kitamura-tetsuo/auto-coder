@@ -7,10 +7,16 @@ This module provides functionality to parse test output from various testing fra
 
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from .logger_config import get_logger
 from .test_result import TestResult
+
+# Dependencies for Playwright report generation
+import json
+import glob
+from datetime import datetime
+from pathlib import Path
 
 logger = get_logger(__name__)
 
@@ -487,3 +493,258 @@ def extract_important_errors(test_result: TestResult) -> str:
     result = "\n".join(unique_lines)
 
     return prefix + (result if result else "Tests failed but no specific error information found")
+
+
+# ----------------------------------------------------------------------
+# Local Playwright Log Summarization Logic
+# ----------------------------------------------------------------------
+
+
+def get_local_playwright_summary(start_time: float) -> str:
+    """
+    Search for Playwright JSON reports in ./logs/tests/*.json that were
+    created/modified after `start_time`, and generate a merged summary.
+
+    Args:
+        start_time: Timestamp (float) indicating when the test run started.
+                    Only logs younger than this time are considered.
+
+    Returns:
+        A formatted string summary of valid Playwright reports found.
+        Returns empty string if no valid logs are found.
+    """
+    search_path = "./logs/tests/*.json"
+    files = glob.glob(search_path)
+    if not files:
+        return ""
+
+    valid_reports = []
+    # Sort files by modification time, newest first
+    files.sort(key=os.path.getmtime, reverse=True)
+
+    for fpath in files:
+        try:
+            mtime = os.path.getmtime(fpath)
+            # Check if file was modified after start_time (with a small buffer for fs resolution)
+            if mtime >= start_time - 1.0:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Basic validation that it looks like a playwright report
+                    if isinstance(data, dict) and "suites" in data:
+                        valid_reports.append(data)
+        except Exception as e:
+            logger.warning(f"Failed to read/parse local Playwright log {fpath}: {e}")
+            continue
+
+    if not valid_reports:
+        return ""
+
+    summary = generate_merged_playwright_report(valid_reports)
+    if not summary:
+        return ""
+
+    return f"\n=== Local Playwright Report ===\n{summary}"
+
+
+def _clean_log_line(text: str) -> str:
+    """Clean ANSI codes and normalize newlines for log text."""
+    # Remove ANSI escape codes
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    text = ansi_escape.sub("", text)
+    return text.strip()
+
+
+def _normalize_gh_path(path: str) -> str:
+    """Normalize file paths from GitHub/CI environments to be relative/clean."""
+    # Remove generic /home/runner/work/... prefix if present
+    # This is a simple heuristic; can be improved if needed
+    if "/home/runner/work/" in path:
+        parts = path.split("/home/runner/work/")
+        if len(parts) > 1:
+            # Usually: /home/runner/work/repo/repo/path/to/file
+            # We want path/to/file.
+            # It's tricky because the repo name repeats.
+            # Let's just try to find the src/ or similar anchors, or just take the basename if fail
+            pass
+    # For now, just ensuring it doesn't start with unnecessary ./
+    if path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
+    """Merge, summarize, and format multiple Playwright JSON reports.
+    Includes deduplication of error logs based on location and optionally includes
+    stdout/stderr logs if available.
+    Also counts skipped, passed, flaky, and interrupted tests.
+    """
+    total_failures = 0
+    total_passed = 0
+    total_skipped = 0
+    total_flaky = 0
+    total_interrupted = 0  # Count interrupted explicitly
+
+    detailed_output = []
+    failed_specs: Dict[str, List[str]] = {}  # Map of file -> [test titles]
+    visited_locations = set()  # To deduplicate exact same error location (file:line:col)
+
+    def _recurse_suites(suites: List[Dict[str, Any]], spec_file: str = ""):
+        nonlocal total_failures, total_passed, total_skipped, total_flaky, total_interrupted
+        for suite in suites:
+            file_loc = suite.get("file", spec_file)
+            # If this suite defines a file, use it for children
+            current_spec_file = file_loc if file_loc else spec_file
+
+            if "suites" in suite:
+                _recurse_suites(suite["suites"], current_spec_file)
+
+            if "specs" in suite:
+                for spec in suite["specs"]:
+                    title = spec.get("title", "Unknown Test")
+                    
+                    is_flaky = False
+                    is_failed = False
+                    is_skipped = False
+                    is_interrupted = False
+                    has_pass = False
+
+                    # Aggregate results from all "tests" (runs)
+                    for test in spec.get("tests", []):
+                        results = test.get("results", [])
+                        for res in results:
+                            status = res.get("status")
+                            if status == "passed":
+                                has_pass = True
+                            elif status == "skipped":
+                                is_skipped = True
+                            elif status == "interrupted":
+                                is_interrupted = True
+                            elif status in ["failed", "timedOut"]:
+                                is_failed = True
+
+                    if spec.get("ok", False):
+                        # It is OK (Passed or Flaky)
+                        # Check if any result was failed
+                        had_failure = False
+                        for test in spec.get("tests", []):
+                            for res in test.get("results", []):
+                                if res.get("status") in ["failed", "timedOut"]:
+                                    had_failure = True
+                                    break
+                        if had_failure:
+                            total_flaky += 1
+                            is_flaky = True
+                        else:
+                            total_passed += 1
+                    else:
+                        # Check if *all* results are skipped
+                        all_skipped_local = True
+                        has_results = False
+                        for test in spec.get("tests", []):
+                            for res in test.get("results", []):
+                                has_results = True
+                                if res.get("status") != "skipped":
+                                    all_skipped_local = False
+                                    break
+                        
+                        if has_results and all_skipped_local:
+                            total_skipped += 1
+                        else:
+                            total_failures += 1
+
+                    # Extract details only if FAILED
+                    if not spec.get("ok", False) and not (has_results and all_skipped_local):
+                        for test in spec.get("tests", []):
+                            for result in test.get("results", []):
+                                if result.get("status") not in ["failed", "timedOut", "interrupted"]:
+                                    continue
+                                
+                                errors = result.get("errors", [])
+                                if not errors and result.get("status") == "timedOut":
+                                    errors = [{"message": f"Test timed out ({result.get('duration', '?')}ms)"}]
+
+                                current_failure_block = []
+
+                                for error in errors:
+                                    msg = error.get("message", "")
+                                    stack = error.get("stack", "")
+
+                                    # Location
+                                    location = error.get("location", {})
+                                    loc_file = location.get("file", current_spec_file)
+                                    loc_file = _normalize_gh_path(loc_file)
+                                    loc_line = location.get("line", "?")
+                                    loc_col = location.get("column", "?")
+
+                                    loc_str = f"{loc_file}:{loc_line}:{loc_col}"
+
+                                    is_duplicate = loc_str in visited_locations
+                                    if not is_duplicate:
+                                        visited_locations.add(loc_str)
+
+                                    clean_spec_file = _normalize_gh_path(current_spec_file)
+                                    if clean_spec_file not in failed_specs:
+                                        failed_specs[clean_spec_file] = []
+                                    failed_specs[clean_spec_file].append(title)
+
+                                    if not is_duplicate:
+                                        clean_msg = _clean_log_line(msg)
+                                        spec_line = spec.get("line", "")
+                                        spec_col = spec.get("column", "")
+                                        if spec_line and spec_col:
+                                            display_loc = f"{clean_spec_file}:{spec_line}:{spec_col}"
+                                        else:
+                                            display_loc = clean_spec_file
+
+                                        current_failure_block.append(f"FAILED: {title}")
+                                        current_failure_block.append(f"File: {display_loc}")
+                                        current_failure_block.append(f"Error: {clean_msg}")
+
+                                        if stack:
+                                            clean_stack = "\n".join([_clean_log_line(line) for line in stack.split("\n")][:10])
+                                            current_failure_block.append(f"Stack:\n{clean_stack}")
+                                        
+                                        std_out = []
+                                        if "stdout" in test:
+                                            std_out.extend([f"STDOUT: {item.get('text', '')}" for item in test.get("stdout", []) if item.get("text")])
+                                        if "stderr" in test:
+                                            std_out.extend([f"STDERR: {item.get('text', '')}" for item in test.get("stderr", []) if item.get("text")])
+                                        
+                                        if std_out:
+                                            log_text = "\n".join(std_out)
+                                            if len(log_text) > 1000:
+                                                log_text = log_text[:1000] + "... (truncated)"
+                                            current_failure_block.append("Logs:")
+                                            current_failure_block.append(log_text)
+
+                                        current_failure_block.append("-")
+
+                                if current_failure_block:
+                                    detailed_output.extend(current_failure_block)
+
+    for report in reports:
+        _recurse_suites(report.get("suites", []))
+
+    if total_failures == 0 and total_flaky == 0 and total_interrupted == 0 and total_passed > 0 and total_skipped == 0:
+        return "All matched tests passed (Playwright)."
+    elif total_failures == 0 and total_passed == 0 and total_skipped == 0:
+        return "No tests found in Playwright report."
+
+    output_lines = []
+    output_lines.append(f"Total Failed: {total_failures}")
+    if total_flaky > 0:
+        output_lines.append(f"Total Flaky: {total_flaky}")
+    output_lines.append(f"Total Passed: {total_passed}")
+    output_lines.append(f"Total Skipped: {total_skipped}")
+
+    if total_failures > 0:
+        output_lines.append("\nFailed Test Files:")
+        for f, titles in failed_specs.items():
+            unique_titles = list(set(titles))
+            output_lines.append(f"- {f} ({len(unique_titles)} failures)")
+
+        if detailed_output:
+            output_lines.append("\nDetailed Failure Log:")
+            output_lines.extend(detailed_output)
+
+    return "\n".join(output_lines)

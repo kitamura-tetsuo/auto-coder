@@ -16,7 +16,7 @@ from .llm_backend_config import get_isolate_single_test_on_failure_from_config
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .test_log_utils import extract_first_failed_test, extract_important_errors
+from .test_log_utils import extract_first_failed_test, extract_important_errors, get_local_playwright_summary
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, log_action
@@ -289,10 +289,22 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 }
 
         # Always run via test script
+        start_time = datetime.now().timestamp()
         cmd_list = ["bash", config.TEST_SCRIPT_PATH]
         logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
         logger.info(f"Finished local tests. {'Passed' if result.success else 'Failed'}")
+
+        # Check for local Playwright logs and append summary if found
+        playwright_summary = get_local_playwright_summary(start_time)
+        if playwright_summary:
+            logger.info("Found local Playwright logs, appending summary to test output.")
+            # Append to output so it gets included in the error summary extraction
+            # We append it with a clear separator
+            if result.stdout:
+                result.stdout += "\n" + playwright_summary
+            else:
+                result.stdout = playwright_summary
 
         # If the test run failed and isolate_single_test_on_failure is enabled in config.toml,
         # try to extract the first failed test file and run it via the script
