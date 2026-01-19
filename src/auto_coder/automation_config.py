@@ -155,11 +155,13 @@ class AutomationConfig:
             get_dependabot_wait_interval_hours_from_config,
             get_jules_failure_threshold_from_config,
             get_jules_wait_timeout_hours_from_config,
+            get_github_action_log_max_length_from_config,
         )
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
         object.__setattr__(self, "DEPENDABOT_WAIT_INTERVAL_HOURS", get_dependabot_wait_interval_hours_from_config())
         object.__setattr__(self, "JULES_FAILURE_THRESHOLD", get_jules_failure_threshold_from_config())
+        object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config())
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
@@ -488,6 +490,10 @@ class AutomationConfig:
     # Jules failure threshold (default: 10)
     # Configurable via [jules].failure_threshold in config.toml
     JULES_FAILURE_THRESHOLD: int = 10
+
+    # GitHub Action log max length (default: 50000)
+    # Configurable via [github_action].max_log_length in config.toml
+    GITHUB_ACTION_LOG_MAX_LENGTH: int = 50000
 
     # Label for auto-coder operations
     AUTO_CODER_LABEL: str = "@auto-coder"

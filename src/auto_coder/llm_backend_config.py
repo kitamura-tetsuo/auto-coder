@@ -796,19 +796,79 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     )
 
 
-def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
-    """Get the Jules wait timeout in hours fromconfig.toml.
 
-    Looks for [jules] wait_timeout_hours in config.toml.
-    Default is 2 hours.
+def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+    """Get the Jules wait timeout in hours from config.toml.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        Timeout in hours (default: 240)
     """
     return _get_config_value(
         section="jules",
         key="wait_timeout_hours",
-        default=2,
+        default=240,
         config_path=config_path,
         value_type=int,
     )
+
+
+def get_dependabot_wait_interval_hours_from_config(config_path: Optional[str] = None) -> int:
+    """Get the Dependabot wait interval in hours from config.toml.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        Interval in hours (default: 0)
+    """
+    return _get_config_value(
+        section="dependabot",
+        key="wait_interval_hours",
+        default=0,
+        config_path=config_path,
+        value_type=int,
+    )
+
+
+def get_jules_failure_threshold_from_config(config_path: Optional[str] = None) -> int:
+    """Get the Jules failure threshold from config.toml.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        Failure threshold (default: 3)
+    """
+    return _get_config_value(
+        section="jules",
+        key="failure_threshold",
+        default=3,
+        config_path=config_path,
+        value_type=int,
+    )
+
+
+def get_github_action_log_max_length_from_config(config_path: Optional[str] = None) -> int:
+    """Get the GitHub Action log max length from config.toml.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        Max length (default: 50000)
+    """
+    return _get_config_value(
+        section="github_action",
+        key="max_log_length",
+        default=50000,
+        config_path=config_path,
+        value_type=int,
+    )
+
+
 
 
 def get_jules_session_expiration_days_from_config(config_path: Optional[str] = None) -> int:
@@ -883,31 +943,3 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
     )
 
 
-def get_dependabot_wait_interval_hours_from_config(config_path: Optional[str] = None) -> int:
-    """Get the Dependabot wait interval in hours from config.toml.
-
-    Looks for [dependabot] wait_interval_hours in config.toml.
-    Default is 24 hours.
-    """
-    return _get_config_value(
-        section="dependabot",
-        key="wait_interval_hours",
-        default=24,
-        config_path=config_path,
-        value_type=int,
-    )
-
-
-def get_jules_failure_threshold_from_config(config_path: Optional[str] = None) -> int:
-    """Get the Jules failure threshold from config.toml.
-
-    Looks for [jules] failure_threshold in config.toml.
-    Default is 10.
-    """
-    return _get_config_value(
-        section="jules",
-        key="failure_threshold",
-        default=10,
-        config_path=config_path,
-        value_type=int,
-    )

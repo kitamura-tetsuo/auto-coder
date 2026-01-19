@@ -2240,11 +2240,13 @@ def _extract_failed_tests_from_playwright_reports(reports: List[Dict[str, Any]])
     return sorted(list(failed_tests))
 
 
+
 def _create_github_action_log_summary(
     repo_name: str,
     config: AutomationConfig,
     *args: Any,
     search_history: Optional[bool] = None,
+    max_log_length: Optional[int] = None,
     **kwargs: Any,
 ) -> Tuple[str, Optional[List[str]]]:
     """Create a formatted summary string from a list of log chunks."""
@@ -2255,6 +2257,10 @@ def _create_github_action_log_summary(
         failed_checks = args[0]
     if len(args) >= 2 and isinstance(args[1], dict):
         pr_data = args[1]
+
+    # Resolve max_log_length
+    if max_log_length is None:
+        max_log_length = config.GITHUB_ACTION_LOG_MAX_LENGTH
 
     logs: List[str] = []
     artifacts_list: List[Dict[str, Any]] = []
@@ -2432,5 +2438,20 @@ def _create_github_action_log_summary(
     failed_test_files = []
     if artifacts_list:
         failed_test_files = _extract_failed_tests_from_playwright_reports(artifacts_list)
+
+    # Truncate logs if exceeding max_log_length
+    # Policy: Remove logs from the end until total size fits or only logs[0] remains.
+    # logs[0] is always preserved.
+    if logs and max_log_length > 0:
+        current_length = sum(len(log) for log in logs) + (len(logs) - 1) * 2  # Including newlines join
+        original_count = len(logs)
+
+        while len(logs) > 1 and current_length > max_log_length:
+            removed = logs.pop()
+            current_length = sum(len(log) for log in logs) + (len(logs) - 1) * 2
+
+        if len(logs) < original_count:
+            truncated_count = original_count - len(logs)
+            logs.append(f"\n... {truncated_count} more logs truncated due to length limit ({max_log_length} chars) ...")
 
     return "\n\n".join(logs) if logs else "No detailed logs available", failed_test_files if failed_test_files else None
