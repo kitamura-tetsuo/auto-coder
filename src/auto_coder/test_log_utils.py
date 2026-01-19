@@ -648,6 +648,7 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
                                     is_interrupted_local = True
                                 if res.get("status") != "skipped":
                                     all_skipped_local = False
+                                    break
 
                         if has_results and all_skipped_local:
                             total_skipped += 1
