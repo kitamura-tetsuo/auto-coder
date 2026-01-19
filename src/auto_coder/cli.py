@@ -36,6 +36,7 @@ from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
 from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
+from .cli_ui import print_lock_error
 from .lock_manager import LockManager
 from .update_manager import maybe_run_auto_update, record_startup_options
 
@@ -127,21 +128,8 @@ def main(ctx: click.Context, force: bool) -> None:
             if lock_manager.is_locked() and not force:
                 lock_info = lock_manager.get_lock_info_obj()
                 if lock_info:
-                    click.echo("Error: auto-coder is already running!", err=True)
-                    click.echo("", err=True)
-                    click.echo("Lock information:", err=True)
-                    click.echo(f"  PID: {lock_info.pid}", err=True)
-                    click.echo(f"  Hostname: {lock_info.hostname}", err=True)
-                    click.echo(f"  Started at: {lock_info.started_at}", err=True)
-                    click.echo("", err=True)
-
-                    # Check if the process is still running
-                    if lock_manager._is_process_running(lock_info.pid):
-                        click.echo("The process is still running. Please wait for it to complete.", err=True)
-                    else:
-                        click.echo("The process is no longer running (stale lock).", err=True)
-                        click.echo("You can use '--force' to override or run 'auto-coder unlock' to remove the lock.", err=True)
-
+                    is_running = lock_manager._is_process_running(lock_info.pid)
+                    print_lock_error(lock_info, is_running)
                     sys.exit(1)
                 else:
                     # Lock file exists but couldn't be read
