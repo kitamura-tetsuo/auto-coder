@@ -74,3 +74,34 @@ def test_sleep_with_countdown_zero_seconds(mock_sleep):
     cli_ui.sleep_with_countdown(-5, stream=mock_stream)
     mock_sleep.assert_not_called()
     mock_stream.write.assert_not_called()
+
+def test_print_lock_error_formatting():
+    """Test that print_lock_error formats output correctly."""
+    lock_info = MagicMock()
+    lock_info.pid = 12345
+    lock_info.hostname = "test-host"
+    lock_info.started_at = "2023-01-01T12:00:00"
+
+    with patch("click.secho") as mock_secho, patch("click.echo") as mock_echo, patch("click.style") as mock_style:
+        # Test without NO_COLOR
+        with patch.dict("os.environ", {}, clear=True):
+            cli_ui.print_lock_error(lock_info, is_running=True)
+
+            # Verify colorful calls
+            assert mock_secho.call_count > 0
+            # Verify "Lock Information" header is printed
+            assert any("Lock Information" in str(args) for args, _ in mock_secho.call_args_list)
+
+        # Test with NO_COLOR
+        mock_secho.reset_mock()
+        mock_echo.reset_mock()
+        with patch.dict("os.environ", {"NO_COLOR": "1"}):
+            cli_ui.print_lock_error(lock_info, is_running=False)
+
+            # Verify no colorful calls via secho (it might still be called if implemented that way, but checking logic)
+            # In our implementation we used explicit checks
+            assert mock_secho.call_count == 0
+            # Verify standard echo used
+            assert mock_echo.call_count > 0
+            # Verify status message
+            assert any("stale lock" in str(args) for args, _ in mock_echo.call_args_list)
