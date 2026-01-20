@@ -555,6 +555,9 @@ class AutomationConfig:
     # Maximum number of semantic labels to copy from issue to PR
     PR_LABEL_MAX_COUNT: int = 3
 
+    # Maximum concurrent tasks (workers)
+    MAX_CONCURRENT_TASKS: int = 1
+
     # Priority order for semantic labels (highest to lowest priority)
     # Labels not in this list will be added after these (if space permits)
     PR_LABEL_PRIORITIES: List[str] = field(
