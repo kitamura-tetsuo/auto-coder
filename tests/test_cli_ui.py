@@ -139,9 +139,7 @@ def test_spinner_execution():
 
 def test_spinner_no_color():
     """Test that Spinner respects NO_COLOR."""
-    with patch("sys.stdout") as mock_stdout, \
-         patch("click.style") as mock_style, \
-         patch.dict("os.environ", {"NO_COLOR": "1"}):
+    with patch("sys.stdout") as mock_stdout, patch("click.style") as mock_style, patch.dict("os.environ", {"NO_COLOR": "1"}):
 
         mock_stdout.isatty.return_value = True
 
