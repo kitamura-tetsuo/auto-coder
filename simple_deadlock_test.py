@@ -3,9 +3,9 @@
 Simple test to check if the deadlock is fixed.
 """
 
+import sys
 import threading
 import time
-import sys
 from pathlib import Path
 
 # Add the src directory to the path
@@ -15,6 +15,7 @@ print("Testing basic GitHubClient import and singleton...")
 
 try:
     from auto_coder.github_client import GitHubClient
+
     print("✓ Successfully imported GitHubClient")
 except ImportError as e:
     print(f"✗ Failed to import GitHubClient: {e}")
@@ -60,6 +61,7 @@ else:
 print("\nBasic functionality test passed!")
 print("Now testing concurrent access with 3 threads...")
 
+
 def worker(worker_id):
     print(f"Worker {worker_id}: Starting...")
     try:
@@ -70,14 +72,16 @@ def worker(worker_id):
         print(f"Worker {worker_id}: Failed with error: {e}")
         return False
 
+
 # Test with just 3 threads to keep it simple
 threads = []
 results = []
 
 for i in range(3):
+
     def make_worker(worker_id):
         return lambda: worker(worker_id)
-    
+
     thread = threading.Thread(target=make_worker(i))
     threads.append(thread)
     thread.start()

@@ -31,6 +31,7 @@ from .graphrag_mcp_integration import GraphRAGMCPIntegration
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
+from .security_utils import redact_data, redact_string
 
 logger = get_logger(__name__)
 
@@ -337,27 +338,35 @@ class CodexMCPClient(LLMClientBase):
         return prompt.replace("@", "\\@").strip()
 
     def _log_jsonrpc_event(self, event_type: str, method: str, params: Dict[str, Any] | None, result: Any = None, error: str | None = None) -> None:
-        """Log JSON-RPC events in structured JSON format."""
+        """Log JSON-RPC events in structured JSON format.
+
+        Note: Sensitive data in params and result is redacted.
+        """
         log_entry: Dict[str, Any] = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "type": event_type,
             "method": method,
         }
         if params is not None:
-            log_entry["params"] = params
+            log_entry["params"] = redact_data(params)
+
         if result is not None:
-            log_entry["result"] = self._extract_text_from_result(result) if not isinstance(result, str) else result
+            text_result = self._extract_text_from_result(result) if not isinstance(result, str) else result
+            log_entry["result"] = redact_string(text_result)
+
         if error is not None:
-            log_entry["error"] = error
+            log_entry["error"] = redact_string(error)
+
         logger.info(json.dumps(log_entry, ensure_ascii=False))
 
     def _log_fallback_event(self, cmd: List[str], output: str, return_code: int) -> None:
         """Log fallback exec events in structured JSON format."""
+        cmd_str = " ".join(cmd)
         log_entry = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "type": "fallback_exec",
-            "command": " ".join(cmd),
-            "output": output,
+            "command": redact_string(cmd_str),
+            "output": redact_string(output),
             "return_code": return_code,
         }
         logger.info(json.dumps(log_entry, ensure_ascii=False))

@@ -2,6 +2,7 @@
 
 from src.auto_coder.label_manager import LabelManager
 
+
 # Example 1: Basic usage with boolean check (backward compatible)
 def example_1():
     """Basic usage - label will be removed on exit."""

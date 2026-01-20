@@ -4,52 +4,26 @@ Detailed test client for checking MCP server operation
 """
 
 import json
-import sys
 import subprocess
+import sys
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 
 def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
     """Test MCP server in detail"""
 
     # MCP initialization message
-    init_message = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "test-client",
-                "version": "1.0.0"
-            }
-        }
-    }
+    init_message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test-client", "version": "1.0.0"}}}
 
     # tools/list request message
-    tools_request = {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list"
-    }
+    tools_request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
 
     # ping request
-    ping_request = {
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "ping"
-    }
+    ping_request = {"jsonrpc": "2.0", "id": 3, "method": "ping"}
 
     try:
-        process = subprocess.Popen(
-            [sys.executable, server_script],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=0
-        )
+        process = subprocess.Popen([sys.executable, server_script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=0)
 
         responses = []
 
@@ -97,7 +71,7 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
         # Read all responses
         remaining_output = process.stdout.read()
         if remaining_output:
-            lines = remaining_output.strip().split('\n')
+            lines = remaining_output.strip().split("\n")
             for line in lines:
                 if line.strip():
                     try:
@@ -111,16 +85,14 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
         process.stdin.close()
         process.wait(timeout=5)
 
-        return {
-            "success": True,
-            "responses": responses
-        }
+        return {"success": True, "responses": responses}
 
     except subprocess.TimeoutExpired:
         process.kill()
         return {"success": False, "error": "Timeout"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
 
 def main():
     print("=== MCP Server Detailed Test ===")
@@ -141,7 +113,7 @@ def main():
                     for tool in tools:
                         print(f"  - Tool name: {tool.get('name', 'Unknown')}")
                         print(f"    Description: {tool.get('description', 'No description')}")
-                        if 'inputSchema' in tool:
+                        if "inputSchema" in tool:
                             print(f"    Parameters: {tool['inputSchema'].get('properties', {}).keys()}")
                         print()
                 elif response["result"] == {}:
@@ -150,6 +122,7 @@ def main():
                 print(f"Error: {response['error']}")
     else:
         print(f"✗ Server startup failed: {result.get('error', 'Unknown error')}")
+
 
 if __name__ == "__main__":
     main()

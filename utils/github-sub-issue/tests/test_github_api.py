@@ -4,7 +4,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from github_sub_issue.github_api import GitHubSubIssueAPI
 
 
@@ -73,16 +72,18 @@ class TestGitHubSubIssueAPI:
         # _get_issue_id call (2 times)
         mock_run.side_effect = [
             MagicMock(stdout="I_parent\n", returncode=0),  # parent ID
-            MagicMock(stdout="I_child\n", returncode=0),   # child ID
+            MagicMock(stdout="I_child\n", returncode=0),  # child ID
             MagicMock(  # GraphQL mutation
-                stdout=json.dumps({
-                    "data": {
-                        "addSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 456, "title": "Child"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "addSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 456, "title": "Child"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -109,14 +110,16 @@ class TestGitHubSubIssueAPI:
             MagicMock(stdout="I_parent\n", returncode=0),
             MagicMock(stdout="I_child\n", returncode=0),
             MagicMock(
-                stdout=json.dumps({
-                    "data": {
-                        "removeSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 456, "title": "Child"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "removeSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 456, "title": "Child"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -131,39 +134,41 @@ class TestGitHubSubIssueAPI:
     def test_list_sub_issues(self, mock_run: MagicMock) -> None:
         """Verify that list of sub-issues can be obtained."""
         mock_run.return_value = MagicMock(
-            stdout=json.dumps({
-                "data": {
-                    "repository": {
-                        "issue": {
-                            "number": 123,
-                            "title": "Parent",
-                            "subIssues": {
-                                "nodes": [
-                                    {
-                                        "number": 456,
-                                        "title": "Child 1",
-                                        "state": "OPEN",
-                                        "url": "https://github.com/owner/repo/issues/456",
-                                        "assignees": {"nodes": []},
-                                    },
-                                    {
-                                        "number": 457,
-                                        "title": "Child 2",
-                                        "state": "CLOSED",
-                                        "url": "https://github.com/owner/repo/issues/457",
-                                        "assignees": {"nodes": []},
-                                    },
-                                ]
-                            },
-                            "subIssuesSummary": {
-                                "total": 2,
-                                "completed": 1,
-                                "percentCompleted": 50,
-                            },
+            stdout=json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            "issue": {
+                                "number": 123,
+                                "title": "Parent",
+                                "subIssues": {
+                                    "nodes": [
+                                        {
+                                            "number": 456,
+                                            "title": "Child 1",
+                                            "state": "OPEN",
+                                            "url": "https://github.com/owner/repo/issues/456",
+                                            "assignees": {"nodes": []},
+                                        },
+                                        {
+                                            "number": 457,
+                                            "title": "Child 2",
+                                            "state": "CLOSED",
+                                            "url": "https://github.com/owner/repo/issues/457",
+                                            "assignees": {"nodes": []},
+                                        },
+                                    ]
+                                },
+                                "subIssuesSummary": {
+                                    "total": 2,
+                                    "completed": 1,
+                                    "percentCompleted": 50,
+                                },
+                            }
                         }
                     }
                 }
-            }),
+            ),
             returncode=0,
         )
 
@@ -186,14 +191,16 @@ class TestGitHubSubIssueAPI:
             MagicMock(stdout="I_new\n", returncode=0),
             # addSubIssue mutation
             MagicMock(
-                stdout=json.dumps({
-                    "data": {
-                        "addSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 789, "title": "New Issue"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "addSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 789, "title": "New Issue"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -238,14 +245,16 @@ class TestGitHubSubIssueAPI:
             MagicMock(stdout="I_new\n", returncode=0),
             # addSubIssue mutation
             MagicMock(
-                stdout=json.dumps({
-                    "data": {
-                        "addSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 789, "title": "New Issue"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "addSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 789, "title": "New Issue"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -290,14 +299,16 @@ class TestGitHubSubIssueAPI:
             MagicMock(stdout="I_new\n", returncode=0),
             # addSubIssue mutation
             MagicMock(
-                stdout=json.dumps({
-                    "data": {
-                        "addSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 789, "title": "New Issue"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "addSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 789, "title": "New Issue"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -324,4 +335,3 @@ class TestGitHubSubIssueAPI:
         # Should not have --body-file when body is also provided
         body_file_indices = [i for i, x in enumerate(args) if x == "--body-file"]
         assert len(body_file_indices) == 0
-
