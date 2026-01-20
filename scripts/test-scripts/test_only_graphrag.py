@@ -7,18 +7,14 @@ import subprocess
 import sys
 import time
 
+
 def test_only_graphrag():
     """Test only the GraphRAG server"""
     print("=== GraphRAG Server Test ===")
 
     try:
         # Run only the GraphRAG server
-        process = subprocess.Popen(
-            [sys.executable, "src/auto_coder/mcp_servers/graphrag_mcp/server.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        process = subprocess.Popen([sys.executable, "src/auto_coder/mcp_servers/graphrag_mcp/server.py"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         print(f"✓ Process started (PID: {process.pid})")
 
@@ -47,6 +43,7 @@ def test_only_graphrag():
     except Exception as e:
         print(f"✗ Error: {e}")
         return False
+
 
 if __name__ == "__main__":
     test_only_graphrag()

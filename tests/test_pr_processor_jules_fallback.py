@@ -11,6 +11,7 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 class TestHandlePrMergeJulesFallback:
     """Test cases for _handle_pr_merge function with Jules fallback logic."""
 
+    @patch("src.auto_coder.git_branch.git_checkout_branch")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
@@ -33,12 +34,12 @@ class TestHandlePrMergeJulesFallback:
         mock_check_status,
         mock_send_feedback,
         mock_is_jules,
+        mock_git_checkout,
     ):
-        """Test that normal Jules flow is used when failure count <= 10."""
-        # Setup
         repo_name = "owner/repo"
-        pr_data = {"number": 123, "title": "Test PR"}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.JULES_FAILURE_THRESHOLD = 10
         github_client = Mock()
 
         # Mock checks failure
@@ -57,6 +58,9 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock send feedback
         mock_send_feedback.return_value = ["Sent feedback to Jules"]
+
+        # Mock git checkout to prevent actual git operations
+        mock_git_checkout.return_value = MagicMock(success=True)
 
         # Execute
         actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
@@ -162,7 +166,7 @@ class TestHandlePrMergeJulesFallback:
         mock_is_jules,
         mock_git_checkout,
     ):
-        """Test that fallback flow is used when waiting > 1 hour."""
+        """Test that fallback flow is used when waiting > 240 hours."""
         # Setup
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
@@ -178,11 +182,15 @@ class TestHandlePrMergeJulesFallback:
         # Mock Jules PR
         mock_is_jules.return_value = True
 
-        # Mock comments (1 failure, but 2 hours ago)
+        # Mock comments (1 failure, but 241 hours ago)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-        two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        comments = [{"body": target_message, "created_at": two_hours_ago}]
+        wait_start_time = (datetime.now(timezone.utc) - timedelta(hours=241)).isoformat()
+        comments = [{"body": target_message, "created_at": wait_start_time}]
         github_client.get_pr_comments.return_value = comments
+
+        # Mock commits (older than comment) to ensure no new commits
+        commits = [{"commit": {"committer": {"date": (datetime.now(timezone.utc) - timedelta(hours=242)).isoformat()}}}]
+        github_client.get_pr_commits.return_value = commits
 
         # Mock checkout success
         mock_checkout.return_value = True
@@ -197,7 +205,7 @@ class TestHandlePrMergeJulesFallback:
         actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
 
         # Assert
-        # Should NOT call send feedback
+        # Should NOT call send feedback (because fallback logic should handle it locally)
         mock_send_feedback.assert_not_called()
 
         # Should proceed to checkout and fix

@@ -4,15 +4,16 @@ Test script to verify that GitHubClient deadlock issue is fixed.
 Tests concurrent access to GitHubClient.get_instance() from multiple threads.
 """
 
+import sys
 import threading
 import time
-import sys
 from pathlib import Path
 
 # Add the src directory to the path so we can import auto_coder modules
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from auto_coder.github_client import GitHubClient
+
 
 class DeadlockTestResult:
     def __init__(self):

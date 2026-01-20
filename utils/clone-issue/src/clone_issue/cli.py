@@ -5,20 +5,17 @@ from typing import List, Optional
 
 import click
 
+
 def run_command(command: List[str], check: bool = True, capture_output: bool = True) -> subprocess.CompletedProcess:
     """Run a shell command."""
     try:
-        result = subprocess.run(
-            command,
-            check=check,
-            text=True,
-            capture_output=capture_output
-        )
+        result = subprocess.run(command, check=check, text=True, capture_output=capture_output)
         return result
     except subprocess.CalledProcessError as e:
         click.echo(f"Error executing command: {' '.join(command)}")
         click.echo(f"Error output: {e.stderr}")
         raise e
+
 
 def get_issue_details(issue_ref: str) -> dict:
     """Get details of an issue using gh cli."""
@@ -26,9 +23,10 @@ def get_issue_details(issue_ref: str) -> dict:
     result = run_command(cmd)
     return json.loads(result.stdout)
 
+
 def get_sub_issues(issue_ref: str) -> List[dict]:
     """Get sub-issues of an issue using github-sub-issue cli."""
-    # First, we need to list sub-issues. 
+    # First, we need to list sub-issues.
     # github-sub-issue list <ref> --state all --json
     cmd = ["github-sub-issue", "list", issue_ref, "--state", "all", "--json"]
     try:
@@ -45,6 +43,7 @@ def get_sub_issues(issue_ref: str) -> List[dict]:
         # But if json.loads fails (because output isn't JSON), we catch that too.
         raise e
 
+
 def create_issue(title: str, body: str, dry_run: bool = False) -> Optional[str]:
     """Create a new issue and return its URL."""
     if dry_run:
@@ -55,6 +54,7 @@ def create_issue(title: str, body: str, dry_run: bool = False) -> Optional[str]:
     result = run_command(cmd)
     # gh issue create returns the URL of the created issue on stdout
     return result.stdout.strip()
+
 
 def add_sub_issues(parent_url: str, child_urls: List[str], dry_run: bool = False):
     """Link sub-issues to a parent."""
@@ -67,6 +67,7 @@ def add_sub_issues(parent_url: str, child_urls: List[str], dry_run: bool = False
 
     cmd = ["github-sub-issue", "add", parent_url] + child_urls
     run_command(cmd)
+
 
 def clone_recursive(issue_ref: str, dry_run: bool = False, visited: set = None) -> Optional[str]:
     """
@@ -83,7 +84,7 @@ def clone_recursive(issue_ref: str, dry_run: bool = False, visited: set = None) 
     visited.add(issue_ref)
 
     click.echo(f"Processing issue: {issue_ref}...")
-    
+
     try:
         details = get_issue_details(issue_ref)
     except subprocess.CalledProcessError:
@@ -104,7 +105,7 @@ def clone_recursive(issue_ref: str, dry_run: bool = False, visited: set = None) 
 
     # 2. Find sub-issues
     sub_issues = get_sub_issues(issue_ref)
-    
+
     new_sub_issue_urls = []
     for sub in sub_issues:
         # sub is a dict, likely containing 'url' or 'number'
@@ -121,6 +122,7 @@ def clone_recursive(issue_ref: str, dry_run: bool = False, visited: set = None) 
 
     return new_issue_url
 
+
 @click.command()
 @click.argument("issue_refs", nargs=-1, required=True)
 @click.option("--dry-run", is_flag=True, help="Simulate execution without creating issues.")
@@ -134,5 +136,6 @@ def main(issue_refs: List[str], dry_run: bool):
         clone_recursive(ref, dry_run=dry_run)
         click.echo("-" * 40)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

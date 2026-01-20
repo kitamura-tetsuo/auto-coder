@@ -37,12 +37,8 @@ def test_github_actions_history_fallback_enabled():
     mock_result.stdout = ""
     mock_result.stderr = "Failed to get checks: some other error"
 
-    with patch(
-        "auto_coder.util.github_action.cmd.run_command", return_value=mock_result
-    ):
-        with patch(
-            "auto_coder.util.github_action._check_github_actions_status_from_history"
-        ) as mock_fallback:
+    with patch("auto_coder.util.github_action.cmd.run_command", return_value=mock_result):
+        with patch("auto_coder.util.github_action._check_github_actions_status_from_history") as mock_fallback:
             # Mock the fallback function to return a successful result
             mock_fallback.return_value = MagicMock(success=True, ids=[])
 
@@ -73,12 +69,8 @@ def test_github_actions_history_fallback_disabled():
     mock_result.stdout = ""
     mock_result.stderr = "Failed to get checks: some other error"
 
-    with patch(
-        "auto_coder.util.github_action.cmd.run_command", return_value=mock_result
-    ):
-        with patch(
-            "auto_coder.util.github_action._check_github_actions_status_from_history"
-        ) as mock_fallback:
+    with patch("auto_coder.util.github_action.cmd.run_command", return_value=mock_result):
+        with patch("auto_coder.util.github_action._check_github_actions_status_from_history") as mock_fallback:
             # Mock the fallback function (should not be called)
             mock_fallback.return_value = MagicMock(success=True, ids=[])
 
@@ -180,9 +172,7 @@ def test_check_github_actions_status_from_history():
 
 def test_check_github_actions_status_from_history_failure():
     """Test the new _check_github_actions_status_from_history function with failures."""
-    print(
-        "Testing _check_github_actions_status_from_history function (with failures)..."
-    )
+    print("Testing _check_github_actions_status_from_history function (with failures)...")
 
     config = AutomationConfig()
 
@@ -258,9 +248,7 @@ def main():
         test_check_github_actions_status_from_history_failure()
 
         print("=" * 60)
-        print(
-            "✅ All tests passed! GitHub Actions history fallback is working correctly."
-        )
+        print("✅ All tests passed! GitHub Actions history fallback is working correctly.")
         return True
 
     except Exception as e:

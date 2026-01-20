@@ -1,8 +1,10 @@
 import json
 import unittest
 from unittest.mock import MagicMock, patch
+
 from auto_coder.codex_mcp_client import CodexMCPClient
 from auto_coder.security_utils import redact_string
+
 
 class TestCodexMCPClientRedaction(unittest.TestCase):
     @patch("auto_coder.codex_mcp_client.get_llm_config")
@@ -102,6 +104,7 @@ class TestCodexMCPClientRedaction(unittest.TestCase):
                 continue
 
         self.assertTrue(found_call, "Could not find expected JSON log call")
+
 
 if __name__ == "__main__":
     unittest.main()
