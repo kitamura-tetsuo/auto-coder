@@ -16,7 +16,7 @@ class TestJulesTimeoutConfig:
         """Test default timeout value when no config exists."""
         with patch("os.path.exists", return_value=False):
             timeout = get_jules_wait_timeout_hours_from_config()
-            assert timeout == 2
+            assert timeout == 240
 
     def test_get_timeout_from_file_explicit(self):
         """Test reading timeout from explicit config file path."""

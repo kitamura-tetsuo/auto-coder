@@ -5,6 +5,7 @@ UI helper functions for the CLI.
 import math
 import os
 import sys
+import threading
 import time
 from typing import Any, Dict, Optional, TextIO
 
@@ -186,3 +187,53 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
         stream.write("\r" + " " * 80 + "\r")
         stream.flush()
         raise
+
+
+class Spinner:
+    """
+    A context manager that displays a spinner animation while a block of code executes.
+    """
+
+    def __init__(self, message: str = "Loading...", delay: float = 0.1):
+        self.message = message
+        self.delay = delay
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self.no_color = "NO_COLOR" in os.environ
+
+    def spin(self) -> None:
+        spinner_frames = SPINNER_FRAMES_ASCII if self.no_color else SPINNER_FRAMES_UNICODE
+        idx = 0
+
+        while not self.stop_event.is_set():
+            frame = spinner_frames[idx % len(spinner_frames)]
+            if self.no_color:
+                msg = f"{frame} {self.message}"
+            else:
+                msg = click.style(f"{frame} {self.message}", fg="cyan")
+
+            sys.stdout.write(f"\r{msg}")
+            sys.stdout.flush()
+
+            # Wait for delay or stop event
+            if self.stop_event.wait(self.delay):
+                break
+
+            idx += 1
+
+    def __enter__(self) -> "Spinner":
+        if sys.stdout.isatty():
+            self.thread = threading.Thread(target=self.spin)
+            self.thread.start()
+        else:
+            # If not a TTY, just print the message once
+            sys.stdout.write(f"{self.message}\n")
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, exc_traceback: Any) -> None:
+        if self.thread:
+            self.stop_event.set()
+            self.thread.join()
+            # Clear the line
+            sys.stdout.write("\r" + " " * (len(self.message) + 10) + "\r")
+            sys.stdout.flush()
