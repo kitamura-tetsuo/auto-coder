@@ -3615,6 +3615,7 @@ class TestCheckAndHandleClosedBranch:
         """Test that _get_candidates skips Dependabot PRs if one was processed recently."""
         # Setup
         engine = AutomationEngine(mock_github_client)
+        # Set interval to 1 hour to ensure checking against timestamp works (default might be 0)
         engine.config.DEPENDABOT_WAIT_INTERVAL_HOURS = 1
 
         # Create a timestamp file indicating a recent Dependabot PR processing
@@ -3643,6 +3644,11 @@ class TestCheckAndHandleClosedBranch:
             # Mock get_open_prs_json to return the list of PR data
             mock_github_client.get_open_prs_json.return_value = [pr_details]
             # Mock get_pr_comments to return empty list
+            mock_github_client.get_pr_comments.return_value = []
+
+            # Mock commits and comments to avoid "Mock object is not subscriptable" error
+            # and ensure _should_skip_waiting_for_jules returns False (not waiting)
+            mock_github_client.get_pr_commits.return_value = []
             mock_github_client.get_pr_comments.return_value = []
 
             mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])

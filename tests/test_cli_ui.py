@@ -1,6 +1,8 @@
 """Tests for CLI UI helpers."""
 
 import sys
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 from src.auto_coder import cli_ui
@@ -106,3 +108,63 @@ def test_print_lock_error_formatting():
             assert mock_echo.call_count > 0
             # Verify status message
             assert any("stale lock" in str(args) for args, _ in mock_echo.call_args_list)
+
+
+def test_spinner_execution():
+    """Test that Spinner executes correctly."""
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = True
+
+        # Test basic execution
+        # Use a short delay to ensure multiple frames might be printed
+        spinner = cli_ui.Spinner("Test Loading", delay=0.001)
+
+        with spinner:
+            # Wait a bit to let the thread run
+            time.sleep(0.01)
+
+        # Verify writes occurred
+        assert mock_stdout.write.called
+        writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+
+        # Should verify spinner presence (at least one frame)
+        # Unicode frames by default
+        assert any("⠋" in w or "Test Loading" in w for w in writes)
+
+        # Should clear line at end
+        # The last write or second to last should be the clear command
+        assert any(w.startswith("\r") and w.endswith("\r") for w in writes)
+        assert mock_stdout.flush.called
+
+
+def test_spinner_no_color():
+    """Test that Spinner respects NO_COLOR."""
+    with patch("sys.stdout") as mock_stdout, patch("click.style") as mock_style, patch.dict("os.environ", {"NO_COLOR": "1"}):
+
+        mock_stdout.isatty.return_value = True
+
+        spinner = cli_ui.Spinner("Test Loading", delay=0.001)
+
+        with spinner:
+            time.sleep(0.01)
+
+        # Should NOT call click.style when NO_COLOR is set
+        mock_style.assert_not_called()
+
+        # Writes should still happen
+        assert mock_stdout.write.called
+        writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+        # Should use ASCII frames (e.g. "|")
+        assert any("|" in w or "/" in w for w in writes)
+
+
+def test_spinner_non_interactive():
+    """Test Spinner in non-interactive mode."""
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = False
+
+        with cli_ui.Spinner("Test Loading"):
+            pass
+
+        # Should verify simple print
+        mock_stdout.write.assert_called_with("Test Loading\n")

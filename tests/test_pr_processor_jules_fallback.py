@@ -11,7 +11,7 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 class TestHandlePrMergeJulesFallback:
     """Test cases for _handle_pr_merge function with Jules fallback logic."""
 
-    @patch("src.auto_coder.git_branch.git_checkout_branch")
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
@@ -34,7 +34,7 @@ class TestHandlePrMergeJulesFallback:
         mock_check_status,
         mock_send_feedback,
         mock_is_jules,
-        mock_git_checkout,
+        mock_branch_manager,
     ):
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
@@ -53,14 +53,11 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock comments (less than 10 failures)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-        comments = [{"body": "Some comment"}, {"body": target_message}] * 5  # 5 failures
+        comments = [{"body": "Some comment"}, {"body": target_message}] * 2  # 2 failures (<= 3 threshold)
         github_client.get_pr_comments.return_value = comments
 
-        # Mock send feedback
-        mock_send_feedback.return_value = ["Sent feedback to Jules"]
-
         # Mock git checkout to prevent actual git operations
-        mock_git_checkout.return_value = MagicMock(success=True)
+        mock_branch_manager.return_value.__enter__.return_value = MagicMock(success=True)
 
         # Execute
         actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
@@ -72,6 +69,7 @@ class TestHandlePrMergeJulesFallback:
         mock_checkout.assert_not_called()
         mock_fix_issues.assert_not_called()
 
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.git_branch.git_checkout_branch")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
@@ -96,6 +94,7 @@ class TestHandlePrMergeJulesFallback:
         mock_send_feedback,
         mock_is_jules,
         mock_git_checkout,
+        mock_branch_manager,
     ):
         """Test that fallback flow is used when failure count > 10."""
         # Setup
@@ -141,6 +140,7 @@ class TestHandlePrMergeJulesFallback:
         # Verify actions contain local fix info
         assert any("Fixed issues locally" in action for action in actions)
 
+    @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.git_branch.git_checkout_branch")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
@@ -165,12 +165,14 @@ class TestHandlePrMergeJulesFallback:
         mock_send_feedback,
         mock_is_jules,
         mock_git_checkout,
+        mock_branch_manager,
     ):
         """Test that fallback flow is used when waiting > 240 hours."""
         # Setup
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.JULES_WAIT_TIMEOUT_HOURS = 1
         github_client = Mock()
 
         # Mock checks failure
