@@ -796,7 +796,6 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     )
 
 
-
 def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
     """Get the Jules wait timeout in hours from config.toml.
 
@@ -869,8 +868,6 @@ def get_github_action_log_max_length_from_config(config_path: Optional[str] = No
     )
 
 
-
-
 def get_jules_session_expiration_days_from_config(config_path: Optional[str] = None) -> int:
     """Get the Jules session expiration in days from config.toml.
 
@@ -941,5 +938,3 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
         config_path=config_path,
         value_type=bool,
     )
-
-

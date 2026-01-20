@@ -1,5 +1,6 @@
 """Utility CLI commands (auth_status, get_actions_logs)."""
 
+import os
 import sys
 from typing import Optional
 
@@ -8,6 +9,7 @@ import click
 from .auth_utils import get_auth_status, get_github_token
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
+from .cli_ui import Spinner
 from .git_utils import get_current_repo_name, is_git_repository, migrate_pr_branches
 from .logger_config import setup_logger
 from .util.gh_cache import GitHubClient
@@ -72,79 +74,102 @@ def get_actions_logs(actions_url: str, github_token: Optional[str]) -> None:
 @click.command()
 def auth_status() -> None:
     """Check authentication status for GitHub and Gemini."""
-    click.echo("Checking authentication status...")
-    click.echo()
+    with Spinner("Checking authentication status..."):
+        status = get_auth_status()
 
-    status = get_auth_status()
+    no_color = "NO_COLOR" in os.environ
+
+    def print_header(emoji: str, title: str) -> None:
+        if no_color:
+            click.echo(f"{title}:")
+        else:
+            click.secho(f"{emoji} {title}:", bold=True, fg="blue")
+
+    def print_item(is_success: bool, text: str, is_warning: bool = False) -> None:
+        if is_success:
+            icon = "[OK]" if no_color else "✅"
+            color = "green"
+        elif is_warning:
+            icon = "[WARN]" if no_color else "⚠️ "
+            color = "yellow"
+        else:
+            icon = "[ERR]" if no_color else "❌"
+            color = "red"
+
+        msg = f"  {icon} {text}"
+        if no_color:
+            click.echo(msg)
+        else:
+            click.secho(msg, fg=color)
 
     # GitHub status
     github_status = status["github"]
-    click.echo("🐙 GitHub:")
+    print_header("🐙", "GitHub")
     if github_status["token_available"]:
-        click.echo("  ✅ Token available")
+        print_item(True, "Token available")
         if github_status["authenticated"]:
-            click.echo("  ✅ gh CLI authenticated")
+            print_item(True, "gh CLI authenticated")
         else:
-            click.echo("  ⚠️  gh CLI not authenticated (but token available)")
+            print_item(False, "gh CLI not authenticated (but token available)", is_warning=True)
     else:
-        click.echo("  ❌ No token found")
+        print_item(False, "No token found")
         click.echo("     Please run 'gh auth login' or set GITHUB_TOKEN")
 
     click.echo()
 
     # Gemini CLI status
-    click.echo("🤖 Gemini CLI:")
+    print_header("🤖", "Gemini CLI")
     try:
         import subprocess
 
         result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
-            click.echo("  ✅ gemini CLI available")
+            print_item(True, "gemini CLI available")
             version_info = result.stdout.strip()
             if version_info:
                 click.echo(f"     Version: {version_info}")
         else:
-            click.echo("  ❌ gemini CLI not working")
+            print_item(False, "gemini CLI not working")
     except Exception:
-        click.echo("  ❌ gemini CLI not found")
+        print_item(False, "gemini CLI not found")
         click.echo("     Please install from: https://github.com/google-gemini/gemini-cli")
 
     click.echo()
 
     # Qwen Code CLI status
-    click.echo("🤖 Qwen Code CLI:")
+    print_header("🤖", "Qwen Code CLI")
     try:
         import subprocess as _sp
 
         res = _sp.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
         if res.returncode == 0:
-            click.echo("  ✅ qwen CLI available")
+            print_item(True, "qwen CLI available")
             ver = (res.stdout or "").strip()
             if ver:
                 click.echo(f"     Version: {ver}")
         else:
-            click.echo("  ❌ qwen CLI not working")
+            print_item(False, "qwen CLI not working")
     except Exception:
-        click.echo("  ❌ qwen CLI not found")
+        print_item(False, "qwen CLI not found")
         click.echo("     Please install from: https://github.com/QwenLM/qwen-code")
 
     click.echo()
 
     # Auggie CLI status
-    click.echo("🤖 Auggie CLI:")
+    print_header("🤖", "Auggie CLI")
     try:
         import subprocess as _sp
 
         res = _sp.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
         if res.returncode == 0:
-            click.echo("  ✅ auggie CLI available")
+            print_item(True, "auggie CLI available")
             ver = (res.stdout or "").strip()
             if ver:
                 click.echo(f"     Version: {ver}")
         else:
-            click.echo("  ❌ auggie CLI not working")
+            print_item(False, "auggie CLI not working")
     except Exception:
-        click.echo("  ❌ auggie CLI not found")
+        print_item(False, "auggie CLI not found")
         click.echo("     Please install via: npm install -g @augmentcode/auggie")
 
     click.echo()
@@ -152,12 +177,12 @@ def auth_status() -> None:
     # Repository detection
     repo_name = get_current_repo_name()
     if repo_name:
-        click.echo(f"📁 Repository: {repo_name} (auto-detected)")
+        print_header("📁", f"Repository: {repo_name} (auto-detected)")
     else:
         if is_git_repository():
-            click.echo("📁 Repository: Git repository detected but not GitHub")
+            print_header("📁", "Repository: Git repository detected but not GitHub")
         else:
-            click.echo("📁 Repository: Not in a Git repository")
+            print_header("📁", "Repository: Not in a Git repository")
 
 
 @click.command()
