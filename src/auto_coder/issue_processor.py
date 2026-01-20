@@ -18,6 +18,7 @@ from .cloud_manager import CloudManager
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
+from .issue_context import get_linked_issues_context, validate_issue_references
 from .jules_client import JulesClient
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_gh_logger, get_logger
@@ -285,6 +286,13 @@ All sub-issues have been processed and their requirements verified. This parent 
 
 Closes #{issue_number}
 """
+
+        # Validate issue references in PR body
+        try:
+            validate_issue_references(pr_body, github_client, repo_name)
+        except ValueError as e:
+            logger.error(f"Validation failed for parent issue PR: {e}")
+            return f"Validation failed for parent issue PR: {e}"
 
         # Create PR using GhApi
         try:
@@ -609,6 +617,13 @@ def _create_pr_for_issue(
         closes_keyword = f"Closes #{issue_number}"
         if closes_keyword not in pr_body:
             pr_body = f"{closes_keyword}\n\n{pr_body}"
+
+        # Validate issue references in PR body
+        try:
+            validate_issue_references(pr_body, github_client, repo_name)
+        except ValueError as e:
+            logger.error(f"Validation failed for issue PR: {e}")
+            return f"Validation failed for issue PR: {e}"
 
         # Create PR using GhApi
         try:

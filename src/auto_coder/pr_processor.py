@@ -31,7 +31,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
+from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
@@ -872,6 +872,16 @@ def _process_pr_jules_mode(
         # Append session info
         new_body = f"{pr_body}\n\nSession ID: {session_id}\nhttps://jules.google.com/session/{session_id}"
 
+        new_body = f"{pr_body}\n\nSession ID: {session_id}\nhttps://jules.google.com/session/{session_id}"
+
+        # Validate issue references in new body
+        try:
+            validate_issue_references(new_body, github_client, repo_name)
+        except ValueError as e:
+            logger.error(f"Validation failed for Jules PR update: {e}")
+            actions.append(f"Error: Validation failed for PR update: {e}")
+            return actions
+
         api.pulls.update(owner, repo, pr_number, body=new_body)
         actions.append(f"Updated PR body with session ID: {session_id}")
 
@@ -1631,17 +1641,23 @@ def _update_jules_pr_body(
             if isinstance(token, str):
                 api = get_ghapi_client(token)
                 owner, repo_name_split = repo_name.split("/")
+                # Validate issue references in new body
+                validate_issue_references(new_body, github_client, repo_name)
                 api.pulls.update(owner, repo_name_split, pr_number, body=new_body)
             elif hasattr(github_client, "get_repository"):
                 # Fallback to direct client methods
                 repo = github_client.get_repository(repo_name)
                 pr = repo.get_pull(pr_number)
+                # Validate issue references in new body
+                validate_issue_references(new_body, github_client, repo_name)
                 pr.edit(body=new_body)
             else:
                 # Last resort: try singleton token
                 token = GitHubClient.get_instance().token
                 api = get_ghapi_client(token)
                 owner, repo_name_split = repo_name.split("/")
+                # Validate issue references in new body
+                validate_issue_references(new_body, github_client, repo_name)
                 api.pulls.update(owner, repo_name_split, pr_number, body=new_body)
 
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")

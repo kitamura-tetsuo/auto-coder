@@ -22,11 +22,12 @@ def extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
         return []
 
     # GitHub's supported keywords for linking issues
-    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+    # Added "Related issue(s)" as requested
+    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|related issue|related issues)"
 
     # Pattern to match: keyword #123 or keyword owner/repo#123
-    # We only extract the issue number, ignoring cross-repo references for now
-    pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
+    # We allow an optional colon after the keyword (e.g. "Related issue: #123")
+    pattern = rf"{keywords}:?\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
 
     matches = re.finditer(pattern, pr_body, re.IGNORECASE)
     issue_numbers = [int(m.group(1)) for m in matches]
@@ -40,6 +41,42 @@ def extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
             unique_issues.append(num)
 
     return unique_issues
+
+
+def validate_issue_references(pr_body: str, github_client: Any, repo_name: str) -> None:
+    """Validate that issue references in PR body point to Issues, not PRs.
+
+    Args:
+        pr_body: The body text of the PR or comment.
+        github_client: GitHubClient instance.
+        repo_name: Repository name (owner/repo).
+
+    Raises:
+        ValueError: If a referenced number points to a Pull Request instead of an Issue.
+    """
+    if not pr_body or not github_client:
+        return
+
+    issue_numbers = extract_linked_issues_from_pr_body(pr_body)
+    
+    for issue_number in issue_numbers:
+        try:
+            # Fetch the issue/PR object
+            # In GitHub API, PRs are Issues, so get_issue works for both.
+            # If it's a PR, it will have a 'pull_request' key.
+            issue = github_client.get_issue(repo_name, issue_number)
+            
+            if issue and "pull_request" in issue:
+                raise ValueError(f"Reference #{issue_number} points to a Pull Request, but should refer to an Issue.")
+                
+        except ValueError:
+            raise
+        except Exception as e:
+            # Log warning but don't block if API fails? 
+            # The prompt says "output an error" if it IS a PR.
+            # If we can't verify, maybe we should warn but allow proceed? 
+            # For now, let's assume we proceed unless we DEFINITELY know it's a PR.
+            logger.warning(f"Failed to validate reference #{issue_number}: {e}")
 
 
 def get_linked_issues_context(github_client: Any, repo_name: str, pr_body: str) -> str:
