@@ -819,6 +819,76 @@ def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff:
     return result
 
 
+def _process_pr_jules_mode(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: Any,
+) -> List[str]:
+    """Process a PR using Jules API for session-based AI interaction.
+
+    This function:
+    1. Starts a Jules session for the PR
+    2. Comments on the PR with the session ID
+    3. Updates PR body with Session ID to mark it as Jules-managed
+    """
+    actions = []
+    pr_number = pr_data["number"]
+
+    try:
+        from .jules_client import JulesClient
+
+        # Check if already Jules PR (sanity check)
+        if _is_jules_pr(pr_data):
+            return ["PR is already a Jules PR"]
+
+        logger.info(f"Converting PR #{pr_number} to Jules mode")
+        actions.append(f"Converting PR #{pr_number} to Jules mode")
+
+        # 1. Start session
+        jules_client = JulesClient()
+
+        # Get prompt
+        pr_diff = _get_pr_diff(repo_name, pr_number, config)
+        action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config, github_client)
+
+        pr_branch = pr_data.get("head", {}).get("ref")
+        session_title = f"PR #{pr_number}: {pr_data.get('title', 'Unknown')}"
+
+        session_id = jules_client.start_session(action_prompt, repo_name, pr_branch, title=session_title)
+
+        # 2. Save session
+        CloudManager(repo_name).add_session(pr_number, session_id)
+        actions.append(f"Started Jules session {session_id}")
+
+        # 3. Update PR body
+        from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
+
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
+        pr_body = pr_data.get("body", "") or ""
+        # Append session info
+        new_body = f"{pr_body}\n\nSession ID: {session_id}\nhttps://jules.google.com/session/{session_id}"
+
+        api.pulls.update(owner, repo, pr_number, body=new_body)
+        actions.append(f"Updated PR body with session ID: {session_id}")
+
+        # 4. Comment
+        comment = f"I started a Jules session to work on this PR. Session ID: {session_id}\n\nhttps://jules.google.com/session/{session_id}"
+        github_client.add_comment_to_pr(repo_name, pr_number, comment)
+        actions.append("Commented on PR with session details")
+
+        return actions
+
+    except Exception as e:
+        msg = f"Error in _process_pr_jules_mode: {e}"
+        logger.error(msg)
+        actions.append(msg)
+        return actions
+
+
 def _handle_pr_merge(
     github_client: Any,
     repo_name: str,
@@ -1058,7 +1128,14 @@ def _handle_pr_merge(
                 actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
                 return actions
 
-        # Step 5: Checkout PR branch for non-Jules PRs
+        # Step 5: Process PR in Jules mode if it's not a Jules PR
+        if not _is_jules_pr(pr_data):
+            jules_mode_actions = _process_pr_jules_mode(repo_name, pr_data, config, github_client)
+            actions.extend(jules_mode_actions)
+            return actions
+
+
+        # Step 6: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
 
         # Prepare branch (ensure fetched)
@@ -1070,7 +1147,7 @@ def _handle_pr_merge(
         with BranchManager(pr_branch_name) as manager:
             actions.append(f"Checked out PR #{pr_number} branch")
 
-            # Step 6: Optionally update with latest base branch commits (configurable)
+            # Step 7: Optionally update with latest base branch commits (configurable)
             if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
                 actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
 
@@ -1088,7 +1165,7 @@ def _handle_pr_merge(
                 update_actions = _update_with_base_branch(repo_name, pr_data, config)
                 actions.extend(update_actions)
 
-                # Step 7: Check for special cases from base branch update
+                # Step 8: Check for special cases from base branch update
 
                 # Check if LLM determined merge would degrade code quality
                 if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
@@ -1111,7 +1188,7 @@ def _handle_pr_merge(
                     actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                     return actions
 
-                # Step 8: If no main branch updates were needed, the test failures are due to PR content
+                # Step 9: If no main branch updates were needed, the test failures are due to PR content
                 # Get GitHub Actions error logs and ask Gemini to fix
                 if any("up to date with" in action for action in update_actions):
                     actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
@@ -1816,6 +1893,9 @@ def _send_jules_error_feedback(
     try:
         # Get the session ID from pr_data
         session_id = pr_data.get("_jules_session_id")
+        if not session_id:
+            session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
+
         if not session_id:
             actions.append(f"Cannot send error feedback to Jules for PR #{pr_number}: no session ID found")
             try:
