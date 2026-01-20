@@ -338,35 +338,12 @@ def process_issues(
         return
 
     # Run automation
-    gemini_config = config.get_backend_config("gemini")
+    import asyncio
 
-    import time
-
-    from .llm_backend_config import get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
-
-    while True:
-        if primary_backend == "gemini" and gemini_config and gemini_config.api_key:
-            result = automation_engine.run(repo_name)
-        else:
-            result = automation_engine.run(repo_name)
-
-        # Determine sleep time based on OPEN issues/PRs (not just processed ones)
-        # We check if there are any open issues or PRs to decide if we should sleep short or long.
-        # Use limit=1 to minimize API cost just to check existence.
-        open_issues_exist = len(github_client.get_open_issues(repo_name, limit=1)) > 0
-        open_prs_exist = len(github_client.get_open_pull_requests(repo_name, limit=1)) > 0
-
-        processed_issues = len(result.get("issues_processed", []))
-        processed_prs = len(result.get("prs_processed", []))
-
-        if not open_issues_exist and not open_prs_exist:
-            sleep_time = get_process_issues_empty_sleep_time_from_config()
-            logger.info(f"No open issues or PRs found. Sleeping for extended time: {sleep_time} seconds...")
-        else:
-            sleep_time = get_process_issues_sleep_time_from_config()
-            logger.info(f"Processed {processed_issues} issues and {processed_prs} PRs (Open items detected). Sleeping for {sleep_time} seconds...")
-
-        sleep_with_countdown(sleep_time)
+    try:
+        asyncio.run(automation_engine.start_automation(repo_name))
+    except KeyboardInterrupt:
+        logger.info("Stopped by user")
 
     # Close MCP session if present
     try:

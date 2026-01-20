@@ -1508,18 +1508,6 @@ def _get_github_actions_logs(
     return "\n\n".join(logs) if logs else "No detailed logs available"
 
 
-def _clean_log_line(line: str) -> str:
-    """Clean log line by removing ANSI codes and timestamps."""
-    # Remove ANSI escape codes
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    line = ansi_escape.sub('', line)
-
-    # Remove typically GHA timestamps at start
-    line = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\s+', '', line)
-
-    return line.rstrip()
-
-
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
     """Extract only the logs for failed steps from the full log content.
 
@@ -2238,7 +2226,6 @@ def _extract_failed_tests_from_playwright_reports(reports: List[Dict[str, Any]])
         _recurse(report.get("suites", []))
 
     return sorted(list(failed_tests))
-
 
 
 def _create_github_action_log_summary(
