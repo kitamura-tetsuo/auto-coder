@@ -1144,7 +1144,6 @@ def _handle_pr_merge(
             actions.extend(jules_mode_actions)
             return actions
 
-
         # Step 6: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
 
