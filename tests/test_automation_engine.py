@@ -3645,6 +3645,11 @@ class TestCheckAndHandleClosedBranch:
             # Mock get_pr_comments to return empty list
             mock_github_client.get_pr_comments.return_value = []
 
+            # Mock commits and comments to avoid "Mock object is not subscriptable" error
+            # and ensure _should_skip_waiting_for_jules returns False (not waiting)
+            mock_github_client.get_pr_commits.return_value = []
+            mock_github_client.get_pr_comments.return_value = []
+
             mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
 
             # Execute
