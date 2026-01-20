@@ -1,6 +1,5 @@
-import os
-import sys
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -22,7 +21,6 @@ class TestProcessIssuesE2E:
             patch("src.auto_coder.cli_commands_main.get_llm_config") as mock_get_llm_config,
             patch("src.auto_coder.cli_commands_main.build_message_backend_manager"),
             patch("src.auto_coder.cli.LockManager"),
-            patch("time.sleep", side_effect=RuntimeError("Stop loop")),
         ):
 
             # Setup mock Config
@@ -36,22 +34,20 @@ class TestProcessIssuesE2E:
             mock_gh_instance = MagicMock()
             MockGitHubClient.get_instance.return_value = mock_gh_instance
 
-            # Setup mock Automation Engine
+            # Setup mock Automation Engine with async start_automation
             mock_engine_instance = MagicMock()
             MockAutomationEngine.return_value = mock_engine_instance
-            mock_engine_instance.run.return_value = {"issues_processed": [], "prs_processed": []}
+
+            # Create an async mock that we can await
+            mock_start_automation = AsyncMock()
+            mock_engine_instance.start_automation = mock_start_automation
 
             runner = CliRunner()
 
             # Invoke command
-            # We expect RuntimeError because we mock time.sleep to raise it to break the while True loop
-            try:
-                runner.invoke(process_issues, ["--repo", target_repo, "--github-token", "dummy_token", "--disable-graphrag"], catch_exceptions=False)
-            except RuntimeError as e:
-                if str(e) != "Stop loop":
-                    raise  # Re-raise unexpected RuntimeErrors
+            runner.invoke(process_issues, ["--repo", target_repo, "--github-token", "dummy_token", "--disable-graphrag"], catch_exceptions=False)
 
             # Verifications
             MockGitHubClient.get_instance.assert_called()
             MockAutomationEngine.assert_called()
-            mock_engine_instance.run.assert_called_with(target_repo)
+            mock_start_automation.assert_called_once_with(target_repo)

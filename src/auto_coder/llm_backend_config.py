@@ -796,7 +796,6 @@ def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) ->
     )
 
 
-
 def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
     """Get the Jules wait timeout in hours from config.toml.
 
@@ -804,12 +803,12 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
         config_path: Optional explicit path to config.toml file.
 
     Returns:
-        Timeout in hours (default: 240)
+        Timeout in hours (default: 2)
     """
     return _get_config_value(
         section="jules",
         key="wait_timeout_hours",
-        default=240,
+        default=2,
         config_path=config_path,
         value_type=int,
     )
@@ -822,12 +821,12 @@ def get_dependabot_wait_interval_hours_from_config(config_path: Optional[str] = 
         config_path: Optional explicit path to config.toml file.
 
     Returns:
-        Interval in hours (default: 0)
+        Interval in hours (default: 24)
     """
     return _get_config_value(
         section="dependabot",
         key="wait_interval_hours",
-        default=0,
+        default=24,
         config_path=config_path,
         value_type=int,
     )
@@ -867,8 +866,6 @@ def get_github_action_log_max_length_from_config(config_path: Optional[str] = No
         config_path=config_path,
         value_type=int,
     )
-
-
 
 
 def get_jules_session_expiration_days_from_config(config_path: Optional[str] = None) -> int:
@@ -941,5 +938,3 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
         config_path=config_path,
         value_type=bool,
     )
-
-
