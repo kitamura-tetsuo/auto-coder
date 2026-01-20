@@ -37,7 +37,7 @@ class TestHandlePrMergeJulesFallback:
         """Test that normal Jules flow is used when failure count <= 10."""
         # Setup
         repo_name = "owner/repo"
-        pr_data = {"number": 123, "title": "Test PR"}
+        pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
         github_client = Mock()
 
@@ -50,9 +50,9 @@ class TestHandlePrMergeJulesFallback:
         # Mock Jules PR
         mock_is_jules.return_value = True
 
-        # Mock comments (less than 10 failures)
+        # Mock comments (less than 3 failures)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-        comments = [{"body": "Some comment"}, {"body": target_message}] * 5  # 5 failures
+        comments = [{"body": "Some comment"}, {"body": target_message}] * 2  # 2 failures
         github_client.get_pr_comments.return_value = comments
 
         # Mock send feedback
@@ -178,10 +178,10 @@ class TestHandlePrMergeJulesFallback:
         # Mock Jules PR
         mock_is_jules.return_value = True
 
-        # Mock comments (1 failure, but 2 hours ago)
+        # Mock comments (1 failure, but > 240 hours ago)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-        two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        comments = [{"body": target_message, "created_at": two_hours_ago}]
+        timeout_exceeded = (datetime.now(timezone.utc) - timedelta(hours=241)).isoformat()
+        comments = [{"body": target_message, "created_at": timeout_exceeded}]
         github_client.get_pr_comments.return_value = comments
 
         # Mock checkout success
