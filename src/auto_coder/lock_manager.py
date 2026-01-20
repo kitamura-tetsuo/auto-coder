@@ -189,7 +189,7 @@ class LockManager:
             if platform.system() == "Windows":
                 import ctypes
 
-                return ctypes.windll.kernel32.OpenProcess(1, False, pid) != 0
+                return ctypes.windll.kernel32.OpenProcess(1, False, pid) != 0  # type: ignore
             else:
                 # Check if process exists by sending signal 0
                 import signal

@@ -58,23 +58,23 @@ def validate_issue_references(pr_body: str, github_client: Any, repo_name: str) 
         return
 
     issue_numbers = extract_linked_issues_from_pr_body(pr_body)
-    
+
     for issue_number in issue_numbers:
         try:
             # Fetch the issue/PR object
             # In GitHub API, PRs are Issues, so get_issue works for both.
             # If it's a PR, it will have a 'pull_request' key.
             issue = github_client.get_issue(repo_name, issue_number)
-            
+
             if issue and "pull_request" in issue:
                 raise ValueError(f"Reference #{issue_number} points to a Pull Request, but should refer to an Issue.")
-                
+
         except ValueError:
             raise
         except Exception as e:
-            # Log warning but don't block if API fails? 
+            # Log warning but don't block if API fails?
             # The prompt says "output an error" if it IS a PR.
-            # If we can't verify, maybe we should warn but allow proceed? 
+            # If we can't verify, maybe we should warn but allow proceed?
             # For now, let's assume we proceed unless we DEFINITELY know it's a PR.
             logger.warning(f"Failed to validate reference #{issue_number}: {e}")
 

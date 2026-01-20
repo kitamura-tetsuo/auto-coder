@@ -254,7 +254,7 @@ class AiderClient(LLMClientBase):
                 # CLI usually infers fnames or expects them in args.
                 # If the user prompt adds files, aider handles it.
                 # But initial fnames might be needed if provided in options?
-                fnames = []
+                fnames: list[str] = []
 
                 # Initialize Model
                 # aider.models.Model(model_name)

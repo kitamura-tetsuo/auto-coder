@@ -162,7 +162,7 @@ if [ "$USE_UV" -eq 1 ]; then
 else
   printf "[WARN] uv is not installed. Falling back to system Python's pytest.
 "
-  printf "       Ensure Python 3.11 is active and dependencies are installed.
+  printf "       Ensure Python 3.12 is active and dependencies are installed.
 " >&2
 fi
 

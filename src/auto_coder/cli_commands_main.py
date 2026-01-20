@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import click
 
@@ -155,7 +155,7 @@ def process_issues(
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
     logger.info(f"Base branch update before fixes when PR checks fail: {policy_str}")
 
-    summary = {
+    summary: Dict[str, Any] = {
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
@@ -453,7 +453,7 @@ def create_feature_issues(
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Disable labels: {disable_labels}")
 
-    summary = {
+    summary: Dict[str, Any] = {
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
@@ -586,7 +586,7 @@ def fix_to_pass_tests_command(
 
     backend_list_str = ", ".join(selected_backends)
 
-    summary = {
+    summary: Dict[str, Any] = {
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
