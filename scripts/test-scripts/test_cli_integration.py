@@ -25,12 +25,8 @@ def test_cli_integration():
 
         # Test that we can access the functions without calling them
         assert callable(process_issues), "process_issues should be callable"
-        assert callable(
-            create_feature_issues
-        ), "create_feature_issues should be callable"
-        assert callable(
-            fix_to_pass_tests_command
-        ), "fix_to_pass_tests_command should be callable"
+        assert callable(create_feature_issues), "create_feature_issues should be callable"
+        assert callable(fix_to_pass_tests_command), "fix_to_pass_tests_command should be callable"
         print("✓ CLI commands are callable")
 
         # Test importing backend manager functions

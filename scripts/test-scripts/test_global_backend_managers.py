@@ -90,9 +90,7 @@ def test_global_backend_managers() -> bool:
     try:
         # Test run_llm_prompt
         llm_response = run_llm_prompt("test prompt")
-        assert (
-            "Mock response to: test prompt" == llm_response
-        ), f"Unexpected response: {llm_response}"
+        assert "Mock response to: test prompt" == llm_response, f"Unexpected response: {llm_response}"
 
         print("✓ Run prompt functions work correctly")
     except Exception as e:

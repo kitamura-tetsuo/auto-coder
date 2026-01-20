@@ -3638,10 +3638,13 @@ class TestCheckAndHandleClosedBranch:
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "dependabot[bot]",
+                "user": {"login": "dependabot[bot]"},
             }
             mock_github_client.get_pr_details.return_value = pr_details
             # Mock get_open_prs_json to return the list of PR data
             mock_github_client.get_open_prs_json.return_value = [pr_details]
+            # Mock get_pr_comments to return empty list
+            mock_github_client.get_pr_comments.return_value = []
 
             # Mock commits and comments to avoid "Mock object is not subscriptable" error
             # and ensure _should_skip_waiting_for_jules returns False (not waiting)

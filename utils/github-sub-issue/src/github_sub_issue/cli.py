@@ -118,17 +118,17 @@ def list_command(ctx: click.Context, parent: str, state: str, json_output: bool)
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
         state_upper = state.upper()
         sub_issues = api.list_sub_issues(parent, state_upper)
-        
+
         if json_output:
             click.echo(json.dumps(sub_issues, indent=2, ensure_ascii=False))
         else:
             if not sub_issues:
                 click.echo(f"No {state} sub-issues found.")
                 return
-            
+
             click.echo(f"\n📋 Sub-issues ({len(sub_issues)} {state}):")
             click.echo("─" * 80)
-            
+
             for si in sub_issues:
                 state_icon = "✅" if si["state"] == "CLOSED" else "🔵"
                 assignees = si.get("assignees", {}).get("nodes", [])
@@ -136,9 +136,9 @@ def list_command(ctx: click.Context, parent: str, state: str, json_output: bool)
                 if assignees:
                     assignee_logins = [a["login"] for a in assignees]
                     assignee_str = f" @{', @'.join(assignee_logins)}"
-                
+
                 click.echo(f"{state_icon} #{si['number']}  {si['title']:<50} [{si['state'].lower()}]{assignee_str}")
-            
+
             click.echo()
     except Exception as e:
         logger.error(f"Failed to list sub-issues: {e}")
@@ -165,9 +165,9 @@ def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: 
             if not click.confirm("Continue?"):
                 click.echo("Cancelled.")
                 return
-        
+
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
-        
+
         for sub_issue in sub_issues:
             try:
                 result = api.remove_sub_issue(parent, sub_issue)
@@ -185,4 +185,3 @@ def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: 
 
 if __name__ == "__main__":
     main()
-
