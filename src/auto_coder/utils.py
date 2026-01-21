@@ -34,7 +34,7 @@ def get_pr_author_login(pr_obj: Any) -> Optional[str]:
 
         _mock_types = (_Mock, _MagicMock)
     except Exception:
-        _mock_types = tuple()
+        _mock_types = tuple()  # type: ignore
 
     try:
         if isinstance(pr_obj, dict):

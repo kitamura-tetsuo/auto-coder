@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 try:
     import google.generativeai as genai  # type: ignore
 except Exception:  # Avoid runtime dependency
-    genai = None  # Replaced via patch in tests
+    genai: Any = None  # type: ignore # Replaced via patch in tests
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
@@ -78,7 +78,7 @@ class GeminiClient(LLMClientBase):
         if genai is not None and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel(self.model_name)
+                self.model: Any = genai.GenerativeModel(self.model_name)
             except Exception:
                 # Fall back silently for tests that don't rely on real SDK
                 self.model = None

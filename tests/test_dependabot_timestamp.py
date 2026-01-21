@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from src.auto_coder.util.dependabot_timestamp import get_last_dependabot_pr_processed_time, set_dependabot_pr_processed_time, should_process_dependabot_pr
@@ -11,12 +11,12 @@ def test_should_process_dependabot_pr_no_timestamp_file():
 
 
 def test_should_process_dependabot_pr_timestamp_file_recent():
-    with patch("src.auto_coder.util.dependabot_timestamp.get_last_dependabot_pr_processed_time", return_value=datetime.utcnow() - timedelta(hours=1)):
+    with patch("src.auto_coder.util.dependabot_timestamp.get_last_dependabot_pr_processed_time", return_value=datetime.now(timezone.utc) - timedelta(hours=1)):
         assert should_process_dependabot_pr() is False
 
 
 def test_should_process_dependabot_pr_timestamp_file_old():
-    with patch("src.auto_coder.util.dependabot_timestamp.get_last_dependabot_pr_processed_time", return_value=datetime.utcnow() - timedelta(hours=25)):
+    with patch("src.auto_coder.util.dependabot_timestamp.get_last_dependabot_pr_processed_time", return_value=datetime.now(timezone.utc) - timedelta(hours=25)):
         assert should_process_dependabot_pr() is True
 
 
@@ -28,4 +28,4 @@ def test_set_and_get_last_dependabot_pr_processed_time(tmpdir):
         last_processed_time = get_last_dependabot_pr_processed_time()
         assert last_processed_time is not None
         assert isinstance(last_processed_time, datetime)
-        assert (datetime.utcnow() - last_processed_time).total_seconds() < 5
+        assert (datetime.now(timezone.utc) - last_processed_time).total_seconds() < 5
