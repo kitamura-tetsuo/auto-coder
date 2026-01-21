@@ -646,3 +646,193 @@ def fix_to_pass_tests_command(
             message_manager.close()
         except Exception:
             pass
+
+
+@click.command()
+@click.option(
+    "--repo",
+    help="GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.",
+)
+@click.option("--github-token", envvar="GITHUB_TOKEN", help="GitHub API token")
+@click.option(
+    "--disable-labels/--no-disable-labels",
+    default=False,
+    help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
+)
+@click.option(
+    "--check-labels/--no-check-labels",
+    default=True,
+    help="Enable checking for existing @auto-coder label before processing (default: enabled)",
+)
+@click.option(
+    "--skip-main-update/--no-skip-main-update",
+    default=True,
+    help="When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)",
+)
+@click.option(
+    "--ignore-dependabot-prs/--no-ignore-dependabot-prs",
+    default=False,
+    help="Skip non-ready dependency-bot PRs (Dependabot/Renovate/[bot]); still auto-merge when checks pass and PR is mergeable.",
+)
+@click.option(
+    "--auto-merge/--no-auto-merge",
+    default=True,
+    help="Enable auto-merge of PRs when checks pass and PR is mergeable (default: enabled)",
+)
+@click.option(
+    "--auto-merge-dependabot-prs/--no-auto-merge-dependabot-prs",
+    default=True,
+    help="Enable auto-merge of Dependabot PRs when checks pass and PR is mergeable (default: enabled)",
+)
+@click.option(
+    "--force-clean-before-checkout/--no-force-clean-before-checkout",
+    default=False,
+    help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
+)
+@click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
+    "--force-reindex",
+    is_flag=True,
+    default=False,
+    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
+)
+@click.option(
+    "--log-level",
+    default="INFO",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
+    help="Set logging level",
+)
+@click.option("--log-file", help="Log file path (optional)")
+@click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option("--host", default="127.0.0.1", help="Host to bind the server to")
+@click.option("--port", default=8000, type=int, help="Port to bind the server to")
+@click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
+@click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
+def serve(
+    repo: Optional[str],
+    github_token: Optional[str],
+    disable_labels: Optional[bool],
+    check_labels: bool,
+    skip_main_update: bool,
+    ignore_dependabot_prs: bool,
+    auto_merge: bool,
+    auto_merge_dependabot_prs: bool,
+    force_clean_before_checkout: bool,
+    enable_graphrag: bool,
+    force_reindex: bool,
+    log_level: str,
+    log_file: Optional[str],
+    verbose: bool,
+    host: str,
+    port: int,
+    github_webhook_secret: Optional[str],
+    sentry_webhook_secret: Optional[str],
+) -> None:
+    """Run Auto-Coder in daemon mode with FastAPI server."""
+
+    config = get_llm_config()
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
+    primary_backend = selected_backends[0]
+    models = build_models_map()
+    primary_model = models.get(primary_backend)
+
+    # Configure verbose flag and setup logger with specified options
+    if verbose:
+        os.environ[VERBOSE_ENV_FLAG] = "1"
+        effective_log_level = "DEBUG"
+    else:
+        os.environ.pop(VERBOSE_ENV_FLAG, None)
+        effective_log_level = log_level
+
+    setup_logger(log_level=effective_log_level, log_file=log_file)
+    setup_progress_footer_logging()
+
+    # Check prerequisites
+    github_token_final = get_github_token_or_fail(github_token)
+    check_backend_prerequisites(selected_backends)
+
+    # Get repository name (from parameter or auto-detect)
+    repo_name = get_repo_or_detect(repo)
+
+    # Ensure required test script is present (fail early)
+    ensure_test_script_or_fail()
+
+    backend_list_str = ", ".join(selected_backends)
+    logger.info(f"Starting Auto-Coder Daemon for repository: {repo_name}")
+    logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
+
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
+
+    # Initialize clients
+    github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
+    manager = build_backend_manager_from_config(
+        enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
+    )
+
+    # Initialize LLM backend manager singleton
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.get_llm_instance(
+        default_backend=manager._default_backend,
+        default_client=manager._clients[manager._default_backend],
+        factories=manager._factories,
+        order=manager._all_backends,
+    )
+
+    selected_backends = manager._all_backends[:]
+    check_graphrag_mcp_for_backends(selected_backends, client=manager)
+
+    message_manager = build_message_backend_manager(models=models)
+
+    # Configure engine behavior flags
+    engine_config = AutomationConfig()
+    engine_config.CHECK_LABELS = check_labels
+    engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
+    engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
+    engine_config.AUTO_MERGE = bool(auto_merge)
+    engine_config.AUTO_MERGE_DEPENDABOT_PRS = bool(auto_merge_dependabot_prs)
+    engine_config.DISABLE_LABELS = bool(disable_labels)
+    engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
+
+    automation_engine = AutomationEngine(
+        github_client,  # type: ignore[arg-type]
+        config=engine_config,
+    )
+
+    # Import here to avoid circular dependencies
+    import asyncio
+
+    import uvicorn
+
+    from .webhook_server import create_app
+
+    app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
+    config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
+    server = uvicorn.Server(config)
+
+    async def run_all():
+        logger.info(f"Starting FastAPI server on {host}:{port}")
+        await asyncio.gather(automation_engine.start_automation(repo_name), server.serve())
+
+    try:
+        asyncio.run(run_all())
+    except KeyboardInterrupt:
+        logger.info("Stopped by user")
+    finally:
+        # Close MCP session if present
+        try:
+            manager.close()
+            message_manager.close()
+        except Exception:
+            pass
