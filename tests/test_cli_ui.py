@@ -134,6 +134,9 @@ def test_spinner_execution():
         # Should clear line at end
         # The last write or second to last should be the clear command
         assert any(w.startswith("\r") and w.endswith("\r") for w in writes)
+
+        # Should print final status message
+        assert any("✅ Test Loading" in w for w in writes)
         assert mock_stdout.flush.called
 
 
@@ -156,6 +159,9 @@ def test_spinner_no_color():
         writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
         # Should use ASCII frames (e.g. "|")
         assert any("|" in w or "/" in w for w in writes)
+
+        # Should print final status with [OK]
+        assert any("[OK] Test Loading" in w for w in writes)
 
 
 def test_spinner_non_interactive():

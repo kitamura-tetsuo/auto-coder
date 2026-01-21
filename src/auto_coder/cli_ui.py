@@ -234,6 +234,25 @@ class Spinner:
         if self.thread:
             self.stop_event.set()
             self.thread.join()
-            # Clear the line
+
+            # Clear the line first
             sys.stdout.write("\r" + " " * (len(self.message) + 10) + "\r")
+
+            # Determine symbol and color based on success/failure
+            if self.no_color:
+                symbol = "[OK]" if exc_type is None else "[ERR]"
+                color_func = lambda x, **kwargs: x
+            else:
+                symbol = "✅" if exc_type is None else "❌"
+                color_func = click.style
+
+            final_msg = f"{symbol} {self.message}"
+
+            if not self.no_color:
+                if exc_type is None:
+                    final_msg = color_func(final_msg, fg="green")
+                else:
+                    final_msg = color_func(final_msg, fg="red")
+
+            sys.stdout.write(f"{final_msg}\n")
             sys.stdout.flush()
