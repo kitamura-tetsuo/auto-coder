@@ -193,6 +193,56 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to list Jules sessions: {e}")
             raise RuntimeError(f"Failed to list Jules sessions: {e}")
 
+    def get_session(self, session_id: str) -> Dict[str, Any]:
+        """Get a specific Jules session.
+
+        Args:
+            session_id: The session ID to retrieve
+
+        Returns:
+            Session dictionary
+        """
+        try:
+            # Prepare the request
+            # Ensure session_id doesn't already contain the full path if possible, or handle it?
+            # The API likely expects projects/.../sessions/SESSION_ID if using name,
+            # or we might need to construct the URL correctly.
+            # Based on list_sessions using {self.base_url}/sessions, GET {self.base_url}/sessions/{session_id}
+            # seems like the standard REST pattern.
+
+            # If session_id is a full path name, extracting just the ID might be safer if the API expects just ID in URL
+            # But usually REST APIs accept the full resource name in URL or just ID.
+            # Let's assume session_id passed here is what we want to append.
+
+            url = f"{self.base_url}/sessions/{session_id}"
+
+            logger.info(f"Getting Jules session: {session_id}")
+            logger.info(f"🤖 GET {url}")
+
+            response = self.session.get(url, timeout=self.timeout)
+
+            # Check if request was successful
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to get Jules session {session_id}: {error_msg}")
+                raise RuntimeError(f"Failed to get Jules session {session_id}: {error_msg}")
+
+            # Parse the response
+            try:
+                session = response.json()
+                logger.info(f"Successfully retrieved session: {session_id}")
+                return session
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse Jules session response as JSON for {session_id}")
+                raise RuntimeError(f"Failed to parse Jules session response as JSON for {session_id}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to get Jules session {session_id}: {e}")
+            raise RuntimeError(f"Failed to get Jules session {session_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to get Jules session {session_id}: {e}")
+            raise RuntimeError(f"Failed to get Jules session {session_id}: {e}")
+
     def send_message(self, session_id: str, message: str) -> str:
         """Send a message to an existing Jules session.
 

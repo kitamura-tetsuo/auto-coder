@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2026.1.21+g4eda9110"
+version = "2026.1.21.2+g6e3c7116"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -185,7 +185,7 @@ disallow_incomplete_defs = false
 check_untyped_defs = false
 disallow_untyped_decorators = false
 no_implicit_optional = false
-exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/"]
+exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/", "utils/"]
 # Use packages instead of files to avoid module path conflicts
 packages = ["auto_coder"]
 

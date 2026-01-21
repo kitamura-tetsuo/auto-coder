@@ -242,14 +242,14 @@ class GitHubSubIssueAPI:
                 check=True,
             )
             data = json.loads(result.stdout)
-            
+
             issue_data = data.get("data", {}).get("repository", {}).get("issue", {})
             sub_issues = issue_data.get("subIssues", {}).get("nodes", [])
 
             # Filter by state
             if state != "ALL":
                 sub_issues = [si for si in sub_issues if si.get("state") == state]
-            
+
             logger.debug(f"Found {len(sub_issues)} sub-issues for #{parent_number}")
             return sub_issues
         except subprocess.CalledProcessError as e:
@@ -312,7 +312,7 @@ class GitHubSubIssueAPI:
             match = re.search(r"/issues/(\d+)", issue_url)
             if not match:
                 raise RuntimeError(f"Failed to extract issue number from URL: {issue_url}")
-            
+
             issue_number = int(match.group(1))
             logger.info(f"Created issue #{issue_number}: {title}")
 
@@ -326,4 +326,3 @@ class GitHubSubIssueAPI:
             }
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to create sub-issue: {e.stderr}")
-

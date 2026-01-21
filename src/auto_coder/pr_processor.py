@@ -71,6 +71,8 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
     from auto_coder.label_manager import LabelManager
     from auto_coder.util.github_action import _check_github_actions_status
 
+    from .jules_client import JulesClient
+
     logger.info(f"Started async monitor for PR #{pr_number} (workflow: {workflow_id})")
 
     github_client = GitHubClient.get_instance()
@@ -290,6 +292,68 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
     """
     try:
         pr_number = pr_data["number"]
+
+        # Check Jules session status
+        try:
+            # Extract session ID from PR body
+            pr_body = pr_data.get("body", "")
+            session_id = _extract_session_id_from_pr_body(pr_body)
+
+            if session_id:
+                from auto_coder.jules_client import JulesClient
+
+                jules_client = JulesClient()
+                # Get specific session directly
+                try:
+                    target_session = jules_client.get_session(session_id)
+                except Exception:
+                    # If get_session fails (e.g. 404), treat as not found/no session
+                    target_session = None
+
+                if target_session:
+                    state = target_session.get("state")
+                    outputs = target_session.get("outputs", {})
+                    # Handle list outputs same as jules_engine
+                    if isinstance(outputs, list):
+                        try:
+                            new_outputs = {}
+                            for item in outputs:
+                                if isinstance(item, dict):
+                                    new_outputs.update(item)
+                                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                                    new_outputs[item[0]] = item[1]
+                            outputs = new_outputs
+                        except Exception:
+                            outputs = {}
+
+                    pull_request = outputs.get("pullRequest")
+
+                    if state == "COMPLETED" and pull_request:
+                        # Extract PR info
+                        pull_request_url = pull_request["url"]
+                        parts = pull_request_url.split("/")
+                        pull_idx = parts.index("pull")
+                        jules_repo_name = f"{parts[pull_idx-2]}/{parts[pull_idx-1]}"
+                        try:
+                            jules_pr_number = int(parts[pull_idx + 1])
+                        except ValueError:
+                            pass
+
+                        if jules_repo_name and jules_pr_number and jules_pr_number != pr_number:
+                            # Check PR status
+                            jules_pr = github_client.get_pull_request(jules_repo_name, jules_pr_number)
+                            if jules_pr.get("state") == "closed":
+                                logger.info(f"Jules session {session_id} PR #{jules_pr_number} is closed. Resuming processing.")
+                            else:
+                                logger.info(f"Jules session {session_id} PR #{jules_pr_number} is open. Waiting...")
+                                return True
+
+                    else:
+                        logger.info(f"Jules session {session_id} for PR #{pr_number} found (State: {state}). Waiting...")
+                        return True
+
+        except Exception as e:
+            logger.warning(f"Failed to check Jules session for PR #{pr_number}: {e}")
 
         # Get comments
         comments = github_client.get_pr_comments(repo_name, pr_number)

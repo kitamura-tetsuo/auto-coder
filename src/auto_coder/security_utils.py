@@ -6,7 +6,7 @@ such as redacting sensitive information from logs.
 """
 
 import re
-from typing import List
+from typing import Any, Dict, List, Union
 
 # Patterns for sensitive data redaction
 REDACTION_PATTERNS = [
@@ -37,3 +37,23 @@ def redact_string(text: str) -> str:
     for pattern in REDACTION_PATTERNS:
         redacted = re.sub(pattern, "[REDACTED]", redacted)
     return redacted
+
+
+def redact_data(data: Any) -> Any:
+    """
+    Recursively redact sensitive information from data structures (dicts, lists).
+
+    Args:
+        data: Data to redact (dict, list, str, or other)
+
+    Returns:
+        Redacted data structure
+    """
+    if isinstance(data, str):
+        return redact_string(data)
+    elif isinstance(data, dict):
+        return {k: redact_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [redact_data(item) for item in data]
+    else:
+        return data

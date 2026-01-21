@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from .security_utils import redact_data, redact_string
+
 
 class LLMOutputLogger:
     """Logger for LLM outputs in JSON Lines format.
@@ -214,7 +216,8 @@ class LLMOutputLogger:
             data["prompt_length"] = prompt_length
 
         if metadata:
-            data.update(metadata)
+            # Recursively redact metadata
+            data.update(redact_data(metadata))
 
         self._write_json_line(data)
 
@@ -259,10 +262,11 @@ class LLMOutputLogger:
             data["duration_ms"] = duration_ms
 
         if error is not None:
-            data["error"] = error
+            data["error"] = redact_string(error)
 
         if metadata:
-            data.update(metadata)
+            # Recursively redact metadata
+            data.update(redact_data(metadata))
 
         self._write_json_line(data)
 
@@ -311,10 +315,11 @@ class LLMOutputLogger:
             data["duration_ms"] = duration_ms
 
         if error is not None:
-            data["error"] = error
+            data["error"] = redact_string(error)
 
         if metadata:
-            data.update(metadata)
+            # Recursively redact metadata
+            data.update(redact_data(metadata))
 
         self._write_json_line(data)
 

@@ -85,7 +85,7 @@
                 // "--force-reindex",
                 "--disable-graphrag",
                 "--verbose",
-                // "--force"
+                "--force"
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {

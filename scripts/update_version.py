@@ -19,9 +19,7 @@ def _run_git_command(args: list[str]) -> str:
 def compute_version() -> str:
     """Compute the YYYY.M.D[.patch]+g<sha> version for the current HEAD."""
 
-    commit_date = _run_git_command(
-        ["show", "-s", "--format=%cd", "--date=format:%Y-%m-%d", "HEAD"]
-    )
+    commit_date = _run_git_command(["show", "-s", "--format=%cd", "--date=format:%Y-%m-%d", "HEAD"])
     year_str, month_str, day_str = commit_date.split("-")
     base_date = f"{year_str}.{int(month_str)}.{int(day_str)}"
 
@@ -48,9 +46,7 @@ def _replace_pattern(path: Path, pattern: str, replacement_value: str) -> bool:
     def _repl(match: re.Match[str]) -> str:
         return f"{match.group(1)}{replacement_value}{match.group(3)}"
 
-    updated, count = re.subn(
-        pattern, _repl, original, count=1, flags=re.MULTILINE | re.DOTALL
-    )
+    updated, count = re.subn(pattern, _repl, original, count=1, flags=re.MULTILINE | re.DOTALL)
     if count == 0:
         raise ValueError(f"Could not find pattern in {path}")
     if updated != original:

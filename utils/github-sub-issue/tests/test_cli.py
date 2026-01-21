@@ -4,7 +4,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
-
 from github_sub_issue.cli import main
 
 
@@ -166,11 +165,16 @@ class TestCLI:
             main,
             [
                 "create",
-                "--parent", "123",
-                "--title", "New Issue",
-                "--body", "Description",
-                "--label", "bug",
-                "--assignee", "user1",
+                "--parent",
+                "123",
+                "--title",
+                "New Issue",
+                "--body",
+                "Description",
+                "--label",
+                "bug",
+                "--assignee",
+                "user1",
             ],
         )
 
@@ -200,10 +204,14 @@ class TestCLI:
             main,
             [
                 "create",
-                "--parent", "123",
-                "--title", "New Issue",
-                "--body-file", "/path/to/body.txt",
-                "--label", "bug",
+                "--parent",
+                "123",
+                "--title",
+                "New Issue",
+                "--body-file",
+                "/path/to/body.txt",
+                "--label",
+                "bug",
             ],
         )
 
@@ -362,4 +370,3 @@ class TestCLI:
 
         assert result.exit_code == 0
         mock_api_class.assert_called_once_with(repo="owner/repo")
-
