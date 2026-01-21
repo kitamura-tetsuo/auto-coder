@@ -41,6 +41,7 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.JULES_FAILURE_THRESHOLD = 10
         github_client = Mock()
 
         # Mock checks failure
@@ -102,6 +103,7 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.JULES_WAIT_TIMEOUT_HOURS = 1
         github_client = Mock()
 
         # Mock checks failure

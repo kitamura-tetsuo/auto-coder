@@ -3614,8 +3614,9 @@ class TestCheckAndHandleClosedBranch:
     ):
         """Test that _get_candidates skips Dependabot PRs if one was processed recently."""
         # Setup
-        engine = AutomationEngine(mock_github_client)
-        engine.config.DEPENDABOT_WAIT_INTERVAL_HOURS = 1
+        config = AutomationConfig()
+        config.DEPENDABOT_WAIT_INTERVAL_HOURS = 24
+        engine = AutomationEngine(mock_github_client, config=config)
 
         # Create a timestamp file indicating a recent Dependabot PR processing
         timestamp_file = tmpdir.join("dependabot_timestamp.txt")
