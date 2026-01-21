@@ -36,6 +36,8 @@ class TestHandlePrMergeJulesFallback:
         mock_is_jules,
         mock_branch_manager,
     ):
+        """Test that normal Jules flow is used when failure count <= 3."""
+        # Setup
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
@@ -51,7 +53,7 @@ class TestHandlePrMergeJulesFallback:
         # Mock Jules PR
         mock_is_jules.return_value = True
 
-        # Mock comments (less than JULES_FAILURE_THRESHOLD=3 failures to use Jules normal flow)
+        # Mock comments (2 failures, <= 3 threshold)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         comments = [{"body": "Some comment"}, {"body": target_message}] * 2  # 2 failures (<= 3 threshold)
         github_client.get_pr_comments.return_value = comments
@@ -101,6 +103,7 @@ class TestHandlePrMergeJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "feature-branch"}}
         config = AutomationConfig()
+        config.JULES_WAIT_TIMEOUT_HOURS = 1
         github_client = Mock()
 
         # Mock checks failure

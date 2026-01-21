@@ -8,7 +8,7 @@ made by Auto-Coder when processing issues and pull requests.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from .logger_config import get_logger
 
@@ -52,13 +52,13 @@ class AttemptInfo:
     error_message: Optional[str] = None
     metadata: Dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert AttemptInfo to a dictionary representation.
 
         Returns:
             Dictionary representation of the attempt info
         """
-        result = {
+        result: Dict[str, Any] = {
             "timestamp": self.timestamp.isoformat(),
             "details": self.details,
             "status": self.status,
@@ -72,7 +72,7 @@ class AttemptInfo:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, str]) -> "AttemptInfo":
+    def from_dict(cls, data: Dict[str, Any]) -> "AttemptInfo":
         """Create AttemptInfo from a dictionary.
 
         Args:

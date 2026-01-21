@@ -16,11 +16,11 @@ except Exception as exc:  # pragma: no cover - optional dependency fallback
         stub_module = types.ModuleType("sentence_transformers")
         sys.modules["sentence_transformers"] = stub_module
 
-    class SentenceTransformer:  # type: ignore[misc]
+    class SentenceTransformer:  # type: ignore[no-redef, misc]
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("sentence_transformers dependency is not available") from exc
 
-    stub_module.SentenceTransformer = SentenceTransformer
+    stub_module.SentenceTransformer = SentenceTransformer  # type: ignore
 
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(

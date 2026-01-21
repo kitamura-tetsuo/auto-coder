@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31.0",
     "pydantic>=2.0.0,<3.0.0",
@@ -85,7 +85,7 @@ auto_coder = ["prompts.yaml", "*.yml", "*.yaml"]
 
 [tool.pyright]
 # Python version
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 
 # Basic checking
 strictParameterNoneValue = true
@@ -135,7 +135,7 @@ exclude = [
 
 [tool.black]
 line-length = 300
-target-version = ['py311']
+target-version = ['py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -169,7 +169,7 @@ skip_glob = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 namespace_packages = true
 # Enable explicit_package_bases to avoid module path conflicts
 explicit_package_bases = true
@@ -241,4 +241,9 @@ dev = [
     "pylint>=4.0.4",
     "types-setuptools>=80.9.0.20250822",
     "pyright>=1.1.407",
+    "types-python-dateutil>=2.9.0.20240316",
+    "mypy>=1.0.0",
+    "pytest>=9.0.0",
+    "pytest-timeout>=2.1.0",
+    "types-toml>=0.10.8.20240310",
 ]
