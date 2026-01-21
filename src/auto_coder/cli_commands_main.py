@@ -818,8 +818,8 @@ def serve(
     from .webhook_server import create_app
 
     app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
-    config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
-    server = uvicorn.Server(config)
+    uvicorn_config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
+    server = uvicorn.Server(uvicorn_config)
 
     async def run_all():
         logger.info(f"Starting FastAPI server on {host}:{port}")
