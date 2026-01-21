@@ -154,7 +154,7 @@ class JulesClient(LLMClientBase):
                 if page_token:
                     params["pageToken"] = page_token
 
-                logger.info(f"🤖 GET {url} (pageToken={page_token if page_token else 'None'})")
+                logger.debug(f"🤖 GET {url} (pageToken={page_token if page_token else 'None'})")
 
                 response = self.session.get(url, params=params, timeout=self.timeout)
 
