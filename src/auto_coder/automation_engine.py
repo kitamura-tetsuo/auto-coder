@@ -2,6 +2,7 @@
 Main automation engine for Auto-Coder.
 """
 
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_engine import check_and_resume_or_archive_sessions
 from .label_manager import LabelManager
+from .llm_backend_config import get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
@@ -47,9 +49,112 @@ class AutomationEngine:
         self.github = github_client
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
+        self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
+
+    async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
+        """Start the automation engine with event-driven architecture."""
+        if concurrency is None:
+            concurrency = self.config.MAX_CONCURRENT_TASKS
+
+        logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
+
+        # Start producer
+        producer_task = asyncio.create_task(self._producer_loop(repo_name))
+
+        # Start workers
+        workers = [asyncio.create_task(self._worker_loop(repo_name, i)) for i in range(concurrency)]
+
+        try:
+            # Wait for all tasks (they run forever until cancelled)
+            await asyncio.gather(producer_task, *workers)
+        except asyncio.CancelledError:
+            logger.info("Automation engine stopped")
+
+    async def _producer_loop(self, repo_name: str) -> None:
+        """Producer loop that polls for candidates and adds them to the queue."""
+        logger.info("Producer started")
+
+        # Check closed branch once at start (as per original run method)
+        if not await asyncio.to_thread(self._check_and_handle_closed_branch, repo_name):
+            logger.info("Closed item handled on startup, exiting producer")
+            return
+
+        while True:
+            try:
+                # Check updates
+                await asyncio.to_thread(check_for_updates_and_restart)
+
+                # Resume sessions
+                await asyncio.to_thread(check_and_resume_or_archive_sessions)
+
+                # Get candidates
+                candidates = await asyncio.to_thread(self._get_candidates, repo_name)
+
+                if not candidates:
+                    # No candidates found. Sleep longer.
+                    # Use asyncio.to_thread for API calls
+                    def check_open_items():
+                        issues = self.github.get_open_issues(repo_name, limit=1)
+                        prs = self.github.get_open_pull_requests(repo_name, limit=1)
+                        return len(issues) > 0 or len(prs) > 0
+
+                    any_open = await asyncio.to_thread(check_open_items)
+
+                    if not any_open:
+                        sleep_time = get_process_issues_empty_sleep_time_from_config()
+                        logger.info(f"No open issues or PRs found. Sleeping for {sleep_time} seconds...")
+                    else:
+                        sleep_time = get_process_issues_sleep_time_from_config()
+                        logger.info(f"No actionable candidates. Sleeping for {sleep_time} seconds...")
+
+                    await asyncio.sleep(sleep_time)
+                    continue
+
+                # Add candidates to queue
+                for candidate in candidates:
+                    await self.queue.put(candidate)
+                    logger.info(f"Queued {candidate.type} #{candidate.data.get('number', 'N/A')}")
+
+                # Clear cache
+                await asyncio.to_thread(lambda: get_github_cache().clear())
+
+                sleep_time = get_process_issues_sleep_time_from_config()
+                logger.info(f"Batch queued. Sleeping for {sleep_time} seconds...")
+                await asyncio.sleep(sleep_time)
+
+            except Exception as e:
+                logger.error(f"Error in producer loop: {e}")
+                await asyncio.sleep(60)  # Sleep on error
+
+    async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
+        """Worker loop that processes candidates from the queue."""
+        logger.info(f"Worker {worker_id} started")
+        while True:
+            candidate = await self.queue.get()
+            try:
+                logger.info(f"Worker {worker_id} processing {candidate.type} #{candidate.data.get('number', 'N/A')}")
+
+                # Process candidate
+                result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+
+                if result.error:
+                    logger.error(f"Worker {worker_id} failed to process {candidate.type} #{candidate.data.get('number', 'N/A')}: {result.error}")
+                else:
+                    logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
+
+                # Save report after each processing (optional, but good for tracking)
+                # Converting result to the dict format expected by _save_report is annoying here
+                # because _save_report expects a full results dict.
+                # Maybe skip saving report per item for now, rely on logs.
+                # Or create a minimal report.
+
+            except Exception as e:
+                logger.error(f"Worker {worker_id} error processing candidate: {e}")
+            finally:
+                self.queue.task_done()
 
     def _check_and_handle_closed_branch(self, repo_name: str) -> bool:
         """

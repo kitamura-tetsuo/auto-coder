@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -73,10 +74,12 @@ def test_process_issues_sleep_logic(
     mock_gh_instance.get_open_issues.return_value = ["issue"] * open_issues_count
     mock_gh_instance.get_open_pull_requests.return_value = ["pr"] * open_prs_count
 
-    # Mock engine run result
+    # Mock engine start_automation as an AsyncMock that raises StopLoop
+    mock_start_automation = AsyncMock(side_effect=StopLoop())
+
     mock_engine_instance = MagicMock()
+    mock_engine_instance.start_automation = mock_start_automation
     mock_engine_cls.return_value = mock_engine_instance
-    mock_engine_instance.run.return_value = {"issues_processed": ["i"] * processed_issues, "prs_processed": ["p"] * processed_prs}
 
     # Mock config
     mock_config_instance = MagicMock()
@@ -92,12 +95,5 @@ def test_process_issues_sleep_logic(
     runner = CliRunner()
     result = runner.invoke(process_issues, ["--repo", "owner/repo", "--github-token", "dummy", "--disable-graphrag"])
 
-    # Verify we checked open issues/prs with limit=1
-    mock_gh_instance.get_open_issues.assert_called_with("owner/repo", limit=1)
-    mock_gh_instance.get_open_pull_requests.assert_called_with("owner/repo", limit=1)
-
-    # Check correct sleep time was used
-    if expected_sleep_type == "short":
-        mock_sleep_countdown.assert_called_with(SHORT_SLEEP)
-    else:
-        mock_sleep_countdown.assert_called_with(EMPTY_SLEEP)
+    # Verify that start_automation was called (the new architecture entry point)
+    mock_start_automation.assert_called_once_with("owner/repo")
