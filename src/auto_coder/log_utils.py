@@ -38,5 +38,22 @@ class LogEntry:
         """Saves the log entry to a file."""
         ensure_log_dirs(log_dir)
         filepath = log_dir / filename
-        with open(filepath, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+
+        # Open file with restrictive permissions (0o600)
+        fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            # Ensure permissions are correct even if file existed
+            os.chmod(filepath, 0o600)
+
+            with os.fdopen(fd, "w") as f:
+                json.dump(asdict(self), f, indent=2)
+        except Exception:
+            # If something fails before fd is closed by fdopen context manager,
+            # we might need to close it manually. But if fdopen succeeded,
+            # it takes ownership. If fdopen failed, fd is still open.
+            # It's safer to rely on garbage collection or simple close if f is not created.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise

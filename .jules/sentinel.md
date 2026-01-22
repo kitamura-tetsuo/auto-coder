@@ -32,3 +32,8 @@
 **Vulnerability:** The `@log_calls` decorator logged function arguments and return values using `repr()` without any redaction, exposing sensitive data (like tokens passed to backend clients) in debug logs.
 **Learning:** Decorators used for tracing or debugging must implement the same security sanitization as explicit logging calls. It's easy to overlook "internal" tracing tools as sources of leakage.
 **Prevention:** Apply `security_utils.redact_string` to all logged arguments and return values in tracing decorators.
+
+## 2026-01-22 - Insecure Log File Permissions
+**Vulnerability:** `LogEntry.save` in `src/auto_coder/log_utils.py` used standard `open()`, creating log files with default permissions (often `0o664` or `0o644`), potentially exposing sensitive information captured in logs to other users on the system.
+**Learning:** Even "temporary" or "log" files can contain sensitive data from the runtime environment. Default `open()` behavior is insufficient for security-critical applications in multi-user environments.
+**Prevention:** Use `os.open` with `os.O_CREAT | os.O_WRONLY | os.O_TRUNC` and `mode=0o600` for all log file creation, ensuring restricted access from the moment of creation.
