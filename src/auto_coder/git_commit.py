@@ -318,6 +318,7 @@ def save_commit_failure_history(
                   ~/.auto-coder/{repository}/ directory.
     """
     import json
+    import os
     import sys
     from datetime import datetime
     from pathlib import Path
@@ -346,7 +347,9 @@ def save_commit_failure_history(
         }
 
         # Save history to file
-        with open(history_file, "w", encoding="utf-8") as f:
+        fd = os.open(history_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.chmod(history_file, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(history_data, f, indent=2, ensure_ascii=False)
 
         logger.error(f"Commit failed. History saved to {history_file}")
