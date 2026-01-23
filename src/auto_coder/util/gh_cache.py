@@ -1061,7 +1061,7 @@ class GitHubClient:
             api = get_ghapi_client(self.token)
 
             api.issues.create_comment(owner, repo, issue_number, body=comment)
-            logger.info(f"Added comment to issue #{issue_number}")
+            logger.debug(f"Added comment to issue #{issue_number}")
 
         except Exception as e:
             logger.error(f"Failed to add comment to issue #{issue_number}: {e}")
@@ -1346,7 +1346,7 @@ class GitHubClient:
             # works for both Issues and PRs
             api.issues.add_labels(owner, repo, issue_number, labels=labels)
 
-            logger.info(f"Added labels {labels} to {item_type} #{issue_number}")
+            logger.debug(f"Added labels {labels} to {item_type} #{issue_number}")
 
             # Update cache if issue
             if item_type != "pr":
