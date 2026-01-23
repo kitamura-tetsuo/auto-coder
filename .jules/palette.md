@@ -21,3 +21,7 @@
 ## 2026-01-20 - Perceived Responsiveness in Countdowns
 **Learning:** Countdowns that only update once per second can feel sluggish or unresponsive. Increasing the update frequency (e.g., to 10Hz) and adding a spinner animation maintains a sense of activity, making the wait feel shorter.
 **Action:** For CLI countdowns, use a high-frequency loop to drive animations, even if the numeric countdown only updates every second.
+
+## 2026-05-21 - Completion Summaries
+**Learning:** After long-running CLI operations (like processing an issue or analyzing a repo), users benefit from a distinct, structured summary that separates the final result from the stream of logs. This provides closure and easy access to key information (e.g., status, errors, actions taken).
+**Action:** Use `print_completion_message` (or similar) to standardize success/failure reporting, ensuring it stands out visually (using colors/emojis if supported) and handles list data cleanly.

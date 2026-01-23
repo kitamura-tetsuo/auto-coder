@@ -256,3 +256,50 @@ class Spinner:
 
             sys.stdout.write(f"{final_msg}\n")
             sys.stdout.flush()
+
+
+def print_completion_message(title: str, summary: Dict[str, Any]) -> None:
+    """
+    Prints a formatted completion message.
+
+    Args:
+        title: The title of the completion section.
+        summary: A dictionary of summary items.
+    """
+    no_color = "NO_COLOR" in os.environ
+
+    if not summary:
+        return
+
+    # Print Title
+    if not no_color:
+        # Green title with sparkles
+        click.secho(f"\n✨ {title} ✨", bold=True, fg="green")
+    else:
+        click.echo(f"\n{title}")
+
+    click.echo("")
+
+    max_key_len = max(len(str(k)) for k in summary.keys()) if summary else 0
+
+    for key, value in summary.items():
+        key_str = str(key)
+        padding = " " * (max_key_len - len(key_str))
+
+        # Format Key
+        if not no_color:
+            key_display = click.style(f"  • {key_str}{padding}", fg="cyan")
+        else:
+            key_display = f"  • {key_str}{padding}"
+
+        # Format Value
+        val_str = str(value)
+        # Check for list of strings (e.g. actions)
+        if isinstance(value, list) and value:
+            val_display = "\n" + "\n".join([f"    - {v}" for v in value])
+        else:
+            val_display = val_str
+
+        click.echo(f"{key_display} : {val_display}")
+
+    click.echo("")
