@@ -330,11 +330,13 @@ class CommandExecutor:
         on_stream: Optional[Callable[[str, str], None]] = None,
         dot_format: bool = False,
         idle_timeout: Optional[int] = None,
+        log_output: bool = True,
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger.
 
         on_stream: optional callback invoked for each chunk (stream_name, chunk).
         The callback may raise to abort the process early; the exception is propagated.
+        log_output: if False, suppress logging of stdout/stderr chunks (default: True).
         """
         process = subprocess.Popen(
             cmd,
@@ -434,7 +436,7 @@ class CommandExecutor:
                                     # Fallback for non-TTY environments
                                     print(".", end="", file=sys.stderr)
                                 sys.stderr.flush()
-                            else:
+                            elif log_output:
                                 # Also output stderr at INFO level
                                 # depth=2 to show the caller of _run_with_streaming
                                 # Redact sensitive information from output logs
@@ -542,19 +544,29 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream, dot_format, idle_timeout=idle_timeout)
-            else:
-                result = subprocess.run(
+                return_code, stdout, stderr = cls._run_with_streaming(
                     cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=cwd,
-                    env=effective_env,
+                    timeout,
+                    cwd,
+                    effective_env,
+                    on_stream,
+                    dot_format,
+                    idle_timeout=idle_timeout,
+                    log_output=True,
                 )
-                return_code = result.returncode
-                stdout = result.stdout
-                stderr = result.stderr
+            else:
+                # Use _run_with_streaming even when not streaming to logger,
+                # to ensure progress footer spinner is ticked and timeouts/interruption are handled consistently.
+                return_code, stdout, stderr = cls._run_with_streaming(
+                    cmd,
+                    timeout,
+                    cwd,
+                    effective_env,
+                    on_stream,
+                    dot_format,
+                    idle_timeout=idle_timeout,
+                    log_output=False,
+                )
 
             success = return_code == 0
 

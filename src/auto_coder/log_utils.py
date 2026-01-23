@@ -38,5 +38,8 @@ class LogEntry:
         """Saves the log entry to a file."""
         ensure_log_dirs(log_dir)
         filepath = log_dir / filename
-        with open(filepath, "w") as f:
+        fd = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # Ensure permissions are restricted even if file already existed
+        os.chmod(filepath, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)

@@ -586,10 +586,10 @@ class LabelManager:
             # Optimization: Use known_labels if provided to avoid API calls
             if self.known_labels is not None:
                 if self.label_name in self.known_labels:
-                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label (checked via known_labels) - skipping")
+                    logger.debug(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label (checked via known_labels) - skipping")
                     return False
                 else:
-                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label (checked via known_labels) - will process")
+                    logger.debug(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label (checked via known_labels) - will process")
                     return True
 
             # Prefer dedicated has_label() when using a real GitHubClient instance or a mock with has_label

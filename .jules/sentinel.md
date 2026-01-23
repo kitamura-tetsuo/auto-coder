@@ -32,3 +32,8 @@
 **Vulnerability:** The `@log_calls` decorator logged function arguments and return values using `repr()` without any redaction, exposing sensitive data (like tokens passed to backend clients) in debug logs.
 **Learning:** Decorators used for tracing or debugging must implement the same security sanitization as explicit logging calls. It's easy to overlook "internal" tracing tools as sources of leakage.
 **Prevention:** Apply `security_utils.redact_string` to all logged arguments and return values in tracing decorators.
+
+## 2026-02-14 - Insecure Permissions on Existing Log Files
+**Vulnerability:** `LogEntry.save` and `save_commit_failure_history` used `os.open` with `O_CREAT` and `0o600` permissions, which correctly secures *new* files but fails to restrict permissions on *existing* files (which retain their original, often world-readable permissions).
+**Learning:** `os.open`'s mode argument only applies when a file is created. Overwriting a file with `O_TRUNC` does not change its permissions.
+**Prevention:** Always call `os.chmod(path, 0o600)` in addition to using `os.open` with restricted permissions, to ensure that pre-existing files are also secured.
