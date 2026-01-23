@@ -21,3 +21,7 @@
 ## 2026-01-20 - Perceived Responsiveness in Countdowns
 **Learning:** Countdowns that only update once per second can feel sluggish or unresponsive. Increasing the update frequency (e.g., to 10Hz) and adding a spinner animation maintains a sense of activity, making the wait feel shorter.
 **Action:** For CLI countdowns, use a high-frequency loop to drive animations, even if the numeric countdown only updates every second.
+
+## 2026-01-21 - Unified CLI Responsiveness
+**Learning:** Having separate code paths for "streaming" vs "blocking" command execution leads to inconsistent UX (e.g., spinners freezing).
+**Action:** Unify execution logic to always use the streaming/ticking path, even if output is captured silently. This ensures consistent "heartbeat" feedback across the entire application.
