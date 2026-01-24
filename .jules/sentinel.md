@@ -47,3 +47,8 @@
 **Vulnerability:** `verify_github_signature` parsed the signature header (splitting by `=`) before verifying it, leading to potential `ValueError` crashes (500 errors) on malformed input and timing information leakage regarding the signature format.
 **Learning:** Validating complex string formats before cryptographic verification can introduce parsing errors and information leaks.
 **Prevention:** Construct the *entire* expected string (e.g. `sha256=<digest>`) and use `hmac.compare_digest` on the full string to avoid parsing steps and ensure constant-time comparison.
+
+## 2026-02-18 - CI Failures from Formatting
+**Vulnerability:** Not a security vulnerability, but a process failure. The CI pipeline blocked the security fix because the new test file `tests/test_webhook_security.py` violated the project's formatting rules (Black).
+**Learning:** Security fixes must adhere to code style guidelines to be deployable. A secure patch that breaks the build cannot protect users.
+**Prevention:** Always run the project's formatter (e.g., `uv run black`) on new test files before submission.
