@@ -147,16 +147,35 @@ def list_command(ctx: click.Context, parent: str, state: str, json_output: bool)
 
 @main.command()
 @click.argument("parent")
-@click.argument("sub_issues", nargs=-1, required=True)
+@click.argument("sub_issues", nargs=-1)
+@click.option("--all", "-a", "remove_all", is_flag=True, help="Remove all sub-issues")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
 @click.pass_context
-def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: bool) -> None:
+def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], remove_all: bool, force: bool) -> None:
     """Remove sub-issue.
 
     PARENT: Parent issue number or URL
     SUB_ISSUES: Sub-issue number(s) or URL(s) to remove (can be specified multiple times)
     """
     try:
+        api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
+
+        if remove_all:
+            if sub_issues:
+                click.echo("⚠️  Ignoring specified sub-issues because --all is used.")
+            
+            # Fetch all sub-issues
+            all_sub_issues = api.list_sub_issues(parent, state="ALL")
+            if not all_sub_issues:
+                click.echo("No sub-issues found to remove.")
+                return
+            
+            sub_issues = tuple(str(si["number"]) for si in all_sub_issues)
+
+        if not sub_issues:
+            click.echo("Error: NO sub-issues specified and --all not used.")
+            ctx.exit(1)
+
         if not force:
             click.echo(f"⚠️  {len(sub_issues)} sub-issue(s) will be deleted:")
             for si in sub_issues:
@@ -165,8 +184,6 @@ def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: 
             if not click.confirm("Continue?"):
                 click.echo("Cancelled.")
                 return
-
-        api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
 
         for sub_issue in sub_issues:
             try:

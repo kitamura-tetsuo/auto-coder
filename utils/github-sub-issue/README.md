@@ -89,6 +89,9 @@ github-sub-issue remove 123 456
 # Remove multiple sub-issues
 github-sub-issue remove 123 456 457 458
 
+# Remove all sub-issues
+github-sub-issue remove 123 --all
+
 # Skip confirmation
 github-sub-issue remove 123 456 --force
 

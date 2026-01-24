@@ -370,3 +370,80 @@ class TestCLI:
 
         assert result.exit_code == 0
         mock_api_class.assert_called_once_with(repo="owner/repo")
+
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_remove_command_all(self, mock_api_class: MagicMock) -> None:
+        """Verify that remove --all works correctly."""
+        mock_api = MagicMock()
+        mock_api.list_sub_issues.return_value = [
+            {"number": 456, "title": "Child 1", "state": "OPEN"},
+            {"number": 457, "title": "Child 2", "state": "OPEN"},
+        ]
+        mock_api.remove_sub_issue.side_effect = [
+            {"data": {"removeSubIssue": {"subIssue": {"number": 456, "title": "Child 1"}}}},
+            {"data": {"removeSubIssue": {"subIssue": {"number": 457, "title": "Child 2"}}}},
+        ]
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["remove", "123", "--all", "--force"])
+
+        assert result.exit_code == 0
+        assert "Removed sub-issue #456" in result.output
+        assert "Removed sub-issue #457" in result.output
+        assert "Deleted 2 sub-issue(s)" in result.output
+        
+        mock_api.list_sub_issues.assert_called_once_with("123", state="ALL")
+        assert mock_api.remove_sub_issue.call_count == 2
+        mock_api.remove_sub_issue.assert_any_call("123", "456")
+        mock_api.remove_sub_issue.assert_any_call("123", "457")
+
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_remove_command_all_no_sub_issues(self, mock_api_class: MagicMock) -> None:
+        """Verify that remove --all handles no sub-issues correctly."""
+        mock_api = MagicMock()
+        mock_api.list_sub_issues.return_value = []
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["remove", "123", "--all", "--force"])
+
+        assert result.exit_code == 0
+        assert "No sub-issues found to remove." in result.output
+        mock_api.list_sub_issues.assert_called_once_with("123", state="ALL")
+        mock_api.remove_sub_issue.assert_not_called()
+
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_remove_command_all_with_explicit_args(self, mock_api_class: MagicMock) -> None:
+        """Verify warning when both --all and manual sub-issues are provided."""
+        mock_api = MagicMock()
+        mock_api.list_sub_issues.return_value = [
+            {"number": 456, "title": "Child 1", "state": "OPEN"},
+        ]
+        mock_api.remove_sub_issue.return_value = {
+            "data": {"removeSubIssue": {"subIssue": {"number": 456, "title": "Child 1"}}}
+        }
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["remove", "123", "999", "--all", "--force"])
+
+        assert result.exit_code == 0
+        assert "Ignoring specified sub-issues because --all is used" in result.output
+        assert "Removed sub-issue #456" in result.output
+        
+        mock_api.list_sub_issues.assert_called_once_with("123", state="ALL")
+        mock_api.remove_sub_issue.assert_called_once_with("123", "456")
+
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_remove_command_no_args(self, mock_api_class: MagicMock) -> None:
+        """Verify error when no sub-issues and no --all flag provided."""
+        mock_api = MagicMock()
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["remove", "123"])
+
+        assert result.exit_code == 1
+        assert "Error: NO sub-issues specified and --all not used." in result.output
+        mock_api.remove_sub_issue.assert_not_called()
