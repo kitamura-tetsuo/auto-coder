@@ -1,7 +1,7 @@
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open, ANY
+from unittest.mock import ANY, MagicMock, mock_open, patch
 
 from src.auto_coder.graphrag_docker_manager import GraphRAGDockerManager
 
