@@ -38,14 +38,13 @@ class LogEntry:
         """Saves the log entry to a file."""
         ensure_log_dirs(log_dir)
         filepath = log_dir / filename
-
         # Open file with restrictive permissions (0o600)
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             # Ensure permissions are correct even if file existed
             os.chmod(filepath, 0o600)
 
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(asdict(self), f, indent=2)
         except Exception:
             # If something fails before fd is closed by fdopen context manager,

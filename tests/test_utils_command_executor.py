@@ -1,6 +1,7 @@
 import os
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -8,25 +9,17 @@ from src.auto_coder import utils
 
 
 def test_run_command_respects_stream_flag(monkeypatch):
-    calls = {}
-
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
 
-    def fake_run(cmd, capture_output, text, timeout, cwd, env=None):
-        calls["called"] = True
-        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+    mock_streaming = MagicMock(return_value=(0, "ok", ""))
+    monkeypatch.setattr(utils.CommandExecutor, "_run_with_streaming", mock_streaming)
 
-    def fail_popen(*_args, **_kwargs):
-        pytest.fail("Popen should not be used when stream_output=False")
+    utils.CommandExecutor.run_command(["echo", "hi"], stream_output=False)
 
-    monkeypatch.setattr(utils.subprocess, "run", fake_run)
-    monkeypatch.setattr(utils.subprocess, "Popen", fail_popen)
-
-    result = utils.CommandExecutor.run_command(["echo", "hi"], stream_output=False)
-
-    assert result.success is True
-    assert result.stdout == "ok"
-    assert calls.get("called") is True
+    mock_streaming.assert_called_once()
+    _args, kwargs = mock_streaming.call_args
+    # Verify log_output=False was passed
+    assert kwargs.get("log_output") is False
 
 
 def test_run_command_streams_output(monkeypatch):
