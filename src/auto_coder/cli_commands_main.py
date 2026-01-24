@@ -10,7 +10,7 @@ from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
-from .cli_ui import print_configuration_summary, sleep_with_countdown
+from .cli_ui import Spinner, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
@@ -317,19 +317,44 @@ def process_issues(
             except ValueError:
                 raise click.ClickException("--only must be a PR/Issue URL or a number")
         # Run single-item processing with auto-detection if needed
-        if target_type is None:
-            # Auto-detect: try PR first, then issue
-            try:
-                _ = automation_engine.process_single(repo_name, "pr", number)
-                target_type = "pr"
-            except Exception:
-                # Fall back to issue
-                _ = automation_engine.process_single(repo_name, "issue", number)
-                target_type = "issue"
-        else:
-            _ = automation_engine.process_single(repo_name, target_type, number)
-        # Print brief summary to stdout
-        click.echo(f"Processed single {target_type} #{number}")
+        result = {}
+        with Spinner(f"Processing {target_type if target_type else 'item'} #{number}...") as spinner:
+            if target_type is None:
+                # Auto-detect: try PR first, then issue
+                try:
+                    result = automation_engine.process_single(repo_name, "pr", number)
+                    target_type = "pr"
+                except Exception:
+                    # Fall back to issue
+                    result = automation_engine.process_single(repo_name, "issue", number)
+                    target_type = "issue"
+            else:
+                result = automation_engine.process_single(repo_name, target_type, number)
+
+            spinner.message = f"Processed single {target_type} #{number}"
+
+        # Prepare summary for completion message
+        completion_summary = {"Repository": repo_name, "Target": f"{target_type} #{number}", "Status": "Success" if not result.get("errors") else "Completed with errors"}
+
+        if result.get("errors"):
+            completion_summary["Errors"] = result["errors"]
+
+        # Extract actions taken
+        actions = []
+        # Check issues_processed
+        for issue_res in result.get("issues_processed", []):
+            if issue_res.get("actions_taken"):
+                actions.extend(issue_res["actions_taken"])
+        # Check prs_processed
+        for pr_res in result.get("prs_processed", []):
+            if pr_res.get("actions_taken"):
+                actions.extend(pr_res["actions_taken"])
+
+        if actions:
+            completion_summary["Actions Taken"] = actions
+
+        print_completion_message("Processing Complete", completion_summary)
+
         # Close MCP session if present
         try:
             manager.close()
@@ -483,7 +508,18 @@ def create_feature_issues(
     automation_engine = AutomationEngine(github_client, config=engine_config)  # type: ignore[arg-type]
 
     # Analyze and create feature issues
-    automation_engine.create_feature_issues(repo_name)
+    created_issues = []
+    with Spinner("Analyzing repository for features...") as spinner:
+        created_issues = automation_engine.create_feature_issues(repo_name)
+        spinner.message = f"Created {len(created_issues)} feature issue(s)"
+
+    # Prepare summary
+    completion_summary = {"Repository": repo_name, "Issues Created": len(created_issues)}
+
+    if created_issues:
+        completion_summary["Details"] = [f"#{issue.get('number')} - {issue.get('title')}" for issue in created_issues]
+
+    print_completion_message("Feature Analysis Complete", completion_summary)
 
     # Close MCP session if present
     try:
