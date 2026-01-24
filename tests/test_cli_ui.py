@@ -196,7 +196,7 @@ def test_spinner_with_timer():
 
         with spinner:
             # Give time for thread to start and capture start_time
-            time.sleep(0.05)
+            time.sleep(0.2)
             # Advance time by 2.5 seconds (should trigger timer display which needs > 1.0s)
             current_time[0] += 2.5
             # Sleep enough to let the spinner thread iterate at least once
