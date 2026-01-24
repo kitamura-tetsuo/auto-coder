@@ -42,3 +42,33 @@
 **Vulnerability:** `LogEntry.save` and `save_commit_failure_history` used `os.open` with `O_CREAT` and `0o600` permissions, which correctly secures *new* files but fails to restrict permissions on *existing* files (which retain their original, often world-readable permissions).
 **Learning:** `os.open`'s mode argument only applies when a file is created. Overwriting a file with `O_TRUNC` does not change its permissions.
 **Prevention:** Always call `os.chmod(path, 0o600)` in addition to using `os.open` with restricted permissions, to ensure that pre-existing files are also secured.
+
+## 2026-02-18 - Insecure Webhook Signature Verification
+**Vulnerability:** `verify_github_signature` parsed the signature header (splitting by `=`) before verifying it, leading to potential `ValueError` crashes (500 errors) on malformed input and timing information leakage regarding the signature format.
+**Learning:** Validating complex string formats before cryptographic verification can introduce parsing errors and information leaks.
+**Prevention:** Construct the *entire* expected string (e.g. `sha256=<digest>`) and use `hmac.compare_digest` on the full string to avoid parsing steps and ensure constant-time comparison.
+
+## 2026-02-18 - CI Failures from Formatting
+**Vulnerability:** Not a security vulnerability, but a process failure. The CI pipeline blocked the security fix because the new test file `tests/test_webhook_security.py` violated the project's formatting rules (Black).
+**Learning:** Security fixes must adhere to code style guidelines to be deployable. A secure patch that breaks the build cannot protect users.
+**Prevention:** Always run the project's formatter (e.g., `uv run black`) on new test files before submission.
+
+## 2026-02-18 - CI Failures from Import Sorting
+**Vulnerability:** Process failure. The CI pipeline blocked the security fix again because `isort` failed on the new test file `tests/test_webhook_security.py`, even though `black` passed.
+**Learning:** Formatting checks often include both code style (Black) and import sorting (isort). Running one without the other is insufficient.
+**Prevention:** Always run the full linting suite (e.g., `scripts/test.sh` or explicitly `uv run black . && uv run isort .`) before submission.
+
+## 2026-02-18 - CI Failure from Global Side Effects in Tests
+**Vulnerability:** Process failure.  globally mocked  in  at the top level. This caused other tests (like ) to fail with  or  because  was replaced with a Mock object that didn't support sub-imports (like ) during test collection.
+**Learning:** Avoid top-level  patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
+**Prevention:** Use  context managers or  fixtures to mock modules temporarily for specific tests, or ensure mocks are robust enough to support required imports if absolutely necessary. Ideally, don't mock 3rd party libraries globally; use their provided test utilities or mock specific imports in the *code under test* using .
+
+## 2026-02-18 - CI Failure from Global Side Effects in Tests
+**Vulnerability:** Process failure. tests/test_webhook_delay.py globally mocked fastapi in sys.modules at the top level. This caused other tests (like test_webhook_security.py) to fail with ModuleNotFoundError or ImportError because fastapi was replaced with a Mock object that didn't support sub-imports (like fastapi.testclient) during test collection.
+**Learning:** Avoid top-level sys.modules patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
+**Prevention:** Use unittest.mock.patch.dict context managers or pytest fixtures to mock modules temporarily for specific tests.
+
+## 2026-02-18 - CI Failure from Global Side Effects in Tests
+**Vulnerability:** Process failure. tests/test_webhook_delay.py globally mocked fastapi in sys.modules at the top level. This caused other tests (like test_webhook_security.py) to fail with ModuleNotFoundError or ImportError because fastapi was replaced with a Mock object that didn't support sub-imports (like fastapi.testclient) during test collection.
+**Learning:** Avoid top-level sys.modules patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
+**Prevention:** Use unittest.mock.patch.dict context managers or pytest fixtures to mock modules temporarily for specific tests, or ensure mocks are robust enough to support required imports if absolutely necessary. Ideally, don't mock 3rd party libraries globally; use their provided test utilities or mock specific imports in the *code under test* using patch.
