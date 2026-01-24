@@ -3047,7 +3047,7 @@ class TestElderSiblingDependencyLogic:
                 "body": "",
                 "labels": [],
                 "state": "open",
-                "created_at": (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "created_at": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "has_open_sub_issues": False,
                 "open_sub_issue_numbers": [],
                 "parent_issue_number": None,
