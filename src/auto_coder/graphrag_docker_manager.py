@@ -61,7 +61,16 @@ class GraphRAGDockerManager:
             temp_dir = Path.home() / ".auto-coder" / "graphrag"
             temp_dir.mkdir(parents=True, exist_ok=True)
             compose_file = temp_dir / "docker-compose.graphrag.yml"
-            compose_file.write_text(compose_content)
+
+            # Securely write the file with restricted permissions (600)
+            def secure_opener(path, flags):
+                return os.open(path, flags, 0o600)
+
+            with open(compose_file, "w", opener=secure_opener) as f:
+                f.write(compose_content)
+
+            # Ensure the file is secure (handles pre-existing files with different permissions)
+            os.chmod(compose_file, 0o600)
 
             # Ensure the directory is writable and accessible
             os.chmod(temp_dir, 0o755)
