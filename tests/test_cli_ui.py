@@ -174,3 +174,41 @@ def test_spinner_non_interactive():
 
         # Should verify simple print
         mock_stdout.write.assert_called_with("Test Loading\n")
+
+
+def test_spinner_with_timer():
+    """Test that Spinner displays elapsed time when show_timer is True."""
+    with patch("sys.stdout") as mock_stdout, patch("time.time") as mock_time:
+        mock_stdout.isatty.return_value = True
+
+        # Simulate time progression
+        start_time = 1000.0
+        current_time = [start_time]
+
+        def fake_time():
+            return current_time[0]
+
+        mock_time.side_effect = fake_time
+
+        # Create spinner with timer enabled
+        # Use short delay so thread updates quickly
+        spinner = cli_ui.Spinner("Test Timer", delay=0.01, show_timer=True)
+
+        with spinner:
+            # Give time for thread to start and capture start_time
+            time.sleep(0.05)
+            # Advance time by 2.5 seconds (should trigger timer display which needs > 1.0s)
+            current_time[0] += 2.5
+            # Sleep enough to let the spinner thread iterate at least once
+            # Since delay is 0.01, sleeping 0.05 is plenty
+            time.sleep(0.05)
+
+        # Verify writes
+        assert mock_stdout.write.called
+        writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+
+        # Check for presence of formatted time
+        # We expect " (2s)" to be part of the output string
+        # Note: Depending on timing, it might print multiple frames.
+        # We just need to find one occurrence.
+        assert any("(2s)" in w for w in writes), f"Writes were: {writes}"

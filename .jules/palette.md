@@ -25,3 +25,7 @@
 ## 2026-05-21 - Completion Summaries
 **Learning:** After long-running CLI operations (like processing an issue or analyzing a repo), users benefit from a distinct, structured summary that separates the final result from the stream of logs. This provides closure and easy access to key information (e.g., status, errors, actions taken).
 **Action:** Use `print_completion_message` (or similar) to standardize success/failure reporting, ensuring it stands out visually (using colors/emojis if supported) and handles list data cleanly.
+
+## 2026-05-22 - Smart Progress Indicators
+**Learning:** For variable-duration operations, showing a timer immediately adds visual noise, while showing nothing causes anxiety for slow operations. A "smart timer" that appears only after a threshold (e.g., 1s) balances cleanliness with reassurance.
+**Action:** Implement progress indicators with a delay threshold to handle both fast and slow paths gracefully without UI flickering or clutter.
