@@ -138,6 +138,36 @@ async def process_github_payload(event_type: Optional[str], payload: Dict[str, A
                         except Exception as e:
                             logger.error(f"Failed to fetch/queue PR #{pr_number}: {e}")
 
+        elif event_type == "issues":
+            action = payload.get("action")
+            if action in ["opened", "edited", "reopened"]:
+                issue_data_raw = payload.get("issue")
+                if issue_data_raw:
+                    issue_number = issue_data_raw.get("number")
+                    logger.info(f"Received issue #{issue_number} event: {action}. Waiting 5 minutes before processing...")
+
+                    # Wait 5 minutes
+                    await asyncio.sleep(300)
+
+                    logger.info(f"Processing issue #{issue_number} after delay")
+
+                    loop = asyncio.get_running_loop()
+                    try:
+                        # Fetch fresh issue details to ensure it's still open and get latest data
+                        issue_obj = await loop.run_in_executor(None, lambda: engine.github.get_issue(repo_name, issue_number))
+
+                        if issue_obj:
+                            issue_details = await loop.run_in_executor(None, lambda: engine.github.get_issue_details(issue_obj))
+
+                            if issue_details.get("state") == "open":
+                                candidate = Candidate(type="issue", data=issue_details, priority=0, issue_number=issue_number)
+                                await engine.queue.put(candidate)
+                                logger.info(f"Queued issue #{issue_number}")
+                            else:
+                                logger.info(f"Issue #{issue_number} is no longer open, skipping")
+                    except Exception as e:
+                        logger.error(f"Failed to fetch/queue issue #{issue_number}: {e}")
+
     except Exception as e:
         logger.error(f"Failed to process GitHub payload: {e}")
 

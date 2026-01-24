@@ -545,9 +545,9 @@ class AutomationEngine:
                         # Get current time in UTC
                         now_utc = datetime.now(timezone.utc)
 
-                        # If created within the last 10 minutes, skip
-                        if now_utc - created_at < timedelta(minutes=10):
-                            logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 10 minutes ago")
+                        # If created within the last 5 minutes, skip
+                        if now_utc - created_at < timedelta(minutes=5):
+                            logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 5 minutes ago")
                             continue
 
                     # Skip if has sub-issues or linked PR
