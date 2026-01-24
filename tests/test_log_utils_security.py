@@ -1,5 +1,6 @@
 import os
-from unittest.mock import MagicMock, mock_open, patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -7,23 +8,49 @@ from auto_coder.git_commit import save_commit_failure_history
 from auto_coder.log_utils import LogEntry
 
 
-def test_log_entry_save_secure_permissions():
-    """Verify that LogEntry.save uses secure file permissions (0o600)."""
-    with patch("os.open") as mock_os_open, patch("os.fdopen") as mock_os_fdopen, patch("pathlib.Path.mkdir") as mock_mkdir, patch("os.chmod") as mock_chmod:
+def test_log_entry_save_secure_permissions(tmp_path):
+    """Test that LogEntry.save creates files with secure permissions (0o600)."""
+    log_dir = tmp_path / "logs"
+    filename = "test_log.json"
 
-        # Setup
-        entry = LogEntry(ts="2023-01-01", source="test", repo="test_repo")
-        log_dir = MagicMock()
-        filepath_mock = MagicMock()
-        log_dir.__truediv__.return_value = filepath_mock
+    entry = LogEntry(ts="2023-01-01T00:00:00", source="test", repo="test_repo", command="echo 'hello'", exit_code=0)
 
-        # Execute
-        entry.save(log_dir, "test.json")
+    entry.save(log_dir, filename)
 
-        # Verify
-        mock_os_open.assert_called_with(filepath_mock, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        # Verify chmod is called to handle existing files
-        mock_chmod.assert_called_with(filepath_mock, 0o600)
+    filepath = log_dir / filename
+    assert filepath.exists()
+
+    # Check permissions
+    st = os.stat(filepath)
+    permissions = st.st_mode & 0o777
+
+    # We expect 0o600 (rw-------)
+    assert permissions == 0o600, f"Expected permissions 0o600, got {oct(permissions)}"
+
+
+def test_log_entry_save_fixes_insecure_permissions(tmp_path):
+    """Test that LogEntry.save fixes permissions if file already exists with insecure permissions."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    filename = "existing_log.json"
+    filepath = log_dir / filename
+
+    # Create file with insecure permissions (0o666)
+    filepath.touch(mode=0o666)
+    os.chmod(filepath, 0o666)
+
+    # Verify it is insecure
+    st = os.stat(filepath)
+    assert (st.st_mode & 0o777) != 0o600
+
+    entry = LogEntry(ts="2023-01-01T00:00:00", source="test", repo="test_repo")
+
+    entry.save(log_dir, filename)
+
+    # Check permissions were fixed
+    st = os.stat(filepath)
+    permissions = st.st_mode & 0o777
+    assert permissions == 0o600, f"Expected permissions 0o600, got {oct(permissions)}"
 
 
 def test_save_commit_failure_history_secure_permissions():

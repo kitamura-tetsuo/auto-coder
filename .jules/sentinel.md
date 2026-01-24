@@ -33,6 +33,11 @@
 **Learning:** Decorators used for tracing or debugging must implement the same security sanitization as explicit logging calls. It's easy to overlook "internal" tracing tools as sources of leakage.
 **Prevention:** Apply `security_utils.redact_string` to all logged arguments and return values in tracing decorators.
 
+## 2026-01-22 - Insecure Log File Permissions
+**Vulnerability:** `LogEntry.save` in `src/auto_coder/log_utils.py` used standard `open()`, creating log files with default permissions (often `0o664` or `0o644`), potentially exposing sensitive information captured in logs to other users on the system.
+**Learning:** Even "temporary" or "log" files can contain sensitive data from the runtime environment. Default `open()` behavior is insufficient for security-critical applications in multi-user environments.
+**Prevention:** Use `os.open` with `os.O_CREAT | os.O_WRONLY | os.O_TRUNC` and `mode=0o600` for all log file creation, ensuring restricted access from the moment of creation.
+
 ## 2026-02-14 - Insecure Permissions on Existing Log Files
 **Vulnerability:** `LogEntry.save` and `save_commit_failure_history` used `os.open` with `O_CREAT` and `0o600` permissions, which correctly secures *new* files but fails to restrict permissions on *existing* files (which retain their original, often world-readable permissions).
 **Learning:** `os.open`'s mode argument only applies when a file is created. Overwriting a file with `O_TRUNC` does not change its permissions.
