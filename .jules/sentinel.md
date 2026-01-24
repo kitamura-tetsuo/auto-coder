@@ -57,3 +57,18 @@
 **Vulnerability:** Process failure. The CI pipeline blocked the security fix again because `isort` failed on the new test file `tests/test_webhook_security.py`, even though `black` passed.
 **Learning:** Formatting checks often include both code style (Black) and import sorting (isort). Running one without the other is insufficient.
 **Prevention:** Always run the full linting suite (e.g., `scripts/test.sh` or explicitly `uv run black . && uv run isort .`) before submission.
+
+## 2026-02-18 - CI Failure from Global Side Effects in Tests
+**Vulnerability:** Process failure.  globally mocked  in  at the top level. This caused other tests (like ) to fail with  or  because  was replaced with a Mock object that didn't support sub-imports (like ) during test collection.
+**Learning:** Avoid top-level  patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
+**Prevention:** Use  context managers or  fixtures to mock modules temporarily for specific tests, or ensure mocks are robust enough to support required imports if absolutely necessary. Ideally, don't mock 3rd party libraries globally; use their provided test utilities or mock specific imports in the *code under test* using .
+
+## 2026-02-18 - CI Failure from Global Side Effects in Tests
+**Vulnerability:** Process failure. tests/test_webhook_delay.py globally mocked fastapi in sys.modules at the top level. This caused other tests (like test_webhook_security.py) to fail with ModuleNotFoundError or ImportError because fastapi was replaced with a Mock object that didn't support sub-imports (like fastapi.testclient) during test collection.
+**Learning:** Avoid top-level sys.modules patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
+**Prevention:** Use unittest.mock.patch.dict context managers or pytest fixtures to mock modules temporarily for specific tests.
+
+## 2026-02-18 - CI Failure from Global Side Effects in Tests
+**Vulnerability:** Process failure. tests/test_webhook_delay.py globally mocked fastapi in sys.modules at the top level. This caused other tests (like test_webhook_security.py) to fail with ModuleNotFoundError or ImportError because fastapi was replaced with a Mock object that didn't support sub-imports (like fastapi.testclient) during test collection.
+**Learning:** Avoid top-level sys.modules patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
+**Prevention:** Use unittest.mock.patch.dict context managers or pytest fixtures to mock modules temporarily for specific tests, or ensure mocks are robust enough to support required imports if absolutely necessary. Ideally, don't mock 3rd party libraries globally; use their provided test utilities or mock specific imports in the *code under test* using patch.
