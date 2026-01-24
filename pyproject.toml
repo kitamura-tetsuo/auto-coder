@@ -246,4 +246,5 @@ dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.1.0",
     "types-toml>=0.10.8.20240310",
+    "httpx>=0.28.1",
 ]

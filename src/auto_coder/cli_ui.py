@@ -194,23 +194,39 @@ class Spinner:
     A context manager that displays a spinner animation while a block of code executes.
     """
 
-    def __init__(self, message: str = "Loading...", delay: float = 0.1):
+    def __init__(self, message: str = "Loading...", delay: float = 0.1, show_timer: bool = False):
         self.message = message
         self.delay = delay
+        self.show_timer = show_timer
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.no_color = "NO_COLOR" in os.environ
 
+    def _format_duration(self, seconds: float) -> str:
+        seconds_int = int(seconds)
+        m, s = divmod(seconds_int, 60)
+        if m > 0:
+            return f"{m}m {s:02d}s"
+        return f"{s}s"
+
     def spin(self) -> None:
         spinner_frames = SPINNER_FRAMES_ASCII if self.no_color else SPINNER_FRAMES_UNICODE
         idx = 0
+        start_time = time.time()
 
         while not self.stop_event.is_set():
             frame = spinner_frames[idx % len(spinner_frames)]
+
+            current_msg = self.message
+            if self.show_timer:
+                elapsed = time.time() - start_time
+                if elapsed > 1.0:
+                    current_msg += f" ({self._format_duration(elapsed)})"
+
             if self.no_color:
-                msg = f"{frame} {self.message}"
+                msg = f"{frame} {current_msg}"
             else:
-                msg = click.style(f"{frame} {self.message}", fg="cyan")
+                msg = click.style(f"{frame} {current_msg}", fg="cyan")
 
             sys.stdout.write(f"\r{msg}")
             sys.stdout.flush()
@@ -236,7 +252,7 @@ class Spinner:
             self.thread.join()
 
             # Clear the line first
-            sys.stdout.write("\r" + " " * (len(self.message) + 10) + "\r")
+            sys.stdout.write("\r" + " " * (len(self.message) + 20) + "\r")
 
             # Determine symbol and color based on success/failure
             if self.no_color:

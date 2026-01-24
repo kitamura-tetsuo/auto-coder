@@ -315,6 +315,7 @@ test = [
 dev = [
     { name = "black" },
     { name = "flake8" },
+    { name = "httpx" },
     { name = "isort" },
     { name = "mypy" },
     { name = "pre-commit" },
@@ -378,6 +379,7 @@ provides-extras = ["test", "dev"]
 dev = [
     { name = "black", specifier = ">=25.9.0" },
     { name = "flake8", specifier = ">=6.0.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "isort", specifier = ">=5.0.0" },
     { name = "mypy", specifier = ">=1.0.0" },
     { name = "pre-commit", specifier = ">=4.5.0" },

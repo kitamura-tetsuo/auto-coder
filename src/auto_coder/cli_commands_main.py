@@ -318,7 +318,7 @@ def process_issues(
                 raise click.ClickException("--only must be a PR/Issue URL or a number")
         # Run single-item processing with auto-detection if needed
         result = {}
-        with Spinner(f"Processing {target_type if target_type else 'item'} #{number}...") as spinner:
+        with Spinner(f"Processing {target_type if target_type else 'item'} #{number}...", show_timer=True) as spinner:
             if target_type is None:
                 # Auto-detect: try PR first, then issue
                 try:
@@ -509,7 +509,7 @@ def create_feature_issues(
 
     # Analyze and create feature issues
     created_issues = []
-    with Spinner("Analyzing repository for features...") as spinner:
+    with Spinner("Analyzing repository for features...", show_timer=True) as spinner:
         created_issues = automation_engine.create_feature_issues(repo_name)
         spinner.message = f"Created {len(created_issues)} feature issue(s)"
 
