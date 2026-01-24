@@ -1,16 +1,18 @@
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch, mock_open, ANY
 
 from src.auto_coder.graphrag_docker_manager import GraphRAGDockerManager
+
 
 class TestGraphRAGDockerManagerSecurePermissions(unittest.TestCase):
     @patch("src.auto_coder.graphrag_docker_manager.resources.files")
     @patch("src.auto_coder.graphrag_docker_manager.Path")
     @patch("src.auto_coder.graphrag_docker_manager.os")
     @patch("src.auto_coder.graphrag_docker_manager.CommandExecutor")
-    def test_get_compose_file_secure_permissions(self, mock_executor, mock_os, mock_path, mock_resources):
+    @patch("builtins.open", new_callable=mock_open)
+    def test_get_compose_file_secure_permissions(self, mock_builtin_open, mock_executor, mock_os, mock_path, mock_resources):
         # Mock resources
         mock_file = MagicMock()
         mock_file.read_text.return_value = "services:\n  neo4j:\n    ..."
@@ -26,12 +28,6 @@ class TestGraphRAGDockerManagerSecurePermissions(unittest.TestCase):
         mock_temp_dir.__truediv__.return_value = mock_compose_file
         mock_compose_file.__str__.return_value = "/home/user/.auto-coder/graphrag/docker-compose.graphrag.yml"
 
-        # Mock os.open and os.fdopen
-        mock_fd = 123
-        mock_os.open.return_value = mock_fd
-        mock_file_handle = MagicMock()
-        mock_os.fdopen.return_value.__enter__.return_value = mock_file_handle
-
         # Mock os constants
         mock_os.O_WRONLY = os.O_WRONLY
         mock_os.O_CREAT = os.O_CREAT
@@ -44,15 +40,26 @@ class TestGraphRAGDockerManagerSecurePermissions(unittest.TestCase):
             # Initialize manager which calls _get_compose_file_from_package
             manager = GraphRAGDockerManager()
 
-        # This part will fail initially because we use write_text, not os.open
-        # Verify os.open called with 0o600
-        mock_os.open.assert_called_with(str(mock_compose_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # Verify builtins.open called with 'w' and an opener
+        mock_builtin_open.assert_called_with(mock_compose_file, "w", opener=ANY)
 
         # Verify content written
-        mock_file_handle.write.assert_called_with("services:\n  neo4j:\n    ...")
+        mock_builtin_open.return_value.write.assert_called_with("services:\n  neo4j:\n    ...")
+
+        # Extract the opener and verify its behavior
+        kwargs = mock_builtin_open.call_args.kwargs
+        opener = kwargs["opener"]
+
+        # Test the opener calls os.open with correct permissions
+        test_path = "/test/path"
+        test_flags = 123
+        opener(test_path, test_flags)
+
+        mock_os.open.assert_called_with(test_path, test_flags, 0o600)
 
         # Verify chmod called on the file
         mock_os.chmod.assert_any_call(mock_compose_file, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()
