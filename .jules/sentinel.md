@@ -42,3 +42,8 @@
 **Vulnerability:** `LogEntry.save` and `save_commit_failure_history` used `os.open` with `O_CREAT` and `0o600` permissions, which correctly secures *new* files but fails to restrict permissions on *existing* files (which retain their original, often world-readable permissions).
 **Learning:** `os.open`'s mode argument only applies when a file is created. Overwriting a file with `O_TRUNC` does not change its permissions.
 **Prevention:** Always call `os.chmod(path, 0o600)` in addition to using `os.open` with restricted permissions, to ensure that pre-existing files are also secured.
+
+## 2026-02-18 - Insecure Webhook Signature Verification
+**Vulnerability:** `verify_github_signature` parsed the signature header (splitting by `=`) before verifying it, leading to potential `ValueError` crashes (500 errors) on malformed input and timing information leakage regarding the signature format.
+**Learning:** Validating complex string formats before cryptographic verification can introduce parsing errors and information leaks.
+**Prevention:** Construct the *entire* expected string (e.g. `sha256=<digest>`) and use `hmac.compare_digest` on the full string to avoid parsing steps and ensure constant-time comparison.
