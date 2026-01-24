@@ -2,8 +2,8 @@ import hashlib
 import hmac
 from unittest.mock import MagicMock
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from src.auto_coder.webhook_server import create_app
 

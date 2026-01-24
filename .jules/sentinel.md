@@ -52,3 +52,8 @@
 **Vulnerability:** Not a security vulnerability, but a process failure. The CI pipeline blocked the security fix because the new test file `tests/test_webhook_security.py` violated the project's formatting rules (Black).
 **Learning:** Security fixes must adhere to code style guidelines to be deployable. A secure patch that breaks the build cannot protect users.
 **Prevention:** Always run the project's formatter (e.g., `uv run black`) on new test files before submission.
+
+## 2026-02-18 - CI Failures from Import Sorting
+**Vulnerability:** Process failure. The CI pipeline blocked the security fix again because `isort` failed on the new test file `tests/test_webhook_security.py`, even though `black` passed.
+**Learning:** Formatting checks often include both code style (Black) and import sorting (isort). Running one without the other is insufficient.
+**Prevention:** Always run the full linting suite (e.g., `scripts/test.sh` or explicitly `uv run black . && uv run isort .`) before submission.
