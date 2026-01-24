@@ -28,16 +28,10 @@ def verify_github_signature(payload: bytes, secret: str, signature: Optional[str
     if not signature:
         raise HTTPException(status_code=403, detail="Missing signature")
 
-    # Signature format: sha256=...
-    if not signature.startswith("sha256="):
-        raise HTTPException(status_code=403, detail="Invalid signature format")
-
-    sha_name, signature_hash = signature.split("=")
-    if sha_name != "sha256":
-        raise HTTPException(status_code=501, detail="Operation not supported")
-
     mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
-    if not hmac.compare_digest(mac.hexdigest(), signature_hash):
+    expected_signature = f"sha256={mac.hexdigest()}"
+
+    if not hmac.compare_digest(expected_signature, signature):
         raise HTTPException(status_code=403, detail="Invalid signature")
 
 
