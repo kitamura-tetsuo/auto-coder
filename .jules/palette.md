@@ -29,3 +29,7 @@
 ## 2026-05-22 - Smart Progress Indicators
 **Learning:** For variable-duration operations, showing a timer immediately adds visual noise, while showing nothing causes anxiety for slow operations. A "smart timer" that appears only after a threshold (e.g., 1s) balances cleanliness with reassurance.
 **Action:** Implement progress indicators with a delay threshold to handle both fast and slow paths gracefully without UI flickering or clutter.
+
+## 2026-10-25 - Context-Aware Completion Messages
+**Learning:** A generic "Done" or "OK" after a CLI spinner is less informative than a specific success message (e.g. "✅ Credentials verified" vs "✅ Checking credentials..."). Updating the spinner to support dedicated success/error messages provides immediate, context-rich feedback.
+**Action:** When using spinners, allow callers to specify distinct completion messages for success and failure states to replace the ongoing process description.
