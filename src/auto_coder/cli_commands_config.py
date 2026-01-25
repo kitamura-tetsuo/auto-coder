@@ -404,6 +404,7 @@ def backup_config(config_path: str) -> None:
 
     try:
         shutil.copy2(config_path, backup_path)
+        os.chmod(backup_path, 0o600)  # Ensure secure permissions for backup
         logger.info(f"Created configuration backup: {backup_path}")
     except Exception as e:
         logger.warning(f"Failed to create configuration backup: {e}")

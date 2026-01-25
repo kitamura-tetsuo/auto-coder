@@ -163,13 +163,13 @@ def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], remove_
         if remove_all:
             if sub_issues:
                 click.echo("⚠️  Ignoring specified sub-issues because --all is used.")
-            
+
             # Fetch all sub-issues
             all_sub_issues = api.list_sub_issues(parent, state="ALL")
             if not all_sub_issues:
                 click.echo("No sub-issues found to remove.")
                 return
-            
+
             sub_issues = tuple(str(si["number"]) for si in all_sub_issues)
 
         if not sub_issues:

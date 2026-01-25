@@ -15,6 +15,8 @@ REDACTION_PATTERNS = [
     r"AIza[0-9A-Za-z-_]{35}",  # Google API keys
     r"sk-[a-zA-Z0-9]{48}",  # OpenAI keys (standard)
     r"sk-proj-[a-zA-Z0-9_-]+",  # OpenAI project keys
+    r"sk-ant-api\d{2}-[\w-]{20,}",  # Anthropic API keys
+    r"(AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}",  # AWS Access Key IDs
     r"xox[baprs]-([0-9a-zA-Z]{10,48})?",  # Slack tokens
     r"glpat-[0-9a-zA-Z\-\_]{20}",  # GitLab Personal Access Tokens
 ]
