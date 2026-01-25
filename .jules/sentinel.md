@@ -15,7 +15,7 @@
 
 ## 2025-05-22 - Docker Compose Sudo Environment Stripping
 **Vulnerability:** GraphRAGDockerManager used `sudo` to retry failed docker commands (due to permission errors) but failed to preserve the `NEO4J_PASSWORD` environment variable. This caused `docker-compose` to silently fall back to the default weak password ("password") even when the user had set a secure password.
-**Learning:** `sudo` strips environment variables by default for security, but this can lead to silent security downgrades when applications rely on environment variables for configuration/secrets.
+**Learning:** `sudo` strips environment variables by default for security, but can lead to silent security downgrades when applications rely on environment variables for configuration/secrets.
 **Prevention:** When wrapping commands with `sudo`, explicitly preserve critical security environment variables using `--preserve-env=VAR` or `sudo -E` (if appropriate), or ensure the child process receives the configuration via another channel (e.g., config file).
 
 ## 2025-12-21 - Command Execution Logging Leak
@@ -59,16 +59,17 @@
 **Prevention:** Always run the full linting suite (e.g., `scripts/test.sh` or explicitly `uv run black . && uv run isort .`) before submission.
 
 ## 2026-02-18 - CI Failure from Global Side Effects in Tests
-**Vulnerability:** Process failure.  globally mocked  in  at the top level. This caused other tests (like ) to fail with  or  because  was replaced with a Mock object that didn't support sub-imports (like ) during test collection.
-**Learning:** Avoid top-level  patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
-**Prevention:** Use  context managers or  fixtures to mock modules temporarily for specific tests, or ensure mocks are robust enough to support required imports if absolutely necessary. Ideally, don't mock 3rd party libraries globally; use their provided test utilities or mock specific imports in the *code under test* using .
-
-## 2026-02-18 - CI Failure from Global Side Effects in Tests
-**Vulnerability:** Process failure. tests/test_webhook_delay.py globally mocked fastapi in sys.modules at the top level. This caused other tests (like test_webhook_security.py) to fail with ModuleNotFoundError or ImportError because fastapi was replaced with a Mock object that didn't support sub-imports (like fastapi.testclient) during test collection.
-**Learning:** Avoid top-level sys.modules patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
-**Prevention:** Use unittest.mock.patch.dict context managers or pytest fixtures to mock modules temporarily for specific tests.
-
-## 2026-02-18 - CI Failure from Global Side Effects in Tests
 **Vulnerability:** Process failure. tests/test_webhook_delay.py globally mocked fastapi in sys.modules at the top level. This caused other tests (like test_webhook_security.py) to fail with ModuleNotFoundError or ImportError because fastapi was replaced with a Mock object that didn't support sub-imports (like fastapi.testclient) during test collection.
 **Learning:** Avoid top-level sys.modules patching in test files. It pollutes the global namespace and breaks other tests in unpredictable ways depending on execution order.
 **Prevention:** Use unittest.mock.patch.dict context managers or pytest fixtures to mock modules temporarily for specific tests, or ensure mocks are robust enough to support required imports if absolutely necessary. Ideally, don't mock 3rd party libraries globally; use their provided test utilities or mock specific imports in the *code under test* using patch.
+
+## 2026-03-01 - Missing Sensitive Key Redaction and Insecure Config Backups
+**Vulnerability:**
+1. Logs did not redact Anthropic and AWS API keys, potentially exposing them if logs were shared.
+2. Configuration backups created by `auto-coder config backup` (or `edit`) inherited the file permissions of the original file. If a user inadvertently created a world-readable config file, the backup would also be world-readable, persisting the insecurity even after the original was fixed.
+**Learning:**
+1. Regex-based redaction must be proactively updated for new API key formats (Anthropic, AWS, etc.).
+2. Backup utilities should enforce secure permissions (0o600) explicitly rather than relying on the source file's permissions, which might be insecure (defense in depth).
+**Prevention:**
+1. Regularly review and update `REDACTION_PATTERNS` in `security_utils.py`.
+2. Always use `os.chmod(path, 0o600)` on sensitive files after creation or copying, regardless of the source permissions.
