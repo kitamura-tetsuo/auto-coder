@@ -4,6 +4,7 @@ UI helper functions for the CLI.
 
 import math
 import os
+import shutil
 import sys
 import threading
 import time
@@ -180,11 +181,13 @@ def sleep_with_countdown(seconds: int, stream: Optional[TextIO] = None) -> None:
 
         # Clear the line after done
         # We need to clear enough space for the longest message
-        stream.write("\r" + " " * 80 + "\r")
+        cols = shutil.get_terminal_size((80, 20)).columns
+        stream.write("\r" + " " * cols + "\r")
         stream.flush()
     except KeyboardInterrupt:
         # Clear the line and re-raise
-        stream.write("\r" + " " * 80 + "\r")
+        cols = shutil.get_terminal_size((80, 20)).columns
+        stream.write("\r" + " " * cols + "\r")
         stream.flush()
         raise
 
@@ -194,10 +197,19 @@ class Spinner:
     A context manager that displays a spinner animation while a block of code executes.
     """
 
-    def __init__(self, message: str = "Loading...", delay: float = 0.1, show_timer: bool = False):
+    def __init__(
+        self,
+        message: str = "Loading...",
+        delay: float = 0.1,
+        show_timer: bool = False,
+        success_message: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ):
         self.message = message
         self.delay = delay
         self.show_timer = show_timer
+        self.success_message = success_message
+        self.error_message = error_message
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.no_color = "NO_COLOR" in os.environ
@@ -252,17 +264,28 @@ class Spinner:
             self.thread.join()
 
             # Clear the line first
-            sys.stdout.write("\r" + " " * (len(self.message) + 20) + "\r")
+            cols = shutil.get_terminal_size((80, 20)).columns
+            sys.stdout.write("\r" + " " * cols + "\r")
 
-            # Determine symbol and color based on success/failure
-            if self.no_color:
-                symbol = "[OK]" if exc_type is None else "[ERR]"
-                color_func = lambda x, **kwargs: x
+            # Determine symbol, message and color based on success/failure
+            if exc_type is None:
+                final_text = self.success_message if self.success_message else self.message
+                if self.no_color:
+                    symbol = "[OK]"
+                    color_func = lambda x, **kwargs: x
+                else:
+                    symbol = "✅"
+                    color_func = click.style
             else:
-                symbol = "✅" if exc_type is None else "❌"
-                color_func = click.style
+                final_text = self.error_message if self.error_message else self.message
+                if self.no_color:
+                    symbol = "[ERR]"
+                    color_func = lambda x, **kwargs: x
+                else:
+                    symbol = "❌"
+                    color_func = click.style
 
-            final_msg = f"{symbol} {self.message}"
+            final_msg = f"{symbol} {final_text}"
 
             if not self.no_color:
                 if exc_type is None:

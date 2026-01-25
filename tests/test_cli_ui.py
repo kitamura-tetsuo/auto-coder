@@ -212,3 +212,29 @@ def test_spinner_with_timer():
         # Note: Depending on timing, it might print multiple frames.
         # We just need to find one occurrence.
         assert any("(2s)" in w for w in writes), f"Writes were: {writes}"
+
+
+def test_spinner_custom_messages():
+    """Test that Spinner uses custom success and error messages."""
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = True
+
+        # Test success message
+        with cli_ui.Spinner("Loading...", success_message="Done!", delay=0.001):
+            pass
+
+        writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+        assert any("✅ Done!" in w for w in writes)
+
+        # Reset mock
+        mock_stdout.reset_mock()
+
+        # Test error message
+        try:
+            with cli_ui.Spinner("Loading...", error_message="Failed!", delay=0.001):
+                raise ValueError("Oops")
+        except ValueError:
+            pass
+
+        writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+        assert any("❌ Failed!" in w for w in writes)
