@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .logger_config import get_logger
+from .security_utils import redact_string
 from .test_result import TestResult
 
 logger = get_logger(__name__)
@@ -547,10 +548,12 @@ def get_local_playwright_summary(start_time: float) -> str:
 
 
 def _clean_log_line(text: str) -> str:
-    """Clean ANSI codes and normalize newlines for log text."""
+    """Clean ANSI codes, normalize newlines, and redact secrets for log text."""
     # Remove ANSI escape codes
     ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
     text = ansi_escape.sub("", text)
+    # Redact secrets
+    text = redact_string(text)
     return text.strip()
 
 
@@ -717,6 +720,8 @@ def generate_merged_playwright_report(reports: List[Dict[str, Any]]) -> str:
 
                                         if std_out:
                                             log_text = "\n".join(std_out)
+                                            # Redact secrets in logs
+                                            log_text = redact_string(log_text)
                                             if len(log_text) > 1000:
                                                 log_text = log_text[:1000] + "... (truncated)"
                                             current_failure_block.append("Logs:")
