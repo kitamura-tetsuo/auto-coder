@@ -27,6 +27,7 @@ from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
 from ..logger_config import get_logger
+from ..security_utils import redact_string
 from ..test_log_utils import generate_merged_playwright_report
 from ..utils import CommandExecutor, log_action
 from .gh_cache import GitHubClient, get_ghapi_client
@@ -34,7 +35,7 @@ from .github_cache import get_github_cache
 
 
 def _clean_log_line(line: str) -> str:
-    """Clean log line by removing ANSI escape sequences and timestamps."""
+    """Clean log line by removing ANSI escape sequences, timestamps, and redacting secrets."""
     # Remove ANSI escape sequences
     ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
     line = ansi_escape.sub("", line)
@@ -42,6 +43,9 @@ def _clean_log_line(line: str) -> str:
     # Remove timestamps (e.g. 2023-01-01T12:00:00.000Z)
     # Simple pattern for ISO-like timestamps at start of line
     line = re.sub(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+", "", line)
+
+    # Redact sensitive information
+    line = redact_string(line)
 
     return line.strip()
 
@@ -1726,6 +1730,9 @@ def _filter_eslint_log(content: str) -> str:
         Filtered content focusing on error/warning messages
     """
     import re
+
+    # Redact sensitive info from content before processing
+    content = redact_string(content)
 
     lines = content.split("\n")
     filtered_lines = []
