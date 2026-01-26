@@ -238,3 +238,46 @@ def test_spinner_custom_messages():
 
         writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
         assert any("❌ Failed!" in w for w in writes)
+
+
+@patch("sys.stdout")
+@patch("time.time")
+def test_spinner_final_message_with_timer(mock_time, mock_stdout):
+    """Test that Spinner final message includes elapsed time when show_timer is True."""
+    mock_stdout.isatty.return_value = True
+
+    # Simulate time progression
+    start_time = 1000.0
+    current_time = [start_time]
+
+    def fake_time():
+        return current_time[0]
+
+    mock_time.side_effect = fake_time
+
+    # Create spinner with timer enabled
+    spinner = cli_ui.Spinner("Test Timer", delay=0.01, show_timer=True)
+
+    with spinner:
+        # Give time for thread to start (though mock time doesn't advance automatically)
+        time.sleep(0.05)
+
+        # Advance time by 2.5 seconds
+        current_time[0] += 2.5
+
+        # We don't need to wait for the thread to spin, as we are testing __exit__ logic
+        # which uses time.time() - self.start_time
+
+    # Verify writes
+    assert mock_stdout.write.called
+    writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+
+    # The final message should be something like "✅ Test Timer (2s)\n"
+    # We check for the presence of the duration string in the final write
+
+    # Filter for the final message (it ends with newline)
+    final_messages = [w for w in writes if w.endswith("\n") and "Test Timer" in w]
+    assert final_messages, "No final message found"
+
+    final_msg = final_messages[-1]
+    assert "(2s)" in final_msg, f"Final message did not include duration: {final_msg}"
