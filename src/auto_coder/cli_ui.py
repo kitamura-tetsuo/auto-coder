@@ -212,6 +212,7 @@ class Spinner:
         self.error_message = error_message
         self.stop_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
+        self.start_time: Optional[float] = None
         self.no_color = "NO_COLOR" in os.environ
 
     def _format_duration(self, seconds: float) -> str:
@@ -224,7 +225,7 @@ class Spinner:
     def spin(self) -> None:
         spinner_frames = SPINNER_FRAMES_ASCII if self.no_color else SPINNER_FRAMES_UNICODE
         idx = 0
-        start_time = time.time()
+        start_time = self.start_time or time.time()
 
         while not self.stop_event.is_set():
             frame = spinner_frames[idx % len(spinner_frames)]
@@ -250,6 +251,7 @@ class Spinner:
             idx += 1
 
     def __enter__(self) -> "Spinner":
+        self.start_time = time.time()
         if sys.stdout.isatty():
             self.thread = threading.Thread(target=self.spin)
             self.thread.start()
@@ -270,6 +272,12 @@ class Spinner:
             # Determine symbol, message and color based on success/failure
             if exc_type is None:
                 final_text = self.success_message if self.success_message else self.message
+
+                if self.show_timer and self.start_time:
+                    elapsed = time.time() - self.start_time
+                    if elapsed > 1.0:
+                        final_text += f" ({self._format_duration(elapsed)})"
+
                 if self.no_color:
                     symbol = "[OK]"
                     color_func = lambda x, **kwargs: x
