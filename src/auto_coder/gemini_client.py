@@ -4,6 +4,8 @@ Gemini CLI client for Auto-Coder.
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
@@ -89,16 +91,27 @@ class GeminiClient(LLMClientBase):
         self.output_logger = LLMOutputLogger()
 
         # Check if gemini CLI is available for CLI-based flows
+        override = os.environ.get("AUTOCODER_GEMINI_CLI")
+        gemini_cmd = shlex.split(override) if override else ["gemini"]
+
         try:
-            result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
+            # If not using override, check if 'gemini' exists in PATH
+            if not override and not shutil.which("gemini"):
+                raise RuntimeError("Gemini CLI ('gemini') not found in PATH. Please install it.")
+
+            result = subprocess.run(gemini_cmd + ["--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
-                raise RuntimeError("Gemini CLI not available or not working")
-        except (
-            subprocess.TimeoutExpired,
-            subprocess.CalledProcessError,
-            FileNotFoundError,
-        ) as e:
-            raise RuntimeError(f"Gemini CLI not available: {e}")
+                stdout = (result.stdout or "").strip()[:200]
+                stderr = (result.stderr or "").strip()[:200]
+                diag = f" (stdout: {stdout} | stderr: {stderr})" if stdout or stderr else ""
+                error_msg = f"Gemini CLI ({' '.join(gemini_cmd)}) found but version check failed with exit code {result.returncode}{diag}"
+                raise RuntimeError(error_msg)
+        except (subprocess.TimeoutExpired, FileNotFoundError, RuntimeError) as e:
+            if override:
+                raise RuntimeError(f"Gemini CLI override (AUTOCODER_GEMINI_CLI='{override}') is not working: {e}")
+            raise RuntimeError(f"Gemini CLI is not available or not working: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error checking Gemini CLI: {e}")
 
     def switch_to_conflict_model(self) -> None:
         """Switch to faster model for conflict resolution."""

@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import shutil
 import subprocess
 from functools import partial
 from pathlib import Path
@@ -222,7 +223,12 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
 def check_gemini_cli_or_fail() -> None:
     """Check if gemini CLI is available and working."""
-    check_cli_tool(tool_name="gemini", install_url="https://github.com/google-gemini/gemini-cli\nOr use: npm install -g @google/generative-ai-cli", version_flag="--version")
+    check_cli_tool(
+        tool_name="gemini",
+        install_url="https://github.com/google-gemini/gemini-cli\nOr use: npm install -g @google/gemini-cli",
+        version_flag="--version",
+        cmd_override_env="AUTOCODER_GEMINI_CLI",
+    )
 
 
 def check_codex_cli_or_fail() -> None:
@@ -290,7 +296,7 @@ def check_cli_tool(
         try:
             result = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                click.echo(f"Using {tool_name} CLI")
+                click.echo(f"Using {tool_name} CLI (override: {override})")
                 return
         except Exception:
             pass
@@ -300,23 +306,38 @@ def check_cli_tool(
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    click.echo(f"Using {tool_name} CLI")
+                    click.echo(f"Using {tool_name} CLI (override: {override})")
                     return
             except Exception:
                 pass
 
-        raise click.ClickException(f"{tool_name} CLI override ({cmd_override_env}) is set but not working")
+        raise click.ClickException(f"{tool_name} CLI override ({cmd_override_env}) is set to '{override}' but it is not working.")
 
     # Default: check the actual CLI tool
     try:
+        # Check if the tool exists in PATH first
+        if not shutil.which(tool_name):
+            raise click.ClickException(f"{tool_name} CLI is not found in PATH. Please install it from:\n{install_url}")
+
         result = subprocess.run([tool_name, version_flag], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo(f"Using {tool_name} CLI")
             return
-    except Exception:
-        pass
-
-    raise click.ClickException(f"{tool_name} CLI is required. Please install it from:\n{install_url}")
+        else:
+            # Tool exists but version check failed - provide diagnostics
+            stdout = (result.stdout or "").strip()[:200]
+            stderr = (result.stderr or "").strip()[:200]
+            diag = []
+            if stdout:
+                diag.append(f"stdout: {stdout}")
+            if stderr:
+                diag.append(f"stderr: {stderr}")
+            diag_str = " | ".join(diag)
+            raise click.ClickException(f"{tool_name} CLI found but '{tool_name} {version_flag}' failed (exit code {result.returncode}).\n" f"Diagnostics: {diag_str}\n" f"Please ensure it is working correctly or reinstall from:\n{install_url}")
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(f"Error checking {tool_name} CLI: {e}\nPlease install it from:\n{install_url}")
 
 
 def build_models_map() -> Dict[str, str]:
