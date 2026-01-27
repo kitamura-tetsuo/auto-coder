@@ -542,7 +542,16 @@ def export(config_file: Optional[str], output: Optional[str]) -> None:
 
     if output:
         try:
-            with open(output, "w") as f:
+            # Use os.open to ensure file is created with 600 permissions
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+            # Ensure permissions are correct even if file already existed
+            try:
+                os.chmod(output, 0o600)
+            except OSError:
+                pass
+
+            with os.fdopen(fd, "w") as f:
                 json.dump(config_dict, f, indent=2)
             click.echo(f"✅ Configuration exported to: {output}")
         except Exception as e:
