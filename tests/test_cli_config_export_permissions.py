@@ -1,8 +1,11 @@
 import os
 import stat
+
 import pytest
 from click.testing import CliRunner
+
 from src.auto_coder.cli_commands_config import config_group
+
 
 @pytest.mark.skipif(os.name == "nt", reason="Permissions check is different on Windows")
 def test_config_export_permissions(tmp_path):
