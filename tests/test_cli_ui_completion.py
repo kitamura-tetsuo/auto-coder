@@ -86,14 +86,7 @@ def test_print_completion_message_empty():
 
 def test_print_completion_message_dict_values():
     """Test print_completion_message with dictionary values."""
-    summary = {
-        "Simple": "Value",
-        "Dict": {"Key A": "Value A", "Key B": "Value B"},
-        "Nested": {
-            "SubList": ["A", "B"],
-            "SubDict": {"X": 1}
-        }
-    }
+    summary = {"Simple": "Value", "Dict": {"Key A": "Value A", "Key B": "Value B"}, "Nested": {"SubList": ["A", "B"], "SubDict": {"X": 1}}}
 
     with patch("click.echo") as mock_echo:
         with patch.dict(os.environ, {}, clear=True):
