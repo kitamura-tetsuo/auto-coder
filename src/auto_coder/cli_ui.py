@@ -16,6 +16,35 @@ SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
+def _format_value(value: Any, indent: str = "    ") -> str:
+    """
+    Recursively formats a value for display.
+    """
+    if isinstance(value, dict) and value:
+        lines = []
+        for k, v in value.items():
+            if isinstance(v, (dict, list)) and v:
+                formatted_v = _format_value(v, indent + "  ")
+                # If formatted_v starts with newline, we append it
+                lines.append(f"{indent}- {k}:{formatted_v}")
+            else:
+                lines.append(f"{indent}- {k}: {v}")
+        return "\n" + "\n".join(lines)
+
+    elif isinstance(value, list) and value:
+        lines = []
+        for v in value:
+            if isinstance(v, (dict, list)) and v:
+                formatted_v = _format_value(v, indent + "  ")
+                lines.append(f"{indent}-{formatted_v}")
+            else:
+                lines.append(f"{indent}- {v}")
+        return "\n" + "\n".join(lines)
+
+    else:
+        return str(value)
+
+
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
     """
     Prints a formatted summary of the configuration.
@@ -53,17 +82,20 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
             key_display = f"  • {key_str}{padding}"
 
         # Format Value
-        val_str = str(value)
-        if not no_color:
-            if value is True or (isinstance(value, str) and value.lower().startswith("enabled")):
-                val_display = click.style(val_str, fg="green")
-            elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower())):
-                # "SKIP (default)" or "Disabled" -> yellow
-                val_display = click.style(val_str, fg="yellow")
+        if isinstance(value, (dict, list)) and value:
+            val_display = _format_value(value)
+        else:
+            val_str = str(value)
+            if not no_color:
+                if value is True or (isinstance(value, str) and value.lower().startswith("enabled")):
+                    val_display = click.style(val_str, fg="green")
+                elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower())):
+                    # "SKIP (default)" or "Disabled" -> yellow
+                    val_display = click.style(val_str, fg="yellow")
+                else:
+                    val_display = val_str
             else:
                 val_display = val_str
-        else:
-            val_display = val_str
 
         click.echo(f"{key_display} : {val_display}")
 
@@ -340,12 +372,10 @@ def print_completion_message(title: str, summary: Dict[str, Any]) -> None:
             key_display = f"  • {key_str}{padding}"
 
         # Format Value
-        val_str = str(value)
-        # Check for list of strings (e.g. actions)
-        if isinstance(value, list) and value:
-            val_display = "\n" + "\n".join([f"    - {v}" for v in value])
+        if isinstance(value, (dict, list)) and value:
+            val_display = _format_value(value)
         else:
-            val_display = val_str
+            val_display = str(value)
 
         click.echo(f"{key_display} : {val_display}")
 
