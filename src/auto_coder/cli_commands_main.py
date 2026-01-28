@@ -334,7 +334,7 @@ def process_issues(
             spinner.message = f"Processed single {target_type} #{number}"
 
         # Prepare summary for completion message
-        completion_summary = {"Repository": repo_name, "Target": f"{target_type} #{number}", "Status": "Success" if not result.get("errors") else "Completed with errors"}
+        completion_summary: Dict[str, Any] = {"Repository": repo_name, "Target": f"{target_type} #{number}", "Status": "Success" if not result.get("errors") else "Completed with errors"}
 
         if result.get("errors"):
             completion_summary["Errors"] = result["errors"]
@@ -514,7 +514,7 @@ def create_feature_issues(
         spinner.message = f"Created {len(created_issues)} feature issue(s)"
 
     # Prepare summary
-    completion_summary = {"Repository": repo_name, "Issues Created": len(created_issues)}
+    completion_summary: Dict[str, Any] = {"Repository": repo_name, "Issues Created": len(created_issues)}
 
     if created_issues:
         completion_summary["Details"] = [f"#{issue.get('number')} - {issue.get('title')}" for issue in created_issues]
@@ -744,7 +744,7 @@ def fix_to_pass_tests_command(
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
-@click.option("--host", default="127.0.0.1", help="Host to bind the server to")
+@click.option("--host", default="0.0.0.0", help="Host to bind the server to")
 @click.option("--port", default=8000, type=int, help="Port to bind the server to")
 @click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
 @click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
