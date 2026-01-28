@@ -92,8 +92,12 @@ def test_process_issues_sleep_logic(
     # Mock sleep to raise exception to break loop
     mock_sleep_countdown.side_effect = StopLoop()
 
-    runner = CliRunner()
-    result = runner.invoke(process_issues, ["--repo", "owner/repo", "--github-token", "dummy", "--disable-graphrag"])
+    import sys
+
+    # Mock webhook server components to avoid dependency issues
+    with patch.dict(sys.modules, {"src.auto_coder.webhook_server": MagicMock(), "fastapi": MagicMock(), "uvicorn": MagicMock()}):
+        runner = CliRunner()
+        result = runner.invoke(process_issues, ["--repo", "owner/repo", "--github-token", "dummy", "--disable-graphrag"])
 
     # Verify that start_automation was called (the new architecture entry point)
     mock_start_automation.assert_called_once_with("owner/repo")

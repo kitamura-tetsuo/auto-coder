@@ -338,6 +338,19 @@ def stub_git_and_gh_commands(monkeypatch, request):
         file=__import__("sys").stderr,
     )
 
+    import shutil
+
+    orig_which = shutil.which
+
+    def fake_which(cmd, mode=os.F_OK | os.X_OK, path=None):
+        # Allow specific tools to be "found"
+        if cmd in ("gemini", "codex", "uv", "node", "qwen", "auggie", "claude", "aider", "github-sub-issue"):
+            return f"/mock/path/to/{cmd}"
+        return orig_which(cmd, mode=mode, path=path)
+
+    if not skip_stub:
+        monkeypatch.setattr(shutil, "which", fake_which)
+
     def _as_text_or_bytes(text_output: str, text: bool):
         if text:
             return text_output, ""
