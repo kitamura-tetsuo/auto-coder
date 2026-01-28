@@ -355,7 +355,7 @@ if __name__ == "__main__":
             with open(main_py_path, "w", encoding="utf-8") as f:
                 f.write(main_py_content)
             if not silent:
-                logger.info(f"✅ Modified main.py (explicitly specified .env path)")
+                logger.info("✅ Modified main.py (explicitly specified .env path)")
         except Exception as e:
             logger.error(f"Failed to modify main.py: {e}")
             return False
@@ -723,7 +723,6 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
     except Exception as e:
         click.echo(f"⚠️  Warning: Could not check indexed path: {e}")
 
-    click.echo("Updating GraphRAG index...")
     if not force:
         try:
             if index_manager.is_index_up_to_date():
@@ -735,16 +734,27 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
             click.echo("   Proceeding with update...")
 
     try:
-        success = index_manager.update_index(force=force)
+        from .cli_ui import Spinner
+
+        success = False
+        try:
+            with Spinner("Updating GraphRAG index...", show_timer=True) as spinner:
+                success = index_manager.update_index(force=force)
+                if success:
+                    spinner.success_message = "Index updated successfully"
+                else:
+                    spinner.error_message = "Failed to update index"
+                    # Raise an exception to trigger the spinner's error state (red cross)
+                    raise RuntimeError("Update failed")
+        except RuntimeError:
+            pass
+
         if success:
-            click.echo("✅ Index updated successfully")
             click.echo()
             click.echo("Note: Current implementation uses hash-based change detection.")
             click.echo("      Full semantic indexing (embeddings, Neo4j/Qdrant storage)")
             click.echo("      is planned for future enhancement.")
         else:
-            click.echo()
-            click.echo("❌ Failed to update index")
             click.echo()
             click.echo("Troubleshooting tips:")
             click.echo("   1. Check if containers are healthy: auto-coder graphrag status")

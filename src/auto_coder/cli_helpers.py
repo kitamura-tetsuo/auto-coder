@@ -18,7 +18,7 @@ from .claude_client import ClaudeClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
 from .gemini_client import GeminiClient
-from .llm_backend_config import BackendConfig, LLMBackendConfiguration, get_llm_config
+from .llm_backend_config import get_llm_config
 from .qwen_client import QwenClient
 
 
@@ -66,30 +66,39 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
         logger.info("Automatically setting up GraphRAG MCP server...")
         click.echo()
         click.echo("⚠️  GraphRAG MCP server not installed")
-        click.echo("   Automatically setting up GraphRAG MCP server...")
         click.echo()
 
         # Import here to avoid circular dependency
         from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+        from .cli_ui import Spinner
 
-        success = run_graphrag_setup_mcp_programmatically(
-            install_dir=None,  # Use default ~/graphrag_mcp
-            neo4j_uri="bolt://localhost:7687",
-            neo4j_user="neo4j",
-            neo4j_password=os.getenv("NEO4J_PASSWORD", "password"),
-            qdrant_url="http://localhost:6333",
-            skip_clone=False,
-            silent=True,  # Suppress verbose output during auto-setup
-        )
+        success = False
+        try:
+            with Spinner("Automatically setting up GraphRAG MCP server...", show_timer=True) as spinner:
+                success = run_graphrag_setup_mcp_programmatically(
+                    install_dir=None,  # Use default ~/graphrag_mcp
+                    neo4j_uri="bolt://localhost:7687",
+                    neo4j_user="neo4j",
+                    neo4j_password=os.getenv("NEO4J_PASSWORD", "password"),
+                    qdrant_url="http://localhost:6333",
+                    skip_clone=False,
+                    silent=True,  # Suppress verbose output during auto-setup
+                )
+                if success:
+                    spinner.success_message = "GraphRAG MCP server setup completed successfully"
+                else:
+                    spinner.error_message = "GraphRAG MCP server setup failed"
+                    # Raise an exception to trigger the spinner's error state (red cross)
+                    raise RuntimeError("Setup failed")
+        except RuntimeError:
+            pass
 
         if not success:
             logger.error("Failed to automatically set up GraphRAG MCP server")
-            click.echo("❌ GraphRAG MCP server setup failed")
             click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
             raise click.ClickException("Failed to set up GraphRAG MCP server. " "Run 'auto-coder graphrag setup-mcp' manually.")
 
         logger.info("✅ GraphRAG MCP server setup completed successfully")
-        click.echo("✅ GraphRAG MCP server setup completed successfully")
 
     # 2. Initialize GraphRAG environment (Docker, indexing, MCP server)
     try:
@@ -165,9 +174,9 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
     # If client is provided, check if already configured
     if client is not None:
-        logger.info(f"Checking GraphRAG MCP configuration for client...")
+        logger.info("Checking GraphRAG MCP configuration for client...")
         if not client.check_mcp_server_configured(server_name):
-            logger.info(f"GraphRAG MCP server not configured for client. " f"Adding configuration...")
+            logger.info("GraphRAG MCP server not configured for client. " "Adding configuration...")
             click.echo()
             click.echo("⚠️  GraphRAG MCP server not configured for client")
             click.echo("   Adding configuration...")
@@ -191,7 +200,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
                 click.echo("❌ GraphRAG MCP server configuration failed")
                 click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
         else:
-            logger.info(f"✅ GraphRAG MCP server configured for client")
+            logger.info("✅ GraphRAG MCP server configured for client")
     else:
         # Fallback to file-based configuration for each backend
         from .mcp_checker import ensure_graphrag_mcp_configured
