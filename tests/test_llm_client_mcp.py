@@ -37,6 +37,7 @@ class TestGeminiClientMCP(unittest.TestCase):
             mock_run.return_value.returncode = 0
             with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
                 client = GeminiClient()
+
                 # For check_mcp_server_configured, it calls subprocess.run(["gemini", "mcp", "list"]...)
                 # We need to configure mock_run to return failure (not configured)
                 def side_effect(cmd, **kwargs):
@@ -50,6 +51,7 @@ class TestGeminiClientMCP(unittest.TestCase):
                         m.stdout = "other-server\n"
                         return m
                     raise FileNotFoundError()
+
                 mock_run.side_effect = side_effect
 
                 result = client.check_mcp_server_configured("graphrag")
