@@ -26,6 +26,10 @@ class TestProcessIssuesE2E:
             patch("src.auto_coder.cli_commands_main.check_graphrag_mcp_for_backends"),
             patch("src.auto_coder.cli_commands_main.ensure_test_script_or_fail"),
             patch("src.auto_coder.cli_commands_main.setup_progress_footer_logging"),
+            patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup"),
+            patch("src.auto_coder.cli_commands_main.get_current_branch"),
+            patch("src.auto_coder.webhook_server.create_app"),
+            patch("uvicorn.Server.serve"),
         ):
 
             # Setup mock Config
