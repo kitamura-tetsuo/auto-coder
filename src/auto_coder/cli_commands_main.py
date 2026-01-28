@@ -86,6 +86,11 @@ logger = get_logger(__name__)
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option("--enable-webhook/--disable-webhook", default=True, help="Enable webhook server in normal mode (default: True)")
+@click.option("--host", default="0.0.0.0", help="Host to bind the server to")
+@click.option("--port", default=8000, type=int, help="Port to bind the server to")
+@click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
+@click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -102,6 +107,11 @@ def process_issues(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
+    enable_webhook: bool,
+    host: str,
+    port: int,
+    github_webhook_secret: Optional[str],
+    sentry_webhook_secret: Optional[str],
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
@@ -365,8 +375,22 @@ def process_issues(
     # Run automation
     import asyncio
 
+    import uvicorn
+
+    from .webhook_server import create_app
+
+    async def run_all():
+        if enable_webhook:
+            app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
+            uvicorn_config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
+            server = uvicorn.Server(uvicorn_config)
+            logger.info(f"Starting FastAPI server on {host}:{port}")
+            await asyncio.gather(automation_engine.start_automation(repo_name), server.serve())
+        else:
+            await automation_engine.start_automation(repo_name)
+
     try:
-        asyncio.run(automation_engine.start_automation(repo_name))
+        asyncio.run(run_all())
     except KeyboardInterrupt:
         logger.info("Stopped by user")
 
