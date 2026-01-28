@@ -35,7 +35,9 @@ class StopLoop(Exception):
 @patch("src.auto_coder.backend_manager.LLMBackendManager")  # dependency
 @patch("src.auto_coder.cli_commands_main.check_graphrag_mcp_for_backends")  # dependency
 @patch("src.auto_coder.cli_commands_main.build_message_backend_manager")  # dependency
+@patch("src.auto_coder.cli_commands_main.check_backend_prerequisites")
 def test_process_issues_sleep_logic(
+    mock_check_prereqs,
     mock_msg_mgr,
     mock_check_mcp,
     mock_llm_mgr,
