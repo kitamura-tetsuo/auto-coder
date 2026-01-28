@@ -40,10 +40,12 @@ def test_qwen_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run, mock
 
 
 @patch("src.auto_coder.gemini_client.get_llm_config")
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
 @patch("src.auto_coder.utils.CommandExecutor.run_command")
-def test_gemini_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run, mock_config, _use_custom_subprocess_mock):
+def test_gemini_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run, mock_shutil_which, mock_config, _use_custom_subprocess_mock):
     mock_config.return_value.get_backend_config.return_value = None
+    mock_shutil_which.return_value = "/usr/bin/gemini"
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(False, "Error 429: Too many requests", "", 2)
 
@@ -53,10 +55,12 @@ def test_gemini_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run, mo
 
 
 @patch("src.auto_coder.gemini_client.get_llm_config")
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
 @patch("src.auto_coder.utils.CommandExecutor.run_command")
-def test_gemini_raises_usage_limit_on_message_even_zero(mock_run_command, mock_run, mock_config, _use_custom_subprocess_mock):
+def test_gemini_raises_usage_limit_on_message_even_zero(mock_run_command, mock_run, mock_shutil_which, mock_config, _use_custom_subprocess_mock):
     mock_config.return_value.get_backend_config.return_value = None
+    mock_shutil_which.return_value = "/usr/bin/gemini"
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "Rate limit exceeded for this project", "", 0)
 
@@ -66,10 +70,12 @@ def test_gemini_raises_usage_limit_on_message_even_zero(mock_run_command, mock_r
 
 
 @patch("src.auto_coder.gemini_client.get_llm_config")
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
 @patch("src.auto_coder.utils.CommandExecutor.run_command")
-def test_gemini_raises_usage_limit_on_zero_with_429_only(mock_run_command, mock_run, mock_config, _use_custom_subprocess_mock):
+def test_gemini_raises_usage_limit_on_zero_with_429_only(mock_run_command, mock_run, mock_shutil_which, mock_config, _use_custom_subprocess_mock):
     mock_config.return_value.get_backend_config.return_value = None
+    mock_shutil_which.return_value = "/usr/bin/gemini"
     mock_run.return_value.returncode = 0
     # Exit code 0 but logs include 429 without explicit 'quota'/'rate limit'
     mock_run_command.return_value = CommandResult(True, "status: 429\nToo Many Requests\n", "", 0)
@@ -80,10 +86,12 @@ def test_gemini_raises_usage_limit_on_zero_with_429_only(mock_run_command, mock_
 
 
 @patch("src.auto_coder.gemini_client.get_llm_config")
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
 @patch("src.auto_coder.utils.CommandExecutor.run_command")
-def test_gemini_raises_usage_limit_on_zero_with_resource_exhausted(mock_run_command, mock_run, mock_config, _use_custom_subprocess_mock):
+def test_gemini_raises_usage_limit_on_zero_with_resource_exhausted(mock_run_command, mock_run, mock_shutil_which, mock_config, _use_custom_subprocess_mock):
     mock_config.return_value.get_backend_config.return_value = None
+    mock_shutil_which.return_value = "/usr/bin/gemini"
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "error: RESOURCE_EXHAUSTED", "", 0)
 
