@@ -7,8 +7,10 @@ from src.auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_run, mock_gemini_api_key):
+def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_which, mock_run, mock_gemini_api_key):
+    mock_which.return_value = "/usr/bin/gemini"
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "gem ok\n", "", 0)
 

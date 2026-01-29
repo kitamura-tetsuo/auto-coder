@@ -84,10 +84,12 @@ class _FakeCompleted:
         self.stderr = stderr
 
 
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("src.auto_coder.gemini_client.get_llm_config")
 @patch("subprocess.run")
 @patch("subprocess.Popen", new=_FakePopen)
-def test_streaming_detects_usage_limit_and_aborts_early(mock_run, mock_config):
+def test_streaming_detects_usage_limit_and_aborts_early(mock_run, mock_config, mock_which):
+    mock_which.return_value = "/usr/bin/gemini"
     mock_config.return_value.get_backend_config.return_value = None
     mock_run.return_value = _FakeCompleted()
     client = GeminiClient(backend_name="gemini")

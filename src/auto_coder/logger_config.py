@@ -196,6 +196,22 @@ def setup_logger(
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Securely create the log file if it doesn't exist, and ensure permissions are restricted
+        if not log_path.exists():
+            try:
+                # Create with restricted permissions (600)
+                fd = os.open(log_path, os.O_WRONLY | os.O_CREAT, 0o600)
+                os.close(fd)
+            except Exception:
+                # Fallback to standard creation if low-level open fails
+                pass
+
+        # Ensure permissions are 600 (rw-------) even if file already existed
+        try:
+            os.chmod(log_path, 0o600)
+        except Exception:
+            pass
+
         # File format without colors
         if include_file_info:
             file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | " "{level: <8} | " "{extra[short_path]}:{line} in {function} - " "{message}"

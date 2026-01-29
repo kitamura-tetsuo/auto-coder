@@ -23,16 +23,45 @@ class TestGeminiClientMCP(unittest.TestCase):
         self.config_dir = Path(self.temp_dir) / ".gemini"
         self.config_path = self.config_dir / "config.json"
 
-    def test_check_mcp_server_not_configured(self):
+    @patch("src.auto_coder.gemini_client.shutil.which")
+    def test_check_mcp_server_not_configured(self, mock_which):
         """Test checking for MCP server when not configured."""
-        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            client = GeminiClient()
-            result = client.check_mcp_server_configured("graphrag")
-            self.assertFalse(result)
+        mock_which.return_value = "/usr/bin/gemini"
+        # Since we patched shutil.which, we also need to patch subprocess.run for the version check in __init__
+        # But here we didn't patch subprocess.run in the decorator.
+        # Wait, if I patch shutil.which, I also need to ensure subprocess.run succeeds for --version.
+        # The original test didn't patch subprocess.run, so it would execute real subprocess.run.
+        # But in CI environment, gemini is not installed, so subprocess.run would fail or raise FileNotFoundError.
+        # So I MUST patch subprocess.run as well.
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
+                client = GeminiClient()
 
+                # For check_mcp_server_configured, it calls subprocess.run(["gemini", "mcp", "list"]...)
+                # We need to configure mock_run to return failure (not configured)
+                def side_effect(cmd, **kwargs):
+                    if "--version" in cmd:
+                        m = MagicMock()
+                        m.returncode = 0
+                        return m
+                    if "mcp" in cmd and "list" in cmd:
+                        m = MagicMock()
+                        m.returncode = 0
+                        m.stdout = "other-server\n"
+                        return m
+                    raise FileNotFoundError()
+
+                mock_run.side_effect = side_effect
+
+                result = client.check_mcp_server_configured("graphrag")
+                self.assertFalse(result)
+
+    @patch("src.auto_coder.gemini_client.shutil.which")
     @patch("subprocess.run")
-    def test_check_mcp_server_configured(self, mock_run):
+    def test_check_mcp_server_configured(self, mock_run, mock_which):
         """Test checking for MCP server when configured."""
+        mock_which.return_value = "/usr/bin/gemini"
 
         # Mock subprocess.run to return success for --version and mcp list with graphrag
         def mock_run_side_effect(cmd, **kwargs):
@@ -55,9 +84,11 @@ class TestGeminiClientMCP(unittest.TestCase):
             result = client.check_mcp_server_configured("graphrag")
             self.assertTrue(result)
 
+    @patch("src.auto_coder.gemini_client.shutil.which")
     @patch("subprocess.run")
-    def test_add_mcp_server_config(self, mock_run):
+    def test_add_mcp_server_config(self, mock_run, mock_which):
         """Test adding MCP server configuration."""
+        mock_which.return_value = "/usr/bin/gemini"
 
         # Mock subprocess.run to return success for --version and mcp add
         def mock_run_side_effect(cmd, **kwargs):
@@ -97,9 +128,11 @@ class TestGeminiClientMCP(unittest.TestCase):
             self.assertIn("run", cmd)
             self.assertIn("mcp-pdb", cmd)
 
+    @patch("src.auto_coder.gemini_client.shutil.which")
     @patch("subprocess.run")
-    def test_ensure_mcp_server_configured(self, mock_run):
+    def test_ensure_mcp_server_configured(self, mock_run, mock_which):
         """Test ensuring MCP server is configured."""
+        mock_which.return_value = "/usr/bin/gemini"
         call_count = {"mcp_list": 0}
 
         # Mock subprocess.run to return success for --version, mcp add, and mcp list

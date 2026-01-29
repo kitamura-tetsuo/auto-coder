@@ -252,10 +252,12 @@ class TestBackendCLIOptions:
     # ================================
 
     @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.shutil.which")
     @patch("src.auto_coder.gemini_client.genai")
     @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_gemini_with_configured_options(self, mock_run_command, mock_genai, mock_run):
+    def test_gemini_with_configured_options(self, mock_run_command, mock_genai, mock_which, mock_run):
         """Test that GeminiClient uses options from config."""
+        mock_which.return_value = "/usr/bin/gemini"
         mock_run.return_value.returncode = 0
         mock_genai.configure = MagicMock()
         mock_run_command.return_value = CommandResult(success=True, stdout="test output", stderr="", returncode=0)
@@ -294,10 +296,12 @@ class TestBackendCLIOptions:
         assert cmd[0] == "gemini"
 
     @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.shutil.which")
     @patch("src.auto_coder.gemini_client.genai")
     @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_gemini_with_empty_options(self, mock_run_command, mock_genai, mock_run):
+    def test_gemini_with_empty_options(self, mock_run_command, mock_genai, mock_which, mock_run):
         """Test that GeminiClient handles empty options."""
+        mock_which.return_value = "/usr/bin/gemini"
         mock_run.return_value.returncode = 0
         mock_genai.configure = MagicMock()
         mock_run_command.return_value = CommandResult(success=True, stdout="test output", stderr="", returncode=0)

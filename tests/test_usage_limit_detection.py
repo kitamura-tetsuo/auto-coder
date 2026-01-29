@@ -39,6 +39,7 @@ def test_qwen_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run, mock
         client._run_qwen_cli("hello", None)
 
 
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("src.auto_coder.gemini_client.get_llm_config")
 @patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
@@ -54,6 +55,7 @@ def test_gemini_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run, mo
         client._run_llm_cli("hi")
 
 
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("src.auto_coder.gemini_client.get_llm_config")
 @patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
@@ -69,6 +71,7 @@ def test_gemini_raises_usage_limit_on_message_even_zero(mock_run_command, mock_r
         client._run_llm_cli("hi")
 
 
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("src.auto_coder.gemini_client.get_llm_config")
 @patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
@@ -85,6 +88,7 @@ def test_gemini_raises_usage_limit_on_zero_with_429_only(mock_run_command, mock_
         client._run_llm_cli("hi")
 
 
+@patch("src.auto_coder.gemini_client.shutil.which")
 @patch("src.auto_coder.gemini_client.get_llm_config")
 @patch("src.auto_coder.gemini_client.shutil.which")
 @patch("subprocess.run")
