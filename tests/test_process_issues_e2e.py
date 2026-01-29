@@ -53,8 +53,17 @@ class TestProcessIssuesE2E:
 
             runner = CliRunner()
 
-            # Invoke command
-            runner.invoke(process_issues, ["--repo", target_repo, "--github-token", "dummy_token", "--disable-graphrag"], catch_exceptions=False)
+            # Mock webhook server components to avoid dependency issues
+            import sys
+
+            mock_uvicorn = MagicMock()
+            mock_server_instance = MagicMock()
+            mock_server_instance.serve = AsyncMock()
+            mock_uvicorn.Server.return_value = mock_server_instance
+
+            with patch.dict(sys.modules, {"src.auto_coder.webhook_server": MagicMock(), "fastapi": MagicMock(), "uvicorn": mock_uvicorn}):
+                # Invoke command
+                runner.invoke(process_issues, ["--repo", target_repo, "--github-token", "dummy_token", "--disable-graphrag"], catch_exceptions=False)
 
             # Verifications
             MockGitHubClient.get_instance.assert_called()
