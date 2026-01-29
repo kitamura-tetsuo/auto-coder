@@ -281,3 +281,30 @@ def test_spinner_final_message_with_timer(mock_time, mock_stdout):
 
     final_msg = final_messages[-1]
     assert "(2s)" in final_msg, f"Final message did not include duration: {final_msg}"
+
+
+@patch("sys.stdout")
+def test_spinner_step(mock_stdout):
+    """Test that Spinner step updates message and handles cleanup."""
+    mock_stdout.isatty.return_value = True
+
+    # Use a very small delay so the spinner thread loops frequently
+    spinner = cli_ui.Spinner("Initial", delay=0.001)
+
+    with spinner:
+        time.sleep(0.01)  # Let it spin a bit with "Initial"
+        spinner.step("Updated Long Message")
+        time.sleep(0.01)  # Let it spin with longer message
+        spinner.step("Short")
+        time.sleep(0.01)  # Let it spin with shorter message
+
+    writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+
+    # Verify initial message was printed
+    assert any("Initial" in w for w in writes)
+
+    # Verify updated long message was printed
+    assert any("Updated Long Message" in w for w in writes)
+
+    # Verify short message was printed
+    assert any("Short" in w for w in writes)

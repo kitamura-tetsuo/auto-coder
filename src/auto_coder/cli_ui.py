@@ -254,10 +254,15 @@ class Spinner:
             return f"{m}m {s:02d}s"
         return f"{s}s"
 
+    def step(self, message: str) -> None:
+        """Update the spinner message safely."""
+        self.message = message
+
     def spin(self) -> None:
         spinner_frames = SPINNER_FRAMES_ASCII if self.no_color else SPINNER_FRAMES_UNICODE
         idx = 0
         start_time = self.start_time or time.time()
+        last_msg_len = 0
 
         while not self.stop_event.is_set():
             frame = spinner_frames[idx % len(spinner_frames)]
@@ -273,7 +278,13 @@ class Spinner:
             else:
                 msg = click.style(f"{frame} {current_msg}", fg="cyan")
 
-            sys.stdout.write(f"\r{msg}")
+            # Calculate visible length for padding
+            visible_msg = click.unstyle(msg)
+            current_len = len(visible_msg)
+            padding = " " * max(0, last_msg_len - current_len)
+            last_msg_len = current_len
+
+            sys.stdout.write(f"\r{msg}{padding}")
             sys.stdout.flush()
 
             # Wait for delay or stop event
