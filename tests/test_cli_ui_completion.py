@@ -97,7 +97,7 @@ def test_print_completion_message_dict_values():
     summary = {"Simple": "Value", "Dict": {"Key A": "Value A", "Key B": "Value B"}, "Nested": {"SubList": ["A", "B"], "SubDict": {"X": 1}}}
 
     with patch("click.echo") as mock_echo, patch("click.style") as mock_style:
-         # Mock style to return input string
+        # Mock style to return input string
         mock_style.side_effect = lambda x, **kwargs: x
 
         with patch.dict(os.environ, {}, clear=True):
