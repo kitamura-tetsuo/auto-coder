@@ -9,6 +9,9 @@ def test_print_completion_message_basic():
     summary = {"Repository": "test/repo", "Status": "Success"}
 
     with patch("click.secho") as mock_secho, patch("click.echo") as mock_echo, patch("click.style") as mock_style:
+        # Mock style to return the input string so we can verify output content
+        mock_style.side_effect = lambda x, **kwargs: x
+
         # Ensure NO_COLOR is not set
         with patch.dict(os.environ, {}, clear=True):
             cli_ui.print_completion_message("Test Title", summary)
@@ -20,14 +23,16 @@ def test_print_completion_message_basic():
             assert "✨ Test Title ✨" in title_call.args[0]
             assert title_call.kwargs.get("fg") == "green"
 
-            # Check keys styled
+            # Check styled calls (keys AND values now)
             assert mock_style.call_count > 0
             # Extract first argument from all calls to style
             style_args = [call.args[0] for call in mock_style.call_args_list]
 
             # Use 'any' to check if "Repository" appears in any of the styled strings
             assert any("Repository" in s for s in style_args), f"Repository not found in styled calls: {style_args}"
-            assert any("Status" in s for s in style_args)
+
+            # "Success" should also be styled now (green)
+            assert any("Success" in s for s in style_args)
 
             # Check values printed via echo
             # echo is called for title (if no color), spacer, and key:value pairs
@@ -63,6 +68,9 @@ def test_print_completion_message_list_values():
     summary = {"Actions": ["Action 1", "Action 2"], "Details": "Some details"}
 
     with patch("click.echo") as mock_echo, patch("click.style") as mock_style:
+        # Mock style to return input string
+        mock_style.side_effect = lambda x, **kwargs: x
+
         with patch.dict(os.environ, {}, clear=True):
             cli_ui.print_completion_message("Test Title", summary)
 
@@ -71,8 +79,8 @@ def test_print_completion_message_list_values():
 
             assert "Action 1" in combined_output
             assert "Action 2" in combined_output
-            # Check for indentation/formatting
-            assert "    - Action 1" in combined_output
+            # Check for indentation/formatting with bullets
+            assert "    • Action 1" in combined_output
 
 
 def test_print_completion_message_empty():
@@ -88,24 +96,27 @@ def test_print_completion_message_dict_values():
     """Test print_completion_message with dictionary values."""
     summary = {"Simple": "Value", "Dict": {"Key A": "Value A", "Key B": "Value B"}, "Nested": {"SubList": ["A", "B"], "SubDict": {"X": 1}}}
 
-    with patch("click.echo") as mock_echo:
+    with patch("click.echo") as mock_echo, patch("click.style") as mock_style:
+         # Mock style to return input string
+        mock_style.side_effect = lambda x, **kwargs: x
+
         with patch.dict(os.environ, {}, clear=True):
             cli_ui.print_completion_message("Test Title", summary)
 
             echo_args = [call.args[0] if call.args else "" for call in mock_echo.call_args_list]
             combined_output = "\n".join(echo_args)
 
-            # Check for Dict formatting
-            assert "- Key A: Value A" in combined_output
-            assert "- Key B: Value B" in combined_output
+            # Check for Dict formatting with bullets
+            assert "• Key A: Value A" in combined_output
+            assert "• Key B: Value B" in combined_output
 
             # Check for Nested formatting
-            assert "- SubList:" in combined_output
-            assert "- A" in combined_output
-            assert "- B" in combined_output
-            assert "- SubDict:" in combined_output
-            assert "- X: 1" in combined_output
+            assert "• SubList:" in combined_output
+            assert "• A" in combined_output
+            assert "• B" in combined_output
+            assert "• SubDict:" in combined_output
+            assert "• X: 1" in combined_output
 
             # Check indentation (approximate)
-            # The exact spacing depends on my implementation, but it should be indented
-            assert "    - Key A" in combined_output
+            # The exact spacing depends on implementation, but it should be indented with bullet
+            assert "    • Key A" in combined_output
