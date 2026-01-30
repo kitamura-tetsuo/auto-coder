@@ -341,7 +341,7 @@ def process_issues(
             else:
                 result = automation_engine.process_single(repo_name, target_type, number)
 
-            spinner.message = f"Processed single {target_type} #{number}"
+            spinner.step(f"Processed single {target_type} #{number}")
 
         # Prepare summary for completion message
         completion_summary: Dict[str, Any] = {"Repository": repo_name, "Target": f"{target_type} #{number}", "Status": "Success" if not result.get("errors") else "Completed with errors"}
@@ -535,7 +535,7 @@ def create_feature_issues(
     created_issues = []
     with Spinner("Analyzing repository for features...", show_timer=True) as spinner:
         created_issues = automation_engine.create_feature_issues(repo_name)
-        spinner.message = f"Created {len(created_issues)} feature issue(s)"
+        spinner.step(f"Created {len(created_issues)} feature issue(s)")
 
     # Prepare summary
     completion_summary: Dict[str, Any] = {"Repository": repo_name, "Issues Created": len(created_issues)}
