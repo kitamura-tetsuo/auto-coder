@@ -73,3 +73,8 @@
 **Prevention:**
 1. Regularly review and update `REDACTION_PATTERNS` in `security_utils.py`.
 2. Always use `os.chmod(path, 0o600)` on sensitive files after creation or copying, regardless of the source permissions.
+
+## 2026-03-04 - Regression in Secure Append Logic
+**Vulnerability:** Switching from `open(mode='a')` to `os.open(O_APPEND)` + `os.fdopen(mode='w')` (to enforce permissions) caused `f.tell()` to return 0, leading to duplicate CSV headers being written.
+**Learning:** `os.fdopen` with mode `w` initializes the file object's position to 0, even if the underlying file descriptor was opened with `O_APPEND`.
+**Prevention:** Use `os.fstat(fd).st_size` to check if the file is empty instead of `f.tell()` when using this secure file creation pattern.
