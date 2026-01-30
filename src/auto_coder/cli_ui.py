@@ -16,33 +16,53 @@ SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
-def _format_value(value: Any, indent: str = "    ") -> str:
+def _colorize_value(value: Any, no_color: bool = False) -> str:
+    """
+    Colorizes a value for display based on its type/content.
+    """
+    val_str = str(value)
+    if no_color:
+        return val_str
+
+    if value is True or (isinstance(value, str) and (value.lower().startswith("enabled") or value.lower() == "success")):
+        return click.style(val_str, fg="green")
+    elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower())):
+        return click.style(val_str, fg="yellow")
+    elif isinstance(value, str) and ("error" in value.lower() or "failed" in value.lower()):
+        return click.style(val_str, fg="red")
+
+    return val_str
+
+
+def _format_value(value: Any, indent: str = "    ", no_color: bool = False) -> str:
     """
     Recursively formats a value for display.
     """
+    bullet = "-" if no_color else "•"
+
     if isinstance(value, dict) and value:
         lines = []
         for k, v in value.items():
             if isinstance(v, (dict, list)) and v:
-                formatted_v = _format_value(v, indent + "  ")
+                formatted_v = _format_value(v, indent + "  ", no_color=no_color)
                 # If formatted_v starts with newline, we append it
-                lines.append(f"{indent}- {k}:{formatted_v}")
+                lines.append(f"{indent}{bullet} {k}:{formatted_v}")
             else:
-                lines.append(f"{indent}- {k}: {v}")
+                lines.append(f"{indent}{bullet} {k}: {_colorize_value(v, no_color)}")
         return "\n" + "\n".join(lines)
 
     elif isinstance(value, list) and value:
         lines = []
         for v in value:
             if isinstance(v, (dict, list)) and v:
-                formatted_v = _format_value(v, indent + "  ")
-                lines.append(f"{indent}-{formatted_v}")
+                formatted_v = _format_value(v, indent + "  ", no_color=no_color)
+                lines.append(f"{indent}{bullet}{formatted_v}")
             else:
-                lines.append(f"{indent}- {v}")
+                lines.append(f"{indent}{bullet} {_colorize_value(v, no_color)}")
         return "\n" + "\n".join(lines)
 
     else:
-        return str(value)
+        return _colorize_value(value, no_color)
 
 
 def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
@@ -83,19 +103,9 @@ def print_configuration_summary(title: str, config: Dict[str, Any]) -> None:
 
         # Format Value
         if isinstance(value, (dict, list)) and value:
-            val_display = _format_value(value)
+            val_display = _format_value(value, no_color=no_color)
         else:
-            val_str = str(value)
-            if not no_color:
-                if value is True or (isinstance(value, str) and value.lower().startswith("enabled")):
-                    val_display = click.style(val_str, fg="green")
-                elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower())):
-                    # "SKIP (default)" or "Disabled" -> yellow
-                    val_display = click.style(val_str, fg="yellow")
-                else:
-                    val_display = val_str
-            else:
-                val_display = val_str
+            val_display = _colorize_value(value, no_color)
 
         click.echo(f"{key_display} : {val_display}")
 
@@ -384,9 +394,9 @@ def print_completion_message(title: str, summary: Dict[str, Any]) -> None:
 
         # Format Value
         if isinstance(value, (dict, list)) and value:
-            val_display = _format_value(value)
+            val_display = _format_value(value, no_color=no_color)
         else:
-            val_display = str(value)
+            val_display = _colorize_value(value, no_color)
 
         click.echo(f"{key_display} : {val_display}")
 
