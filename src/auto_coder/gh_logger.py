@@ -215,12 +215,27 @@ class GHCommandLogger:
         # Write to CSV file
         log_file = self._get_log_file_path()
         try:
-            with open(log_file, "a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-                # Write header if file is empty
-                if f.tell() == 0:
-                    writer.writeheader()
-                writer.writerow(row)
+            # Use os.open to ensure restricted permissions (0o600)
+            fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                # Ensure permissions are correct even if file existed
+                os.chmod(log_file, 0o600)
+
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+                    # Write header if file is empty
+                    # Use os.fstat because f.tell() returns 0 when opened with "w" even if O_APPEND is set
+                    if os.fstat(fd).st_size == 0:
+                        writer.writeheader()
+                    writer.writerow(row)
+            except Exception:
+                # If something fails before fd is closed by fdopen context manager,
+                # we might need to close it manually.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             # Don't fail the command if logging fails
             if self.logger:
