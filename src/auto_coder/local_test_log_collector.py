@@ -123,6 +123,8 @@ def collect_and_run():
                 try:
                     shutil.move(str(log_file), str(raw_log_dir))
                     raw_log_file_path = str(raw_log_dir / log_file.name)
+                    # Secure the moved file
+                    os.chmod(raw_log_file_path, 0o600)
                     print(f"Moved raw log file: {log_file} to {raw_log_file_path}")
                     # For now, just handle the first found log file
                     break

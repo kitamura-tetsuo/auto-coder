@@ -1161,8 +1161,19 @@ class AutomationEngine:
                 reports_dir,
                 f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             )
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            # Secure file creation with 0o600 permissions
+            fd = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                # Ensure permissions are correct even if file existed
+                os.chmod(filepath, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            except Exception:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
             log_action(f"Report saved to {filepath}")
         except Exception as e:
             logger.error(f"Error saving report {filename}: {e}")

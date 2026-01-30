@@ -365,7 +365,9 @@ class TestAutomationEngine:
         for criteria in sample_feature_suggestion["acceptance_criteria"]:
             assert f"- [ ] {criteria}" in result
 
-    @patch("builtins.open")
+    @patch("os.fdopen")
+    @patch("os.chmod")
+    @patch("os.open")
     @patch("json.dump")
     @patch("os.path.join")
     @patch("os.makedirs")
@@ -374,7 +376,9 @@ class TestAutomationEngine:
         mock_makedirs,
         mock_join,
         mock_json_dump,
-        mock_open,
+        mock_os_open,
+        mock_chmod,
+        mock_fdopen,
         mock_github_client,
         mock_gemini_client,
     ):
@@ -382,7 +386,8 @@ class TestAutomationEngine:
         # Setup
         mock_join.return_value = "reports/test_report.json"
         mock_file = Mock()
-        mock_open.return_value.__enter__.return_value = mock_file
+        mock_fdopen.return_value.__enter__.return_value = mock_file
+        mock_os_open.return_value = 123  # Fake file descriptor
 
         engine = AutomationEngine(mock_github_client)
         test_data = {"test": "data"}
@@ -392,17 +397,23 @@ class TestAutomationEngine:
 
         # Assert
         mock_makedirs.assert_called_once_with("reports", exist_ok=True)
-        mock_open.assert_called_once()
+        mock_os_open.assert_called_once_with("reports/test_report.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        mock_chmod.assert_called_once_with("reports/test_report.json", 0o600)
+        mock_fdopen.assert_called_once_with(123, "w", encoding="utf-8")
         mock_json_dump.assert_called_once_with(test_data, mock_file, indent=2, ensure_ascii=False)
 
-    @patch("builtins.open")
+    @patch("os.fdopen")
+    @patch("os.chmod")
+    @patch("os.open")
     @patch("json.dump")
     @patch("os.makedirs")
     def test_save_report_with_repo_name(
         self,
         mock_makedirs,
         mock_json_dump,
-        mock_open,
+        mock_os_open,
+        mock_chmod,
+        mock_fdopen,
         mock_github_client,
         mock_gemini_client,
     ):
@@ -413,7 +424,8 @@ class TestAutomationEngine:
         repo_name = "owner/repo"
         expected_dir = str(Path.home() / ".auto-coder" / "owner_repo")
         mock_file = Mock()
-        mock_open.return_value.__enter__.return_value = mock_file
+        mock_fdopen.return_value.__enter__.return_value = mock_file
+        mock_os_open.return_value = 123  # Fake file descriptor
 
         engine = AutomationEngine(mock_github_client)
         test_data = {"test": "data"}
@@ -423,7 +435,15 @@ class TestAutomationEngine:
 
         # Assert
         mock_makedirs.assert_called_once_with(expected_dir, exist_ok=True)
-        mock_open.assert_called_once()
+        # We don't check exact path for os.open as it includes timestamp, unless we mock datetime
+        # But we can check flags and mode
+        assert mock_os_open.call_count == 1
+        args, kwargs = mock_os_open.call_args
+        assert args[1] == os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        assert args[2] == 0o600
+
+        mock_chmod.assert_called_once()
+        mock_fdopen.assert_called_once_with(123, "w", encoding="utf-8")
         mock_json_dump.assert_called_once_with(test_data, mock_file, indent=2, ensure_ascii=False)
 
     def test_should_auto_merge_pr_low_risk_bugfix(self, mock_github_client, mock_gemini_client):
