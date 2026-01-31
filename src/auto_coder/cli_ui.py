@@ -16,6 +16,15 @@ SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
+def create_terminal_link(text: str, url: str) -> str:
+    """
+    Creates a terminal hyperlink (OSC 8) if supported.
+    """
+    if "NO_COLOR" in os.environ or not sys.stdout.isatty():
+        return text
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
 def _colorize_value(value: Any, no_color: bool = False) -> str:
     """
     Colorizes a value for display based on its type/content.

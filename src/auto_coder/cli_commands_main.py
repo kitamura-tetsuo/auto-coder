@@ -10,7 +10,7 @@ from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
-from .cli_ui import Spinner, print_completion_message, print_configuration_summary, sleep_with_countdown
+from .cli_ui import Spinner, create_terminal_link, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
@@ -344,7 +344,16 @@ def process_issues(
             spinner.step(f"Processed single {target_type} #{number}")
 
         # Prepare summary for completion message
-        completion_summary: Dict[str, Any] = {"Repository": repo_name, "Target": f"{target_type} #{number}", "Status": "Success" if not result.get("errors") else "Completed with errors"}
+        target_display = f"{target_type} #{number}"
+        if number:
+            target_url = f"https://github.com/{repo_name}/{'issues' if target_type == 'issue' else 'pull'}/{number}"
+            target_display = create_terminal_link(target_display, target_url)
+
+        completion_summary: Dict[str, Any] = {
+            "Repository": repo_name,
+            "Target": target_display,
+            "Status": "Success" if not result.get("errors") else "Completed with errors",
+        }
 
         if result.get("errors"):
             completion_summary["Errors"] = result["errors"]
@@ -541,7 +550,16 @@ def create_feature_issues(
     completion_summary: Dict[str, Any] = {"Repository": repo_name, "Issues Created": len(created_issues)}
 
     if created_issues:
-        completion_summary["Details"] = [f"#{issue.get('number')} - {issue.get('title')}" for issue in created_issues]
+        details = []
+        for issue in created_issues:
+            num = issue.get("number")
+            title = issue.get("title")
+            display_text = f"#{num}"
+            if num:
+                url = f"https://github.com/{repo_name}/issues/{num}"
+                display_text = create_terminal_link(display_text, url)
+            details.append(f"{display_text} - {title}")
+        completion_summary["Details"] = details
 
     print_completion_message("Feature Analysis Complete", completion_summary)
 
