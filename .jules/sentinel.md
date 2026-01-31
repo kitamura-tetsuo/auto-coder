@@ -78,3 +78,8 @@
 **Vulnerability:** Switching from `open(mode='a')` to `os.open(O_APPEND)` + `os.fdopen(mode='w')` (to enforce permissions) caused `f.tell()` to return 0, leading to duplicate CSV headers being written.
 **Learning:** `os.fdopen` with mode `w` initializes the file object's position to 0, even if the underlying file descriptor was opened with `O_APPEND`.
 **Prevention:** Use `os.fstat(fd).st_size` to check if the file is empty instead of `f.tell()` when using this secure file creation pattern.
+
+## 2026-01-31 - Insecure Session Storage in CloudManager
+**Vulnerability:** `CloudManager` stored session IDs in `cloud.csv` using standard `open()`, resulting in default file permissions (e.g., world-readable) which could allow session hijacking in multi-user environments.
+**Learning:** User state files (like session tokens) are just as sensitive as configuration files with API keys and require the same strict permission controls.
+**Prevention:** Apply the `os.open(..., 0o600)` and `os.chmod` pattern to all files storing user session data or state, ensuring they are private to the owner.

@@ -6,6 +6,7 @@ by storing issue number and session ID mappings in CSV files.
 """
 
 import csv
+import os
 import threading
 from pathlib import Path
 from typing import Dict, Optional
@@ -92,7 +93,13 @@ class CloudManager:
         self._ensure_cloud_dir()
 
         try:
-            with open(self.cloud_file_path, "w", newline="", encoding="utf-8") as f:
+            # Secure file opening with restricted permissions (600)
+            fd = os.open(str(self.cloud_file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+            # Ensure permissions are correct even if file already existed
+            os.chmod(self.cloud_file_path, 0o600)
+
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
                 writer.writeheader()
 
