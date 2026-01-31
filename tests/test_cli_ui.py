@@ -308,3 +308,28 @@ def test_spinner_step(mock_stdout):
 
     # Verify short message was printed
     assert any("Short" in w for w in writes)
+
+
+def test_create_terminal_link():
+    """Test create_terminal_link formatting."""
+    url = "https://example.com"
+    text = "Link"
+    expected = "\033]8;;https://example.com\033\\Link\033]8;;\033\\"
+
+    # Test with TTY and no NO_COLOR
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = True
+        with patch.dict("os.environ", {}, clear=True):
+            assert cli_ui.create_terminal_link(text, url) == expected
+
+    # Test with NO_COLOR
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = True
+        with patch.dict("os.environ", {"NO_COLOR": "1"}):
+            assert cli_ui.create_terminal_link(text, url) == text
+
+    # Test with non-TTY
+    with patch("sys.stdout") as mock_stdout:
+        mock_stdout.isatty.return_value = False
+        with patch.dict("os.environ", {}, clear=True):
+            assert cli_ui.create_terminal_link(text, url) == text
