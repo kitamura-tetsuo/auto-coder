@@ -83,3 +83,8 @@
 **Vulnerability:** `CloudManager` stored session IDs in `cloud.csv` using standard `open()`, resulting in default file permissions (e.g., world-readable) which could allow session hijacking in multi-user environments.
 **Learning:** User state files (like session tokens) are just as sensitive as configuration files with API keys and require the same strict permission controls.
 **Prevention:** Apply the `os.open(..., 0o600)` and `os.chmod` pattern to all files storing user session data or state, ensuring they are private to the owner.
+
+## 2026-03-05 - Insecure Script Creation Race Condition
+**Vulnerability:** `run_server.sh` and `main.py` were created using `open()` (default permissions) followed by `chmod()`. This created a race condition where the files were briefly world-readable (or writeable) before being secured.
+**Learning:** Even for scripts intended to be executable (`0o755`), creating them with default permissions first is insecure.
+**Prevention:** Use `os.open(path, flags, 0o755)` for scripts to ensure they are created with correct permissions atomically, then `os.fdopen`. Always include `os.chmod` to handle pre-existing files.

@@ -208,7 +208,13 @@ class GraphRAGIndexManager:
         self.index_state_file.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            with open(self.index_state_file, "w") as f:
+            # Secure file opening with restricted permissions (600)
+            fd = os.open(str(self.index_state_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+            # Ensure permissions are correct even if file already existed
+            os.chmod(self.index_state_file, 0o600)
+
+            with os.fdopen(fd, "w") as f:
                 json.dump(state, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save index state: {e}")
