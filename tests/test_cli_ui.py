@@ -44,8 +44,8 @@ def test_sleep_with_countdown_execution(mock_sleep, mock_time):
 
     # Verify spinner presence (at least one frame)
     # Since we didn't set NO_COLOR, it should use unicode frames
-    # ⠋ is the first frame
-    assert any("⠋" in w for w in writes)
+    # ⣾ is the first frame of the new spinner
+    assert any("⣾" in w for w in writes)
 
 
 @patch("time.sleep")
@@ -129,7 +129,7 @@ def test_spinner_execution():
 
         # Should verify spinner presence (at least one frame)
         # Unicode frames by default
-        assert any("⠋" in w or "Test Loading" in w for w in writes)
+        assert any("⣾" in w or "Test Loading" in w for w in writes)
 
         # Should clear line at end
         # The last write or second to last should be the clear command

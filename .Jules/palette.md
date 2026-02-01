@@ -9,3 +9,7 @@
 ## 2026-02-05 - [CLI Terminal Hyperlinks]
 **Learning:** Modern terminals support OSC 8 hyperlinks, allowing clickable text in CLI output which significantly improves navigation for Issues/PRs.
 **Action:** Use a helper function `create_terminal_link` with `NO_COLOR` and `isatty` checks to safely add clickable links to summaries.
+
+## 2026-02-19 - [CLI Visual Polish]
+**Learning:** Standard Braille spinners are functional but lack the "modern" feel of newer CLI tools; semantic coloring for states like "Completed" or "Pending" improves scanability.
+**Action:** Updated spinner frames to an 8-bit "dots" style and expanded semantic color mapping for status keywords.
