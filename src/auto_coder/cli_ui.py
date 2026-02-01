@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, TextIO
 
 import click
 
-SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES_UNICODE = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
 SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"]
 
 
@@ -33,9 +33,9 @@ def _colorize_value(value: Any, no_color: bool = False) -> str:
     if no_color:
         return val_str
 
-    if value is True or (isinstance(value, str) and (value.lower().startswith("enabled") or value.lower() == "success")):
+    if value is True or (isinstance(value, str) and (value.lower().startswith("enabled") or value.lower() == "success" or value.lower() == "completed")):
         return click.style(val_str, fg="green")
-    elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower())):
+    elif value is False or (isinstance(value, str) and (value.lower().startswith("disabled") or "skip" in value.lower() or value.lower() == "pending" or value.lower() == "warning")):
         return click.style(val_str, fg="yellow")
     elif isinstance(value, str) and ("error" in value.lower() or "failed" in value.lower()):
         return click.style(val_str, fg="red")
