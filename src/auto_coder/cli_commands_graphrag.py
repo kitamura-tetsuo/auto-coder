@@ -317,10 +317,15 @@ exec "$UV_CMD" run main.py
 """
 
         try:
-            with open(run_script_path, "w", encoding="utf-8") as f:
-                f.write(run_script_content)
-            # Make the script executable
+            # Secure file creation with executable permissions (755)
+            fd = os.open(str(run_script_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
+
+            # Ensure permissions are correct even if file already existed
             os.chmod(run_script_path, 0o755)
+
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(run_script_content)
+
             if not silent:
                 logger.info(f"✅ Created run_server.sh script: {run_script_path}")
         except Exception as e:
@@ -352,8 +357,15 @@ if __name__ == "__main__":
 """
 
         try:
-            with open(main_py_path, "w", encoding="utf-8") as f:
+            # Secure file creation with restricted permissions (600)
+            fd = os.open(str(main_py_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+            # Ensure permissions are correct even if file already existed
+            os.chmod(main_py_path, 0o600)
+
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(main_py_content)
+
             if not silent:
                 logger.info("✅ Modified main.py (explicitly specified .env path)")
         except Exception as e:
