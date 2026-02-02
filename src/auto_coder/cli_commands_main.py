@@ -341,7 +341,13 @@ def process_issues(
             else:
                 result = automation_engine.process_single(repo_name, target_type, number)
 
-            spinner.step(f"Processed single {target_type} #{number}")
+            # Create completion message with clickable link
+            target_display = f"{target_type} #{number}"
+            if number:
+                target_url = f"https://github.com/{repo_name}/{'issues' if target_type == 'issue' else 'pull'}/{number}"
+                target_display = create_terminal_link(target_display, target_url)
+
+            spinner.step(f"Processed single {target_display}")
 
         # Prepare summary for completion message
         target_display = f"{target_type} #{number}"

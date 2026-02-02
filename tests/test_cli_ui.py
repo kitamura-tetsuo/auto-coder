@@ -333,3 +333,25 @@ def test_create_terminal_link():
         mock_stdout.isatty.return_value = False
         with patch.dict("os.environ", {}, clear=True):
             assert cli_ui.create_terminal_link(text, url) == text
+
+
+def test_get_visual_length():
+    """Test _get_visual_length helper."""
+    # Plain text
+    assert cli_ui._get_visual_length("Hello") == 5
+
+    # ANSI Color
+    import click
+
+    colored = click.style("Hello", fg="red")
+    assert cli_ui._get_visual_length(colored) == 5
+
+    # OSC 8 Link
+    url = "https://example.com"
+    text = "Link"
+    link = f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+    assert cli_ui._get_visual_length(link) == 4
+
+    # Mixed
+    mixed = f"Click {link} now"
+    assert cli_ui._get_visual_length(mixed) == 14  # "Click " (6) + "Link" (4) + " now" (4)

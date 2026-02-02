@@ -4,6 +4,7 @@ UI helper functions for the CLI.
 
 import math
 import os
+import re
 import shutil
 import sys
 import threading
@@ -23,6 +24,16 @@ def create_terminal_link(text: str, url: str) -> str:
     if "NO_COLOR" in os.environ or not sys.stdout.isatty():
         return text
     return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def _get_visual_length(text: str) -> int:
+    """
+    Returns the visual length of the text, ignoring ANSI colors and OSC 8 links.
+    """
+    # Strip OSC 8 links
+    text = re.sub(r"\x1b\]8;;.*?\x1b\\", "", text)
+    # Strip ANSI colors (click.unstyle does this)
+    return len(click.unstyle(text))
 
 
 def _colorize_value(value: Any, no_color: bool = False) -> str:
@@ -298,8 +309,7 @@ class Spinner:
                 msg = click.style(f"{frame} {current_msg}", fg="cyan")
 
             # Calculate visible length for padding
-            visible_msg = click.unstyle(msg)
-            current_len = len(visible_msg)
+            current_len = _get_visual_length(msg)
             padding = " " * max(0, last_msg_len - current_len)
             last_msg_len = current_len
 
