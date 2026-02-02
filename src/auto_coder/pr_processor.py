@@ -39,9 +39,9 @@ from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
+from .trace_logger import get_trace_logger
 from .util.github_action import _create_github_action_log_summary
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
-from .trace_logger import get_trace_logger
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()

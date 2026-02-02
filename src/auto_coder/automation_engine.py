@@ -28,12 +28,12 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
+from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import GitHubClient, get_ghapi_client
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
-from .trace_logger import get_trace_logger
 
 logger = get_logger(__name__)
 
