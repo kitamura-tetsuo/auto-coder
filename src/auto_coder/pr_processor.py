@@ -41,6 +41,7 @@ from .test_log_utils import extract_all_failed_tests, extract_first_failed_test,
 from .test_result import TestResult
 from .util.github_action import _create_github_action_log_summary
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
+from .trace_logger import get_trace_logger
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -228,9 +229,37 @@ def process_pull_request(
             branch_name=branch_name,
         ):
             try:
+                get_trace_logger().log(
+                    "PR Processing",
+                    f"Processing PR #{pr_number}",
+                    item_type="pr",
+                    item_number=pr_number,
+                    details={"branch": branch_name}
+                )
+
                 # Check GitHub Actions status and mergeability
                 github_checks = _check_github_actions_status(repo_name, pr_data, config)
+
+                get_trace_logger().log(
+                    "CI Status",
+                    f"CI Status for PR #{pr_number}: {'Success' if github_checks.success else 'Failure/Pending'}",
+                    item_type="pr",
+                    item_number=pr_number,
+                    details={
+                        "success": github_checks.success,
+                        "in_progress": github_checks.in_progress,
+                        "conclusion": github_checks.conclusion
+                    }
+                )
+
                 mergeable = pr_data.get("mergeable", True)
+                get_trace_logger().log(
+                    "Merge Check",
+                    f"Mergeable status for PR #{pr_number}: {mergeable}",
+                    item_type="pr",
+                    item_number=pr_number,
+                    details={"mergeable": mergeable}
+                )
 
                 # Always use _take_pr_actions for unified processing
                 # This ensures tests that mock _take_pr_actions continue to work
@@ -246,6 +275,17 @@ def process_pull_request(
                 if processed_pr_result.error:
                     processed_pr.error = processed_pr_result.error
 
+                get_trace_logger().log(
+                    "Decision",
+                    f"Finished processing PR #{pr_number}",
+                    item_type="pr",
+                    item_number=pr_number,
+                    details={
+                        "actions_taken": processed_pr.actions_taken,
+                        "error": processed_pr.error
+                    }
+                )
+
             finally:
                 # Clear progress header after processing
                 newline_progress()
@@ -253,7 +293,15 @@ def process_pull_request(
         return processed_pr
 
     except Exception as e:
-        logger.error(f"Failed to process PR #{pr_data.get('number', 'unknown')}: {e}")
+        pr_number = pr_data.get('number', 'unknown')
+        logger.error(f"Failed to process PR #{pr_number}: {e}")
+        get_trace_logger().log(
+            "Error",
+            f"Exception processing PR #{pr_number}: {e}",
+            item_type="pr",
+            item_number=pr_number, # type: ignore
+            details={"error": str(e)}
+        )
         return ProcessedPRResult(
             pr_data=pr_data,
             actions_taken=[f"Error processing PR: {str(e)}"],

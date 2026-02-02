@@ -33,6 +33,7 @@ from .util.gh_cache import GitHubClient, get_ghapi_client
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
+from .trace_logger import get_trace_logger
 
 logger = get_logger(__name__)
 
@@ -50,6 +51,7 @@ class AutomationEngine:
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
+        self.active_workers: Dict[int, Optional[Candidate]] = {}
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
@@ -76,6 +78,7 @@ class AutomationEngine:
     async def _producer_loop(self, repo_name: str) -> None:
         """Producer loop that polls for candidates and adds them to the queue."""
         logger.info("Producer started")
+        get_trace_logger().log("System", "Producer started", details={"repo_name": repo_name})
 
         # Check closed branch once at start (as per original run method)
         if not await asyncio.to_thread(self._check_and_handle_closed_branch, repo_name):
@@ -116,7 +119,15 @@ class AutomationEngine:
                 # Add candidates to queue
                 for candidate in candidates:
                     await self.queue.put(candidate)
-                    logger.info(f"Queued {candidate.type} #{candidate.data.get('number', 'N/A')}")
+                    item_number = candidate.data.get('number', 'N/A')
+                    logger.info(f"Queued {candidate.type} #{item_number}")
+                    get_trace_logger().log(
+                        "Queue",
+                        f"Queued {candidate.type} #{item_number}",
+                        item_type=candidate.type,
+                        item_number=item_number,
+                        details={"priority": candidate.priority}
+                    )
 
                 # Clear cache
                 await asyncio.to_thread(lambda: get_github_cache().clear())
@@ -132,18 +143,45 @@ class AutomationEngine:
     async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
         """Worker loop that processes candidates from the queue."""
         logger.info(f"Worker {worker_id} started")
+        get_trace_logger().log("System", f"Worker {worker_id} started")
+
         while True:
             candidate = await self.queue.get()
+            item_number = candidate.data.get('number', 'N/A')
+
             try:
-                logger.info(f"Worker {worker_id} processing {candidate.type} #{candidate.data.get('number', 'N/A')}")
+                self.active_workers[worker_id] = candidate
+                logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
+
+                get_trace_logger().log(
+                    "Worker",
+                    f"Worker {worker_id} started processing {candidate.type} #{item_number}",
+                    item_type=candidate.type,
+                    item_number=item_number,
+                    details={"worker_id": worker_id}
+                )
 
                 # Process candidate
                 result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
 
                 if result.error:
-                    logger.error(f"Worker {worker_id} failed to process {candidate.type} #{candidate.data.get('number', 'N/A')}: {result.error}")
+                    logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
+                    get_trace_logger().log(
+                        "Worker",
+                        f"Worker {worker_id} failed to process {candidate.type} #{item_number}",
+                        item_type=candidate.type,
+                        item_number=item_number,
+                        details={"worker_id": worker_id, "error": result.error}
+                    )
                 else:
-                    logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
+                    logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{item_number}")
+                    get_trace_logger().log(
+                        "Worker",
+                        f"Worker {worker_id} successfully processed {candidate.type} #{item_number}",
+                        item_type=candidate.type,
+                        item_number=item_number,
+                        details={"worker_id": worker_id}
+                    )
 
                 # Save report after each processing (optional, but good for tracking)
                 # Converting result to the dict format expected by _save_report is annoying here
@@ -154,7 +192,31 @@ class AutomationEngine:
             except Exception as e:
                 logger.error(f"Worker {worker_id} error processing candidate: {e}")
             finally:
+                self.active_workers[worker_id] = None
                 self.queue.task_done()
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get the current status of the automation engine."""
+        queue_items = list(self.queue._queue) if hasattr(self.queue, '_queue') else []
+
+        status = {
+            "queue_length": self.queue.qsize(),
+            "queue_items": [
+                {
+                    "type": c.type,
+                    "number": c.data.get("number"),
+                    "priority": c.priority
+                } for c in queue_items
+            ],
+            "active_workers": {
+                wid: {
+                    "type": c.type,
+                    "number": c.data.get("number")
+                } if c else None
+                for wid, c in self.active_workers.items()
+            }
+        }
+        return status
 
     def _check_and_handle_closed_branch(self, repo_name: str) -> bool:
         """
