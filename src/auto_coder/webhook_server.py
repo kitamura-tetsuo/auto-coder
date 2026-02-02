@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from .automation_config import Candidate
 from .automation_engine import AutomationEngine
+from .dashboard import init_dashboard
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -197,5 +198,7 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
         payload = await request.json()
         background_tasks.add_task(process_github_payload, event_type, payload, engine, repo_name)
         return {"status": "received"}
+
+    init_dashboard(app)
 
     return app
