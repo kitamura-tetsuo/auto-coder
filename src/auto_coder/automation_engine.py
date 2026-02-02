@@ -119,15 +119,9 @@ class AutomationEngine:
                 # Add candidates to queue
                 for candidate in candidates:
                     await self.queue.put(candidate)
-                    item_number = candidate.data.get('number', 'N/A')
+                    item_number = candidate.data.get("number", "N/A")
                     logger.info(f"Queued {candidate.type} #{item_number}")
-                    get_trace_logger().log(
-                        "Queue",
-                        f"Queued {candidate.type} #{item_number}",
-                        item_type=candidate.type,
-                        item_number=item_number,
-                        details={"priority": candidate.priority}
-                    )
+                    get_trace_logger().log("Queue", f"Queued {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"priority": candidate.priority})
 
                 # Clear cache
                 await asyncio.to_thread(lambda: get_github_cache().clear())
@@ -147,41 +141,23 @@ class AutomationEngine:
 
         while True:
             candidate = await self.queue.get()
-            item_number = candidate.data.get('number', 'N/A')
+            item_number = candidate.data.get("number", "N/A")
 
             try:
                 self.active_workers[worker_id] = candidate
                 logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
 
-                get_trace_logger().log(
-                    "Worker",
-                    f"Worker {worker_id} started processing {candidate.type} #{item_number}",
-                    item_type=candidate.type,
-                    item_number=item_number,
-                    details={"worker_id": worker_id}
-                )
+                get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
 
                 # Process candidate
                 result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
 
                 if result.error:
                     logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
-                    get_trace_logger().log(
-                        "Worker",
-                        f"Worker {worker_id} failed to process {candidate.type} #{item_number}",
-                        item_type=candidate.type,
-                        item_number=item_number,
-                        details={"worker_id": worker_id, "error": result.error}
-                    )
+                    get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
                 else:
                     logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{item_number}")
-                    get_trace_logger().log(
-                        "Worker",
-                        f"Worker {worker_id} successfully processed {candidate.type} #{item_number}",
-                        item_type=candidate.type,
-                        item_number=item_number,
-                        details={"worker_id": worker_id}
-                    )
+                    get_trace_logger().log("Worker", f"Worker {worker_id} successfully processed {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
 
                 # Save report after each processing (optional, but good for tracking)
                 # Converting result to the dict format expected by _save_report is annoying here
@@ -197,25 +173,9 @@ class AutomationEngine:
 
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the automation engine."""
-        queue_items = list(self.queue._queue) if hasattr(self.queue, '_queue') else []
+        queue_items = list(self.queue._queue) if hasattr(self.queue, "_queue") else []
 
-        status = {
-            "queue_length": self.queue.qsize(),
-            "queue_items": [
-                {
-                    "type": c.type,
-                    "number": c.data.get("number"),
-                    "priority": c.priority
-                } for c in queue_items
-            ],
-            "active_workers": {
-                wid: {
-                    "type": c.type,
-                    "number": c.data.get("number")
-                } if c else None
-                for wid, c in self.active_workers.items()
-            }
-        }
+        status = {"queue_length": self.queue.qsize(), "queue_items": [{"type": c.type, "number": c.data.get("number"), "priority": c.priority} for c in queue_items], "active_workers": {wid: {"type": c.type, "number": c.data.get("number")} if c else None for wid, c in self.active_workers.items()}}
         return status
 
     def _check_and_handle_closed_branch(self, repo_name: str) -> bool:
