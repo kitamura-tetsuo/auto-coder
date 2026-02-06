@@ -36,7 +36,8 @@ class TestAutomationEngine:
             "gemini-2.5-pro",
         )
 
-        with patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
+        with patch("src.auto_coder.automation_engine.get_current_branch") as mock_get_current_branch, patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
+            mock_get_current_branch.return_value = "main"
             mock_get_manager.return_value = mock_backend_manager
 
             # Setup - Mock GitHub client methods needed for operation
@@ -82,7 +83,8 @@ class TestAutomationEngine:
             "gemini-2.5-pro",
         )
 
-        with patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
+        with patch("src.auto_coder.automation_engine.get_current_branch") as mock_get_current_branch, patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
+            mock_get_current_branch.return_value = "main"
             mock_get_manager.return_value = mock_backend_manager
 
             # Setup - Create one issue candidate so processing path is exercised

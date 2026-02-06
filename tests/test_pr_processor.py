@@ -19,12 +19,18 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
     @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
+    @patch("src.auto_coder.pr_processor.git_push")
+    @patch("src.auto_coder.pr_processor.git_commit_with_retry")
+    @patch("src.auto_coder.pr_processor.cmd")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_backend_switching_on_attempt_2(
         self,
         mock_commit,
         mock_get_default_manager,
+        mock_cmd,
+        mock_git_commit,
+        mock_git_push,
         mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
@@ -50,6 +56,9 @@ class TestPRProcessorBackendSwitching:
         high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
         mock_create_high_score_manager.return_value = high_score_manager
+        mock_cmd.run_command.return_value = MagicMock(success=True, stdout="")
+        mock_git_commit.return_value = MagicMock(success=True)
+        mock_git_push.return_value = MagicMock(success=True)
 
         # Mock the test results - fail first, pass on third
         # Use dicts with .get() method since the code uses test_result.get("success")
@@ -88,12 +97,18 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
     @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
+    @patch("src.auto_coder.pr_processor.git_push")
+    @patch("src.auto_coder.pr_processor.git_commit_with_retry")
+    @patch("src.auto_coder.pr_processor.cmd")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_no_backend_switching_on_attempt_1(
         self,
         mock_commit,
         mock_get_default_manager,
+        mock_cmd,
+        mock_git_commit,
+        mock_git_push,
         mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
@@ -119,6 +134,9 @@ class TestPRProcessorBackendSwitching:
         high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
         mock_create_high_score_manager.return_value = high_score_manager
+        mock_cmd.run_command.return_value = MagicMock(success=True, stdout="")
+        mock_git_commit.return_value = MagicMock(success=True)
+        mock_git_push.return_value = MagicMock(success=True)
 
         # Mock test to pass on first attempt
         mock_run_tests.return_value = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
@@ -140,12 +158,18 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
     @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
+    @patch("src.auto_coder.pr_processor.git_push")
+    @patch("src.auto_coder.pr_processor.git_commit_with_retry")
+    @patch("src.auto_coder.pr_processor.cmd")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_backend_switching_on_multiple_attempts(
         self,
         mock_commit,
         mock_get_default_manager,
+        mock_cmd,
+        mock_git_commit,
+        mock_git_push,
         mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
@@ -171,6 +195,9 @@ class TestPRProcessorBackendSwitching:
         high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
         mock_create_high_score_manager.return_value = high_score_manager
+        mock_cmd.run_command.return_value = MagicMock(success=True, stdout="")
+        mock_git_commit.return_value = MagicMock(success=True)
+        mock_git_push.return_value = MagicMock(success=True)
 
         # Mock test results - fail multiple times
         # Use dicts with .get() method since the code uses test_result.get("success")
@@ -210,12 +237,18 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
     @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
+    @patch("src.auto_coder.pr_processor.git_push")
+    @patch("src.auto_coder.pr_processor.git_commit_with_retry")
+    @patch("src.auto_coder.pr_processor.cmd")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_backend_switching_with_finite_attempts_limit(
         self,
         mock_commit,
         mock_get_default_manager,
+        mock_cmd,
+        mock_git_commit,
+        mock_git_push,
         mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
@@ -241,6 +274,9 @@ class TestPRProcessorBackendSwitching:
         high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
         mock_create_high_score_manager.return_value = high_score_manager
+        mock_cmd.run_command.return_value = MagicMock(success=True, stdout="")
+        mock_git_commit.return_value = MagicMock(success=True)
+        mock_git_push.return_value = MagicMock(success=True)
 
         # Mock test results - always fail
         # Use dict with .get() method since the code uses test_result.get("success")

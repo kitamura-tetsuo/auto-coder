@@ -82,16 +82,21 @@ class TestLabelManagerPerformance:
 
         config = AutomationConfig()
 
-        # Measure time with retries
-        start = time.perf_counter()
-        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=3, retry_delay=0.01) as should_process:
-            assert should_process
-        end = time.perf_counter()
-        retry_time = end - start
+        # Mock time.sleep to make test run instantly
+        from unittest.mock import patch
 
-        # Should include retry delays (0.01 * 2 = 0.02s minimum)
-        assert retry_time >= 0.02, f"Retry time {retry_time:.4f}s should include retry delays"
-        print(f"✓ LabelManager with retries (max_retries=3): {retry_time:.4f}s")
+        with patch("time.sleep") as mock_sleep:
+            start = time.perf_counter()
+            with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=3, retry_delay=0.01) as should_process:
+                assert should_process
+            end = time.perf_counter()
+            retry_time = end - start
+
+            # Verify sleep was called twice (2 retries before success)
+            assert mock_sleep.call_count == 2
+            for call in mock_sleep.call_args_list:
+                assert call[0][0] == 0.01
+            print(f"✓ LabelManager with retries (max_retries=3): {retry_time:.4f}s")
 
     def test_label_manager_thread_safety_performance(self):
         """Test thread safety performance impact."""

@@ -317,6 +317,7 @@ class TestIssueProcessorWithCloudManager:
 class TestProcessIssueJulesMode:
     """Test cases for _process_issue_jules_mode function."""
 
+    @patch("src.auto_coder.issue_processor.get_commit_log")
     @patch("src.auto_coder.issue_processor.JulesClient")
     @patch("src.auto_coder.issue_processor.CloudManager")
     @patch("src.auto_coder.issue_processor.render_prompt")
@@ -327,6 +328,7 @@ class TestProcessIssueJulesMode:
         mock_render,
         mock_cloud_manager_class,
         mock_jules_client_class,
+        mock_get_commit_log,
     ):
         """Test that _process_issue_jules_mode passes the issue title to start_session."""
         from src.auto_coder.issue_processor import _process_issue_jules_mode
@@ -345,6 +347,9 @@ class TestProcessIssueJulesMode:
 
         mock_config = Mock()
         mock_config.MAIN_BRANCH = "main"
+
+        # Mock get_commit_log to prevent git command execution
+        mock_get_commit_log.return_value = "No commits"
 
         # Test data
         issue_data = {"number": 123, "title": "Test Issue Title", "body": "Test Body"}
