@@ -109,11 +109,12 @@ def test_mergeability_remediation_checkout_fails(mock_github_client, mock_get_gh
 
 @patch("src.auto_coder.pr_processor._check_github_actions_status")
 @patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+@patch("src.auto_coder.pr_processor.BranchManager")
 @patch("src.auto_coder.pr_processor._checkout_pr_branch")
 @patch("src.auto_coder.pr_processor._update_with_base_branch")
 @patch("src.auto_coder.pr_processor.get_ghapi_client")
 @patch("src.auto_coder.pr_processor.GitHubClient")
-def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghapi_client, mock_update, mock_checkout, mock_check_progress, mock_check_status):
+def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghapi_client, mock_update, mock_checkout, mock_branch_manager, mock_check_progress, mock_check_status):
     """Verify remediation handles update failure."""
     mock_check_progress.return_value = True
     mock_checkout.return_value = True

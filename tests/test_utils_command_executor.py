@@ -24,8 +24,15 @@ def test_run_command_respects_stream_flag(monkeypatch):
 
 def test_run_command_streams_output(monkeypatch):
     # Ensure subprocess.run is not used in streaming mode
-    def fail_run(*_args, **_kwargs):
-        pytest.fail("subprocess.run should not be used when stream_output=True")
+    def fail_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        # Only fail if the command matches the one we're testing (which uses sys.executable)
+        # This prevents background threads (like GraphRAGIndexManager running git) from failing the test
+        if isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == sys.executable:
+            pytest.fail("subprocess.run should not be used when stream_output=True")
+
+        # Return dummy result for background calls
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(utils.subprocess, "run", fail_run)

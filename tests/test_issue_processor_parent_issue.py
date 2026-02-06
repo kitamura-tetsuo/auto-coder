@@ -486,7 +486,11 @@ class TestCreatePRForParentIssue:
 class TestParentIssueContextInjection:
     """Tests for parent issue context injection in sub-issues."""
 
-    def test_sub_issue_with_parent_context_injected(self):
+    @patch("src.auto_coder.issue_processor.BranchManager")
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
+    @patch("src.auto_coder.issue_processor.get_current_branch", return_value="main")
+    @patch("src.auto_coder.issue_processor.cmd")
+    def test_sub_issue_with_parent_context_injected(self, mock_cmd, mock_get_branch, mock_get_attempt, mock_branch_mgr):
         """Test that sub-issues correctly inject parent issue context into prompts."""
         repo_name = "owner/repo"
         issue_number = 201
@@ -545,7 +549,11 @@ class TestParentIssueContextInjection:
         # Verify parent context was fetched
         github_client.get_parent_issue_details.assert_called_once_with(repo_name, issue_number)
 
-    def test_regular_issue_without_parent_not_affected(self):
+    @patch("src.auto_coder.issue_processor.BranchManager")
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
+    @patch("src.auto_coder.issue_processor.get_current_branch", return_value="main")
+    @patch("src.auto_coder.issue_processor.cmd")
+    def test_regular_issue_without_parent_not_affected(self, mock_cmd, mock_get_branch, mock_get_attempt, mock_branch_mgr):
         """Test that regular issues without parents do not get parent context."""
         repo_name = "owner/repo"
         issue_number = 300
@@ -598,7 +606,11 @@ class TestParentIssueContextInjection:
         # get_parent_issue_body should not be called when there's no parent
         github_client.get_parent_issue_body.assert_not_called()
 
-    def test_parent_issue_body_none_handled_correctly(self):
+    @patch("src.auto_coder.issue_processor.BranchManager")
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
+    @patch("src.auto_coder.issue_processor.get_current_branch", return_value="main")
+    @patch("src.auto_coder.issue_processor.cmd")
+    def test_parent_issue_body_none_handled_correctly(self, mock_cmd, mock_get_branch, mock_get_attempt, mock_branch_mgr):
         """Test that None parent issue body is handled correctly."""
         repo_name = "owner/repo"
         issue_number = 201

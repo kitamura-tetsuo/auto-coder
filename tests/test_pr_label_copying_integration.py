@@ -226,24 +226,25 @@ class TestPRLabelCopyingIntegration:
                 "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
             }
             with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
-                # Mock find_pr_by_head_branch to return None
-                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+                with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                    # Mock find_pr_by_head_branch to return None
+                    mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
-                # Create PR
-                result = _create_pr_for_issue(
-                    repo_name,
-                    issue_data,
-                    work_branch,
-                    base_branch,
-                    llm_response,
-                    mock_github_client_for_pr,
-                    config_with_pr_label_copying,
-                )
+                    # Create PR
+                    result = _create_pr_for_issue(
+                        repo_name,
+                        issue_data,
+                        work_branch,
+                        base_branch,
+                        llm_response,
+                        mock_github_client_for_pr,
+                        config_with_pr_label_copying,
+                    )
 
-                # Verify PR was created
-                assert f"Successfully created PR for issue #{issue_number}" in result
-                # Verify resolve_pr_labels_with_priority was called
-                assert mock_resolve.called
+                    # Verify PR was created
+                    assert f"Successfully created PR for issue #{issue_number}" in result
+                    # Verify resolve_pr_labels_with_priority was called
+                    assert mock_resolve.called
 
     def test_create_pr_with_label_copying_disabled(self, mock_github_client_for_pr):
         """Test PR creation skips label copying when disabled."""
@@ -286,22 +287,23 @@ class TestPRLabelCopyingIntegration:
             "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
         }
         with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
-            # Mock find_pr_by_head_branch to return None
-            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+            with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                # Mock find_pr_by_head_branch to return None
+                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
-            # Create PR
-            result = _create_pr_for_issue(
-                repo_name,
-                issue_data,
-                work_branch,
-                base_branch,
-                llm_response,
-                mock_github_client_for_pr,
-                config,
-            )
+                # Create PR
+                result = _create_pr_for_issue(
+                    repo_name,
+                    issue_data,
+                    work_branch,
+                    base_branch,
+                    llm_response,
+                    mock_github_client_for_pr,
+                    config,
+                )
 
-            # Verify PR was created
-            assert f"Successfully created PR for issue #{issue_number}" in result
+                # Verify PR was created
+                assert f"Successfully created PR for issue #{issue_number}" in result
 
     def test_create_pr_with_no_semantic_labels(self, config_with_pr_label_copying, mock_github_client_for_pr):
         """Test PR creation handles issues with no semantic labels."""
@@ -328,22 +330,23 @@ class TestPRLabelCopyingIntegration:
             "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
         }
         with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
-            # Mock find_pr_by_head_branch to return None
-            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+            with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                # Mock find_pr_by_head_branch to return None
+                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
-            # Create PR
-            result = _create_pr_for_issue(
-                repo_name,
-                issue_data,
-                work_branch,
-                base_branch,
-                llm_response,
-                mock_github_client_for_pr,
-                config_with_pr_label_copying,
-            )
+                # Create PR
+                result = _create_pr_for_issue(
+                    repo_name,
+                    issue_data,
+                    work_branch,
+                    base_branch,
+                    llm_response,
+                    mock_github_client_for_pr,
+                    config_with_pr_label_copying,
+                )
 
-            # Verify PR was created
-            assert f"Successfully created PR for issue #{issue_number}" in result
+                # Verify PR was created
+                assert f"Successfully created PR for issue #{issue_number}" in result
 
     def test_create_pr_with_label_copying_graceful_error_handling(self, config_with_pr_label_copying, mock_github_client_for_pr):
         """Test that PR creation continues even if label copying fails."""
@@ -373,22 +376,23 @@ class TestPRLabelCopyingIntegration:
             "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
         }
         with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
-            # Mock find_pr_by_head_branch to return None
-            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+            with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                # Mock find_pr_by_head_branch to return None
+                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
-            # Create PR - should not raise despite label error
-            result = _create_pr_for_issue(
-                repo_name,
-                issue_data,
-                work_branch,
-                base_branch,
-                llm_response,
-                mock_github_client_for_pr,
-                config_with_pr_label_copying,
-            )
+                # Create PR - should not raise despite label error
+                result = _create_pr_for_issue(
+                    repo_name,
+                    issue_data,
+                    work_branch,
+                    base_branch,
+                    llm_response,
+                    mock_github_client_for_pr,
+                    config_with_pr_label_copying,
+                )
 
-            # Verify PR was still created successfully
-            assert f"Successfully created PR for issue #{issue_number}" in result
+                # Verify PR was still created successfully
+                assert f"Successfully created PR for issue #{issue_number}" in result
 
     def test_pr_label_priority_integration(self, config_with_pr_label_copying):
         """Test that PR label priorities are correctly applied in integration."""
@@ -488,21 +492,22 @@ class TestPRLabelCopyingIntegration:
                 "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
             }
             with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
-                # Mock find_pr_by_head_branch to return None
-                mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+                with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                    # Mock find_pr_by_head_branch to return None
+                    mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
 
-                # Create PR with comprehensive test
-                result = _create_pr_for_issue(
-                    repo_name,
-                    issue_data,
-                    work_branch,
-                    base_branch,
-                    llm_response,
-                    mock_github_client_for_pr,
-                    config_with_pr_label_copying,
-                )
+                    # Create PR with comprehensive test
+                    result = _create_pr_for_issue(
+                        repo_name,
+                        issue_data,
+                        work_branch,
+                        base_branch,
+                        llm_response,
+                        mock_github_client_for_pr,
+                        config_with_pr_label_copying,
+                    )
 
-                # Verify PR was created
-                assert f"Successfully created PR for issue #{issue_number}" in result
-                # Verify resolve was called
-                assert mock_resolve.called
+                    # Verify PR was created
+                    assert f"Successfully created PR for issue #{issue_number}" in result
+                    # Verify resolve was called
+                    assert mock_resolve.called

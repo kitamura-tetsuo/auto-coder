@@ -234,9 +234,7 @@ def process_pull_request(
                 # Check GitHub Actions status and mergeability
                 github_checks = _check_github_actions_status(repo_name, pr_data, config)
 
-                get_trace_logger().log(
-                    "CI Status", f"CI Status for PR #{pr_number}: {'Success' if github_checks.success else 'Failure/Pending'}", item_type="pr", item_number=pr_number, details={"success": github_checks.success, "in_progress": github_checks.in_progress, "conclusion": github_checks.conclusion}
-                )
+                get_trace_logger().log("CI Status", f"CI Status for PR #{pr_number}: {'Success' if github_checks.success else 'Failure/Pending'}", item_type="pr", item_number=pr_number, details={"success": github_checks.success, "in_progress": github_checks.in_progress})
 
                 mergeable = pr_data.get("mergeable", True)
                 get_trace_logger().log("Merge Check", f"Mergeable status for PR #{pr_number}: {mergeable}", item_type="pr", item_number=pr_number, details={"mergeable": mergeable})

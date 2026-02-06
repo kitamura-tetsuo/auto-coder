@@ -11,16 +11,22 @@ class TestSettings:
 
     def test_default_settings(self):
         """Test default settings values."""
-        settings = Settings()
+        # Clear environment variables to ensure we get true defaults
+        import os
+        from unittest.mock import patch
 
-        assert settings.github_token is None
-        assert settings.github_api_url == "https://api.github.com"
-        assert settings.gemini_api_key is None
-        assert settings.gemini_model == "gemini-pro"
-        assert settings.max_issues_per_run == -1
-        assert settings.max_prs_per_run == -1
-        assert settings.log_level == "INFO"
-        assert "%(asctime)s" in settings.log_format
+        # Patch both environment and the env_file loading
+        with patch.dict(os.environ, {}, clear=True), patch.object(Settings, "model_config", {**Settings.model_config, "env_file": None}):
+            settings = Settings()
+
+            assert settings.github_token is None
+            assert settings.github_api_url == "https://api.github.com"
+            assert settings.gemini_api_key is None
+            assert settings.gemini_model == "gemini-pro"
+            assert settings.max_issues_per_run == -1
+            assert settings.max_prs_per_run == -1
+            assert settings.log_level == "INFO"
+            assert "%(asctime)s" in settings.log_format
 
     @patch.dict(
         os.environ,
@@ -48,7 +54,8 @@ class TestSettings:
         assert settings.log_level == "DEBUG"
         assert settings.log_format == "custom format"
 
-    @patch.dict(os.environ, {"GITHUB_TOKEN": "env_token"})
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "env_token"}, clear=True)
+    @patch.object(Settings, "model_config", {**Settings.model_config, "env_file": None})
     def test_settings_partial_environment(self):
         """Test settings with partial environment variables."""
         settings = Settings()

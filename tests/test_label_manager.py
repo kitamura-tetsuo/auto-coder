@@ -292,14 +292,15 @@ class TestLabelManager:
 
         config = AutomationConfig()
 
-        # Use custom retry_delay
-        start = time.time()
-        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=2, retry_delay=0.1) as should_process:
-            assert should_process
-        elapsed = time.time() - start
+        # Mock time.sleep to make test run instantly
+        with patch("time.sleep") as mock_sleep:
+            start = time.time()
+            with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=2, retry_delay=0.1) as should_process:
+                assert should_process
+            elapsed = time.time() - start
 
-        # Should wait at least 0.1 seconds for retry
-        assert elapsed >= 0.1, f"Expected at least 0.1s delay, got {elapsed:.4f}s"
+            # Verify sleep was called once with the correct delay
+            mock_sleep.assert_called_once_with(0.1)
 
     def test_label_manager_zero_retries(self):
         """Test LabelManager with max_retries=0 (no retries attempted)."""
@@ -1083,12 +1084,14 @@ class TestLabelManagerProcessorIntegration:
     def test_issue_processor_calls_keep_label_on_pr_creation_success(self):
         """Test that issue_processor calls keep_label() when PR creation is successful."""
         from src.auto_coder.issue_processor import _apply_issue_actions_directly
+        from src.auto_coder.utils import CommandResult
 
         # Setup mocks
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
         mock_github_client.try_add_labels.return_value = True
+        mock_github_client.get_parent_issue_details.return_value = None
 
         config = AutomationConfig()
         config.llm = Mock()  # Mock LLM client
@@ -1101,8 +1104,41 @@ class TestLabelManagerProcessorIntegration:
             "pr_number": 123,
         }
 
-        with patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr:
+        # Mock all the dependencies to prevent hanging
+        with (
+            patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr,
+            patch("src.auto_coder.issue_processor.cmd.run_command") as mock_run_command,
+            patch("src.auto_coder.issue_processor.get_current_attempt") as mock_get_attempt,
+            patch("src.auto_coder.issue_processor.get_current_branch") as mock_get_branch,
+            patch("src.auto_coder.issue_processor.get_commit_log") as mock_get_log,
+            patch("src.auto_coder.issue_processor.get_llm_backend_manager") as mock_llm_manager,
+            patch("src.auto_coder.issue_processor.commit_and_push_changes") as mock_commit,
+            patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr_issue,
+            patch("src.auto_coder.issue_processor.set_progress_item") as mock_progress,
+            patch("src.auto_coder.issue_processor.BranchManager") as mock_branch_mgr,
+            patch("src.auto_coder.issue_processor.ProgressStage") as mock_stage,
+        ):
+
             mock_create_pr.return_value = "Successfully created PR"
+            mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
+            mock_get_attempt.return_value = 0
+            mock_get_branch.return_value = "main"
+            mock_get_log.return_value = "No commits"
+            mock_commit.return_value = "Committed changes"
+            mock_create_pr_issue.return_value = "Successfully created PR for issue #1: Test issue"
+
+            # Mock LLM backend manager
+            mock_llm_backend = Mock()
+            mock_llm_backend._run_llm_cli.return_value = "Fixed the issue"
+            mock_llm_manager.return_value = mock_llm_backend
+
+            # Mock BranchManager as a context manager
+            mock_branch_mgr.return_value.__enter__ = Mock(return_value=None)
+            mock_branch_mgr.return_value.__exit__ = Mock(return_value=None)
+
+            # Mock ProgressStage as a context manager
+            mock_stage.return_value.__enter__ = Mock(return_value=None)
+            mock_stage.return_value.__exit__ = Mock(return_value=None)
 
             # Call the function which should call keep_label()
             actions = _apply_issue_actions_directly(
@@ -1119,6 +1155,7 @@ class TestLabelManagerProcessorIntegration:
     def test_issue_processor_does_not_call_keep_label_on_pr_creation_failure(self):
         """Test that issue_processor does not call keep_label() when PR creation fails."""
         from src.auto_coder.issue_processor import _apply_issue_actions_directly
+        from src.auto_coder.utils import CommandResult
 
         # Setup mocks
         mock_github_client = Mock()
@@ -1130,8 +1167,44 @@ class TestLabelManagerProcessorIntegration:
         config.llm = Mock()  # Mock LLM client
         config.llm.run_code.return_value = "Failed to create PR"
 
-        with patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr:
+        with (
+            patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr,
+            patch("src.auto_coder.issue_processor.cmd.run_command") as mock_run_command,
+            patch("src.auto_coder.issue_processor.get_current_attempt") as mock_get_attempt,
+            patch("src.auto_coder.issue_processor.get_current_branch") as mock_get_branch,
+            patch("src.auto_coder.issue_processor.get_commit_log") as mock_get_log,
+            patch("src.auto_coder.issue_processor.get_llm_backend_manager") as mock_llm_manager,
+            patch("src.auto_coder.issue_processor.commit_and_push_changes") as mock_commit,
+            patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr_issue,
+            patch("src.auto_coder.issue_processor.set_progress_item") as mock_progress,
+            patch("src.auto_coder.issue_processor.BranchManager") as mock_branch_mgr,
+            patch("src.auto_coder.issue_processor.ProgressStage") as mock_stage,
+        ):
+
+            # Mock get_parent_issue_details on the github_client
+            mock_github_client.get_parent_issue_details.return_value = None
+
             mock_create_pr.return_value = "Failed to create PR"
+            mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
+            mock_get_attempt.return_value = 0
+            mock_get_branch.return_value = "main"
+            mock_get_log.return_value = "commit log"
+
+            # Mock LLM backend manager
+            mock_llm = Mock()
+            mock_llm._run_llm_cli.return_value = "ACTION_SUMMARY: Failed to create PR"
+            mock_llm_manager.return_value = mock_llm
+
+            mock_commit.return_value = {"success": False}
+            mock_create_pr_issue.return_value = "Failed to create PR"
+
+            # Mock BranchManager as context manager
+            mock_branch_mgr.return_value.__enter__.return_value = Mock()
+            mock_branch_mgr.return_value.__exit__.return_value = None
+
+            # Mock ProgressStage as context manager
+            mock_stage.return_value.__enter__.return_value = Mock()
+            mock_stage.return_value.__exit__.return_value = None
 
             # Call the function
             actions = _apply_issue_actions_directly(

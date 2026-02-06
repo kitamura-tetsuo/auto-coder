@@ -8,7 +8,10 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
 
-def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
+@patch("src.auto_coder.pr_processor.get_commit_log")
+def test_create_pr_prompt_is_action_oriented_no_comments(mock_get_log, mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
+    mock_get_log.return_value = ""
+
     config = AutomationConfig()
     engine = AutomationEngine(mock_github_client, config=config)
     prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")

@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -7,7 +7,8 @@ from src.auto_coder.pr_processor import _create_pr_analysis_prompt
 
 
 class TestPRPromptGeneration:
-    def test_link_issue_context_injection(self):
+    @patch("src.auto_coder.pr_processor.get_commit_log")
+    def test_link_issue_context_injection(self, mock_get_commit_log):
         # Setup
         config = AutomationConfig()
         repo_name = "test/repo"
@@ -34,6 +35,9 @@ class TestPRPromptGeneration:
         mock_client.get_parent_issue_details.return_value = {"number": 456, "title": "Epic: Auth Refactor"}
         mock_client.get_parent_issue_body.return_value = "Refactor the entire auth system"
 
+        # Mock get_commit_log to prevent git command execution
+        mock_get_commit_log.return_value = "No commits"
+
         # Execute
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config, mock_client)
 
@@ -44,7 +48,8 @@ class TestPRPromptGeneration:
         assert "Parent Issue #456 (of #123): Epic: Auth Refactor" in prompt
         assert "Parent Issue Description:\nRefactor the entire auth system" in prompt
 
-    def test_no_linked_issues(self):
+    @patch("src.auto_coder.pr_processor.get_commit_log")
+    def test_no_linked_issues(self, mock_get_commit_log):
         # Setup
         config = AutomationConfig()
         repo_name = "test/repo"
@@ -59,6 +64,9 @@ class TestPRPromptGeneration:
         pr_diff = "diff content"
 
         mock_client = Mock()
+
+        # Mock get_commit_log to prevent git command execution
+        mock_get_commit_log.return_value = "No commits"
 
         # Execute
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config, mock_client)

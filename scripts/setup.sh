@@ -26,6 +26,8 @@ fi
 
 # Install dependencies using uv
 echo "Installing dependencies with uv sync..."
+uv python pin 3.12
+
 # Use --all-extras to install optional dependencies (like test)
 # Use --dev to install development dependencies
 uv sync --all-extras --dev

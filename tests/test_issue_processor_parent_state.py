@@ -35,10 +35,13 @@ def mock_config():
 
 @patch("auto_coder.issue_processor.cmd")
 @patch("auto_coder.issue_processor.get_current_attempt")
-@patch("auto_coder.issue_processor.branch_context")
+@patch("auto_coder.issue_processor.BranchManager")
+@patch("auto_coder.issue_processor.LabelManager")
+@patch("auto_coder.issue_processor.get_current_branch")
+@patch("auto_coder.issue_processor.get_commit_log")
 @patch("auto_coder.issue_processor.get_llm_backend_manager")
 @patch("auto_coder.git_info.CommandExecutor")
-def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_branch_context, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
+def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_get_commit_log, mock_get_current_branch, mock_label_manager, mock_branch_manager, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
     # Setup
     repo_name = "owner/repo"
     issue_data = {"number": 124, "title": "Test Issue Open Parent", "body": "Body", "labels": []}
@@ -56,6 +59,20 @@ def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_
 
     # Mock get_current_attempt
     mock_get_current_attempt.return_value = 1
+
+    # Mock get_commit_log to return empty string
+    mock_get_commit_log.return_value = ""
+
+    # Mock get_current_branch to return main
+    mock_get_current_branch.return_value = "main"
+
+    # Mock BranchManager context manager
+    mock_branch_manager.return_value.__enter__ = MagicMock(return_value=None)
+    mock_branch_manager.return_value.__exit__ = MagicMock(return_value=None)
+
+    # Mock LabelManager context manager
+    mock_label_manager.return_value.__enter__ = MagicMock(return_value=True)
+    mock_label_manager.return_value.__exit__ = MagicMock(return_value=None)
 
     # Run
     _apply_issue_actions_directly(repo_name, issue_data, mock_config, mock_github_client)
@@ -81,10 +98,13 @@ def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_
 
 @patch("auto_coder.issue_processor.cmd")
 @patch("auto_coder.issue_processor.get_current_attempt")
-@patch("auto_coder.issue_processor.branch_context")
+@patch("auto_coder.issue_processor.BranchManager")
+@patch("auto_coder.issue_processor.LabelManager")
+@patch("auto_coder.issue_processor.get_current_branch")
+@patch("auto_coder.issue_processor.get_commit_log")
 @patch("auto_coder.issue_processor.get_llm_backend_manager")
 @patch("auto_coder.git_info.CommandExecutor")
-def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_branch_context, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
+def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_get_commit_log, mock_get_current_branch, mock_label_manager, mock_branch_manager, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
     # Setup
     repo_name = "owner/repo"
     issue_data = {"number": 125, "title": "Test Issue Closed Parent", "body": "Body", "labels": []}
@@ -102,6 +122,20 @@ def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_cl
 
     # Mock get_current_attempt
     mock_get_current_attempt.return_value = 1
+
+    # Mock get_commit_log to return empty string
+    mock_get_commit_log.return_value = ""
+
+    # Mock get_current_branch to return main
+    mock_get_current_branch.return_value = "main"
+
+    # Mock BranchManager context manager
+    mock_branch_manager.return_value.__enter__ = MagicMock(return_value=None)
+    mock_branch_manager.return_value.__exit__ = MagicMock(return_value=None)
+
+    # Mock LabelManager context manager
+    mock_label_manager.return_value.__enter__ = MagicMock(return_value=True)
+    mock_label_manager.return_value.__exit__ = MagicMock(return_value=None)
 
     # Run
     _apply_issue_actions_directly(repo_name, issue_data, mock_config, mock_github_client)

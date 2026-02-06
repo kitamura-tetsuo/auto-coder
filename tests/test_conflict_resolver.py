@@ -60,7 +60,9 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         patch("src.auto_coder.conflict_resolver.run_llm_noedit_prompt") as mock_llm,
         patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager") as mock_create_backend,
         patch("src.auto_coder.conflict_resolver._archive_jules_session") as mock_archive,
+        patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as mock_check_mergeability,
     ):
+        mock_check_mergeability.return_value = False
         # Setup mocks
         mock_create_backend.return_value = None
         mock_client = MagicMock()

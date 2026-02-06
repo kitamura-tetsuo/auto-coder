@@ -51,23 +51,25 @@ def test_parent_issue_branch_creation_uses_main_base():
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
             with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
-                # Minimal GitHub client mock
-                github_client = MagicMock()
-                # Mock get_parent_issue_details to return OPEN parent
-                github_client.get_parent_issue_details.return_value = {"number": parent_issue_number, "title": "Parent Issue", "state": "OPEN", "url": "http://url"}
+                with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        # Minimal GitHub client mock
+                        github_client = MagicMock()
+                        # Mock get_parent_issue_details to return OPEN parent
+                        github_client.get_parent_issue_details.return_value = {"number": parent_issue_number, "title": "Parent Issue", "state": "OPEN", "url": "http://url"}
 
-                # Avoid deeper execution
-                class DummyLLM:
-                    def _run_llm_cli(self, *_args, **_kwargs):
-                        return None
+                        # Avoid deeper execution
+                        class DummyLLM:
+                            def _run_llm_cli(self, *_args, **_kwargs):
+                                return None
 
-                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                    _apply_issue_actions_directly(
-                        repo_name,
-                        issue_data,
-                        config,
-                        github_client,
-                    )
+                        with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                            _apply_issue_actions_directly(
+                                repo_name,
+                                issue_data,
+                                config,
+                                github_client,
+                            )
 
     # First branch_context call should be for creating the parent branch from MAIN_BRANCH
     assert captured_calls, "branch_context was not called"
@@ -109,22 +111,24 @@ def test_existing_work_branch_not_recreated():
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
             with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
-                # Minimal GitHub client mock
-                github_client = MagicMock()
-                github_client.get_parent_issue_details.return_value = None  # No parent issue
+                with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        # Minimal GitHub client mock
+                        github_client = MagicMock()
+                        github_client.get_parent_issue_details.return_value = None  # No parent issue
 
-                # Avoid deeper execution
-                class DummyLLM:
-                    def _run_llm_cli(self, *_args, **_kwargs):
-                        return None
+                        # Avoid deeper execution
+                        class DummyLLM:
+                            def _run_llm_cli(self, *_args, **_kwargs):
+                                return None
 
-                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                    _apply_issue_actions_directly(
-                        repo_name,
-                        issue_data,
-                        config,
-                        github_client,
-                    )
+                        with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                            _apply_issue_actions_directly(
+                                repo_name,
+                                issue_data,
+                                config,
+                                github_client,
+                            )
 
     # Verify that branch_context was called with create_new=False
     assert captured_calls, "branch_context was not called"
@@ -164,22 +168,24 @@ def test_missing_work_branch_created_with_correct_base():
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
             with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
-                # Minimal GitHub client mock
-                github_client = MagicMock()
-                github_client.get_parent_issue_details.return_value = None  # No parent issue
+                with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        # Minimal GitHub client mock
+                        github_client = MagicMock()
+                        github_client.get_parent_issue_details.return_value = None  # No parent issue
 
-                # Avoid deeper execution
-                class DummyLLM:
-                    def _run_llm_cli(self, *_args, **_kwargs):
-                        return None
+                        # Avoid deeper execution
+                        class DummyLLM:
+                            def _run_llm_cli(self, *_args, **_kwargs):
+                                return None
 
-                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                    _apply_issue_actions_directly(
-                        repo_name,
-                        issue_data,
-                        config,
-                        github_client,
-                    )
+                        with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                            _apply_issue_actions_directly(
+                                repo_name,
+                                issue_data,
+                                config,
+                                github_client,
+                            )
 
     # Verify that branch_context was called with create_new=True and correct base_branch
     assert captured_calls, "branch_context was not called"
@@ -230,7 +236,12 @@ class TestPRMessageGeneration:
                 # For non-JSON responses, return a default
                 return {"title": "Default", "body": "Default body"}
 
-        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.parse_llm_output_as_json", side_effect=parse_response):
+        with (
+            patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt,
+            patch("src.auto_coder.issue_processor.parse_llm_output_as_json", side_effect=parse_response),
+            patch("src.auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"),
+        ):
             mock_run_prompt.return_value = message_response
 
             result = _create_pr_for_issue(
@@ -377,7 +388,12 @@ class TestPRLabelCopying:
         # Create JSON response
         json_response = '{"title": ' + f'"{pr_title}"' + ', "body": ' + f'"{pr_body}"' + "}"
 
-        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.parse_llm_output_as_json", return_value={"title": pr_title, "body": pr_body}):
+        with (
+            patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt,
+            patch("src.auto_coder.issue_processor.parse_llm_output_as_json", return_value={"title": pr_title, "body": pr_body}),
+            patch("src.auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"),
+        ):
             mock_run_prompt.return_value = json_response
 
             result = _create_pr_for_issue(
@@ -975,27 +991,29 @@ class TestKeepLabelOnPRCreation:
                 with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
                         with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
-                            # Mock _create_pr_for_issue to return success message
-                            with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
-                                mock_create_pr.return_value = f"Successfully created PR for issue #{issue_number}: Test PR"
+                            with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                                with patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0):
+                                    # Mock _create_pr_for_issue to return success message
+                                    with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                                        mock_create_pr.return_value = f"Successfully created PR for issue #{issue_number}: Test PR"
 
-                                # Mock GitHub client
-                                github_client = MagicMock()
-                                github_client.get_parent_issue_details.return_value = None
-                                github_client.get_all_sub_issues.return_value = []
+                                        # Mock GitHub client
+                                        github_client = MagicMock()
+                                        github_client.get_parent_issue_details.return_value = None
+                                        github_client.get_all_sub_issues.return_value = []
 
-                                # Mock LLM response
-                                class DummyLLM:
-                                    def _run_llm_cli(self, *_args, **_kwargs):
-                                        return "Made some changes to fix the issue"
+                                        # Mock LLM response
+                                        class DummyLLM:
+                                            def _run_llm_cli(self, *_args, **_kwargs):
+                                                return "Made some changes to fix the issue"
 
-                                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                                    _apply_issue_actions_directly(
-                                        repo_name,
-                                        issue_data,
-                                        config,
-                                        github_client,
-                                    )
+                                        with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                                            _apply_issue_actions_directly(
+                                                repo_name,
+                                                issue_data,
+                                                config,
+                                                github_client,
+                                            )
 
         # Verify keep_label was called
         assert len(keep_label_called) == 1, "keep_label should be called once on successful PR creation"
@@ -1039,28 +1057,29 @@ class TestKeepLabelOnPRCreation:
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
                 with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
-                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
-                            # Mock _create_pr_for_issue to return failure message
-                            with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
-                                mock_create_pr.return_value = f"Failed to create PR for issue #{issue_number}: Error"
+                        with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                            with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                                # Mock _create_pr_for_issue to return failure message
+                                with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                                    mock_create_pr.return_value = f"Failed to create PR for issue #{issue_number}: Error"
 
-                                # Mock GitHub client
-                                github_client = MagicMock()
-                                github_client.get_parent_issue_details.return_value = None
-                                github_client.get_all_sub_issues.return_value = []
+                                    # Mock GitHub client
+                                    github_client = MagicMock()
+                                    github_client.get_parent_issue_details.return_value = None
+                                    github_client.get_all_sub_issues.return_value = []
 
-                                # Mock LLM response
-                                class DummyLLM:
-                                    def _run_llm_cli(self, *_args, **_kwargs):
-                                        return "Made some changes to fix the issue"
+                                    # Mock LLM response
+                                    class DummyLLM:
+                                        def _run_llm_cli(self, *_args, **_kwargs):
+                                            return "Made some changes to fix the issue"
 
-                                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                                    _apply_issue_actions_directly(
-                                        repo_name,
-                                        issue_data,
-                                        config,
-                                        github_client,
-                                    )
+                                    with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                                        _apply_issue_actions_directly(
+                                            repo_name,
+                                            issue_data,
+                                            config,
+                                            github_client,
+                                        )
 
         # Verify keep_label was NOT called
         assert len(keep_label_called) == 0, "keep_label should not be called when PR creation fails"
@@ -1104,24 +1123,25 @@ class TestKeepLabelOnPRCreation:
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
                 with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
-                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
-                            # Mock GitHub client
-                            github_client = MagicMock()
-                            github_client.get_parent_issue_details.return_value = None
-                            github_client.get_all_sub_issues.return_value = []
+                        with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                            with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                                # Mock GitHub client
+                                github_client = MagicMock()
+                                github_client.get_parent_issue_details.return_value = None
+                                github_client.get_all_sub_issues.return_value = []
 
-                            # Mock LLM response
-                            class DummyLLM:
-                                def _run_llm_cli(self, *_args, **_kwargs):
-                                    return "Made some changes to fix the issue"
+                                # Mock LLM response
+                                class DummyLLM:
+                                    def _run_llm_cli(self, *_args, **_kwargs):
+                                        return "Made some changes to fix the issue"
 
-                            with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                                _apply_issue_actions_directly(
-                                    repo_name,
-                                    issue_data,
-                                    config,
-                                    github_client,
-                                )
+                                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                                    _apply_issue_actions_directly(
+                                        repo_name,
+                                        issue_data,
+                                        config,
+                                        github_client,
+                                    )
 
         # Verify keep_label was NOT called (no PR creation for PR items)
         assert len(keep_label_called) == 0, "keep_label should not be called for PR items (head_branch set)"

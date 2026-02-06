@@ -39,11 +39,13 @@ class TestWorkflowTrigger(unittest.TestCase):
         mock_lm_instance.keep_label.assert_called_once()  # Label kept
         self.assertIn("Triggered ci.yml for PR #123", actions)
 
+    @patch("auto_coder.pr_processor.get_commit_log")
+    @patch("auto_coder.pr_processor.cmd.run_command")
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
     @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
-    def test_handle_pr_merge_fails_trigger(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
+    def test_handle_pr_merge_fails_trigger(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status, mock_run_command, mock_get_commit_log):
         # Setup: No existing checks
         mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
@@ -53,6 +55,14 @@ class TestWorkflowTrigger(unittest.TestCase):
         # Mock LabelManager
         mock_lm_instance = MagicMock()
         mock_label_manager.return_value.__enter__.return_value = mock_lm_instance
+
+        # Mock cmd.run_command to prevent git branch --show-current execution
+        from auto_coder.utils import CommandResult
+
+        mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
+
+        # Mock get_commit_log to prevent git command execution in _process_pr_jules_mode
+        mock_get_commit_log.return_value = "No commits"
 
         # Execute
         actions = _handle_pr_merge(self.github_client, self.repo_name, self.pr_data, self.config, {})
