@@ -294,17 +294,17 @@ def test_spinner_step(mock_stdout):
     with spinner:
         # Wait for the spinner thread to start and print the initial message
         # We need to ensure the thread actually runs at least once
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         # Step 1: Update message
         spinner.step("Updated Long Message")
         # Wait for the thread to pick up the new message and print it
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         # Step 2: Update message again
         spinner.step("Short")
         # Wait for the thread to pick up the new message
-        time.sleep(0.2)
+        time.sleep(0.5)
 
     # Collect all writes to stdout
     writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
