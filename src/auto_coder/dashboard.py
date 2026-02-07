@@ -34,6 +34,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         ui.label("Queue").classes("text-xl font-bold mt-4")
         queue_container = ui.column().classes("w-full gap-2")
 
+        # Open Issues/PRs Section
+        ui.label("Open Issues/PRs").classes("text-xl font-bold mt-4")
+        open_items_container = ui.column().classes("w-full gap-2")
+
         def refresh_status() -> None:
             status = engine.get_status()
 
@@ -50,7 +54,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                             if worker_data:
                                 item_type = worker_data.get("type", "")
                                 item_number = worker_data.get("number")
-                                ui.link(f"{item_type.capitalize()} #{item_number}", f"/detail/{item_type}/{item_number}").classes("text-blue-500 font-bold")
+                                ui.link(
+                                    f"{item_type.capitalize()} #{item_number}",
+                                    f"/detail/{item_type}/{item_number}",
+                                ).classes("text-blue-500 font-bold")
                                 ui.label(worker_data.get("title", "No Title")).classes("text-sm text-gray-500 truncate")
                             else:
                                 ui.label("Idle").classes("text-gray-400")
@@ -74,8 +81,54 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                             item_type = item.get("type", "")
                             item_number = item.get("number")
                             ui.label(item_type.capitalize()).classes("w-20")
-                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
+                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes(
+                                "w-20 text-blue-500"
+                            )
                             ui.label(str(item.get("priority"))).classes("w-20")
+                            ui.label(item.get("title", "")).classes("flex-grow truncate")
+
+            # Update Open Issues/PRs
+            open_items_container.clear()
+            with open_items_container:
+                open_items = status.get("open_items", [])
+                if not open_items:
+                    ui.label("No open issues or PRs found")
+                else:
+                    # Header for table
+                    with ui.row().classes("w-full font-bold border-b"):
+                        ui.label("Type").classes("w-20")
+                        ui.label("Number").classes("w-20")
+                        ui.label("Status").classes("w-48")
+                        ui.label("Created At").classes("w-48")
+                        ui.label("Title").classes("flex-grow")
+
+                    for item in open_items:
+                        with ui.row().classes("w-full border-b py-2 items-center"):
+                            item_type = item.get("type", "")
+                            item_number = item.get("number")
+                            status_str = item.get("status", "Unknown")
+                            created_at = item.get("created_at", "")
+                            # Format created_at slightly nicer if it's ISO
+                            if created_at and "T" in created_at:
+                                try:
+                                    created_at = created_at.split("T")[0]  # Just date
+                                except Exception:
+                                    pass
+
+                            ui.label(item_type.capitalize()).classes("w-20")
+                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes(
+                                "w-20 text-blue-500"
+                            )
+
+                            # Colorize status
+                            status_color = "text-black"
+                            if "Processing" in status_str:
+                                status_color = "text-green-600 font-bold"
+                            elif "Queued" in status_str:
+                                status_color = "text-blue-600"
+
+                            ui.label(status_str).classes(f"w-48 {status_color}")
+                            ui.label(created_at).classes("w-48 text-sm text-gray-500")
                             ui.label(item.get("title", "")).classes("flex-grow truncate")
 
         # Initial load
