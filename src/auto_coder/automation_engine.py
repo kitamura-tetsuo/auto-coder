@@ -52,6 +52,8 @@ class AutomationEngine:
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
         self.active_workers: Dict[int, Optional[Candidate]] = {}
+        self.open_prs_snapshot: List[Dict[str, Any]] = []
+        self.open_issues_snapshot: List[Dict[str, Any]] = []
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
@@ -175,6 +177,58 @@ class AutomationEngine:
         """Get the current status of the automation engine."""
         queue_items = list(self.queue._queue) if hasattr(self.queue, "_queue") else []
 
+        # Helper to check if item is in queue or processing
+        processing_map = {}  # (type, number) -> worker_id
+        for wid, c in self.active_workers.items():
+            if c:
+                processing_map[(c.type, c.data.get("number"))] = wid
+
+        queued_map = {}  # (type, number) -> priority
+        for c in queue_items:
+            queued_map[(c.type, c.data.get("number"))] = c.priority
+
+        open_items_status = []
+
+        # Process PRs
+        for pr in self.open_prs_snapshot:
+            number = pr.get("number")
+            status_str = "Open"
+            worker_id = processing_map.get(("pr", number))
+            if worker_id is not None:
+                status_str = f"Processing (Worker {worker_id})"
+            elif ("pr", number) in queued_map:
+                status_str = f"Queued (Priority {queued_map[('pr', number)]})"
+
+            open_items_status.append(
+                {
+                    "type": "pr",
+                    "number": number,
+                    "title": pr.get("title"),
+                    "status": status_str,
+                    "created_at": pr.get("created_at"),
+                }
+            )
+
+        # Process Issues
+        for issue in self.open_issues_snapshot:
+            number = issue.get("number")
+            status_str = "Open"
+            worker_id = processing_map.get(("issue", number))
+            if worker_id is not None:
+                status_str = f"Processing (Worker {worker_id})"
+            elif ("issue", number) in queued_map:
+                status_str = f"Queued (Priority {queued_map[('issue', number)]})"
+
+            open_items_status.append(
+                {
+                    "type": "issue",
+                    "number": number,
+                    "title": issue.get("title"),
+                    "status": status_str,
+                    "created_at": issue.get("created_at"),
+                }
+            )
+
         status = {
             "queue_length": self.queue.qsize(),
             "queue_items": [
@@ -198,6 +252,7 @@ class AutomationEngine:
                 )
                 for wid, c in self.active_workers.items()
             },
+            "open_items": open_items_status,
         }
         return status
 
@@ -319,6 +374,9 @@ class AutomationEngine:
             # Optimized to use get_open_prs_json to batch fetch details
             # This replaces the need for get_open_pull_requests which triggers separate API calls
             pr_data_list = self.github.get_open_prs_json(repo_name)
+
+            # Update snapshot
+            self.open_prs_snapshot = pr_data_list
 
             # Sort by creation date ascending (oldest first) to match processing order expectation
             pr_data_list.sort(key=lambda x: x.get("created_at", ""))
@@ -569,6 +627,9 @@ class AutomationEngine:
                 # Collect issue candidates
                 # Use optimized GraphQL query to fetch all issue details in one go, avoiding N+1 API calls
                 all_issues = self.github.get_open_issues_json(repo_name)
+
+                # Update snapshot
+                self.open_issues_snapshot = all_issues
 
                 # Build map for fast lookup of open issues
                 issue_map = {i["number"]: i for i in all_issues}

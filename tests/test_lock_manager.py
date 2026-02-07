@@ -148,7 +148,8 @@ class TestLockManager:
 class TestLockCLI:
     """Integration tests for CLI lock commands."""
 
-    def test_lock_group_help(self):
+    @patch("src.auto_coder.auth_utils.verify_github_access", return_value=True)
+    def test_lock_group_help(self, mock_auth):
         """Test the help output for the 'lock' command group."""
         from click.testing import CliRunner
 
@@ -162,7 +163,8 @@ class TestLockCLI:
         assert "Lock management commands" in result.output
         assert "unlock" in result.output
 
-    def test_unlock_no_lock_file(self):
+    @patch("src.auto_coder.auth_utils.verify_github_access", return_value=True)
+    def test_unlock_no_lock_file(self, mock_auth):
         """Test unlock command when no lock file exists."""
         from click.testing import CliRunner
 
@@ -175,7 +177,8 @@ class TestLockCLI:
             assert result.exit_code == 0
             assert "No lock file found" in result.output
 
-    def test_lock_unlock_commands_exist(self):
+    @patch("src.auto_coder.auth_utils.verify_github_access", return_value=True)
+    def test_lock_unlock_commands_exist(self, mock_auth):
         """Test that lock and unlock commands are properly registered."""
         from click.testing import CliRunner
 
