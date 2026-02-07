@@ -25,6 +25,26 @@ from src.auto_coder.util.gh_cache import GitHubClient
 
 # Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)
 @pytest.fixture(autouse=True)
+def mock_sleep_globally(monkeypatch):
+    """Mock time.sleep and asyncio.sleep globally to speed up tests."""
+    import asyncio
+    import time
+
+    mock_sleep = Mock()
+    monkeypatch.setattr(time, "sleep", mock_sleep)
+
+    # Also mock asyncio.sleep
+    original_async_sleep = asyncio.sleep
+
+    async def async_mock_sleep(delay, *args, **kwargs):
+        # Allow short sleeps to actually happen to prevent busy loops (e.g. in NiceGUI)
+        await original_async_sleep(delay if delay < 1.0 else 0.01, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", async_mock_sleep)
+    return mock_sleep
+
+
+@pytest.fixture(autouse=True)
 def _clear_sensitive_env(monkeypatch, request):
     import tempfile
 
@@ -457,7 +477,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 return result
 
             # Stubbed commands
-            if program not in ("git", "gh", "gemini", "codex", "uv", "node", "uname"):
+            if program not in ("git", "gh", "gemini", "codex", "uv", "node", "uname", "sleep"):
                 return orig_run(
                     cmd,
                     capture_output=capture_output,

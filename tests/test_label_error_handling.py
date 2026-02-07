@@ -487,24 +487,30 @@ class TestCircuitBreakerPatterns:
         retry_delay = 0.01
 
         import time
+        from unittest.mock import patch
 
-        start = time.perf_counter()
+        # Mock time.sleep to make test run instantly
+        with patch("time.sleep") as mock_sleep:
+            start = time.perf_counter()
 
-        result = None
-        for attempt in range(max_retries):
-            try:
-                result = failing_operation()
-                break
-            except OSError:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    raise
+            result = None
+            for attempt in range(max_retries):
+                try:
+                    result = failing_operation()
+                    break
+                except OSError:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                    else:
+                        raise
 
-        elapsed = time.perf_counter() - start
-        assert result == "success"
-        assert call_count == 3
-        assert elapsed >= retry_delay * 2  # Should have waited
+            elapsed = time.perf_counter() - start
+            assert result == "success"
+            assert call_count == 3
+            # Verify sleep was called twice with correct delay
+            assert mock_sleep.call_count == 2
+            for call in mock_sleep.call_args_list:
+                assert call[0][0] == retry_delay
 
 
 if __name__ == "__main__":

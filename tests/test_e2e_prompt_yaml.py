@@ -1,6 +1,7 @@
 """E2E-style tests ensuring prompts are sourced from YAML templates."""
 
 from textwrap import dedent
+from unittest.mock import patch
 
 import pytest
 
@@ -19,7 +20,8 @@ def sample_pr(sample_pr_data):
     return data
 
 
-def test_pr_prompt_uses_yaml_template(tmp_path, sample_pr):
+@patch("src.auto_coder.pr_processor.get_commit_log", return_value="")
+def test_pr_prompt_uses_yaml_template(mock_get_commit_log, tmp_path, sample_pr):
     """Customizing the YAML template should affect generated prompts end-to-end."""
     custom_yaml = tmp_path / "prompts.yaml"
     custom_yaml.write_text(

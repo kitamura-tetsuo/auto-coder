@@ -1,6 +1,6 @@
 import hashlib
 import hmac
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,7 +37,8 @@ class MockEngine:
         self.queue = MockQueue()
 
 
-def test_github_webhook_security_valid_signature():
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_github_webhook_security_valid_signature(mock_init_dashboard):
     engine = MockEngine()
     secret = "mysecret"
     app = create_app(engine, "owner/repo", github_secret=secret)
@@ -57,7 +58,8 @@ def test_github_webhook_security_valid_signature():
         assert response.json() == {"status": "received"}
 
 
-def test_github_webhook_security_malformed_signature_too_many_equals():
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_github_webhook_security_malformed_signature_too_many_equals(mock_init_dashboard):
     engine = MockEngine()
     secret = "mysecret"
     app = create_app(engine, "owner/repo", github_secret=secret)
@@ -79,7 +81,8 @@ def test_github_webhook_security_malformed_signature_too_many_equals():
             pytest.fail(f"Server crashed: {e}")
 
 
-def test_github_webhook_security_invalid_prefix():
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_github_webhook_security_invalid_prefix(mock_init_dashboard):
     engine = MockEngine()
     secret = "mysecret"
     app = create_app(engine, "owner/repo", github_secret=secret)
@@ -94,7 +97,8 @@ def test_github_webhook_security_invalid_prefix():
         assert "Invalid signature" in response.json()["detail"]
 
 
-def test_github_webhook_security_missing_signature():
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_github_webhook_security_missing_signature(mock_init_dashboard):
     engine = MockEngine()
     secret = "mysecret"
     app = create_app(engine, "owner/repo", github_secret=secret)

@@ -3101,10 +3101,11 @@ class TestElderSiblingDependencyLogic:
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""
 
+    @patch("auto_coder.issue_processor.get_commit_log")
     @patch("auto_coder.issue_processor.get_ghapi_client")
     @patch("auto_coder.gh_logger.subprocess.run")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_propagates_urgent_label(self, mock_get_current_branch, mock_cmd, mock_get_ghapi_client, mock_github_client, mock_gemini_client):
+    def test_create_pr_for_issue_propagates_urgent_label(self, mock_get_current_branch, mock_cmd, mock_get_ghapi_client, mock_get_commit_log, mock_github_client, mock_gemini_client):
         """Test that urgent label is propagated from issue to PR."""
         # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
@@ -3161,10 +3162,11 @@ class TestUrgentLabelPropagation:
         # 2. Add labels via github_client.add_labels
         mock_github_client.add_labels.assert_called_once_with("test/repo", 456, ["urgent"], item_type="pr")
 
+    @patch("auto_coder.issue_processor.get_commit_log")
     @patch("auto_coder.issue_processor.get_ghapi_client")
     @patch("auto_coder.gh_logger.subprocess.run")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_without_urgent_label(self, mock_get_current_branch, mock_cmd, mock_get_ghapi_client, mock_github_client, mock_gemini_client):
+    def test_create_pr_for_issue_without_urgent_label(self, mock_get_current_branch, mock_cmd, mock_get_ghapi_client, mock_get_commit_log, mock_github_client, mock_gemini_client):
         """Test that no urgent label is propagated when issue doesn't have it."""
         # Setup
         from auto_coder.issue_processor import _create_pr_for_issue

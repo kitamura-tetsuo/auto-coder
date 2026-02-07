@@ -11,6 +11,7 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 class TestHandlePrMergeJulesFallback:
     """Test cases for _handle_pr_merge function with Jules fallback logic."""
 
+    @patch("src.auto_coder.pr_processor.cmd.run_command")
     @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
     @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
@@ -35,6 +36,7 @@ class TestHandlePrMergeJulesFallback:
         mock_send_feedback,
         mock_is_jules,
         mock_branch_manager,
+        mock_run_command,
     ):
         """Test that normal Jules flow is used when failure count <= 3."""
         # Setup
@@ -60,6 +62,11 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock git checkout to prevent actual git operations
         mock_branch_manager.return_value.__enter__.return_value = MagicMock(success=True)
+
+        # Mock cmd.run_command to prevent git branch --show-current execution
+        from src.auto_coder.utils import CommandResult
+
+        mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
 
         # Execute
         actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
@@ -143,6 +150,7 @@ class TestHandlePrMergeJulesFallback:
         # Verify actions contain local fix info
         assert any("Fixed issues locally" in action for action in actions)
 
+    @patch("src.auto_coder.pr_processor.cmd.run_command")
     @patch("src.auto_coder.pr_processor.BranchManager")
     @patch("src.auto_coder.git_branch.git_checkout_branch")
     @patch("src.auto_coder.pr_processor._is_jules_pr")
@@ -169,6 +177,7 @@ class TestHandlePrMergeJulesFallback:
         mock_is_jules,
         mock_git_checkout,
         mock_branch_manager,
+        mock_run_command,
     ):
         """Test that fallback flow is used when waiting > 240 hours."""
         # Setup
@@ -205,6 +214,11 @@ class TestHandlePrMergeJulesFallback:
 
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
+
+        # Mock cmd.run_command to prevent git branch --show-current execution
+        from src.auto_coder.utils import CommandResult
+
+        mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
 
         # Execute
         actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
