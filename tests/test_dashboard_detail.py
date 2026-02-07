@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi import FastAPI
-from src.auto_coder.dashboard import init_dashboard
+
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.dashboard import init_dashboard
 
 
 @patch("src.auto_coder.dashboard.ui")
