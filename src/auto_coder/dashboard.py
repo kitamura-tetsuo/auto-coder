@@ -39,12 +39,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                         with ui.card().classes("w-64"):
                             ui.label(f"Worker {wid}").classes("font-bold")
                             if worker_data:
-                                ui.label(
-                                    f"{worker_data.get('type', '').capitalize()} #{worker_data.get('number')}"
-                                )
-                                ui.label(worker_data.get("title", "No Title")).classes(
-                                    "text-sm text-gray-500 truncate"
-                                )
+                                ui.label(f"{worker_data.get('type', '').capitalize()} #{worker_data.get('number')}")
+                                ui.label(worker_data.get("title", "No Title")).classes("text-sm text-gray-500 truncate")
                             else:
                                 ui.label("Idle").classes("text-gray-400")
 
@@ -67,9 +63,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                             ui.label(item.get("type", "").capitalize()).classes("w-20")
                             ui.label(f"#{item.get('number')}").classes("w-20")
                             ui.label(str(item.get("priority"))).classes("w-20")
-                            ui.label(item.get("title", "")).classes(
-                                "flex-grow truncate"
-                            )
+                            ui.label(item.get("title", "")).classes("flex-grow truncate")
 
         # Initial load
         refresh_status()

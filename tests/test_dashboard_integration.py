@@ -27,10 +27,7 @@ def test_automation_engine_get_status_structure():
         MockCandidate("pr", 2, 7, "PR 2"),
     ]
     real_engine.queue.qsize.return_value = 2
-    real_engine.active_workers = {
-        0: MockCandidate("pr", 3, 3, "PR 3"),
-        1: None
-    }
+    real_engine.active_workers = {0: MockCandidate("pr", 3, 3, "PR 3"), 1: None}
 
     status = real_engine.get_status()
 

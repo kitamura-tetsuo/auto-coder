@@ -187,13 +187,15 @@ class AutomationEngine:
                 for c in queue_items
             ],
             "active_workers": {
-                wid: {
-                    "type": c.type,
-                    "number": c.data.get("number"),
-                    "title": c.data.get("title"),
-                }
-                if c
-                else None
+                wid: (
+                    {
+                        "type": c.type,
+                        "number": c.data.get("number"),
+                        "title": c.data.get("title"),
+                    }
+                    if c
+                    else None
+                )
                 for wid, c in self.active_workers.items()
             },
         }
