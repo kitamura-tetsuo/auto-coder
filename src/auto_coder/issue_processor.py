@@ -24,6 +24,7 @@ from .label_manager import LabelManager, LabelManagerContext, LabelOperationErro
 from .logger_config import get_gh_logger, get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
+from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
 
@@ -350,6 +351,8 @@ def _take_issue_actions(
     issue_number = issue_data["number"]
 
     try:
+        get_trace_logger().log("Issue Processing", f"Processing issue #{issue_number}", item_type="issue", item_number=issue_number)
+
         # Check if this is a parent issue (has sub-issues, no parent, all sub-issues closed)
         all_sub_issues = github_client.get_all_sub_issues(repo_name, issue_number)
         parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
@@ -535,6 +538,8 @@ def _process_issue_jules_mode(
         actions.append(f"Started Jules session '{session_id}' for issue #{issue_number}")
         logger.info(f"Jules session started successfully for issue #{issue_number}")
 
+        get_trace_logger().log("Jules Session", f"Started Jules session for issue #{issue_number}", item_type="issue", item_number=issue_number, details={"session_id": session_id})
+
         # Keep the @auto-coder label if context was provided
         if label_context:
             label_context.keep_label()
@@ -648,6 +653,8 @@ def _create_pr_for_issue(
             pr_url = pr_response.get("html_url")
 
             logger.info(f"Successfully created PR for issue #{issue_number}: {pr_url}")
+
+            get_trace_logger().log("Create PR", f"Created PR for issue #{issue_number}", item_type="issue", item_number=issue_number, details={"pr_url": pr_url})
 
             # Propagate semantic labels from issue to PR if present
             if pr_number:
@@ -836,6 +843,9 @@ def _apply_issue_actions_directly(
 
         # Now perform all work on the target branch using branch_context
         assert target_branch is not None, "target_branch must be set before using branch_context"
+
+        get_trace_logger().log("Branch Setup", f"Determined work branch for issue #{issue_number}", item_type="issue", item_number=issue_number, details={"target_branch": target_branch})
+
         with LabelManager(
             github_client,
             repo_name,
@@ -890,11 +900,15 @@ def _apply_issue_actions_directly(
                 # Use LLM CLI to analyze and take actions
                 logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
 
+                get_trace_logger().log("Analysis Start", f"Starting analysis for issue #{issue_number}", item_type="issue", item_number=issue_number)
+
                 # Call LLM client
                 response = get_llm_backend_manager()._run_llm_cli(action_prompt)
 
                 # Parse the response
                 if response and len(response.strip()) > 0:
+                    get_trace_logger().log("Analysis Complete", f"Completed analysis for issue #{issue_number}", item_type="issue", item_number=issue_number)
+
                     actions.append(f"LLM CLI analyzed and took action on issue: {response[:200]}...")
 
                     # Check if LLM indicated the issue should be closed
@@ -915,6 +929,8 @@ def _apply_issue_actions_directly(
                             issue_number=issue_data["number"],
                         )
                         actions.append(commit_action)
+
+                    get_trace_logger().log("Apply Changes", f"Committed changes for issue #{issue_number}", item_type="issue", item_number=issue_number)
 
                     # Create PR if this is a regular issue (not a PR)
                     if "head_branch" not in issue_data and target_branch:

@@ -936,6 +936,8 @@ def _process_pr_jules_mode(
         CloudManager(repo_name).add_session(pr_number, session_id)
         actions.append(f"Started Jules session {session_id}")
 
+        get_trace_logger().log("Jules Mode", f"Started Jules session for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
+
         # 3. Update PR body
         from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 
@@ -2016,6 +2018,8 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         jules_client = JulesClient()
         response = jules_client.send_message(session_id, message)
 
+        get_trace_logger().log("Jules Feedback", f"Sent CI failure logs to Jules for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
+
         actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
         try:
             logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
@@ -2079,6 +2083,7 @@ def _merge_pr(
                 api_method = method.replace("--", "")
                 result = api.pulls.merge(owner, repo, pr_number, merge_method=api_method)
                 if result.get("merged"):
+                    get_trace_logger().log("Merging", f"Successfully merged PR #{pr_number}", item_type="pr", item_number=pr_number, details={"method": method})
                     log_action(f"Successfully merged PR #{pr_number} (method: {method})")
                     _close_linked_issues(repo_name, pr_number)
                     _archive_jules_session(repo_name, pr_number)
@@ -2330,6 +2335,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
 
             if status_result.success and not status_result.stdout.strip():
                 logger.info(f"Merge conflicts resolved for PR #{pr_number}")
+                get_trace_logger().log("Conflict Resolution", f"Resolved merge conflicts for PR #{pr_number}", item_type="pr", item_number=pr_number)
                 return True
             else:
                 logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}")
@@ -2383,6 +2389,7 @@ def _fix_pr_issues_with_github_actions_testing(
     try:
         # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
         # 1. Apply fix based on GHA logs
+        get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number)
         actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
         initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager)
         actions.extend(initial_fix_actions)
@@ -2471,6 +2478,7 @@ def _fix_pr_issues_with_local_testing(
             logger.info(msg)
             actions.append(msg)
         else:
+            get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs (local loop)", item_type="pr", item_number=pr_number)
             actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
             initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
             actions.extend(initial_fix_actions)

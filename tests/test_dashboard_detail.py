@@ -58,6 +58,15 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
     # Verify Back button
     mock_ui.link.assert_any_call("Back to Dashboard", "/")
 
+    # Verify Mermaid diagram
+    mock_ui.mermaid.assert_called()
+    mermaid_args = mock_ui.mermaid.call_args[0][0]
+    assert "graph TD" in mermaid_args
+    assert "Start[Start PR Processing]" in mermaid_args
+    # Check for style class application
+    assert "class CheckCI visited" in mermaid_args
+    assert "class CheckMerge visited" in mermaid_args
+
 
 @patch("src.auto_coder.dashboard.ui")
 def test_dashboard_main_page_search(mock_ui):
