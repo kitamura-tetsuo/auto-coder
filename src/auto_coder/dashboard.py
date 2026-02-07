@@ -4,12 +4,108 @@ Dashboard module for Auto-Coder using NiceGUI.
 
 import os
 from datetime import datetime
+from typing import Any, Dict, List
 
 from fastapi import FastAPI
 from nicegui import ui
 
 from .automation_engine import AutomationEngine
 from .trace_logger import get_trace_logger
+
+
+def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str:
+    """Generate Mermaid activity diagram based on logs."""
+
+    # Define base diagrams
+    if item_type == "pr":
+        graph = """
+        graph TD
+            Start[Start PR Processing]
+            CheckCI{Check CI}
+            CheckMerge{Check Mergeability}
+            FixCI[Fix Issues]
+            JulesFix[Jules Fix]
+            Merge[Merge PR]
+            ResolveConflict[Resolve Conflicts]
+            End[End Processing]
+
+            Start --> CheckCI
+            CheckCI -- Success --> CheckMerge
+            CheckCI -- Failure --> FixCI
+            CheckCI -- Jules Failure --> JulesFix
+            CheckMerge -- Mergeable --> Merge
+            CheckMerge -- Conflict --> ResolveConflict
+            FixCI --> End
+            JulesFix --> End
+            Merge --> End
+            ResolveConflict --> End
+        """
+    elif item_type == "issue":
+        graph = """
+        graph TD
+            Start[Start Issue Processing]
+            Analyze[Analyze Issue]
+            Branch[Branch Setup]
+            Apply[Apply Changes]
+            CreatePR[Create PR]
+            Jules[Jules Session]
+            End[End Processing]
+
+            Start --> Analyze
+            Analyze --> Branch
+            Branch --> Apply
+            Apply --> CreatePR
+            Branch --> Jules
+            Apply --> Jules
+            CreatePR --> End
+            Jules --> End
+        """
+    else:
+        return ""
+
+    # Map logs to nodes to highlight
+    visited_nodes = set()
+    visited_nodes.add("Start")
+
+    for log in logs:
+        cat = log["category"]
+        details = log.get("details", {})
+
+        if item_type == "pr":
+            if cat == "CI Status":
+                visited_nodes.add("CheckCI")
+            elif cat == "Merge Check":
+                visited_nodes.add("CheckMerge")
+            elif cat == "Fixing Issues":
+                visited_nodes.add("FixCI")
+            elif cat == "Jules Feedback" or cat == "Jules Mode":
+                visited_nodes.add("JulesFix")
+            elif cat == "Merging" and "Successfully merged" in log["message"]:
+                visited_nodes.add("Merge")
+            elif cat == "Conflict Resolution":
+                visited_nodes.add("ResolveConflict")
+            elif cat == "Decision":
+                visited_nodes.add("End")
+
+        elif item_type == "issue":
+            if cat == "Analysis Start":
+                visited_nodes.add("Analyze")
+            elif cat == "Branch Setup":
+                visited_nodes.add("Branch")
+            elif cat == "Apply Changes":
+                visited_nodes.add("Apply")
+            elif cat == "Create PR":
+                visited_nodes.add("CreatePR")
+            elif cat == "Jules Session":
+                visited_nodes.add("Jules")
+                visited_nodes.add("End")
+
+    # Add styles
+    style_def = "\\n    classDef visited fill:#4ade80,stroke:#16a34a,stroke-width:2px;\\n"
+    for node in visited_nodes:
+        style_def += f"    class {node} visited;\\n"
+
+    return graph + style_def
 
 
 def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
@@ -140,6 +236,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         # Back button
         ui.link("Back to Dashboard", "/").classes("text-blue-500 mb-4 inline-block")
 
+        # Activity Diagram container
+        diagram_container = ui.row().classes("w-full mb-6")
+
         # Metrics container
         metrics_container = ui.row().classes("w-full gap-4 mb-6")
 
@@ -149,6 +248,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         def refresh_details():
             metrics_container.clear()
             logs_container.clear()
+            diagram_container.clear()
 
             logs = get_trace_logger().get_logs(item_type=item_type, item_number=item_number)
 
@@ -168,6 +268,14 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                         ci_status = "In Progress"
                     else:
                         ci_status = "Success" if success else "Failure"
+
+            with diagram_container:
+                ui.label("Processing Path").classes("text-xl font-bold mb-2")
+                mermaid_code = generate_activity_diagram(logs, item_type)
+                if mermaid_code:
+                    ui.mermaid(mermaid_code).classes("w-full bg-white p-4 rounded shadow")
+                else:
+                    ui.label("No diagram available for this item type.")
 
             with metrics_container:
                 with ui.card():
