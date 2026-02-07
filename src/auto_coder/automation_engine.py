@@ -175,7 +175,28 @@ class AutomationEngine:
         """Get the current status of the automation engine."""
         queue_items = list(self.queue._queue) if hasattr(self.queue, "_queue") else []
 
-        status = {"queue_length": self.queue.qsize(), "queue_items": [{"type": c.type, "number": c.data.get("number"), "priority": c.priority} for c in queue_items], "active_workers": {wid: {"type": c.type, "number": c.data.get("number")} if c else None for wid, c in self.active_workers.items()}}
+        status = {
+            "queue_length": self.queue.qsize(),
+            "queue_items": [
+                {
+                    "type": c.type,
+                    "number": c.data.get("number"),
+                    "priority": c.priority,
+                    "title": c.data.get("title"),
+                }
+                for c in queue_items
+            ],
+            "active_workers": {
+                wid: {
+                    "type": c.type,
+                    "number": c.data.get("number"),
+                    "title": c.data.get("title"),
+                }
+                if c
+                else None
+                for wid, c in self.active_workers.items()
+            },
+        }
         return status
 
     def _check_and_handle_closed_branch(self, repo_name: str) -> bool:

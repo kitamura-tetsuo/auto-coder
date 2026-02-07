@@ -36,7 +36,8 @@ class MockEngine:
         self.queue = MockQueue()
 
 
-def test_sentry_webhook():
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_sentry_webhook(mock_init_dashboard):
     engine = MockEngine()
     app = create_app(engine, "owner/repo")
 
@@ -48,7 +49,8 @@ def test_sentry_webhook():
         assert response.json() == {"status": "received"}
 
 
-def test_github_pr_webhook():
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_github_pr_webhook(mock_init_dashboard):
     engine = MockEngine()
     app = create_app(engine, "owner/repo")
 
