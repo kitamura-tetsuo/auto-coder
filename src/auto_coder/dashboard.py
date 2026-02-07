@@ -81,9 +81,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                             item_type = item.get("type", "")
                             item_number = item.get("number")
                             ui.label(item_type.capitalize()).classes("w-20")
-                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes(
-                                "w-20 text-blue-500"
-                            )
+                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
                             ui.label(str(item.get("priority"))).classes("w-20")
                             ui.label(item.get("title", "")).classes("flex-grow truncate")
 
@@ -116,9 +114,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                                     pass
 
                             ui.label(item_type.capitalize()).classes("w-20")
-                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes(
-                                "w-20 text-blue-500"
-                            )
+                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
 
                             # Colorize status
                             status_color = "text-black"
