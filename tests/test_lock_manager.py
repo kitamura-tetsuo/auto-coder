@@ -155,7 +155,9 @@ class TestLockCLI:
         from src.auto_coder.cli import main
 
         runner = CliRunner()
-        result = runner.invoke(main, ["lock", "--help"])
+        # Mock sys.argv so main() detects help flag
+        with patch("sys.argv", ["auto-coder", "lock", "--help"]):
+            result = runner.invoke(main, ["lock", "--help"])
         assert result.exit_code == 0
         assert "Lock management commands" in result.output
         assert "unlock" in result.output
@@ -182,11 +184,13 @@ class TestLockCLI:
         runner = CliRunner()
 
         # Test lock command exists
-        result = runner.invoke(main, ["lock", "--help"])
+        with patch("sys.argv", ["auto-coder", "lock", "--help"]):
+            result = runner.invoke(main, ["lock", "--help"])
         assert result.exit_code == 0
 
         # Test top-level unlock command exists
-        result = runner.invoke(main, ["unlock", "--help"])
+        with patch("sys.argv", ["auto-coder", "unlock", "--help"]):
+            result = runner.invoke(main, ["unlock", "--help"])
         assert result.exit_code == 0
 
     def test_lock_cleanup_on_exit(self):

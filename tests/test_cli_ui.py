@@ -292,15 +292,25 @@ def test_spinner_step(mock_stdout):
     spinner = cli_ui.Spinner("Initial", delay=0.001)
 
     with spinner:
-        time.sleep(0.01)  # Let it spin a bit with "Initial"
-        spinner.step("Updated Long Message")
-        time.sleep(0.01)  # Let it spin with longer message
-        spinner.step("Short")
-        time.sleep(0.01)  # Let it spin with shorter message
+        # Wait for the spinner thread to start and print the initial message
+        # We need to ensure the thread actually runs at least once
+        time.sleep(0.2)
 
+        # Step 1: Update message
+        spinner.step("Updated Long Message")
+        # Wait for the thread to pick up the new message and print it
+        time.sleep(0.2)
+
+        # Step 2: Update message again
+        spinner.step("Short")
+        # Wait for the thread to pick up the new message
+        time.sleep(0.2)
+
+    # Collect all writes to stdout
     writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
 
     # Verify initial message was printed
+    # The spinner prints "⣾ Initial" or similar frames
     assert any("Initial" in w for w in writes)
 
     # Verify updated long message was printed
