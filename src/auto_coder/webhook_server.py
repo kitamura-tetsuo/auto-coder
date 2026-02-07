@@ -199,6 +199,6 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
         background_tasks.add_task(process_github_payload, event_type, payload, engine, repo_name)
         return {"status": "received"}
 
-    init_dashboard(app)
+    init_dashboard(app, engine)
 
     return app
