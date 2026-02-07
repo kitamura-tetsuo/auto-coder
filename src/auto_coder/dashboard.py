@@ -24,7 +24,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         with ui.row().classes("gap-2 items-center"):
             search_type = ui.select(["pr", "issue"], value="pr", label="Type").classes("w-32")
             search_number = ui.number(label="Number", value=1, format="%.0f").classes("w-32")
-            ui.button("Go", on_click=lambda: ui.open(f"/detail/{search_type.value}/{int(search_number.value)}"))
+            ui.button("Go", on_click=lambda: ui.navigate.to(f"/detail/{search_type.value}/{int(search_number.value)}"))
 
         # Active Workers Section
         ui.label("Active Workers").classes("text-xl font-bold mt-4")
