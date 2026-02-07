@@ -41,7 +41,10 @@ from .lock_manager import LockManager
 from .update_manager import maybe_run_auto_update, record_startup_options
 
 # Load environment variables
-load_dotenv()
+# We explicitly set override=False to ensure that environment variables exported in the shell
+# take precedence over values in the local .env file. This is critical for CI/CD and
+# user overrides (e.g. export GITHUB_TOKEN=...).
+load_dotenv(override=False)
 
 
 class ForceAwareGroup(click.Group):
@@ -140,6 +143,25 @@ def main(ctx: click.Context, force: bool) -> None:
                     else:
                         click.echo("Use '--force' to remove the corrupted lock file.", err=True)
                         sys.exit(1)
+
+            # --- STARTUP AUTH CHECK ---
+            from .auth_utils import verify_github_access
+
+            try:
+                # We only check if we are not just unlocking or checking status?
+                # The user asked for "startup check", usually implies before doing anything real.
+
+                # If the user is providing a token via arguments, we skip the global check
+                # and let the subcommand handle authentication (or fail later).
+                # This avoids blocking users who want to override a stale env var.
+                if "--github-token" in sys.argv:
+                    pass
+                elif not verify_github_access():
+                    sys.exit(1)
+            except Exception:
+                # The exception (re-raised) likely already logged the specific 401 message.
+                # We exit to prevent further execution.
+                sys.exit(1)
 
             # Use LockManager as a context manager with force flag
             # Store in ctx.with_resource to keep it alive for the entire command execution

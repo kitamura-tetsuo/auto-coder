@@ -350,6 +350,7 @@ class GHCommandLogger:
         timeout = kwargs.get("timeout", 60)
         cwd = kwargs.get("cwd", None)
         capture_output = kwargs.get("capture_output", True)
+        env = kwargs.get("env", None)
 
         # Execute the command
         result = subprocess.run(
@@ -358,6 +359,7 @@ class GHCommandLogger:
             cwd=cwd,
             capture_output=capture_output,
             text=True,
+            env=env,
         )
 
         # Add success attribute for compatibility

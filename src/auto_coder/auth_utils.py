@@ -193,7 +193,9 @@ def check_gh_auth() -> bool:
             text=True,
             timeout=10,
         )
-        return result.returncode == 0 and "logged in" in result.stdout.lower()
+        # gh auth status often outputs to stderr
+        output = (result.stdout + result.stderr).lower()
+        return result.returncode == 0 and "logged in" in output
     except Exception:
         return False
 
@@ -241,3 +243,51 @@ def get_auth_status() -> dict:
             "api_key_available": get_gemini_api_key() is not None,
         },
     }
+
+
+def verify_github_access() -> bool:
+    """
+    Verify GitHub access by making a lightweight API call.
+    Returns True if successful, False otherwise.
+    Logs appropriate error messages if access fails.
+    """
+    try:
+        import httpx
+
+        from .util.gh_cache import get_ghapi_client
+
+        token = get_github_token()
+        if not token:
+            logger.debug("No GitHub token found during verification.")
+            return False
+
+        # Use httpx directly to bypass cache and ensure the token is valid right now.
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Cache-Control": "no-cache",
+        }
+
+        try:
+            resp = httpx.get("https://api.github.com/user", headers=headers, timeout=10)
+            resp.raise_for_status()
+            logger.debug("GitHub access verification successful.")
+            return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                # Log the specific error message for 401
+                logger.error("GitHub API authentication failed (401). Please update your GITHUB_TOKEN. (https://github.com/settings/tokens)")
+                raise
+            else:
+                logger.debug(f"GitHub access verification failed: {e}")
+                raise
+        except Exception as e:
+            logger.debug(f"GitHub access verification failed with unexpected error: {e}")
+            raise
+
+    except ImportError:
+        logger.debug("Could not import dependencies for GitHub verification.")
+        return False
+    except Exception:
+        # If get_github_token fails or other setup issues
+        return False

@@ -103,7 +103,14 @@ def get_ghapi_client(token: str) -> GhApi:
             resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout)
 
             # Raise for status to ensure errors are caught (e.g. 404, 422)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    logger.error("GitHub API authentication failed (401). Please update your GITHUB_TOKEN. (https://github.com/settings/tokens)")
+                    raise
+                else:
+                    raise
 
             # Update last headers
             try:
