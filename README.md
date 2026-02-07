@@ -41,6 +41,7 @@ This feature is controlled by the `ENABLE_MERGEABILITY_REMEDIATION` configuratio
 See [docs/client-features.yaml](docs/client-features.yaml) for complete technical documentation.
 
 ### 📊 Logging and Monitoring
+- **Real-time Dashboard**: Visualize queue status and active workers at `http://localhost:8000/dashboard/`. See [docs/DASHBOARD.md](docs/DASHBOARD.md) for details.
 - **Structured JSON Logs**: All LLM interactions are logged in JSON Lines format at `~/.auto-coder/logs/llm_output.jsonl`
 - **User-Friendly Output**: Execution summaries are printed to console for immediate feedback
 - **Rich Metadata**: Each log entry includes timestamp, backend, model, prompt/response lengths, duration, and status
