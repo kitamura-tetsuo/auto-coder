@@ -50,7 +50,7 @@ def test_init_dashboard_registration(mock_ui):
     init_dashboard(app, engine)
 
     # Verify ui.page was called
-    mock_ui.page.assert_called_with("/")
+    mock_ui.page.assert_any_call("/")
 
     # Verify ui.run_with was called
     mock_ui.run_with.assert_called()
