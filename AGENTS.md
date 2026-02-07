@@ -56,7 +56,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Required jobs in `PR Tests`:
   * **Lint & Type Check** (black / isort / flake8 / mypy)
   * **Tests with Coverage** (pytest with coverage reports)
-  * Target Python version: 3.11
+  * Target Python version: 3.12
 * Branch protection should include the following required status checks:
   * `PR Tests / Lint & Type Check`
   * `PR Tests / Tests with Coverage`
