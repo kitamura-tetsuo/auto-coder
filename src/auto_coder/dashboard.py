@@ -22,9 +22,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         # Search Section
         ui.label("Search").classes("text-xl font-bold mt-4")
         with ui.row().classes("gap-2 items-center"):
-             search_type = ui.select(["pr", "issue"], value="pr", label="Type").classes("w-32")
-             search_number = ui.number(label="Number", value=1, format="%.0f").classes("w-32")
-             ui.button("Go", on_click=lambda: ui.open(f"/detail/{search_type.value}/{int(search_number.value)}"))
+            search_type = ui.select(["pr", "issue"], value="pr", label="Type").classes("w-32")
+            search_number = ui.number(label="Number", value=1, format="%.0f").classes("w-32")
+            ui.button("Go", on_click=lambda: ui.open(f"/detail/{search_type.value}/{int(search_number.value)}"))
 
         # Active Workers Section
         ui.label("Active Workers").classes("text-xl font-bold mt-4")
@@ -48,8 +48,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                         with ui.card().classes("w-64"):
                             ui.label(f"Worker {wid}").classes("font-bold")
                             if worker_data:
-                                item_type = worker_data.get('type', '')
-                                item_number = worker_data.get('number')
+                                item_type = worker_data.get("type", "")
+                                item_number = worker_data.get("number")
                                 ui.link(f"{item_type.capitalize()} #{item_number}", f"/detail/{item_type}/{item_number}").classes("text-blue-500 font-bold")
                                 ui.label(worker_data.get("title", "No Title")).classes("text-sm text-gray-500 truncate")
                             else:
@@ -84,7 +84,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         # Auto-refresh every 1 second
         ui.timer(1.0, refresh_status)
 
-    @ui.page('/detail/{item_type}/{item_number}')
+    @ui.page("/detail/{item_type}/{item_number}")
     def detail_page(item_type: str, item_number: int) -> None:
         ui.label(f"Detail View: {item_type.capitalize()} #{item_number}").classes("text-2xl font-bold mb-4")
 
@@ -109,16 +109,16 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
 
             for log in logs:
                 if log["category"] == "Merge Check":
-                     details = log.get("details", {})
-                     mergeability = str(details.get("mergeable", "Unknown"))
+                    details = log.get("details", {})
+                    mergeability = str(details.get("mergeable", "Unknown"))
                 if log["category"] == "CI Status":
-                     details = log.get("details", {})
-                     success = details.get("success")
-                     in_progress = details.get("in_progress")
-                     if in_progress:
-                         ci_status = "In Progress"
-                     else:
-                         ci_status = "Success" if success else "Failure"
+                    details = log.get("details", {})
+                    success = details.get("success")
+                    in_progress = details.get("in_progress")
+                    if in_progress:
+                        ci_status = "In Progress"
+                    else:
+                        ci_status = "Success" if success else "Failure"
 
             with metrics_container:
                 with ui.card():
@@ -138,22 +138,17 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                 else:
                     # Table
                     columns = [
-                        {'name': 'time', 'label': 'Time', 'field': 'time', 'align': 'left'},
-                        {'name': 'category', 'label': 'Category', 'field': 'category', 'align': 'left'},
-                        {'name': 'message', 'label': 'Message', 'field': 'message', 'align': 'left'},
-                        {'name': 'details', 'label': 'Details', 'field': 'details', 'align': 'left'},
+                        {"name": "time", "label": "Time", "field": "time", "align": "left"},
+                        {"name": "category", "label": "Category", "field": "category", "align": "left"},
+                        {"name": "message", "label": "Message", "field": "message", "align": "left"},
+                        {"name": "details", "label": "Details", "field": "details", "align": "left"},
                     ]
                     rows = []
                     for log in logs:
-                        dt = datetime.fromtimestamp(log["timestamp"]).strftime('%H:%M:%S')
-                        rows.append({
-                            'time': dt,
-                            'category': log['category'],
-                            'message': log['message'],
-                            'details': str(log.get('details', ''))
-                        })
+                        dt = datetime.fromtimestamp(log["timestamp"]).strftime("%H:%M:%S")
+                        rows.append({"time": dt, "category": log["category"], "message": log["message"], "details": str(log.get("details", ""))})
 
-                    ui.table(columns=columns, rows=rows, pagination=10).classes('w-full')
+                    ui.table(columns=columns, rows=rows, pagination=10).classes("w-full")
 
         refresh_details()
 

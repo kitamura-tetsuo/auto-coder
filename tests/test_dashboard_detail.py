@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from src.auto_coder.dashboard import init_dashboard
 from src.auto_coder.automation_engine import AutomationEngine
 
+
 @patch("src.auto_coder.dashboard.ui")
 @patch("src.auto_coder.dashboard.get_trace_logger")
 def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mock_ui):
@@ -25,6 +26,7 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
         def decorator(func):
             captured_functions[path] = func
             return func
+
         return decorator
 
     mock_ui.page.side_effect = capture_page
@@ -54,6 +56,7 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
     # Verify Back button
     mock_ui.link.assert_any_call("Back to Dashboard", "/")
 
+
 @patch("src.auto_coder.dashboard.ui")
 def test_dashboard_main_page_search(mock_ui):
     app = FastAPI()
@@ -61,10 +64,12 @@ def test_dashboard_main_page_search(mock_ui):
     engine.get_status.return_value = {"active_workers": {}, "queue_items": []}
 
     captured_functions = {}
+
     def capture_page(path):
         def decorator(func):
             captured_functions[path] = func
             return func
+
         return decorator
 
     mock_ui.page.side_effect = capture_page
