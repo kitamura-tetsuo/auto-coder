@@ -829,6 +829,7 @@ class AutomationEngine:
                 known_labels=candidate.data.get("labels") if candidate.data else None,
             ) as should_process:
                 if not should_process:
+                    get_trace_logger().log("Skip", f"Skipping {item_type} #{item_number} - already processing", item_type=item_type, item_number=item_number, details={"reason": "label_exists"})
                     result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                     return result
 
@@ -851,10 +852,12 @@ class AutomationEngine:
 
                     if has_sub_issues:
                         logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing to ensure branch merging.")
+                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode (Parent Issue)", item_type="issue", item_number=item_number, details={"mode": "parent_local"})
                         # Force local processing for parent issues
                         result.actions = self._take_issue_actions(repo_name, candidate.data)
                     elif jules_mode:
                         # Use Jules mode for issue processing
+                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Jules Mode", item_type="issue", item_number=item_number, details={"mode": "jules"})
                         from .issue_processor import _process_issue_jules_mode
 
                         result.actions = _process_issue_jules_mode(
@@ -867,6 +870,7 @@ class AutomationEngine:
 
                     else:
                         # Regular issue processing
+                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         result.actions = self._take_issue_actions(repo_name, candidate.data)
                     result.success = True
                 elif item_type == "pr":

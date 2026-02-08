@@ -362,6 +362,7 @@ def _take_issue_actions(
 
         if is_parent_issue:
             logger.info(f"Issue #{issue_number} detected as parent issue with all sub-issues closed")
+            get_trace_logger().log("Issue Type", f"Issue #{issue_number} is a parent issue", item_type="issue", item_number=issue_number, details={"is_parent": True})
             # Create PR directly for parent issue
             pr_action = _create_pr_for_parent_issue(
                 repo_name=repo_name,
