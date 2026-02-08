@@ -274,9 +274,7 @@ def group_logs_by_session(logs: List[Dict[str, Any]]) -> List[List[Dict[str, Any
             should_split = True
         elif is_worker_start:
             # Split if current session already has a worker start marker
-            if any(
-                l.get("category") == "Worker" and "started processing" in l.get("message", "") for l in current_session
-            ):
+            if any(l.get("category") == "Worker" and "started processing" in l.get("message", "") for l in current_session):
                 should_split = True
 
         if should_split and current_session:
@@ -515,7 +513,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                                 ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(mermaid_code)})"),
                                 ui.notify("Copied!"),
                             ),
-                        ).props("flat round dense").tooltip("Copy Mermaid Code")
+                        ).props(
+                            "flat round dense"
+                        ).tooltip("Copy Mermaid Code")
 
                 if mermaid_code:
                     ui.mermaid(mermaid_code).classes("w-full bg-white p-4 rounded shadow")
@@ -525,20 +525,12 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
             with metrics_container:
                 with ui.card():
                     ui.label("Mergeability").classes("text-sm text-gray-500")
-                    color = (
-                        "text-green-500"
-                        if mergeability == "True"
-                        else "text-red-500" if mergeability == "False" else "text-gray-500"
-                    )
+                    color = "text-green-500" if mergeability == "True" else "text-red-500" if mergeability == "False" else "text-gray-500"
                     ui.label(mergeability).classes(f"text-xl font-bold {color}")
 
                 with ui.card():
                     ui.label("CI Status").classes("text-sm text-gray-500")
-                    color = (
-                        "text-green-500"
-                        if ci_status == "Success"
-                        else "text-red-500" if ci_status == "Failure" else "text-yellow-500"
-                    )
+                    color = "text-green-500" if ci_status == "Success" else "text-red-500" if ci_status == "Failure" else "text-yellow-500"
                     ui.label(ci_status).classes(f"text-xl font-bold {color}")
 
             with logs_container:
