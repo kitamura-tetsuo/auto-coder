@@ -274,7 +274,10 @@ def group_logs_by_session(logs: List[Dict[str, Any]]) -> List[List[Dict[str, Any
             should_split = True
         elif is_worker_start:
             # Split if current session already has a worker start marker
-            if any(l.get("category") == "Worker" and "started processing" in l.get("message", "") for l in current_session):
+            if any(
+                log_entry.get("category") == "Worker" and "started processing" in log_entry.get("message", "")
+                for log_entry in current_session
+            ):
                 should_split = True
 
         if should_split and current_session:
