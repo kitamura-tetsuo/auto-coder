@@ -150,9 +150,9 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
                 if details.get("in_progress"):
                     visited_nodes.add("End")
                 elif details.get("success"):
-                    pass # Path goes to CheckMerge
+                    pass  # Path goes to CheckMerge
                 else:
-                    visited_nodes.add("CheckJules") # Path goes to CheckJules
+                    visited_nodes.add("CheckJules")  # Path goes to CheckJules
 
             elif cat == "CI Trigger":
                 if details.get("monitor"):
@@ -172,7 +172,7 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
                 step = details.get("step")
 
                 if step == "update_base":
-                    pass # Arrow logic handles this visually in static graph
+                    pass  # Arrow logic handles this visually in static graph
 
                 if result == "success":
                     visited_nodes.add("CheckConflict")
@@ -206,7 +206,7 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
 
             elif cat == "Fixing Issues":
                 visited_nodes.add("FixIssues")
-                visited_nodes.add("CommitFix") # Assumption based on flow
+                visited_nodes.add("CommitFix")  # Assumption based on flow
                 visited_nodes.add("End")
 
             elif cat == "Decision":

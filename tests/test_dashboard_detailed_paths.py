@@ -1,5 +1,7 @@
 import pytest
+
 from auto_coder.dashboard import generate_activity_diagram
+
 
 def test_pr_happy_path_merge():
     logs = [
@@ -23,6 +25,7 @@ def test_pr_happy_path_merge():
     assert "class Remediate visited" not in diagram
     assert "class FixIssues visited" not in diagram
 
+
 def test_pr_ci_failure_fix_local():
     logs = [
         {"category": "PR Processing", "message": "Processing PR #2", "details": {"branch": "fix"}, "timestamp": 1000},
@@ -42,6 +45,7 @@ def test_pr_ci_failure_fix_local():
     assert "class FixIssues visited" in diagram
     assert "class CommitFix visited" in diagram
     assert "class End visited" in diagram
+
 
 def test_pr_remediation_success():
     logs = [
@@ -63,6 +67,7 @@ def test_pr_remediation_success():
     # but my implementation separates them.
     # Remediate log is present, so "Remediate" node is visited.
 
+
 def test_issue_jules_mode():
     logs = [
         {"category": "Issue Processing", "message": "Processing", "details": {}, "timestamp": 1000},
@@ -81,6 +86,7 @@ def test_issue_jules_mode():
     assert "class End visited" in diagram
 
     assert "class BranchSetup visited" not in diagram
+
 
 def test_issue_direct_mode():
     logs = [
