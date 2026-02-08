@@ -43,7 +43,7 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
     detail_page_func(item_type="pr", item_number=123)
 
     # Verify TraceLogger called
-    mock_logger_instance.get_logs.assert_called_with(item_type="pr", item_number=123)
+    mock_logger_instance.get_logs.assert_called_with(item_type="pr", item_number=123, limit=5000)
 
     # Verify UI components called
     assert mock_ui.label.call_count > 0
@@ -70,6 +70,8 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
     # Verify Copy button
     button_calls = [kwargs.get("icon") for _, kwargs in mock_ui.button.call_args_list]
     assert "content_copy" in button_calls
+    assert "arrow_downward" in button_calls
+    assert "arrow_upward" in button_calls
 
 
 @patch("src.auto_coder.dashboard.ui")

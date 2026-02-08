@@ -260,6 +260,37 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
     return graph + style_def
 
 
+def group_logs_by_session(logs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Group logs into sessions based on Queue and Worker events."""
+    sessions = []
+    current_session = []
+
+    for log in logs:
+        is_worker_start = log.get("category") == "Worker" and "started processing" in log.get("message", "")
+        is_queue = log.get("category") == "Queue"
+
+        should_split = False
+        if is_queue:
+            should_split = True
+        elif is_worker_start:
+            # Split if current session already has a worker start marker
+            if any(
+                l.get("category") == "Worker" and "started processing" in l.get("message", "") for l in current_session
+            ):
+                should_split = True
+
+        if should_split and current_session:
+            sessions.append(current_session)
+            current_session = []
+
+        current_session.append(log)
+
+    if current_session:
+        sessions.append(current_session)
+
+    return sessions
+
+
 def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
     """Initialize the dashboard and mount it to the FastAPI app."""
 
@@ -388,6 +419,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         # Back button
         ui.link("Back to Dashboard", "/").classes("text-blue-500 mb-4 inline-block")
 
+        # Navigation container
+        navigation_container = ui.row().classes("w-full items-center mb-4 gap-2")
+
         # Activity Diagram container
         diagram_container = ui.row().classes("w-full mb-6")
 
@@ -397,12 +431,33 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
         # Logs container
         logs_container = ui.column().classes("w-full")
 
+        # State to track current session index
+        session_state = {"index": -1}
+
         def refresh_details():
             metrics_container.clear()
             logs_container.clear()
             diagram_container.clear()
+            navigation_container.clear()
 
-            logs = get_trace_logger().get_logs(item_type=item_type, item_number=item_number)
+            all_logs = get_trace_logger().get_logs(item_type=item_type, item_number=item_number, limit=5000)
+            sessions = group_logs_by_session(all_logs)
+
+            if not sessions:
+                with logs_container:
+                    ui.label("No logs found.")
+                return
+
+            # Initialize or clamp index
+            if session_state["index"] == -1:
+                session_state["index"] = len(sessions) - 1
+
+            if session_state["index"] >= len(sessions):
+                session_state["index"] = len(sessions) - 1
+            if session_state["index"] < 0:
+                session_state["index"] = 0
+
+            logs = sessions[session_state["index"]]
 
             # Extract metrics
             mergeability = "Unknown"
@@ -421,6 +476,34 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                     else:
                         ci_status = "Success" if success else "Failure"
 
+            # Render Navigation
+            with navigation_container:
+
+                def go_older():
+                    session_state["index"] -= 1
+                    refresh_details()
+
+                def go_newer():
+                    session_state["index"] += 1
+                    refresh_details()
+
+                btn_older = ui.button(icon="arrow_downward", on_click=go_older).props("dense flat").tooltip("Older Session")
+                if session_state["index"] <= 0:
+                    btn_older.disable()
+
+                ui.label(f"Session {session_state['index'] + 1} of {len(sessions)}").classes("font-bold")
+
+                btn_newer = ui.button(icon="arrow_upward", on_click=go_newer).props("dense flat").tooltip("Newer Session")
+                if session_state["index"] >= len(sessions) - 1:
+                    btn_newer.disable()
+
+                # Show timestamp range if available
+                if logs:
+                    start_ts = logs[0].get("timestamp")
+                    if start_ts:
+                        start_dt = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S")
+                        ui.label(f"Start: {start_dt}").classes("text-sm text-gray-500 ml-4")
+
             with diagram_container:
                 mermaid_code = generate_activity_diagram(logs, item_type)
                 with ui.row().classes("items-center gap-2 mb-2"):
@@ -432,9 +515,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                                 ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(mermaid_code)})"),
                                 ui.notify("Copied!"),
                             ),
-                        ).props(
-                            "flat round dense"
-                        ).tooltip("Copy Mermaid Code")
+                        ).props("flat round dense").tooltip("Copy Mermaid Code")
 
                 if mermaid_code:
                     ui.mermaid(mermaid_code).classes("w-full bg-white p-4 rounded shadow")
@@ -444,12 +525,20 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
             with metrics_container:
                 with ui.card():
                     ui.label("Mergeability").classes("text-sm text-gray-500")
-                    color = "text-green-500" if mergeability == "True" else "text-red-500" if mergeability == "False" else "text-gray-500"
+                    color = (
+                        "text-green-500"
+                        if mergeability == "True"
+                        else "text-red-500" if mergeability == "False" else "text-gray-500"
+                    )
                     ui.label(mergeability).classes(f"text-xl font-bold {color}")
 
                 with ui.card():
                     ui.label("CI Status").classes("text-sm text-gray-500")
-                    color = "text-green-500" if ci_status == "Success" else "text-red-500" if ci_status == "Failure" else "text-yellow-500"
+                    color = (
+                        "text-green-500"
+                        if ci_status == "Success"
+                        else "text-red-500" if ci_status == "Failure" else "text-yellow-500"
+                    )
                     ui.label(ci_status).classes(f"text-xl font-bold {color}")
 
             with logs_container:
