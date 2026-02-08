@@ -39,44 +39,76 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
         graph = """
         graph TD
             Start[Start PR Processing]
-            CheckCI{Check CI}
-            CheckMerge{Check Mergeability}
-            FixCI[Fix Issues]
-            JulesFix[Jules Fix]
-            Merge[Merge PR]
-            ResolveConflict[Resolve Conflicts]
-            End[End Processing]
+            CheckLabel{Check @auto-coder}
+            CheckWaitJules{Waiting for Jules?}
+            LinkJules[Link Jules PR]
+            CheckCI{Check CI Status}
 
-            Start --> CheckCI
-            CheckCI -- Success --> CheckMerge
-            CheckCI -- Failure --> FixCI
-            CheckCI -- Jules Failure --> JulesFix
-            CheckMerge -- Mergeable --> Merge
-            CheckMerge -- Conflict --> ResolveConflict
-            FixCI --> End
-            JulesFix --> End
-            Merge --> End
-            ResolveConflict --> End
+            %% CI Status Branches
+            CheckCI -- In Progress --> End[End Processing]
+            CheckCI -- No Runs --> TriggerCI[Trigger Workflow]
+            TriggerCI --> MonitorCI[Start Monitor] --> End
+            CheckCI -- Success --> CheckMerge{Check Mergeability}
+            CheckCI -- Failure --> CheckJules{Is Jules PR?}
+
+            %% Merge Path
+            CheckMerge -- Mergeable --> Merge[Merge PR]
+            CheckMerge -- Not Mergeable --> Remediate{Remediation}
+
+            Merge -- Success --> Cleanup[Cleanup & Archive] --> End
+            Merge -- Failure --> End
+
+            %% Remediation Path
+            Remediate -- Update Base --> CheckConflict{Conflict?}
+            CheckConflict -- Resolved --> PushUpdate[Push Update] --> End
+            CheckConflict -- Degrading --> ClosePR[Close PR] --> End
+            CheckConflict -- Failed --> End
+
+            %% Failure Path
+            CheckJules -- Yes --> Feedback[Send Jules Feedback] --> End
+            CheckJules -- No --> UpdateBase{Update Base Branch}
+
+            UpdateBase -- Pushed --> End
+            UpdateBase -- UpToDate/Skipped --> FixIssues[Fix Issues]
+            FixIssues -- GHA Logs --> CommitFix[Commit Fix]
+            FixIssues -- Local Tests --> CommitFix
+            CommitFix --> End
+
+            %% Early Exits
+            Start --> CheckLabel
+            CheckLabel -- Yes --> End
+            CheckLabel -- No --> CheckWaitJules
+            CheckWaitJules -- Yes --> End
+            CheckWaitJules -- No --> LinkJules
+            LinkJules --> CheckCI
         """
     elif item_type == "issue":
         graph = """
         graph TD
             Start[Start Issue Processing]
-            Analyze[Analyze Issue]
-            Branch[Branch Setup]
-            Apply[Apply Changes]
-            CreatePR[Create PR]
-            Jules[Jules Session]
-            End[End Processing]
+            CheckLabel{Check @auto-coder}
 
-            Start --> Analyze
-            Analyze --> Branch
-            Branch --> Apply
-            Apply --> CreatePR
-            Branch --> Jules
-            Apply --> Jules
-            CreatePR --> End
-            Jules --> End
+            CheckLabel -- Yes --> End[End Processing]
+            CheckLabel -- No --> CheckType{Issue Type}
+
+            %% Parent Issue Path
+            CheckType -- Parent Issue --> CreateParentPR[Create Parent PR] --> End
+
+            %% Regular Issue Path
+            CheckType -- Regular --> CheckMode{Processing Mode}
+
+            %% Jules Mode
+            CheckMode -- Jules --> StartSession[Start Jules Session]
+            StartSession --> Comment[Comment & Label] --> End
+
+            %% Direct Mode
+            CheckMode -- Direct --> BranchSetup[Branch Setup]
+            BranchSetup --> Analyze[Analyze Issue]
+            Analyze -- Success --> Apply[Apply Changes]
+            Analyze -- Fail --> End
+            Apply --> CreatePR[Create PR] --> End
+
+            Start --> CheckLabel
         """
     else:
         return ""
@@ -84,44 +116,140 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
     # Map logs to nodes to highlight
     visited_nodes = set()
     visited_nodes.add("Start")
-    last_ci_success = False
+
+    # Track state for context-dependent nodes
+    is_jules_pr = False
+    is_remediating = False
 
     for log in logs:
         cat = log["category"]
         details = log.get("details", {})
 
+        # Ensure details is a dict (sometimes it might be a string in older logs, though code ensures dict)
+        if isinstance(details, str):
+            try:
+                details = json.loads(details.replace("'", '"'))
+            except:
+                details = {}
+
         if item_type == "pr":
             if cat == "PR Processing":
-                visited_nodes = {"Start"}
-                last_ci_success = False
+                visited_nodes.add("CheckLabel")
+                visited_nodes.add("CheckWaitJules")
+                if details.get("skip_reason") == "already_processed":
+                    visited_nodes.add("End")
+                elif details.get("skip_reason") == "waiting_for_jules":
+                    visited_nodes.add("End")
+
+            elif cat == "Jules Link":
+                visited_nodes.add("LinkJules")
+                is_jules_pr = details.get("success", False)
+
             elif cat == "CI Status":
                 visited_nodes.add("CheckCI")
-                last_ci_success = details.get("success", False)
+                if details.get("in_progress"):
+                    visited_nodes.add("End")
+                elif details.get("success"):
+                    pass  # Path goes to CheckMerge
+                else:
+                    visited_nodes.add("CheckJules")  # Path goes to CheckJules
+
+            elif cat == "CI Trigger":
+                if details.get("monitor"):
+                    visited_nodes.add("MonitorCI")
+                    visited_nodes.add("End")
+                else:
+                    visited_nodes.add("TriggerCI")
+
             elif cat == "Merge Check":
-                if last_ci_success:
-                    visited_nodes.add("CheckMerge")
-            elif cat == "Fixing Issues":
-                visited_nodes.add("FixCI")
-            elif cat == "Jules Feedback" or cat == "Jules Mode":
-                visited_nodes.add("JulesFix")
-            elif cat == "Merging" and "Successfully merged" in log["message"]:
+                visited_nodes.add("CheckMerge")
+
+            elif cat == "Remediation":
+                is_remediating = True
+                visited_nodes.add("Remediate")
+                state = details.get("state")
+                result = details.get("result")
+                step = details.get("step")
+
+                if step == "update_base":
+                    pass  # Arrow logic handles this visually in static graph
+
+                if result == "success":
+                    visited_nodes.add("CheckConflict")
+                    visited_nodes.add("PushUpdate")
+                    visited_nodes.add("End")
+                elif result == "degrading":
+                    visited_nodes.add("CheckConflict")
+                    visited_nodes.add("ClosePR")
+                    visited_nodes.add("End")
+                elif result == "failed":
+                    visited_nodes.add("CheckConflict")
+                    visited_nodes.add("End")
+
+            elif cat == "Merging":
                 visited_nodes.add("Merge")
-            elif cat == "Conflict Resolution":
-                visited_nodes.add("ResolveConflict")
+                visited_nodes.add("Cleanup")
+                visited_nodes.add("End")
+
+            elif cat == "Jules Feedback":
+                visited_nodes.add("Feedback")
+                visited_nodes.add("End")
+
+            elif cat == "Update Base":
+                if not is_remediating:
+                    visited_nodes.add("UpdateBase")
+                    result = details.get("result")
+                    if result == "pushed":
+                        visited_nodes.add("End")
+                    elif result in ["skipped", "up_to_date"]:
+                        visited_nodes.add("FixIssues")
+
+            elif cat == "Fixing Issues":
+                visited_nodes.add("FixIssues")
+                visited_nodes.add("CommitFix")  # Assumption based on flow
+                visited_nodes.add("End")
+
             elif cat == "Decision":
                 visited_nodes.add("End")
 
         elif item_type == "issue":
-            if cat == "Analysis Start":
-                visited_nodes.add("Analyze")
+            if cat == "Skip":
+                visited_nodes.add("CheckLabel")
+                visited_nodes.add("End")
+
+            elif cat == "Issue Type":
+                visited_nodes.add("CheckLabel")
+                visited_nodes.add("CheckType")
+                if details.get("is_parent"):
+                    visited_nodes.add("CreateParentPR")
+                    visited_nodes.add("End")
+
+            elif cat == "Dispatch":
+                visited_nodes.add("CheckLabel")
+                visited_nodes.add("CheckType")
+                visited_nodes.add("CheckMode")
+                mode = details.get("mode")
+                if mode == "jules":
+                    visited_nodes.add("StartSession")
+                elif mode == "local":
+                    visited_nodes.add("BranchSetup")
+
+            elif cat == "Jules Session":
+                visited_nodes.add("StartSession")
+                visited_nodes.add("Comment")
+                visited_nodes.add("End")
+
             elif cat == "Branch Setup":
-                visited_nodes.add("Branch")
+                visited_nodes.add("BranchSetup")
+
+            elif cat == "Analysis Start":
+                visited_nodes.add("Analyze")
+
             elif cat == "Apply Changes":
                 visited_nodes.add("Apply")
+
             elif cat == "Create PR":
                 visited_nodes.add("CreatePR")
-            elif cat == "Jules Session":
-                visited_nodes.add("Jules")
                 visited_nodes.add("End")
 
     # Add styles

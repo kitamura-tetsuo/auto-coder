@@ -187,12 +187,14 @@ def process_pull_request(
         ) as should_process:
             if not should_process:
                 logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
+                get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - already processed", item_type="pr", item_number=pr_number, details={"skip_reason": "already_processed"})
                 processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
                 return processed_pr
 
         # Check if we should skip this PR because it's waiting for Jules
         if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
+            get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
             return processed_pr
 
@@ -201,8 +203,10 @@ def process_pull_request(
             jules_success = _link_jules_pr_to_issue(repo_name, pr_data, github_client)
             if jules_success:
                 logger.info(f"Successfully processed Jules PR #{pr_number} (or not a Jules PR)")
+                get_trace_logger().log("Jules Link", f"Linked Jules PR #{pr_number}", item_type="pr", item_number=pr_number, details={"success": True})
             else:
                 logger.warning(f"Failed to process Jules PR #{pr_number}, but continuing with normal processing")
+                get_trace_logger().log("Jules Link", f"Failed to link Jules PR #{pr_number}", item_type="pr", item_number=pr_number, details={"success": False})
         except Exception as e:
             logger.error(f"Error in Jules PR processing for PR #{pr_number}: {e}")
             # Continue with normal processing even if Jules processing fails
@@ -210,6 +214,7 @@ def process_pull_request(
         # Check if we should skip this PR because it's waiting for Jules
         if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
+            get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
             return processed_pr
 
@@ -474,6 +479,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
     try:
         log_action(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
         actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
+        get_trace_logger().log("Remediation", f"Starting remediation for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"state": state_text})
 
         # Step 1: Get PR details to determine the base branch and head branch
         try:
@@ -522,6 +528,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # - Merging base branch
             # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
             # - Pushing updated branch with retry
+            get_trace_logger().log("Remediation", f"Updating base branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"step": "update_base"})
             update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
             actions.extend(update_actions)
 
@@ -532,6 +539,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # The linked issues have been reopened and attempt incremented
             # Now we need to close the PR
             try:
+                get_trace_logger().log("Remediation", f"Degrading merge detected for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "degrading"})
                 client = GitHubClient.get_instance()
                 close_comment = "Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
                 client.close_pr(repo_name, pr_number, close_comment)
@@ -555,9 +563,11 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+            get_trace_logger().log("Remediation", f"Remediation success for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "success"})
         elif "Failed" in str(update_actions):
             # Remediation attempted but failed
             actions.append(f"Mergeability remediation failed for PR #{pr_number}")
+            get_trace_logger().log("Remediation", f"Remediation failed for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "failed"})
 
     except Exception as e:
         error_msg = f"Error during mergeability remediation for PR #{pr_number}: {str(e)}"
@@ -1062,6 +1072,7 @@ def _handle_pr_merge(
 
                     if triggered:
                         actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
+                        get_trace_logger().log("CI Trigger", f"Triggered {workflow_id} for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
 
                         # 3. Start async monitor
                         head_sha = pr_data.get("head", {}).get("sha")
@@ -1070,6 +1081,7 @@ def _handle_pr_merge(
                             monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
                             monitor_thread.start()
                             actions.append(f"Started async monitor for {workflow_id}")
+                            get_trace_logger().log("CI Trigger", f"Started async monitor for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"monitor": True})
                         except Exception as e:
                             # Clean up if thread fails to start
                             with _active_monitors_lock:
@@ -1192,6 +1204,7 @@ def _handle_pr_merge(
                     if failure_count > config.JULES_FAILURE_THRESHOLD:
                         logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
                         should_fallback = True
+                        get_trace_logger().log("Jules Fallback", f"Switching to local backend for PR #{pr_number} (threshold)", item_type="pr", item_number=pr_number, details={"reason": "failure_threshold"})
                     else:
                         # Check if the last failure comment was more than 2 hour ago
                         last_failure_comment = next((c for c in reversed(comments) if target_message in c.get("body", "")), None)
@@ -1203,6 +1216,7 @@ def _handle_pr_merge(
                             if current_time - last_comment_dt > timedelta(hours=config.JULES_WAIT_TIMEOUT_HOURS):
                                 logger.info(f"PR #{pr_number} has been waiting for Jules for > {config.JULES_WAIT_TIMEOUT_HOURS} hour (last failure). Switching to local llm_backend.")
                                 should_fallback = True
+                                get_trace_logger().log("Jules Fallback", f"Switching to local backend for PR #{pr_number} (timeout)", item_type="pr", item_number=pr_number, details={"reason": "timeout"})
 
                 except Exception as e:
                     logger.error(f"Error checking Jules failure count/time for PR #{pr_number}: {e}")
@@ -1236,6 +1250,7 @@ def _handle_pr_merge(
             # Step 7: Optionally update with latest base branch commits (configurable)
             if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
                 actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
+                get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
 
                 # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
@@ -1272,12 +1287,14 @@ def _handle_pr_merge(
                 # If base branch update required pushing changes, skip to next PR
                 if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
                     actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
+                    get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
                     return actions
 
                 # Step 9: If no main branch updates were needed, the test failures are due to PR content
                 # Get GitHub Actions error logs and ask Gemini to fix
                 if any("up to date with" in action for action in update_actions):
                     actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
+                    get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
 
                     # Fix PR issues using GitHub Actions logs first, then local tests
                     if failed_checks:
