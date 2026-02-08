@@ -83,16 +83,22 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
     # Map logs to nodes to highlight
     visited_nodes = set()
     visited_nodes.add("Start")
+    last_ci_success = False
 
     for log in logs:
         cat = log["category"]
         details = log.get("details", {})
 
         if item_type == "pr":
-            if cat == "CI Status":
+            if cat == "PR Processing":
+                visited_nodes = {"Start"}
+                last_ci_success = False
+            elif cat == "CI Status":
                 visited_nodes.add("CheckCI")
+                last_ci_success = details.get("success", False)
             elif cat == "Merge Check":
-                visited_nodes.add("CheckMerge")
+                if last_ci_success:
+                    visited_nodes.add("CheckMerge")
             elif cat == "Fixing Issues":
                 visited_nodes.add("FixCI")
             elif cat == "Jules Feedback" or cat == "Jules Mode":

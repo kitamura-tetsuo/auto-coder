@@ -17,8 +17,8 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
     mock_logger_instance = MagicMock()
     mock_get_trace_logger.return_value = mock_logger_instance
     mock_logger_instance.get_logs.return_value = [
-        {"timestamp": 1700000000, "category": "Merge Check", "message": "Check", "details": {"mergeable": True}},
-        {"timestamp": 1700000001, "category": "CI Status", "message": "CI", "details": {"success": True, "in_progress": False}},
+        {"timestamp": 1700000000, "category": "CI Status", "message": "CI", "details": {"success": True, "in_progress": False}},
+        {"timestamp": 1700000001, "category": "Merge Check", "message": "Check", "details": {"mergeable": True}},
     ]
 
     # Capture page functions
