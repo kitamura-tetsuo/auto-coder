@@ -103,7 +103,7 @@ class TestDashboardReachability:
         response = client.get("/dashboard/")
         assert response.status_code == 200
         # Check for some nicegui content to verify it rendered
-        assert "<!DOCTYPE html>" in response.text
+        assert "<!doctype html>" in response.text.lower()
         assert "Auto-Coder Dashboard" in response.text or "NiceGUI" in response.text
 
         # Test detail page (mock data required for TraceLogger if detail page fetches it)
