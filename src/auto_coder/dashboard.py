@@ -13,6 +13,23 @@ from .automation_engine import AutomationEngine
 from .trace_logger import get_trace_logger
 
 
+def prepare_log_rows(logs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Format logs for display in the dashboard table, reversed (newest first)."""
+    rows = []
+    # Reverse logs to show newest first
+    for log in reversed(logs):
+        dt = datetime.fromtimestamp(log["timestamp"]).strftime("%H:%M:%S")
+        rows.append(
+            {
+                "time": dt,
+                "category": log["category"],
+                "message": log["message"],
+                "details": str(log.get("details", "")),
+            }
+        )
+    return rows
+
+
 def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str:
     """Generate Mermaid activity diagram based on logs."""
 
@@ -300,10 +317,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                         {"name": "message", "label": "Message", "field": "message", "align": "left"},
                         {"name": "details", "label": "Details", "field": "details", "align": "left"},
                     ]
-                    rows = []
-                    for log in logs:
-                        dt = datetime.fromtimestamp(log["timestamp"]).strftime("%H:%M:%S")
-                        rows.append({"time": dt, "category": log["category"], "message": log["message"], "details": str(log.get("details", ""))})
+                    rows = prepare_log_rows(logs)
 
                     ui.table(columns=columns, rows=rows, pagination=10).classes("w-full")
 

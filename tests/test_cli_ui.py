@@ -288,23 +288,44 @@ def test_spinner_step(mock_stdout):
     """Test that Spinner step updates message and handles cleanup."""
     mock_stdout.isatty.return_value = True
 
-    # Use a larger delay to avoid overwhelming the mock/thread scheduler
-    spinner = cli_ui.Spinner("Initial", delay=0.1)
+    # Helper function to wait for specific output
+    def wait_for_output(pattern, timeout=2.0):
+        start = time.time()
+        while time.time() - start < timeout:
+            writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+            if any(pattern in w for w in writes):
+                return True
+            time.sleep(0.05)
+        return False
+
+    # Use a very small delay so the spinner thread loops frequently
+    spinner = cli_ui.Spinner("Initial", delay=0.001)
 
     with spinner:
-        time.sleep(0.3)  # Let it spin a bit with "Initial"
-        spinner.step("Updated Long Message")
-        time.sleep(0.3)  # Let it spin with longer message
-        spinner.step("Short")
-        time.sleep(0.3)  # Let it spin with shorter message
+        # Wait for the spinner thread to start and print the initial message
+        if not wait_for_output("Initial"):
+            # If not found, check what WAS printed for debugging context
+            writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+            raise AssertionError(f"Timeout waiting for 'Initial'. Writes: {writes}")
 
+        # Step 1: Update message
+        spinner.step("Updated Long Message")
+        if not wait_for_output("Updated Long Message"):
+            writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+            raise AssertionError(f"Timeout waiting for 'Updated Long Message'. Writes: {writes}")
+
+        # Step 2: Update message again
+        spinner.step("Short")
+        if not wait_for_output("Short"):
+            writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
+            raise AssertionError(f"Timeout waiting for 'Short'. Writes: {writes}")
+
+    # Collect all writes to stdout
     writes = [args[0] for args, _ in mock_stdout.write.call_args_list]
 
-    # Verify initial message was printed
+    # Double check final assertions (redundant but good for verification)
     assert any("Initial" in w for w in writes)
-
-    # Verify short message was printed (this proves step() updated the message for the final output)
-    # Intermediate updates might be missed by the thread due to timing/mocking issues in CI
+    assert any("Updated Long Message" in w for w in writes)
     assert any("Short" in w for w in writes)
 
 
