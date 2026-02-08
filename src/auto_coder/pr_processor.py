@@ -1570,6 +1570,10 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         github_url_in_session = re.search(r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+", session_id)
         if github_url_in_session:
             session_id = github_url_in_session.group(0)
+            logger.debug(f"Found session ID pattern 1 (URL): {session_id}")
+            return session_id
+
+        # Allow alphanumeric session IDs (some tests use them)
         logger.debug(f"Found session ID pattern 1: {session_id}")
         return session_id
 
@@ -1609,7 +1613,9 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
 
     # Pattern 6: Look for standalone session IDs starting with "session_"
     # e.g., session_12345, session_abc-def
-    session_prefix_pattern = r"\b(session_[a-zA-Z0-9-_]+)\b"
+    # Must have a suffix beyond just "session_id" to avoid matching JSON keys.
+    # We require at least one character after "session_" that isn't just "id" unless it's longer.
+    session_prefix_pattern = r"\b(session_(?!id\b)[a-zA-Z0-9-_]+)\b"
     match = re.search(session_prefix_pattern, pr_body)
     if match:
         session_id = match.group(1).strip()

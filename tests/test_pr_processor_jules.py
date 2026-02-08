@@ -111,6 +111,14 @@ class TestExtractSessionIdFromPrBody:
         session_id = _extract_session_id_from_pr_body(pr_body)
         assert session_id == "longSessionIdValue12345"
 
+    def test_extract_session_id_from_pr_body_json_false_positive(self):
+        """Test that 'session_id' in a JSON string is not incorrectly extracted."""
+        pr_body = "Closes #1963\n\n" '{"type":"init","timestamp":"2026-02-02T06:09:09.038Z",' '"session_id":"fc7312d1-b7c1-4623-8e8e-c436b3b8cab0","model":"auto-gemini-3"}'
+        session_id = _extract_session_id_from_pr_body(pr_body)
+        # It should not extract "session_id" from the JSON key
+        # AND it should not extract the UUID value (since Pattern 6 is now refined)
+        assert session_id is None
+
 
 class TestUpdateJulesPrBody:
     """Test cases for _update_jules_pr_body function."""
