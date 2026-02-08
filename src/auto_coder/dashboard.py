@@ -118,9 +118,9 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
                 visited_nodes.add("End")
 
     # Add styles
-    style_def = "\\n    classDef visited fill:#4ade80,stroke:#16a34a,stroke-width:2px;\\n"
+    style_def = "\n    classDef visited fill:#4ade80,stroke:#16a34a,stroke-width:2px;\n"
     for node in visited_nodes:
-        style_def += f"    class {node} visited;\\n"
+        style_def += f"    class {node} visited;\n"
 
     return graph + style_def
 
