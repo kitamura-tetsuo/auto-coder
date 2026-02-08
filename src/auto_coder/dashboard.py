@@ -2,6 +2,7 @@
 Dashboard module for Auto-Coder using NiceGUI.
 """
 
+import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List
@@ -287,8 +288,20 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine) -> None:
                         ci_status = "Success" if success else "Failure"
 
             with diagram_container:
-                ui.label("Processing Path").classes("text-xl font-bold mb-2")
                 mermaid_code = generate_activity_diagram(logs, item_type)
+                with ui.row().classes("items-center gap-2 mb-2"):
+                    ui.label("Processing Path").classes("text-xl font-bold")
+                    if mermaid_code:
+                        ui.button(
+                            icon="content_copy",
+                            on_click=lambda: (
+                                ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(mermaid_code)})"),
+                                ui.notify("Copied!"),
+                            ),
+                        ).props(
+                            "flat round dense"
+                        ).tooltip("Copy Mermaid Code")
+
                 if mermaid_code:
                     ui.mermaid(mermaid_code).classes("w-full bg-white p-4 rounded shadow")
                 else:

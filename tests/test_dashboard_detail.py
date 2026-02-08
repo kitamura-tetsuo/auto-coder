@@ -67,6 +67,10 @@ def test_dashboard_detail_page_registration_and_render(mock_get_trace_logger, mo
     assert "class CheckCI visited" in mermaid_args
     assert "class CheckMerge visited" in mermaid_args
 
+    # Verify Copy button
+    button_calls = [kwargs.get("icon") for _, kwargs in mock_ui.button.call_args_list]
+    assert "content_copy" in button_calls
+
 
 @patch("src.auto_coder.dashboard.ui")
 def test_dashboard_main_page_search(mock_ui):
