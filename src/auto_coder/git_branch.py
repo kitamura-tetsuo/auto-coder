@@ -575,20 +575,29 @@ def git_checkout_branch(
     has_changes = status_result.success and status_result.stdout.strip()
 
     if has_changes:
-        logger.info("Detected uncommitted changes before checkout, committing them first")
-        # Add all changes
-        add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
-        if not add_result.success:
-            logger.warning(f"Failed to add changes: {add_result.stderr}")
+        # Check current branch to decide whether to commit or discard changes
+        current_branch_result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
+        current_branch = current_branch_result.stdout.strip() if current_branch_result.success else ""
 
-        # Commit changes
-        commit_result = git_commit_with_retry(
-            commit_message="WIP: Auto-commit before branch checkout",
-            cwd=cwd,
-            max_retries=1,
-        )
-        if not commit_result.success:
-            logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
+        if current_branch == "main":
+            logger.info("Detected uncommitted changes on 'main' branch, discarding them")
+            cmd.run_command(["git", "reset", "--hard"], cwd=cwd)
+            cmd.run_command(["git", "clean", "-fd"], cwd=cwd)
+        else:
+            logger.info("Detected uncommitted changes before checkout, committing them first")
+            # Add all changes
+            add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+            if not add_result.success:
+                logger.warning(f"Failed to add changes: {add_result.stderr}")
+
+            # Commit changes
+            commit_result = git_commit_with_retry(
+                commit_message="WIP: Auto-commit before branch checkout",
+                cwd=cwd,
+                max_retries=1,
+            )
+            if not commit_result.success:
+                logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
 
     # Check if branch already exists locally (only when create_new is True)
     branch_exists_locally = False

@@ -794,37 +794,39 @@ class TestGitCheckoutBranch:
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (has changes, needs commit)
                 CommandResult(success=True, stdout="M  test.py", stderr="", returncode=0),
-                # Second call: git add -A (from git_checkout_branch)
+                # Second call: Check current branch (NOT main)
+                CommandResult(success=True, stdout="feature-old\n", stderr="", returncode=0),
+                # Third call: git add -A (from git_checkout_branch)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Third call: git commit (from git_commit_with_retry)
+                # Fourth call: git commit (from git_commit_with_retry)
                 CommandResult(
                     success=True,
                     stdout="WIP: Auto-commit before branch checkout\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fourth call: git branch --list (branch doesn't exist)
+                # Fifth call: git branch --list (branch doesn't exist)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fifth call: git fetch origin --prune --tags
+                # Sixth call: git fetch origin --prune --tags
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Sixth call: git branch --list (re-check after fetch, branch still doesn't exist)
+                # Seventh call: git branch --list (re-check after fetch, branch still doesn't exist)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Seventh call: git ls-remote --heads origin refs/heads/new-feature (check if branch exists remotely)
+                # Eighth call: git ls-remote --heads origin refs/heads/new-feature (check if branch exists remotely)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Eighth call: git branch --format=%(refname:short) (check for branch name conflicts)
+                # Ninth call: git branch --format=%(refname:short) (check for branch name conflicts)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Ninth call: verify origin/main exists
+                # Tenth call: verify origin/main exists
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Tenth call: git checkout -B new-feature origin/main
+                # Eleventh call: git checkout -B new-feature origin/main
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'new-feature'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Eleventh call: verify current branch (git rev-parse --abbrev-ref HEAD)
+                # Twelfth call: verify current branch (git rev-parse --abbrev-ref HEAD)
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
-                # Twelfth call: git push -u origin new-feature
+                # Thirteenth call: git push -u origin new-feature
                 CommandResult(
                     success=True,
                     stdout="Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.\n",
@@ -836,7 +838,7 @@ class TestGitCheckoutBranch:
             result = git_checkout_branch("new-feature", create_new=True, base_branch="main")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 12
+            assert mock_cmd.run_command.call_count == 13
             # Verify status check
             assert mock_cmd.run_command.call_args_list[0][0][0] == [
                 "git",
@@ -844,7 +846,7 @@ class TestGitCheckoutBranch:
                 "--porcelain",
             ]
             # Verify fetch
-            assert mock_cmd.run_command.call_args_list[4][0][0] == [
+            assert mock_cmd.run_command.call_args_list[5][0][0] == [
                 "git",
                 "fetch",
                 "origin",
@@ -852,14 +854,14 @@ class TestGitCheckoutBranch:
                 "--tags",
             ]
             # Verify re-check of local branch after fetch
-            assert mock_cmd.run_command.call_args_list[5][0][0] == [
+            assert mock_cmd.run_command.call_args_list[6][0][0] == [
                 "git",
                 "branch",
                 "--list",
                 "new-feature",
             ]
             # Verify ls-remote check for branch existence (added by PR #774)
-            assert mock_cmd.run_command.call_args_list[6][0][0] == [
+            assert mock_cmd.run_command.call_args_list[7][0][0] == [
                 "git",
                 "ls-remote",
                 "--heads",
@@ -867,28 +869,28 @@ class TestGitCheckoutBranch:
                 "refs/heads/new-feature",
             ]
             # Verify branch format check for conflicts
-            assert mock_cmd.run_command.call_args_list[7][0][0] == [
+            assert mock_cmd.run_command.call_args_list[8][0][0] == [
                 "git",
                 "branch",
                 "--format=%(refname:short)",
             ]
             # Verify origin/main check
-            assert mock_cmd.run_command.call_args_list[8][0][0] == [
+            assert mock_cmd.run_command.call_args_list[9][0][0] == [
                 "git",
                 "rev-parse",
                 "--verify",
                 "refs/remotes/origin/main",
             ]
-            # Verify checkout command with -B flag and base ref (now at index 9)
-            assert mock_cmd.run_command.call_args_list[9][0][0] == [
+            # Verify checkout command with -B flag and base ref (now at index 10)
+            assert mock_cmd.run_command.call_args_list[10][0][0] == [
                 "git",
                 "checkout",
                 "-B",
                 "new-feature",
                 "refs/remotes/origin/main",
             ]
-            # Verify push command (now at index 11)
-            assert mock_cmd.run_command.call_args_list[11][0][0] == [
+            # Verify push command (now at index 12)
+            assert mock_cmd.run_command.call_args_list[12][0][0] == [
                 "git",
                 "push",
                 "-u",
@@ -1298,39 +1300,88 @@ class TestGitCheckoutBranch:
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (has changes)
                 CommandResult(success=True, stdout=" M file.txt\n", stderr="", returncode=0),
-                # Second call: git add -A
+                # Second call: Check current branch (NOT main)
+                CommandResult(success=True, stdout="feature-old\n", stderr="", returncode=0),
+                # Third call: git add -A
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Third call: git commit (from git_commit_with_retry)
+                # Fourth call: git commit (from git_commit_with_retry)
                 CommandResult(
                     success=True,
-                    stdout="[main abc123] WIP: Auto-commit before branch checkout\n",
+                    stdout="[feature-old abc] WIP: Auto-commit before branch checkout\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fourth call: git checkout
+                # Fifth call: git checkout
                 CommandResult(
                     success=True,
                     stdout="Switched to branch 'feature'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fifth call: verify current branch
+                # Sixth call: verify current branch
                 CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("feature")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 5
+            assert mock_cmd.run_command.call_count == 6
             # Verify that git add was called
-            assert mock_cmd.run_command.call_args_list[1][0][0] == ["git", "add", "-A"]
+            assert mock_cmd.run_command.call_args_list[2][0][0] == ["git", "add", "-A"]
             # Verify that commit was called
-            assert mock_cmd.run_command.call_args_list[2][0][0] == [
+            assert mock_cmd.run_command.call_args_list[3][0][0] == [
                 "git",
                 "commit",
                 "-m",
                 "WIP: Auto-commit before branch checkout",
             ]
+
+    def test_checkout_from_main_discards_changes(self):
+        """Test that checking out from 'main' with uncommitted changes discards them."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+
+            # Setup the sequence of command results
+            mock_cmd.run_command.side_effect = [
+                # 1. Check status (has changes)
+                CommandResult(success=True, stdout=" M file.txt\n", stderr="", returncode=0),
+                # 2. Check current branch (MUST be main for this test)
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 3. Discard changes (git reset --hard)
+                CommandResult(success=True, stdout="HEAD is now at ...", stderr="", returncode=0),
+                # 4. Clean working directory (git clean -fd)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # 5. Checkout new branch
+                CommandResult(success=True, stdout="Switched to branch 'feature'\n", stderr="", returncode=0),
+                # 6. Verify current branch
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
+            ]
+
+            # Execute
+            result = git_checkout_branch("feature")
+
+            # Assertions
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 6
+
+            # Verify specific calls
+            calls = mock_cmd.run_command.call_args_list
+
+            # 1. Status check
+            assert calls[0][0][0] == ["git", "status", "--porcelain"]
+
+            # 2. Branch check
+            assert calls[1][0][0] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+
+            # 3. Reset hard
+            assert calls[2][0][0] == ["git", "reset", "--hard"]
+
+            # 4. Clean
+            assert calls[3][0][0] == ["git", "clean", "-fd"]
+
+            # 5. Checkout
+            assert calls[4][0][0] == ["git", "checkout", "feature"]
 
     def test_checkout_with_uncommitted_changes_error_retry(self):
         """Test checkout fails with uncommitted changes error, then retries after commit."""
