@@ -276,7 +276,14 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         if test_file:
             with ProgressStage(f"Running only the specified test file via script: {test_file}"):
                 logger.info(f"Running only the specified test file via script: {test_file}")
-                cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
+
+                target_container = os.environ.get("TARGET_CONTAINER_NAME")
+                if target_container:
+                    logger.info(f"Using target container: {target_container}")
+                    cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH, test_file]
+                else:
+                    cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
+
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 return {
                     "success": result.success,
@@ -290,8 +297,15 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
 
         # Always run via test script
         start_time = datetime.now().timestamp()
-        cmd_list = ["bash", config.TEST_SCRIPT_PATH]
-        logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
+
+        target_container = os.environ.get("TARGET_CONTAINER_NAME")
+        if target_container:
+            logger.info(f"Running local tests via target container: {target_container}")
+            cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH]
+        else:
+            logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
+            cmd_list = ["bash", config.TEST_SCRIPT_PATH]
+
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
         logger.info(f"Finished local tests. {'Passed' if result.success else 'Failed'}")
 
@@ -323,7 +337,12 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 }
 
                 # Run the isolated test
-                isolated_cmd_list = ["bash", config.TEST_SCRIPT_PATH, first_failed_test]
+                target_container = os.environ.get("TARGET_CONTAINER_NAME")
+                if target_container:
+                    isolated_cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH, first_failed_test]
+                else:
+                    isolated_cmd_list = ["bash", config.TEST_SCRIPT_PATH, first_failed_test]
+
                 isolated_result = cmd.run_command(isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
 
                 # Check for stability issue: failed in full suite but passed in isolation

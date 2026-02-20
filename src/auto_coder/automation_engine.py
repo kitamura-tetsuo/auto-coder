@@ -1491,10 +1491,7 @@ class AutomationEngine:
 
     def _run_pr_tests(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
         """Run tests for PR."""
-        import subprocess
-
         test_script_path = self.config.TEST_SCRIPT_PATH
-        cwd = None  # Could be extended to use repo-specific working directory
 
         if not os.path.exists(test_script_path):
             return {
@@ -1504,15 +1501,20 @@ class AutomationEngine:
             }
 
         try:
-            result = subprocess.run(
-                ["bash", test_script_path],
-                capture_output=True,
-                text=True,
-                timeout=3600,
-                cwd=cwd,
+            target_container = os.environ.get("TARGET_CONTAINER_NAME")
+            if target_container:
+                logger.info(f"Running PR tests via target container: {target_container}")
+                cmd_list = ["docker", "exec", target_container, "bash", test_script_path]
+            else:
+                logger.info(f"Running PR tests via script: {test_script_path}")
+                cmd_list = ["bash", test_script_path]
+
+            result = self.cmd.run_command(
+                cmd_list,
+                timeout=self.cmd.DEFAULT_TIMEOUTS["test"],
             )
 
-            if result.returncode == 0:
+            if result.success:
                 return {"success": True, "output": result.stdout}
             else:
                 return {
@@ -1521,12 +1523,6 @@ class AutomationEngine:
                     "errors": result.stderr,
                     "return_code": result.returncode,
                 }
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "errors": "Test execution timed out after 1 hour",
-                "return_code": -1,
-            }
         except Exception as e:
             return {
                 "success": False,

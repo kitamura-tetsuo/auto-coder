@@ -1,0 +1,27 @@
+services:
+  auto-coder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - AUTHORIZED_KEYS=${AUTHORIZED_KEYS:-}
+        - DOCKER_GID=${DOCKER_GID:-999}
+    container_name: auto-coder-env
+    volumes:
+      - /mnt/nas/src/home/.auto-coder:/root/.auto-coder
+      - /home/ubuntu/workspaces_for_auto_coder_docker:/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+      - tailscale-data:/var/lib/tailscale
+    environment:
+      - GH_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN:-}
+      - TARGET_CONTAINER_NAME=${TARGET_CONTAINER_NAME:-target-app}
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TARGET=${TARGET:-auto-coder}
+      - AM_I_AUTOCODER_CONTAINER=true
+    working_dir: /workspaces
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  tailscale-data:

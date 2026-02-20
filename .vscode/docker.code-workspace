@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../../mnt/nas/src/settings_for_auto_coder"
+		}
+	],
+	"settings": {
+		"window.title": "docker auto-coder${separator}${activeEditorShort}${separator}${remoteName}/5",
+	}
+}

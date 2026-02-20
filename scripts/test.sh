@@ -4,6 +4,23 @@ set -Eeuo pipefail
 # -----------------------------------------------------------------------------
 # Environment detection and setup
 # -----------------------------------------------------------------------------
+# Handle remote execution if TARGET_CONTAINER_NAME is set
+if [ -n "${TARGET_CONTAINER_NAME:-}" ] && [ "${AM_I_AUTOCODER_CONTAINER:-false}" = "true" ] && [ "${INSIDE_TARGET_EXECUTION:-false}" != "true" ]; then
+    echo "[INFO] Redirecting test execution to target container: $TARGET_CONTAINER_NAME"
+    
+    # Ensure Docker is accessible
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[ERROR] docker command not found. Cannot execute tests in target container."
+        exit 1
+    fi
+
+    # Execute this script inside the target container
+    # We pass INSIDE_TARGET_EXECUTION=true to avoid recursion
+    # We also pass all arguments received by this script
+    docker exec -e INSIDE_TARGET_EXECUTION=true "$TARGET_CONTAINER_NAME" ./scripts/test.sh "$@"
+    exit $?
+fi
+
 # Detect CI environment and set appropriate flags
 
 echo "Detecting CI environment..."
