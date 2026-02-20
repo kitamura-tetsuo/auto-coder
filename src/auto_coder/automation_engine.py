@@ -93,7 +93,7 @@ class AutomationEngine:
                 await asyncio.to_thread(check_for_updates_and_restart)
 
                 # Resume sessions
-                await asyncio.to_thread(check_and_resume_or_archive_sessions)
+                await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
 
                 # Get candidates
                 candidates = await asyncio.to_thread(self._get_candidates, repo_name)

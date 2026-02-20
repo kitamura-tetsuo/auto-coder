@@ -125,10 +125,11 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to start Jules session: {e}")
             raise RuntimeError(f"Failed to start Jules session: {e}")
 
-    def list_sessions(self, page_size: int = 20) -> List[Dict[str, Any]]:
-        """List recent Jules sessions.
+    def list_sessions(self, repo_name: Optional[str] = None, page_size: int = 20) -> List[Dict[str, Any]]:
+        """List recent Jules sessions, optionally filtered by repository.
 
         Args:
+            repo_name: Optional repository name to filter sessions by (e.g., 'owner/repo')
             page_size: Number of sessions to return per page (default: 20)
 
         Returns:
@@ -138,13 +139,13 @@ class JulesClient(LLMClientBase):
             # Prepare the request
             url = f"{self.base_url}/sessions"
 
-            # Note: The API does not support server-side filtering for 'state'.
+            # Note: The API does not support server-side filtering for 'state' or 'source'.
             # We must fetch sessions and filter them client-side.
             base_params = {
                 "pageSize": page_size,
             }
 
-            logger.info(f"Listing Jules sessions (pageSize={page_size})")
+            logger.info(f"Listing Jules sessions (pageSize={page_size}, repo_name={repo_name})")
 
             all_sessions = []
             page_token = None
@@ -179,12 +180,30 @@ class JulesClient(LLMClientBase):
                     logger.error("Failed to parse Jules sessions response as JSON")
                     break
 
-            # Filter out archived sessions client-side
-            active_sessions = [s for s in all_sessions if s.get("state") != "ARCHIVED"]
+            # Filter sessions client-side
+            filtered_sessions = []
+            expected_source = f"sources/github/{repo_name}" if repo_name else None
 
-            logger.info(f"Total sessions retrieved: {len(all_sessions)}, Active: {len(active_sessions)}")
+            for s in all_sessions:
+                # Skip archived sessions
+                if s.get("state") == "ARCHIVED":
+                    continue
+
+                # Filter by repo name if requested
+                if repo_name:
+                    source_context = s.get("sourceContext")
+                    if not source_context:
+                        continue
+
+                    source = source_context.get("source")
+                    if source != expected_source:
+                        continue
+
+                filtered_sessions.append(s)
+
+            logger.info(f"Total sessions retrieved: {len(all_sessions)}, Filtered: {len(filtered_sessions)}")
             logger.info("=" * 60)
-            return active_sessions
+            return filtered_sessions
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to list Jules sessions: {e}")

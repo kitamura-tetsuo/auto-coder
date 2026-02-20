@@ -5,7 +5,7 @@ Jules engine module for managing Jules sessions.
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict
+from typing import Dict, Optional
 
 from dateutil import parser
 
@@ -40,7 +40,7 @@ def _save_state(state: Dict[str, int]) -> None:
         logger.warning(f"Failed to save Jules session state: {e}")
 
 
-def check_and_resume_or_archive_sessions() -> None:
+def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> None:
     """Check for Jules sessions to resume or archive.
 
     - If state is FAILED: Resume with "ok".
@@ -53,7 +53,7 @@ def check_and_resume_or_archive_sessions() -> None:
     """
     try:
         jules_client = JulesClient()
-        sessions = jules_client.list_sessions()
+        sessions = jules_client.list_sessions(repo_name=repo_name)
 
         # Load retry state
         retry_state = _load_state()
