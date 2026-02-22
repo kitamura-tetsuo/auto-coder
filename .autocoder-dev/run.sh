@@ -14,9 +14,9 @@ elif [ -d "$HOME/.ssh" ]; then
     export AUTHORIZED_KEYS=$(cat "$HOME/.ssh"/*.pub 2>/dev/null || true)
 fi
 
-echo "Building auto-coder-env with DOCKER_GID=$DOCKER_GID..."
+echo "Rebuilding auto-coder-env with DOCKER_GID=$DOCKER_GID..."
 
-docker compose -f docker-compose.yml build \
+docker compose -f docker-compose.yml build --no-cache \
     --build-arg DOCKER_GID="$DOCKER_GID" \
     --build-arg AUTHORIZED_KEYS="$AUTHORIZED_KEYS"
 
