@@ -93,7 +93,9 @@ class QwenClient(LLMClientBase):
 
         # Verify qwen CLI is available
         try:
-            result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
+            override = os.environ.get("AUTOCODER_QWEN_CLI")
+            cmd = shlex.split(override) if override else ["qwen"]
+            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise RuntimeError("qwen CLI not available or not working")
         except Exception as e:
@@ -169,7 +171,8 @@ class QwenClient(LLMClientBase):
                 env.pop("QWEN_MODEL", None)
             env["QWEN_MODEL"] = model_to_use
 
-        cmd = ["qwen"]
+        override = os.environ.get("AUTOCODER_QWEN_CLI")
+        cmd = shlex.split(override) if override else ["qwen"]
 
         # Get processed options with placeholders replaced
         if self.config_backend:
@@ -377,8 +380,10 @@ class QwenClient(LLMClientBase):
             True if the MCP server is configured, False otherwise
         """
         try:
+            override = os.environ.get("AUTOCODER_QWEN_CLI")
+            base_cmd = shlex.split(override) if override else ["qwen"]
             result = subprocess.run(
-                ["qwen", "mcp", "list"],
+                base_cmd + ["mcp", "list"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -411,7 +416,9 @@ class QwenClient(LLMClientBase):
         try:
             # Use qwen mcp add command to add the server
             # Format: qwen mcp add --scope user <name> <command> [args...]
-            cmd = ["qwen", "mcp", "add", "--scope", "user", server_name, command] + args
+            override = os.environ.get("AUTOCODER_QWEN_CLI")
+            base_cmd = shlex.split(override) if override else ["qwen"]
+            cmd = base_cmd + ["mcp", "add", "--scope", "user", server_name, command] + args
 
             logger.debug(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(

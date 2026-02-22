@@ -139,7 +139,8 @@ class GeminiClient(LLMClientBase):
         try:
             escaped_prompt = self._escape_prompt(prompt)
 
-            cmd = ["gemini"]
+            override = os.environ.get("AUTOCODER_GEMINI_CLI")
+            cmd = shlex.split(override) if override else ["gemini"]
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
@@ -379,8 +380,10 @@ class GeminiClient(LLMClientBase):
             True if the MCP server is configured, False otherwise
         """
         try:
+            override = os.environ.get("AUTOCODER_GEMINI_CLI")
+            base_cmd = shlex.split(override) if override else ["gemini"]
             result = subprocess.run(
-                ["gemini", "mcp", "list"],
+                base_cmd + ["mcp", "list"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -413,7 +416,9 @@ class GeminiClient(LLMClientBase):
         try:
             # Use gemini mcp add command
             # Format: gemini mcp add <name> <command> [args...]
-            cmd = ["gemini", "mcp", "add", server_name, command] + args
+            override = os.environ.get("AUTOCODER_GEMINI_CLI")
+            base_cmd = shlex.split(override) if override else ["gemini"]
+            cmd = base_cmd + ["mcp", "add", server_name, command] + args
 
             result = subprocess.run(
                 cmd,

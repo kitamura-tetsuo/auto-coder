@@ -269,11 +269,12 @@ def check_auggie_cli_or_fail() -> None:
 
 def check_claude_cli_or_fail() -> None:
     """Check if claude CLI is available and working."""
-    check_cli_tool(tool_name="claude", install_url="https://claude.ai/download", version_flag="--version")
+    check_cli_tool(tool_name="claude", install_url="https://claude.ai/download\nOr use: npm install -g @anthropic-ai/claude-code", version_flag="--version")
 
 
 def check_aider_cli_or_fail() -> None:
     """Check if aider CLI is available and working."""
+    # Note: aider is typically a python library but it does have a CLI
     check_cli_tool(tool_name="aider", install_url="pip install aider-chat", version_flag="--version")
 
 
@@ -298,8 +299,53 @@ def check_cli_tool(
     Raises:
         click.ClickException: If the CLI tool is not available or not working
     """
+    if not cmd_override_env:
+        cmd_override_env = f"AUTOCODER_{tool_name.upper()}_CLI"
+
+    # Handle docker execution if AM_I_AUTOCODER_CONTAINER=true
+    if os.environ.get("AM_I_AUTOCODER_CONTAINER") == "true":
+        from .utils import get_target_container
+        target_container = get_target_container(None)
+        if target_container:
+            override_val = f"docker exec -i {target_container} {tool_name}"
+            os.environ[cmd_override_env] = override_val
+            
+            # Check if it exists in the container
+            cmd = shlex.split(override_val)
+            try:
+                res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+                if res.returncode != 0 and fallback_without_args:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                
+                if res.returncode != 0:
+                    click.echo(f"Installing {tool_name} inside {target_container}...")
+                    
+                    # Extract install command from install_url
+                    install_cmd = None
+                    if "npm install" in install_url:
+                        for line in install_url.split('\n'):
+                            if "npm install" in line:
+                                install_cmd = shlex.split(line.strip().replace("Or use: ", ""))
+                                break
+                    elif "pip install" in install_url:
+                        for line in install_url.split('\n'):
+                            if "pip install" in line:
+                                install_cmd = shlex.split(line.strip().replace("Or use: ", ""))
+                                break
+                    
+                    if install_cmd:
+                        subprocess.run(["docker", "exec", "-i", target_container] + install_cmd, check=True)
+                        # Re-verify post installation
+                        verify_res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+                        if verify_res.returncode != 0:
+                            raise RuntimeError(f"Installation succeeded but {tool_name} is still failing in {target_container}")
+                    else:
+                        raise click.ClickException(f"Cannot auto-install {tool_name} inside container, missing install command in: {install_url}")
+            except Exception as e:
+                raise click.ClickException(f"Failed to check/install {tool_name} in target container {target_container}: {e}")
+
     # Check if override env var is set
-    override = os.environ.get(cmd_override_env) if cmd_override_env else None
+    override = os.environ.get(cmd_override_env)
     if override:
         cmd = shlex.split(override)
         try:

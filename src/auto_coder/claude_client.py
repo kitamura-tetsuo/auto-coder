@@ -87,7 +87,9 @@ class ClaudeClient(LLMClientBase):
                     logger.warning(error)
 
         try:
-            result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+            override = os.environ.get("AUTOCODER_CLAUDE_CLI")
+            base_cmd = shlex.split(override) if override else ["claude"]
+            result = subprocess.run(base_cmd + ["--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise RuntimeError("claude CLI not available or not working")
         except Exception as e:
@@ -113,7 +115,9 @@ class ClaudeClient(LLMClientBase):
         """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            base_cmd = ["claude"]
+            
+            override = os.environ.get("AUTOCODER_CLAUDE_CLI")
+            base_cmd = shlex.split(override) if override else ["claude"]
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
@@ -330,8 +334,10 @@ class ClaudeClient(LLMClientBase):
             True if the MCP server is configured, False otherwise
         """
         try:
+            override = os.environ.get("AUTOCODER_CLAUDE_CLI")
+            base_cmd = shlex.split(override) if override else ["claude"]
             result = subprocess.run(
-                ["claude", "mcp"],
+                base_cmd + ["mcp"],
                 capture_output=True,
                 text=True,
                 timeout=10,

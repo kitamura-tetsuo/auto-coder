@@ -70,7 +70,9 @@ class AuggieClient(LLMClientBase):
 
         # Verify Auggie CLI availability early for deterministic failures.
         try:
-            result = subprocess.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
+            override = os.environ.get("AUTOCODER_AUGGIE_CLI")
+            cmd = shlex.split(override) if override else ["auggie"]
+            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise RuntimeError("auggie CLI not available or not working")
         except Exception as exc:  # pragma: no cover - defensive; raised in init
@@ -162,7 +164,9 @@ class AuggieClient(LLMClientBase):
         """Execute Auggie CLI and stream output via logger."""
         self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
-        cmd = ["auggie"]
+        
+        override = os.environ.get("AUTOCODER_AUGGIE_CLI")
+        cmd = shlex.split(override) if override else ["auggie"]
 
         # Get processed options with placeholders replaced
         # Use options_for_noedit for no-edit operations if available
@@ -257,8 +261,10 @@ class AuggieClient(LLMClientBase):
             True if the MCP server is configured, False otherwise
         """
         try:
+            override = os.environ.get("AUTOCODER_AUGGIE_CLI")
+            base_cmd = shlex.split(override) if override else ["auggie"]
             result = subprocess.run(
-                ["auggie", "mcp", "list"],
+                base_cmd + ["mcp", "list"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -292,8 +298,9 @@ class AuggieClient(LLMClientBase):
             # Use auggie mcp add command
             # Format: auggie mcp add <name> --command <command> --args "<args>"
             args_str = " ".join(args)
-            cmd = [
-                "auggie",
+            override = os.environ.get("AUTOCODER_AUGGIE_CLI")
+            base_cmd = shlex.split(override) if override else ["auggie"]
+            cmd = base_cmd + [
                 "mcp",
                 "add",
                 server_name,
