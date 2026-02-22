@@ -4,21 +4,42 @@ set -Eeuo pipefail
 # -----------------------------------------------------------------------------
 # Environment detection and setup
 # -----------------------------------------------------------------------------
-# Handle remote execution if TARGET_CONTAINER_NAME is set
-if [ -n "${TARGET_CONTAINER_NAME:-}" ] && [ "${AM_I_AUTOCODER_CONTAINER:-false}" = "true" ] && [ "${INSIDE_TARGET_EXECUTION:-false}" != "true" ]; then
-    echo "[INFO] Redirecting test execution to target container: $TARGET_CONTAINER_NAME"
-    
-    # Ensure Docker is accessible
-    if ! command -v docker >/dev/null 2>&1; then
-        echo "[ERROR] docker command not found. Cannot execute tests in target container."
-        exit 1
+# Handle remote execution if AM_I_AUTOCODER_CONTAINER matches
+if [ "${AM_I_AUTOCODER_CONTAINER:-false}" = "true" ] && [ "${INSIDE_TARGET_EXECUTION:-false}" != "true" ]; then
+    # Determine target container name from repo name
+    if [ -z "${REPO_NAME:-}" ]; then
+        # Try to detect repo name (similar to get_repo_or_detect in Python)
+        if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            # Extract owner/repo from origin URL
+            REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+            if [ -n "$REMOTE_URL" ]; then
+                # Handle both HTTPS and SSH URLs
+                REPO_NAME=$(echo "$REMOTE_URL" | sed -E 's/.*[:\/]([^\/]+\/[^\/]+)(\.git)?$/\1/' | sed 's/\.git$//')
+            fi
+        fi
+        # Fallback to current directory name if detection failed
+        if [ -z "${REPO_NAME:-}" ]; then
+            REPO_NAME=$(basename "$(pwd)")
+        fi
     fi
 
-    # Execute this script inside the target container
-    # We pass INSIDE_TARGET_EXECUTION=true to avoid recursion
-    # We also pass all arguments received by this script
-    docker exec -e INSIDE_TARGET_EXECUTION=true "$TARGET_CONTAINER_NAME" ./scripts/test.sh "$@"
-    exit $?
+    if [ -n "${REPO_NAME:-}" ]; then
+        CLEAN_REPO_NAME=$(echo "$REPO_NAME" | sed 's/.*\///')
+        TARGET_CONTAINER="auto-coder-$CLEAN_REPO_NAME"
+        echo "[INFO] Redirecting test execution to target container: $TARGET_CONTAINER"
+        
+        # Ensure Docker is accessible
+        if ! command -v docker >/dev/null 2>&1; then
+            echo "[ERROR] docker command not found. Cannot execute tests in target container."
+            exit 1
+        fi
+
+        # Execute this script inside the target container
+        docker exec -e INSIDE_TARGET_EXECUTION=true "$TARGET_CONTAINER" ./scripts/test.sh "$@"
+        exit $?
+    else
+        echo "[WARN] AM_I_AUTOCODER_CONTAINER is true but REPO_NAME is not set. Running locally."
+    fi
 fi
 
 # Detect CI environment and set appropriate flags

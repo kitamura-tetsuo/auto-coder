@@ -18,7 +18,6 @@ Running `auto-coder` in its own container avoids the overhead of installing its 
      auto-coder:
        environment:
          - GITHUB_PERSONAL_ACCESS_TOKEN=your_token
-         - TARGET_CONTAINER_NAME=your-target-container-name
          - TS_AUTHKEY=your_tailscale_key (optional)
    ```
 
@@ -43,6 +42,7 @@ Running `auto-coder` in its own container avoids the overhead of installing its 
 ## Remote Test Execution
 This setup supports running tests inside your **target development container** while `auto-coder` remains isolated.
 
-- **Redirection**: Both `run_local_tests` and `_run_pr_tests` in the Python source, as well as `scripts/test.sh`, are updated to check for `TARGET_CONTAINER_NAME`.
-- **Mechanism**: If `TARGET_CONTAINER_NAME` is set, `auto-coder` uses `docker exec` to run the test script inside the development container.
+- **Redirection**: Both `run_local_tests` and `_run_pr_tests` in the Python source, as well as `scripts/test.sh`, check for the `AM_I_AUTOCODER_CONTAINER` environment variable.
+- **Dynamic Container Naming**: When running in this dedicated environment, target containers are automatically expected to be named `auto-coder-[repo-name]`. For example, if processing `owner/my-project`, the target container must be named `auto-coder-my-project`.
+- **Mechanism**: `auto-coder` uses `docker exec` to run the test script inside the development container associated with the repository.
 - **Benefits**: Tests run in their native environment with project-specific dependencies, while `auto-coder`'s environment remains clean.

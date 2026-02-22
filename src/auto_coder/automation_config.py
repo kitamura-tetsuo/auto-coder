@@ -18,6 +18,7 @@ class AutomationConfig:
     # File paths
     REPORTS_DIR: str = "reports"
     TEST_SCRIPT_PATH: str = "scripts/test.sh"
+    repo_name: Optional[str] = None
 
     # Label prompt mappings for label-based issue/PR processing
     # Maps labels to prompt template keys

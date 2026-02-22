@@ -14,7 +14,6 @@ services:
       - tailscale-data:/var/lib/tailscale
     environment:
       - GH_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN:-}
-      - TARGET_CONTAINER_NAME=${TARGET_CONTAINER_NAME:-target-app}
       - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TARGET=${TARGET:-auto-coder}
       - AM_I_AUTOCODER_CONTAINER=true

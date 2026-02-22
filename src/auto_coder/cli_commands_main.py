@@ -226,6 +226,7 @@ def process_issues(
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
+    engine_config.repo_name = repo_name
 
     # When --only is specified, set CHECK_LABELS to False
     effective_check_labels = check_labels
@@ -542,6 +543,7 @@ def create_feature_issues(
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
+    engine_config.repo_name = repo_name
     engine_config.DISABLE_LABELS = bool(disable_labels)
 
     automation_engine = AutomationEngine(github_client, config=engine_config)  # type: ignore[arg-type]
@@ -707,6 +709,7 @@ def fix_to_pass_tests_command(
     message_primary_backend = message_manager._default_backend
     logger.info(f"Message backends: {', '.join(message_backend_list)} (default: {message_primary_backend})")
     engine_config = AutomationConfig()
+    engine_config.repo_name = get_repo_or_detect(None)
     engine = AutomationEngine(github_client, config=engine_config)  # type: ignore[arg-type]
 
     try:

@@ -33,7 +33,7 @@ from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import GitHubClient, get_ghapi_client
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.github_cache import get_github_cache
-from .utils import CommandExecutor, log_action
+from .utils import CommandExecutor, get_target_container, log_action
 
 logger = get_logger(__name__)
 
@@ -64,6 +64,9 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
+
+        # Sync repo_name to environment for subprocesses (like test.sh)
+        os.environ["REPO_NAME"] = repo_name
 
         # Start producer
         producer_task = asyncio.create_task(self._producer_loop(repo_name))
@@ -1024,6 +1027,8 @@ class AutomationEngine:
         Returns:
             Dictionary with processing results
         """
+        os.environ["REPO_NAME"] = repo_name
+        self.config.repo_name = repo_name
         # Check if Jules mode should be used based on configuration
         # Check if Jules mode should be used based on configuration
         from .llm_backend_config import is_jules_mode_enabled
@@ -1155,6 +1160,8 @@ class AutomationEngine:
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
+        os.environ["REPO_NAME"] = repo_name
+        self.config.repo_name = repo_name
         return create_feature_issues(
             self.github,
             self.config,
@@ -1168,6 +1175,8 @@ class AutomationEngine:
         message_backend_manager: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
+        if self.config.repo_name:
+            os.environ["REPO_NAME"] = self.config.repo_name
         run_override = getattr(self, "_run_local_tests", None)
         apply_override = getattr(self, "_apply_workspace_test_fix", None)
 
@@ -1501,7 +1510,7 @@ class AutomationEngine:
             }
 
         try:
-            target_container = os.environ.get("TARGET_CONTAINER_NAME")
+            target_container = get_target_container(self.config)
             if target_container:
                 logger.info(f"Running PR tests via target container: {target_container}")
                 cmd_list = ["docker", "exec", target_container, "bash", test_script_path]

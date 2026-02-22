@@ -19,7 +19,7 @@ from .prompt_loader import render_prompt
 from .test_log_utils import extract_first_failed_test, extract_important_errors, get_local_playwright_summary
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
-from .utils import CommandExecutor, change_fraction, log_action
+from .utils import CommandExecutor, change_fraction, get_target_container, log_action
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -277,7 +277,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
             with ProgressStage(f"Running only the specified test file via script: {test_file}"):
                 logger.info(f"Running only the specified test file via script: {test_file}")
 
-                target_container = os.environ.get("TARGET_CONTAINER_NAME")
+                target_container = get_target_container(config)
                 if target_container:
                     logger.info(f"Using target container: {target_container}")
                     cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH, test_file]
@@ -298,7 +298,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         # Always run via test script
         start_time = datetime.now().timestamp()
 
-        target_container = os.environ.get("TARGET_CONTAINER_NAME")
+        target_container = get_target_container(config)
         if target_container:
             logger.info(f"Running local tests via target container: {target_container}")
             cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH]
@@ -337,7 +337,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 }
 
                 # Run the isolated test
-                target_container = os.environ.get("TARGET_CONTAINER_NAME")
+                target_container = get_target_container(config)
                 if target_container:
                     isolated_cmd_list = ["docker", "exec", target_container, "bash", config.TEST_SCRIPT_PATH, first_failed_test]
                 else:

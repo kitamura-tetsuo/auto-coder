@@ -22,6 +22,22 @@ from .test_log_utils import extract_first_failed_test
 logger = get_logger(__name__)
 
 
+def get_target_container(config: Any) -> Optional[str]:
+    """Determine the target container name based on environment and config.
+
+    When running in a dedicated auto-coder container (AM_I_AUTOCODER_CONTAINER=true),
+    the target container name is derived from the repository name as auto-coder-[repo].
+    """
+    if os.environ.get("AM_I_AUTOCODER_CONTAINER") == "true":
+        # We use Any for config to avoid circular imports
+        repo_name = getattr(config, "repo_name", None) or os.environ.get("REPO_NAME")
+        if repo_name:
+            repo_segment = repo_name.split("/")[-1]
+            return f"auto-coder-{repo_segment}"
+        logger.warning("AM_I_AUTOCODER_CONTAINER is true but no repository name found.")
+    return None
+
+
 def get_pr_author_login(pr_obj: Any) -> Optional[str]:
     """Extract author login from a PR-like object or dict.
 
