@@ -19,5 +19,5 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
     # sudo tailscale funnel 8080 &
 fi
 
-# Execute CMD
-exec process-issues-watcher --opts "--disable-graphrag"
+# Execute process-issues-watcher with default options and pass through any CMD arguments
+exec process-issues-watcher --opts="--disable-graphrag" "$@"
