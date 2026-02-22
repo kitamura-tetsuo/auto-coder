@@ -19,5 +19,9 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
     # sudo tailscale funnel 8080 &
 fi
 
-# Execute process-issues-watcher with default options and pass through any CMD arguments
-exec process-issues-watcher --opts="--disable-graphrag" "$@"
+# If the command is just /bin/bash, we ignore it so process-issues-watcher uses its default behavior (watching current dir)
+if [ "$1" = "/bin/bash" ]; then
+    shift
+fi
+
+exec process-issues-watcher --opts="--disable-graphrag --force" "$@"
