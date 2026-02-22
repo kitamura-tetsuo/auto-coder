@@ -19,13 +19,5 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
     # sudo tailscale funnel 8080 &
 fi
 
-# Run any workspace-specific setup if it exists and hasn't been run
-# (Moved from runtime command in override.yml)
-if [ -f "/workspace/scripts/setup.sh" ] && [ ! -f "/workspace/.setup-installed" ]; then
-    echo "Running workspace setup..."
-    /workspace/scripts/setup.sh
-    touch /workspace/.setup-installed
-fi
-
 # Execute CMD
-exec "$@"
+exec process-issues-watcher --opts "--disable-graphrag"

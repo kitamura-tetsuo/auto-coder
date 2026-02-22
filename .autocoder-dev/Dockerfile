@@ -73,14 +73,17 @@ RUN mkdir -p /var/run/sshd /root/.ssh /home/node/.ssh && \
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV UV_SYSTEM_PYTHON=1
-ENV PATH="/home/node/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:/home/node/.local/bin:${PATH}"
 
-WORKDIR /workspace
+WORKDIR /workspaces
 
 # Install auto-coder via pipx (as node user)
 # USER node
 RUN pipx install --python python3.12 git+https://github.com/kitamura-tetsuo/auto-coder.git && \
     pipx ensurepath
+
+# Install process_issues_watcher via pipx from GitHub URL
+RUN pipx install "git+https://github.com/kitamura-tetsuo/auto-coder.git#subdirectory=scripts/process_issues_watcher"
 
 # Note: uv sync will be run at runtime via entrypoint if needed.
 
