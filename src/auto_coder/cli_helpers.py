@@ -305,34 +305,35 @@ def check_cli_tool(
     # Handle docker execution if AM_I_AUTOCODER_CONTAINER=true
     if os.environ.get("AM_I_AUTOCODER_CONTAINER") == "true":
         from .utils import get_target_container
+
         target_container = get_target_container(None)
         if target_container:
             override_val = f"docker exec -i {target_container} {tool_name}"
             os.environ[cmd_override_env] = override_val
-            
+
             # Check if it exists in the container
             cmd = shlex.split(override_val)
             try:
                 res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
                 if res.returncode != 0 and fallback_without_args:
                     res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                
+
                 if res.returncode != 0:
                     click.echo(f"Installing {tool_name} inside {target_container}...")
-                    
+
                     # Extract install command from install_url
                     install_cmd = None
                     if "npm install" in install_url:
-                        for line in install_url.split('\n'):
+                        for line in install_url.split("\n"):
                             if "npm install" in line:
                                 install_cmd = shlex.split(line.strip().replace("Or use: ", ""))
                                 break
                     elif "pip install" in install_url:
-                        for line in install_url.split('\n'):
+                        for line in install_url.split("\n"):
                             if "pip install" in line:
                                 install_cmd = shlex.split(line.strip().replace("Or use: ", ""))
                                 break
-                    
+
                     if install_cmd:
                         subprocess.run(["docker", "exec", "-i", target_container] + install_cmd, check=True)
                         # Re-verify post installation

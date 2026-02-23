@@ -2662,10 +2662,10 @@ def _apply_local_test_fix(
     Returns:
         Tuple of (actions_list, llm_response)
     """
+    actions = []
+    llm_response = ""
     with ProgressStage(f"Local test fix"):
-        actions = []
         pr_number = pr_data["number"]
-        llm_response = ""
 
         try:
             # Extract important error information (convert legacy dict to TestResult)
@@ -2749,4 +2749,4 @@ def _apply_local_test_fix(
             actions.append(f"Error applying local test fix for PR #{pr_number}: {e}")
             logger.error(f"Error applying local test fix for PR #{pr_number}: {e}", exc_info=True)
 
-        return actions, llm_response
+    return actions, llm_response

@@ -12,6 +12,7 @@ class TraceLogger:
 
     _instance = None
     _lock = threading.Lock()
+    logs: collections.deque[Dict[str, Any]]
 
     def __new__(cls, max_len: int = 2000):
         if cls._instance is None:

@@ -10,7 +10,7 @@ import shutil
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Any, Literal, Optional, TextIO, cast
 
 from .logger_config import get_logger
 
@@ -25,7 +25,7 @@ class ProgressFooter:
     that updates in place (overprint) rather than creating new lines.
     """
 
-    def __init__(self, stream=sys.stderr):
+    def __init__(self, stream: TextIO = sys.stderr) -> None:
         """Initialize the progress footer."""
         self._lock = threading.Lock()
         self._current_footer: Optional[str] = None
@@ -214,7 +214,7 @@ class ProgressFooter:
         else:
             self._current_footer = None
 
-    def sink_wrapper(self, message):
+    def sink_wrapper(self, message: Any) -> None:
         """
         Loguru sink wrapper that clears footer before log, then re-prints after.
 
@@ -423,17 +423,18 @@ class ProgressContext:
         self.related_issues = related_issues
         self.branch_name = branch_name
         # Use ProgressStage context manager for automatic stage push/pop
-        self._progress_stage = None
+        self._progress_stage: Optional[ProgressStage] = None
 
-    def __enter__(self):
+    def __enter__(self) -> "ProgressContext":
         """Enter the context and display the initial footer."""
         set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
         # Use ProgressStage context manager for the initial stage
-        self._progress_stage = ProgressStage(self.initial_stage)
-        self._progress_stage.__enter__()
+        stage = ProgressStage(self.initial_stage)
+        self._progress_stage = stage
+        stage.__enter__()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         """Exit the context and clear the footer."""
         # Exit the ProgressStage context first
         if self._progress_stage:
@@ -452,8 +453,9 @@ class ProgressContext:
         # Exit the current ProgressStage and enter a new one
         if self._progress_stage:
             self._progress_stage.__exit__(None, None, None)
-        self._progress_stage = ProgressStage(stage)  # type: ignore[assignment]
-        self._progress_stage.__enter__()  # type: ignore[union-attr,attr-defined]
+        new_progress_stage = ProgressStage(stage)
+        self._progress_stage = new_progress_stage
+        new_progress_stage.__enter__()
 
 
 class ProgressStage:
@@ -511,7 +513,7 @@ class ProgressStage:
         else:
             raise ValueError("ProgressStage requires either 1 argument (stage), 3 arguments (item_type, item_number, stage), or 5 arguments (item_type, item_number, stage, related_issues, branch_name)")
 
-    def __enter__(self):
+    def __enter__(self) -> "ProgressStage":
         """Enter the context and push the stage."""
         footer = get_progress_footer()
         if self.item_type and self.item_number:
@@ -523,7 +525,7 @@ class ProgressStage:
             footer.push_stage(self.stage)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         """Exit the context and pop the stage."""
         footer = get_progress_footer()
         if self.item_type and self.item_number:

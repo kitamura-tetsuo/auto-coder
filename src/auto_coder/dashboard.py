@@ -263,7 +263,7 @@ def generate_activity_diagram(logs: List[Dict[str, Any]], item_type: str) -> str
 def group_logs_by_session(logs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     """Group logs into sessions based on Queue and Worker events."""
     sessions = []
-    current_session = []
+    current_session: List[Dict[str, Any]] = []
 
     for log in logs:
         is_worker_start = log.get("category") == "Worker" and "started processing" in log.get("message", "")

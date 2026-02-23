@@ -4,6 +4,7 @@ Claude CLI client for Auto-Coder.
 
 import os
 import re
+import shlex
 import subprocess
 from typing import Any, List, Optional
 
@@ -115,7 +116,7 @@ class ClaudeClient(LLMClientBase):
         """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            
+
             override = os.environ.get("AUTOCODER_CLAUDE_CLI")
             base_cmd = shlex.split(override) if override else ["claude"]
 

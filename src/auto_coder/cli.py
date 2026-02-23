@@ -157,10 +157,12 @@ def main(ctx: click.Context, force: bool) -> None:
                 if "--github-token" in sys.argv:
                     pass
                 elif not verify_github_access():
+                    # Error is logged inside verify_github_access
                     sys.exit(1)
-            except Exception:
-                # The exception (re-raised) likely already logged the specific 401 message.
-                # We exit to prevent further execution.
+            except Exception as e:
+                # The exception might have been logged already, but let's ensure visibility
+                if "401" not in str(e):
+                    click.echo(f"Error: GitHub access verification failed: {e}", err=True)
                 sys.exit(1)
 
             # Use LockManager as a context manager with force flag

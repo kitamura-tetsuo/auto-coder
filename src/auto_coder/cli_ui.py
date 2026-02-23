@@ -352,7 +352,7 @@ class Spinner:
 
                 if self.no_color:
                     symbol = "[OK]"
-                    color_func = lambda x, **kwargs: x
+                    color_func: Any = lambda x, **kwargs: x
                 else:
                     symbol = "✅"
                     color_func = click.style

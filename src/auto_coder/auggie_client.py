@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -164,7 +165,7 @@ class AuggieClient(LLMClientBase):
         """Execute Auggie CLI and stream output via logger."""
         self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
-        
+
         override = os.environ.get("AUTOCODER_AUGGIE_CLI")
         cmd = shlex.split(override) if override else ["auggie"]
 

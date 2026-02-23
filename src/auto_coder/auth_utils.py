@@ -258,7 +258,7 @@ def verify_github_access() -> bool:
 
         token = get_github_token()
         if not token:
-            logger.debug("No GitHub token found during verification.")
+            logger.error("No GitHub token found. Please set GITHUB_TOKEN environment variable or login via 'gh auth login'.")
             return False
 
         # Use httpx directly to bypass cache and ensure the token is valid right now.
@@ -279,14 +279,14 @@ def verify_github_access() -> bool:
                 logger.error("GitHub API authentication failed (401). Please update your GITHUB_TOKEN. (https://github.com/settings/tokens)")
                 raise
             else:
-                logger.debug(f"GitHub access verification failed: {e}")
+                logger.error(f"GitHub access verification failed: {e}")
                 raise
         except Exception as e:
-            logger.debug(f"GitHub access verification failed with unexpected error: {e}")
+            logger.error(f"GitHub access verification failed with unexpected error: {e}")
             raise
 
     except ImportError:
-        logger.debug("Could not import dependencies for GitHub verification.")
+        logger.error("Could not import dependencies for GitHub verification.")
         return False
     except Exception:
         # If get_github_token fails or other setup issues
