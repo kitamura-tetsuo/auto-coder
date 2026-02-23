@@ -18,6 +18,7 @@ class AutomationConfig:
     # File paths
     REPORTS_DIR: str = "reports"
     TEST_SCRIPT_PATH: str = "scripts/test.sh"
+    JULES_ONLY_MODE: bool = False
     repo_name: Optional[str] = None
 
     # Label prompt mappings for label-based issue/PR processing
@@ -176,6 +177,7 @@ class AutomationConfig:
         object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
+        object.__setattr__(self, "JULES_ONLY_MODE", False)
         object.__setattr__(
             self,
             "PR_LABEL_PRIORITIES",
@@ -409,6 +411,12 @@ class AutomationConfig:
                     logger.warning("AUTO_CODER_PR_LABEL_PRIORITIES must be a JSON array (list)")
             except json.JSONDecodeError as exc:
                 logger.error(f"Failed to parse AUTO_CODER_PR_LABEL_PRIORITIES: {exc}")
+
+        # Jules Only Mode override
+        jules_only = os.environ.get("AUTOCODER_JULES_ONLY_MODE")
+        if jules_only:
+            object.__setattr__(self, "JULES_ONLY_MODE", jules_only.lower() in ("true", "1", "yes"))
+            logger.info(f"Jules Only Mode set to {self.JULES_ONLY_MODE} from environment")
 
     def _merge_label_mappings(self, new_mappings: Dict[str, str]) -> None:
         """Merge new label mappings with existing ones.

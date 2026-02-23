@@ -29,7 +29,11 @@ def ensure_test_script_or_fail() -> None:
     cfg = AutomationConfig()
     script_path = cfg.TEST_SCRIPT_PATH
     if not os.path.exists(script_path):
-        raise click.ClickException(f"Required test script not found: {script_path}. This tool requires a target-repo-provided test script.")
+        click.echo(f"⚠️  Required test script not found: {script_path}. Entering Jules dedicated mode (remote execution only).")
+        # Update singleton if it exists, or just set it on the next instance
+        cfg.JULES_ONLY_MODE = True
+        # Also ensure the environment variable is set for any subprocesses or re-initializations
+        os.environ["AUTOCODER_JULES_ONLY_MODE"] = "true"
 
 
 def initialize_graphrag(force_reindex: bool = False) -> None:

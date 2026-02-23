@@ -98,7 +98,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/workspace",
+            "cwd": "/workspaces/outliner",
             "args": [
                 "process-issues",
                 "--disable-graphrag",
