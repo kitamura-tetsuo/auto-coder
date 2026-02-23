@@ -99,7 +99,7 @@ class GeminiClient(LLMClientBase):
             if not override and not shutil.which("gemini"):
                 raise RuntimeError("Gemini CLI ('gemini') not found in PATH. Please install it.")
 
-            result = subprocess.run(gemini_cmd + ["--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(gemini_cmd + ["--version"], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 stdout = (result.stdout or "").strip()[:200]
                 stderr = (result.stderr or "").strip()[:200]
@@ -386,7 +386,7 @@ class GeminiClient(LLMClientBase):
                 base_cmd + ["mcp", "list"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0:
                 output = result.stdout.lower()

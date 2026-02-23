@@ -39,7 +39,7 @@ def get_github_token() -> Optional[str]:
             ["gh", "auth", "token"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         if result.returncode == 0:
             token = result.stdout.strip()
@@ -95,7 +95,7 @@ def get_gemini_api_key() -> Optional[str]:
             ["gemini", "config", "get", "api_key"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         if result.returncode == 0:
             api_key = result.stdout.strip()
@@ -111,7 +111,7 @@ def get_gemini_api_key() -> Optional[str]:
 
     # 3. Try alternative gemini CLI command
     try:
-        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=60)
         if result.returncode == 0 and "authenticated" in result.stdout.lower():
             # Try to extract API key from status output
             lines = result.stdout.split("\n")
@@ -160,7 +160,7 @@ def get_gemini_api_key() -> Optional[str]:
             ["gcloud", "auth", "application-default", "print-access-token"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         if result.returncode == 0:
             token = result.stdout.strip()
@@ -191,7 +191,7 @@ def check_gh_auth() -> bool:
             ["gh", "auth", "status"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         # gh auth status often outputs to stderr
         output = (result.stdout + result.stderr).lower()
@@ -209,7 +209,7 @@ def check_gemini_auth() -> bool:
     """
     try:
         # Try to check if gemini CLI is authenticated
-        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             return "authenticated" in result.stdout.lower()
 
@@ -218,7 +218,7 @@ def check_gemini_auth() -> bool:
             ["gemini", "config", "get", "api_key"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         return result.returncode == 0 and result.stdout.strip() not in ["", "null"]
 
@@ -269,7 +269,7 @@ def verify_github_access() -> bool:
         }
 
         try:
-            resp = httpx.get("https://api.github.com/user", headers=headers, timeout=10)
+            resp = httpx.get("https://api.github.com/user", headers=headers, timeout=60)
             resp.raise_for_status()
             logger.debug("GitHub access verification successful.")
             return True

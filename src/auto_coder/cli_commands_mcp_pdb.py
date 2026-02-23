@@ -79,7 +79,7 @@ def mcp_pdb_status() -> None:
     try:
         import subprocess as _sp
 
-        res = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=10)
+        res = _sp.run(["uv", "--version"], capture_output=True, text=True, timeout=60)
         if res.returncode == 0:
             ver = (res.stdout or "").strip()
             click.echo("✅ uv available")

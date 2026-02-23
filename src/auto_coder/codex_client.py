@@ -98,7 +98,7 @@ class CodexClient(LLMClientBase):
 
         # Check if codex CLI is available
         try:
-            result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise RuntimeError("codex CLI not available or not working")
         except Exception as e:
@@ -260,7 +260,7 @@ class CodexClient(LLMClientBase):
                 ["codex", "mcp", "list"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0:
                 output = result.stdout.lower()

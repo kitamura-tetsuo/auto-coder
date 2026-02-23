@@ -207,14 +207,14 @@ def mcp_test(server_name: str) -> None:
         result = subprocess.run(
             cmd,
             cwd=str(server_path),
-            timeout=10,
+            timeout=60,
         )
         if result.returncode == 0:
             logger.info(f"✅ {server_name} MCP server test successful")
         else:
             logger.error(f"❌ {server_name} MCP server test failed with code {result.returncode}")
     except subprocess.TimeoutExpired:
-        logger.info(f"✅ {server_name} MCP server is running (stopped after 10s)")
+        logger.info(f"✅ {server_name} MCP server is running (stopped after 60s)")
     except KeyboardInterrupt:
         logger.info(f"✅ {server_name} MCP server test stopped by user")
     except Exception as e:

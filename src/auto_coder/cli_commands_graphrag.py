@@ -56,7 +56,7 @@ def run_graphrag_setup_mcp_programmatically(
                 ["uv", "--version"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0:
                 uv_available = True
@@ -137,7 +137,7 @@ def run_graphrag_setup_mcp_programmatically(
                         ["uv", "--version"],
                         capture_output=True,
                         text=True,
-                        timeout=10,
+                        timeout=60,
                     )
                     if result.returncode == 0:
                         if not silent:

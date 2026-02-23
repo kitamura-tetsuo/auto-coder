@@ -416,7 +416,7 @@ class GraphRAGIndexManager:
                 command + ["--version"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=60,
             )
             if result.returncode == 0:
                 version = result.stdout.strip() or result.stderr.strip()
@@ -459,7 +459,7 @@ class GraphRAGIndexManager:
                     ["node", str(cli_path), "scan", "--help"],
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=60,
                 )
                 if result.returncode != 0:
                     return False, f"CLI test failed: {result.stderr}"
@@ -482,7 +482,7 @@ class GraphRAGIndexManager:
                     ["python3", str(py_cli), "scan", "--help"],
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=60,
                 )
                 if result.returncode != 0:
                     return False, f"CLI test failed: {result.stderr}"

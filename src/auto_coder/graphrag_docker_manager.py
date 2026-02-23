@@ -94,7 +94,7 @@ class GraphRAGDockerManager:
             result = subprocess.run(
                 ["docker", "compose", "version"],
                 capture_output=True,
-                timeout=5,
+                timeout=60,
             )
             if result.returncode == 0:
                 logger.debug("Using 'docker compose' command")
@@ -245,7 +245,7 @@ class GraphRAGDockerManager:
         Returns:
             True if both containers are running, False otherwise
         """
-        result = self._run_docker_compose(["ps", "-q"], timeout=10)
+        result = self._run_docker_compose(["ps", "-q"], timeout=60)
         if not result.success:
             return False
 
@@ -300,7 +300,7 @@ class GraphRAGDockerManager:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                timeout=5,
+                timeout=60,
             )
             if result.returncode != 0:
                 # Try with sudo if permission denied
@@ -308,7 +308,7 @@ class GraphRAGDockerManager:
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    timeout=5,
+                    timeout=60,
                 )
 
             if result.returncode == 0:
@@ -336,7 +336,7 @@ class GraphRAGDockerManager:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                timeout=5,
+                timeout=60,
             )
             if result.returncode != 0:
                 # Try with sudo if permission denied
@@ -344,7 +344,7 @@ class GraphRAGDockerManager:
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    timeout=5,
+                    timeout=60,
                 )
 
             if result.returncode == 0:
@@ -395,12 +395,12 @@ class GraphRAGDockerManager:
                 "--filter",
                 "name=graphrag",
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=5)
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode != 0:
                 # Try with sudo
                 cmd = ["sudo"] + cmd
-                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode == 0:
                 networks = result.stdout.decode().strip().split("\n")
@@ -428,12 +428,12 @@ class GraphRAGDockerManager:
         try:
             # Get container name
             cmd = ["docker", "inspect", container_id, "--format", "{{.Name}}"]
-            result = subprocess.run(cmd, capture_output=True, timeout=5)
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode != 0:
                 # Try with sudo
                 cmd = ["sudo"] + cmd
-                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             container_name = result.stdout.decode().strip().lstrip("/") if result.returncode == 0 else None
 
@@ -446,12 +446,12 @@ class GraphRAGDockerManager:
                 "--format",
                 "{{range .Containers}}{{.Name}} {{end}}",
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=5)
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode != 0:
                 # Try with sudo
                 cmd = ["sudo"] + cmd
-                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode == 0:
                 connected_containers = result.stdout.decode().strip()
@@ -462,12 +462,12 @@ class GraphRAGDockerManager:
 
             # Connect to network
             cmd = ["docker", "network", "connect", network_name, container_id]
-            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode != 0:
                 # Try with sudo
                 cmd = ["sudo"] + cmd
-                result = subprocess.run(cmd, capture_output=True, timeout=10)
+                result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode == 0:
                 logger.info(f"Connected container {container_id} ({container_name}) to GraphRAG network {network_name}")

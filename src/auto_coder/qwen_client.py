@@ -96,7 +96,7 @@ class QwenClient(LLMClientBase):
         try:
             override = os.environ.get("AUTOCODER_QWEN_CLI")
             cmd = shlex.split(override) if override else ["qwen"]
-            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise RuntimeError("qwen CLI not available or not working")
         except Exception as e:
@@ -387,7 +387,7 @@ class QwenClient(LLMClientBase):
                 base_cmd + ["mcp", "list"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0:
                 output = result.stdout.lower()

@@ -73,7 +73,7 @@ class AuggieClient(LLMClientBase):
         try:
             override = os.environ.get("AUTOCODER_AUGGIE_CLI")
             cmd = shlex.split(override) if override else ["auggie"]
-            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise RuntimeError("auggie CLI not available or not working")
         except Exception as exc:  # pragma: no cover - defensive; raised in init
@@ -268,7 +268,7 @@ class AuggieClient(LLMClientBase):
                 base_cmd + ["mcp", "list"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0:
                 output = result.stdout.lower()

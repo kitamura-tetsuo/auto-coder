@@ -122,7 +122,7 @@ def auth_status() -> None:
     try:
         import subprocess
 
-        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             print_item(True, "gemini CLI available")
             version_info = result.stdout.strip()
@@ -141,7 +141,7 @@ def auth_status() -> None:
     try:
         import subprocess as _sp
 
-        res = _sp.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
+        res = _sp.run(["qwen", "--version"], capture_output=True, text=True, timeout=60)
         if res.returncode == 0:
             print_item(True, "qwen CLI available")
             ver = (res.stdout or "").strip()
@@ -160,7 +160,7 @@ def auth_status() -> None:
     try:
         import subprocess as _sp
 
-        res = _sp.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
+        res = _sp.run(["auggie", "--version"], capture_output=True, text=True, timeout=60)
         if res.returncode == 0:
             print_item(True, "auggie CLI available")
             ver = (res.stdout or "").strip()

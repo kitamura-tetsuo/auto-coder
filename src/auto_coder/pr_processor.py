@@ -1179,7 +1179,7 @@ def _handle_pr_merge(
         else:
             current_branch_res = cmd.run_command(
                 ["git", "branch", "--show-current"],
-                timeout=10,
+                timeout=60,
                 stream_output=False,
             )
             current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""

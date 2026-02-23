@@ -90,7 +90,7 @@ class ClaudeClient(LLMClientBase):
         try:
             override = os.environ.get("AUTOCODER_CLAUDE_CLI")
             base_cmd = shlex.split(override) if override else ["claude"]
-            result = subprocess.run(base_cmd + ["--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(base_cmd + ["--version"], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise RuntimeError("claude CLI not available or not working")
         except Exception as e:
@@ -341,7 +341,7 @@ class ClaudeClient(LLMClientBase):
                 base_cmd + ["mcp"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0:
                 output = result.stdout.lower()

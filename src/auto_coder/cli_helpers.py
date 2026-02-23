@@ -314,9 +314,9 @@ def check_cli_tool(
             # Check if it exists in the container
             cmd = shlex.split(override_val)
             try:
-                res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+                res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=60)
                 if res.returncode != 0 and fallback_without_args:
-                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
                 if res.returncode != 0:
                     click.echo(f"Installing {tool_name} inside {target_container}...")
@@ -337,7 +337,7 @@ def check_cli_tool(
                     if install_cmd:
                         subprocess.run(["docker", "exec", "-i", target_container] + install_cmd, check=True)
                         # Re-verify post installation
-                        verify_res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+                        verify_res = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=60)
                         if verify_res.returncode != 0:
                             raise RuntimeError(f"Installation succeeded but {tool_name} is still failing in {target_container}")
                     else:
@@ -350,7 +350,7 @@ def check_cli_tool(
     if override:
         cmd = shlex.split(override)
         try:
-            result = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=60)
             if result.returncode == 0:
                 click.echo(f"Using {tool_name} CLI (override: {override})")
                 return
@@ -360,7 +360,7 @@ def check_cli_tool(
         # Fallback: try without args if version check fails
         if fallback_without_args:
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 if result.returncode == 0:
                     click.echo(f"Using {tool_name} CLI (override: {override})")
                     return
@@ -375,7 +375,7 @@ def check_cli_tool(
         if not shutil.which(tool_name):
             raise click.ClickException(f"{tool_name} CLI is not found in PATH. Please install it from:\n{install_url}")
 
-        result = subprocess.run([tool_name, version_flag], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([tool_name, version_flag], capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             click.echo(f"Using {tool_name} CLI")
             return
@@ -637,7 +637,7 @@ def check_github_sub_issue_or_setup() -> None:
             ["github-sub-issue", "--version"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         if result.returncode == 0:
             click.echo("Using github-sub-issue CLI")
@@ -651,7 +651,7 @@ def check_github_sub_issue_or_setup() -> None:
             ["github-sub-issue", "list", "--help"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
         if result.returncode == 0:
             click.echo("Using github-sub-issue CLI")
@@ -685,7 +685,7 @@ def check_github_sub_issue_or_setup() -> None:
                     ["github-sub-issue", "--version"],
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=60,
                 )
                 if verify_result.returncode == 0:
                     click.echo("✅ github-sub-issue CLI is now available and working")
@@ -770,7 +770,7 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
     try:
         import re as _re
 
-        res = subprocess.run(["qwen", "--help"], capture_output=True, text=True, timeout=10)
+        res = subprocess.run(["qwen", "--help"], capture_output=True, text=True, timeout=60)
         if res.returncode != 0:
             return False
         help_text_raw = (res.stdout or "") + (res.stderr or "")
