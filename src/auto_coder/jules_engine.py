@@ -43,9 +43,9 @@ def _save_state(state: Dict[str, int]) -> None:
 def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> None:
     """Check for Jules sessions to resume or archive.
 
-    - If state is FAILED: Resume with "ok".
+    - If state is FAILED: Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
     - If state is COMPLETED and no "outputs"/"pullRequest":
-        - If retried < 5 times: Resume with "ok".
+        - If retried < 5 times: Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
         - If retried >= 5 times: Request to create PR.
     - If state is COMPLETED and has "outputs"/"pullRequest":
         - Check if PR is closed or merged.
@@ -116,6 +116,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                     outputs = {}
 
             pull_request = outputs.get("pullRequest")
+            automation_mode = session.get("automationMode")
 
             # Check for timeout if IN_PROGRESS
             is_timeout = False
@@ -131,8 +132,8 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                     except Exception as e:
                         logger.warning(f"Failed to parse updateTime for session {session_id}: {e}")
 
-            # Case 1: Failed session or Timeout -> Resume
-            if state == "FAILED" or is_timeout:
+            # Case 1: Failed session or Timeout -> Resume (only if automationMode is AUTO_CREATE_PR)
+            if (state == "FAILED" or is_timeout) and automation_mode == "AUTO_CREATE_PR":
                 logger.info(f"Resuming failed/timed-out Jules session: {session_id}")
                 try:
                     jules_client.send_message(session_id, "ok")
@@ -155,8 +156,8 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         logger.error(f"Failed to approve plan for session {session_id}")
                 except Exception as e:
                     logger.error(f"Failed to approve plan for session {session_id}: {e}")
-            # Case 2: Awaiting User Feedback or Completed session without PR -> Resume with retry logic
-            elif state == "AWAITING_USER_FEEDBACK" or (state == "COMPLETED" and not pull_request):
+            # Case 2: Awaiting User Feedback or Completed session without PR -> Resume with retry logic (only if automationMode is AUTO_CREATE_PR)
+            elif (state == "AWAITING_USER_FEEDBACK" or (state == "COMPLETED" and not pull_request)) and automation_mode == "AUTO_CREATE_PR":
                 retry_count = retry_state.get(session_id, 0)
 
                 if retry_count < 5:

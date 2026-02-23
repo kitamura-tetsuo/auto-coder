@@ -13,7 +13,7 @@ class TestJulesEngine(unittest.TestCase):
     def test_resume_failed_session(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
-        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s1", "state": "FAILED"}]
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s1", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"}]
         mock_load_state.return_value = {"s1": 1}  # Should be cleared
 
         # Execute
@@ -30,7 +30,7 @@ class TestJulesEngine(unittest.TestCase):
     def test_resume_completed_session_no_pr_first_attempt(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
-        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}}]
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}, "automationMode": "AUTO_CREATE_PR"}]
         mock_load_state.return_value = {}
 
         # Execute
@@ -47,7 +47,7 @@ class TestJulesEngine(unittest.TestCase):
     def test_resume_completed_session_no_pr_second_attempt(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
-        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}}]
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}, "automationMode": "AUTO_CREATE_PR"}]
         mock_load_state.return_value = {"s2": 1}
 
         # Execute
@@ -64,7 +64,7 @@ class TestJulesEngine(unittest.TestCase):
     def test_resume_completed_session_no_pr_force_pr(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
         # Setup
         mock_jules_client = mock_jules_client_cls.return_value
-        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}}]
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s2", "state": "COMPLETED", "outputs": {}, "automationMode": "AUTO_CREATE_PR"}]
         mock_load_state.return_value = {"s2": 5}
 
         # Execute
@@ -181,7 +181,7 @@ class TestJulesEngine(unittest.TestCase):
 
         mock_datetime.now.return_value = now
 
-        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s7", "state": "IN_PROGRESS", "updateTime": six_mins_ago}]
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s7", "state": "IN_PROGRESS", "updateTime": six_mins_ago, "automationMode": "AUTO_CREATE_PR"}]
         mock_load_state.return_value = {}
 
         # Execute
@@ -189,3 +189,24 @@ class TestJulesEngine(unittest.TestCase):
 
         # Verify
         mock_jules_client.send_message.assert_called_once_with("s7", "ok")
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_do_not_resume_non_auto_create_pr_session(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {"name": "projects/p/locations/l/sessions/s8", "state": "FAILED", "automationMode": "NONE"},
+            {"name": "projects/p/locations/l/sessions/s9", "state": "AWAITING_USER_FEEDBACK", "automationMode": "NONE"},
+            {"name": "projects/p/locations/l/sessions/s10", "state": "COMPLETED", "outputs": {}, "automationMode": "NONE"}
+        ]
+        mock_load_state.return_value = {}
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify
+        mock_jules_client.send_message.assert_not_called()
+        mock_save_state.assert_not_called()
