@@ -8,6 +8,8 @@ services:
         - DOCKER_GID=${DOCKER_GID:-999}
     container_name: auto-coder-env
     volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
       - /mnt/nas/src/home/.auto-coder:/root/.auto-coder
       - /home/ubuntu/workspaces_for_auto_coder_docker:/workspaces
       - /var/run/docker.sock:/var/run/docker.sock
