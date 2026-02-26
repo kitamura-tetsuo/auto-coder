@@ -500,13 +500,13 @@ class TestAutomationEngine:
         # Assert
         assert result is False
 
-    @patch("subprocess.run")
+    @patch("auto_coder.utils.CommandExecutor.run_command")
     @patch("os.path.exists")
-    def test_run_pr_tests_success(self, mock_exists, mock_run, mock_github_client, mock_gemini_client):
+    def test_run_pr_tests_success(self, mock_exists, mock_run_command, mock_github_client, mock_gemini_client):
         """Test successful PR test execution."""
         # Setup
         mock_exists.return_value = True
-        mock_run.return_value = Mock(returncode=0, stdout="All tests passed", stderr="")
+        mock_run_command.return_value = Mock(success=True, returncode=0, stdout="All tests passed", stderr="")
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
@@ -517,21 +517,18 @@ class TestAutomationEngine:
         # Assert
         assert result["success"] is True
         assert result["output"] == "All tests passed"
-        mock_run.assert_called_once_with(
-            ["bash", "scripts/test.sh"],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            cwd=None,
-        )
+        mock_run_command.assert_called_once()
+        args, kwargs = mock_run_command.call_args
+        assert args[0] == ["bash", "scripts/test.sh"]
+        assert kwargs["timeout"] == 3600
 
-    @patch("subprocess.run")
+    @patch("auto_coder.utils.CommandExecutor.run_command")
     @patch("os.path.exists")
-    def test_run_pr_tests_failure(self, mock_exists, mock_run, mock_github_client, mock_gemini_client):
+    def test_run_pr_tests_failure(self, mock_exists, mock_run_command, mock_github_client, mock_gemini_client):
         """Test PR test execution failure."""
         # Setup
         mock_exists.return_value = True
-        mock_run.return_value = Mock(returncode=1, stdout="", stderr="Test failed: assertion error")
+        mock_run_command.return_value = Mock(success=False, returncode=1, stdout="", stderr="Test failed: assertion error")
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
