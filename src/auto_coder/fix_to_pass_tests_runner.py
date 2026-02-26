@@ -602,6 +602,29 @@ def fix_to_pass_tests(
         except Exception:
             logger.warning("Auto-update check failed during fix loop", exc_info=True)
 
+        # Check if the issue/PR is closed to abort early
+        try:
+            from .git_branch import extract_number_from_branch
+            from .git_info import get_current_branch
+            from .util.gh_cache import GitHubClient
+            from .util.github_action import is_item_closed_on_github
+
+            repo_name = os.environ.get("REPO_NAME")
+            if repo_name:
+                current_branch = get_current_branch()
+                if current_branch:
+                    item_number = extract_number_from_branch(current_branch)
+                    if item_number is not None:
+                        item_type = "issue" if "issue-" in current_branch.lower() else "pr"
+                        if is_item_closed_on_github(repo_name, item_type, item_number, GitHubClient.get_instance()):
+                            msg = f"{item_type.capitalize()} #{item_number} is closed on GitHub. Aborting fix loop."
+                            logger.info(msg)
+                            summary["messages"].append(msg)
+                            summary["success"] = False
+                            return summary
+        except Exception as e:
+            logger.warning(f"Failed to check if item is closed: {e}")
+
         # Use cached result (from previous post-fix run) if available; otherwise run tests now
         if cached_test_result is not None:
             test_result = cached_test_result

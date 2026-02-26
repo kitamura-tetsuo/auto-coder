@@ -200,7 +200,7 @@ class TestJulesEngine(unittest.TestCase):
         mock_jules_client.list_sessions.return_value = [
             {"name": "projects/p/locations/l/sessions/s8", "state": "FAILED", "automationMode": "NONE"},
             {"name": "projects/p/locations/l/sessions/s9", "state": "AWAITING_USER_FEEDBACK", "automationMode": "NONE"},
-            {"name": "projects/p/locations/l/sessions/s10", "state": "COMPLETED", "outputs": {}, "automationMode": "NONE"}
+            {"name": "projects/p/locations/l/sessions/s10", "state": "COMPLETED", "outputs": {}, "automationMode": "NONE"},
         ]
         mock_load_state.return_value = {}
 

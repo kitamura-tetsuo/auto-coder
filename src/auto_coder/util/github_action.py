@@ -1905,6 +1905,43 @@ def check_github_actions_and_exit_if_in_progress(
         return True  # Continue processing on error
 
 
+def is_item_closed_on_github(
+    repo_name: str,
+    item_type: str,
+    item_number: int,
+    github_client: GitHubClient,
+) -> bool:
+    """
+    Check if a PR or Issue is closed on GitHub.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        item_type: Type of item ("issue" or "pr")
+        item_number: Item number
+        github_client: GitHubClient instance
+
+    Returns:
+        True if item is closed, False if open or if an error occurs.
+    """
+    try:
+        if item_type == "pr":
+            pr = github_client.get_pull_request(repo_name, item_number)
+            current_item = github_client.get_pr_details(pr)
+        elif item_type == "issue":
+            issue = github_client.get_issue(repo_name, item_number)
+            current_item = github_client.get_issue_details(issue)
+        else:
+            logger.warning(f"Unknown item type: {item_type}")
+            return False
+
+        if current_item.get("state") == "closed":
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to check if item is closed on GitHub: {e}")
+        return False
+
+
 def check_and_handle_closed_state(
     repo_name: str,
     item_type: str,

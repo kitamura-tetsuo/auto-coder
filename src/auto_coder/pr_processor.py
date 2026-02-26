@@ -2428,6 +2428,16 @@ def _fix_pr_issues_with_github_actions_testing(
             while not test_result.get("success") and 1 <= len(failed_tests) <= 3 and attempt < attempts_limit:
                 attempt += 1
 
+                # Check if PR is closed
+                from .util.gh_cache import GitHubClient
+                from .util.github_action import is_item_closed_on_github
+
+                if is_item_closed_on_github(repo_name, "pr", pr_number, GitHubClient.get_instance()):
+                    msg = f"PR #{pr_number} is closed on GitHub. Aborting fix loop."
+                    logger.info(msg)
+                    actions.append(msg)
+                    return actions
+
                 # Backend switching logic
                 if attempt >= 2 and high_score_backend_manager:
                     if current_backend_manager != high_score_backend_manager:
@@ -2512,6 +2522,16 @@ def _fix_pr_issues_with_local_testing(
         while True:
             with ProgressStage(f"attempt: {attempt}"):
                 attempt += 1
+
+                # Check if PR is closed
+                from .util.gh_cache import GitHubClient
+                from .util.github_action import is_item_closed_on_github
+
+                if is_item_closed_on_github(repo_name, "pr", pr_number, GitHubClient.get_instance()):
+                    msg = f"PR #{pr_number} is closed on GitHub. Aborting fix loop."
+                    logger.info(msg)
+                    actions.append(msg)
+                    return actions
 
                 # Backend switching logic: switch to fallback after 2 attempts
                 if attempt >= 2 and high_score_backend_manager:

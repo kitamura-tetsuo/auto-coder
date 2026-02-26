@@ -31,7 +31,7 @@ from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import GitHubClient, get_ghapi_client
-from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
+from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
 
@@ -151,6 +151,11 @@ class AutomationEngine:
             try:
                 self.active_workers[worker_id] = candidate
                 logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
+
+                # Check if the item is already closed before processing
+                if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
+                    logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
+                    continue
 
                 get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
 
