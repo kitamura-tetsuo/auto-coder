@@ -31,7 +31,7 @@ class JulesClient(LLMClientBase):
             backend_name: Backend name to use for configuration lookup (optional).
         """
         self.backend_name = backend_name or "jules"
-        self.timeout = None  # No timeout - let HTTP requests run as needed
+        self.timeout = 30
         self.active_sessions: Dict[str, str] = {}  # Track active sessions
         self.api_key: Optional[str] = None
         self.base_url = "https://jules.googleapis.com/v1alpha"
