@@ -612,6 +612,12 @@ def _process_pr_for_merge(
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to configuration (AUTO_MERGE=False)")
             return processed_pr
 
+        # Check for disable-auto-merge label
+        labels = pr_data.get("labels", [])
+        if any((isinstance(l, dict) and l.get("name") == "disable-auto-merge") or (isinstance(l, str) and l == "disable-auto-merge") for l in labels):
+            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to 'disable-auto-merge' label")
+            return processed_pr
+
         merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
@@ -1113,6 +1119,12 @@ def _handle_pr_merge(
             # Check if AUTO_MERGE is enabled before attempting merge
             if not config.AUTO_MERGE:
                 actions.append(f"Skipping merge for PR #{pr_number} due to configuration (AUTO_MERGE=False)")
+                return actions
+
+            # Check for disable-auto-merge label
+            labels = pr_data.get("labels", [])
+            if any((isinstance(l, dict) and l.get("name") == "disable-auto-merge") or (isinstance(l, str) and l == "disable-auto-merge") for l in labels):
+                actions.append(f"Skipping merge for PR #{pr_number} due to 'disable-auto-merge' label")
                 return actions
 
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
