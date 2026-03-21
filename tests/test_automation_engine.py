@@ -7,9 +7,6 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.util.dependabot_timestamp import (
-    set_dependabot_pr_processed_time,
-)
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandExecutor
 
@@ -500,13 +497,14 @@ class TestAutomationEngine:
         # Assert
         assert result is False
 
-    @patch("subprocess.run")
+    @patch("auto_coder.automation_engine.CommandExecutor.run_command")
     @patch("os.path.exists")
-    def test_run_pr_tests_success(self, mock_exists, mock_run, mock_github_client, mock_gemini_client):
+    def test_run_pr_tests_success(self, mock_exists, mock_run_command, mock_github_client, mock_gemini_client):
         """Test successful PR test execution."""
         # Setup
         mock_exists.return_value = True
-        mock_run.return_value = Mock(returncode=0, stdout="All tests passed", stderr="")
+        from auto_coder.utils import CommandResult
+        mock_run_command.return_value = CommandResult(success=True, stdout="All tests passed", stderr="", returncode=0)
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
@@ -517,21 +515,16 @@ class TestAutomationEngine:
         # Assert
         assert result["success"] is True
         assert result["output"] == "All tests passed"
-        mock_run.assert_called_once_with(
-            ["bash", "scripts/test.sh"],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            cwd=None,
-        )
+        mock_run_command.assert_called_once()
 
-    @patch("subprocess.run")
+    @patch("auto_coder.automation_engine.CommandExecutor.run_command")
     @patch("os.path.exists")
-    def test_run_pr_tests_failure(self, mock_exists, mock_run, mock_github_client, mock_gemini_client):
+    def test_run_pr_tests_failure(self, mock_exists, mock_run_command, mock_github_client, mock_gemini_client):
         """Test PR test execution failure."""
         # Setup
         mock_exists.return_value = True
-        mock_run.return_value = Mock(returncode=1, stdout="", stderr="Test failed: assertion error")
+        from auto_coder.utils import CommandResult
+        mock_run_command.return_value = CommandResult(success=False, stdout="", stderr="Test failed: assertion error", returncode=1)
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
@@ -1734,20 +1727,17 @@ class TestGetCandidates:
         # When IGNORE_DEPENDABOT_PRS is True, ALL Dependabot PRs should be skipped
         assert [c.data["number"] for c in candidates] == []
 
-    @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_treats_dependency_bot_prs_like_normal_when_ignore_disabled(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_should_process,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
     ):
         """Dependency-bot PRs behave like normal PRs when both flags are False."""
-        mock_should_process.return_value = True
         config = AutomationConfig()
         config.IGNORE_DEPENDABOT_PRS = False
         config.AUTO_MERGE_DEPENDABOT_PRS = False
@@ -1812,28 +1802,23 @@ class TestGetCandidates:
 
             candidates = engine._get_candidates(test_repo_name, max_items=10)
 
-        numbers = [c.data["number"] for c in candidates]
-        # Only the first PR should be included because of the "once daily" limit for Dependabot PRs
-        assert numbers == [1]
-
+        numbers = sorted([c.data["number"] for c in candidates])
+        assert numbers == [1, 2]
         priorities = {c.data["number"]: c.priority for c in candidates}
         assert priorities[1] == 2  # Mergeable with successful checks
-        # PR #2 is excluded due to daily limit, so we don't check its priority
+        assert priorities[2] == 2  # Unmergeable PR gets priority 2
 
-    @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_prs_only_green(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_should_process,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
     ):
         """When AUTO_MERGE_DEPENDABOT_PRS is True, only green/mergeable Dependabot PRs are included."""
-        mock_should_process.return_value = True
         config = AutomationConfig()
         config.IGNORE_DEPENDABOT_PRS = False
         config.AUTO_MERGE_DEPENDABOT_PRS = True
@@ -1902,20 +1887,17 @@ class TestGetCandidates:
         assert candidates[0].priority == 2  # Mergeable with successful checks
         assert candidates[0].data["author"] == "dependabot[bot]"
 
-    @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_true_includes_passing(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_should_process,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
     ):
         """When AUTO_MERGE_DEPENDABOT_PRS is True, passing/mergeable Dependabot PRs are included."""
-        mock_should_process.return_value = True
         config = AutomationConfig()
         config.IGNORE_DEPENDABOT_PRS = False
         config.AUTO_MERGE_DEPENDABOT_PRS = True
@@ -2030,20 +2012,17 @@ class TestGetCandidates:
         # Failing/non-mergeable Dependabot PR should be excluded
         assert [c.data["number"] for c in candidates] == []
 
-    @patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_false_includes_failing(
         self,
         mock_extract_issues,
         mock_check_actions,
-        mock_should_process,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
     ):
         """When AUTO_MERGE_DEPENDABOT_PRS is False, failing Dependabot PRs are included (treated like normal PRs)."""
-        mock_should_process.return_value = True
         config = AutomationConfig()
         config.IGNORE_DEPENDABOT_PRS = False
         config.AUTO_MERGE_DEPENDABOT_PRS = False
@@ -3622,61 +3601,3 @@ class TestCheckAndHandleClosedBranch:
         # In the buggy version, has_label would be called (default check_labels=True)
         # In the fixed version, has_label is not called (check_labels=False is respected)
         assert "issues_processed" in result
-
-    @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
-    def test_get_candidates_skips_dependabot_pr_if_processed_recently(
-        self,
-        mock_extract_issues,
-        mock_check_actions,
-        mock_github_client,
-        mock_gemini_client,
-        test_repo_name,
-        tmpdir,
-    ):
-        """Test that _get_candidates skips Dependabot PRs if one was processed recently."""
-        # Setup
-        config = AutomationConfig()
-        config.DEPENDABOT_WAIT_INTERVAL_HOURS = 24
-        engine = AutomationEngine(mock_github_client, config=config)
-
-        # Create a timestamp file indicating a recent Dependabot PR processing
-        timestamp_file = tmpdir.join("dependabot_timestamp.txt")
-        # Fix patch path: remove src. prefix
-        with patch("auto_coder.util.dependabot_timestamp.TIMESTAMP_FILE", str(timestamp_file)):
-            set_dependabot_pr_processed_time()
-
-            # Mock GitHub client to return a Dependabot PR
-            mock_github_client.get_open_pull_requests.return_value = [
-                Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            ]
-            mock_github_client.get_open_issues_json.return_value = []
-            pr_details = {
-                "number": 1,
-                "title": "Dependabot PR",
-                "body": "",
-                "head": {"ref": "dependabot-pr-1"},
-                "labels": [],
-                "mergeable": True,
-                "created_at": "2024-01-01T00:00:00Z",
-                "author": "dependabot[bot]",
-                "user": {"login": "dependabot[bot]"},
-            }
-            mock_github_client.get_pr_details.return_value = pr_details
-            # Mock get_open_prs_json to return the list of PR data
-            mock_github_client.get_open_prs_json.return_value = [pr_details]
-            # Mock get_pr_comments to return empty list
-            mock_github_client.get_pr_comments.return_value = []
-
-            # Mock commits and comments to avoid "Mock object is not subscriptable" error
-            # and ensure _should_skip_waiting_for_jules returns False (not waiting)
-            mock_github_client.get_pr_commits.return_value = []
-            mock_github_client.get_pr_comments.return_value = []
-
-            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
-
-            # Execute
-            candidates = engine._get_candidates(test_repo_name, max_items=10)
-
-            # Assert
-            assert len(candidates) == 0

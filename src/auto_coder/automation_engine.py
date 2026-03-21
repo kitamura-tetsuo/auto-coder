@@ -362,7 +362,6 @@ class AutomationEngine:
         """
         from .issue_context import extract_linked_issues_from_pr_body
         from .pr_processor import _is_dependabot_pr, _is_jules_pr
-        from .util.dependabot_timestamp import should_process_dependabot_pr
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
@@ -373,10 +372,6 @@ class AutomationEngine:
         candidates_count = 0
 
         try:
-            # Check if we should process Dependabot PRs at all in this run
-            can_process_dependabot_pr = should_process_dependabot_pr(self.config.DEPENDABOT_WAIT_INTERVAL_HOURS)
-            if not can_process_dependabot_pr:
-                logger.info(f"Skipping Dependabot PRs in this run due to {self.config.DEPENDABOT_WAIT_INTERVAL_HOURS}-hour processing limit.")
 
             # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
             # Optimized to use get_open_prs_json to batch fetch details
@@ -513,10 +508,7 @@ class AutomationEngine:
                             logger.info(f"Processing dependency-bot PR #{pr_number} - checks passed and mergeable")
                     # If both flags are False: Process all Dependabot PRs (try to fix failing)
 
-                    # Check if we are allowed to process a Dependabot PR in this run
-                    if not can_process_dependabot_pr:
-                        logger.debug(f"Skipping dependency-bot PR #{pr_number} - 24-hour limit applies")
-                        continue
+                    # If both flags are False: Process all Dependabot PRs (try to fix failing)
 
                 # Check if PR is created by Jules and waiting for Jules update
                 if pr_data.get("author") == "jules":
@@ -605,15 +597,6 @@ class AutomationEngine:
                     pr_priority = 1  # Fix-required but mergeable PRs
                 else:
                     pr_priority = 2  # Mergeable with successful checks (auto-merge candidate)
-
-                # If this is a dependabot PR and we are processing it,
-                # record the time and prevent further dependabot PRs in this run.
-                if is_dependency_bot:
-                    from .util.dependabot_timestamp import set_dependabot_pr_processed_time
-
-                    logger.info(f"Dependabot PR #{pr_number} is a candidate, setting processed time.")
-                    set_dependabot_pr_processed_time()
-                    can_process_dependabot_pr = False  # Prevent any further Dependabot PRs in this same run
 
                 candidates.append(
                     Candidate(

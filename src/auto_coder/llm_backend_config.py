@@ -814,24 +814,6 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
     )
 
 
-def get_dependabot_wait_interval_hours_from_config(config_path: Optional[str] = None) -> int:
-    """Get the Dependabot wait interval in hours from config.toml.
-
-    Args:
-        config_path: Optional explicit path to config.toml file.
-
-    Returns:
-        Interval in hours (default: 24)
-    """
-    return _get_config_value(
-        section="dependabot",
-        key="wait_interval_hours",
-        default=24,
-        config_path=config_path,
-        value_type=int,
-    )
-
-
 def get_jules_failure_threshold_from_config(config_path: Optional[str] = None) -> int:
     """Get the Jules failure threshold from config.toml.
 

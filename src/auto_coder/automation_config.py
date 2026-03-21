@@ -154,14 +154,12 @@ class AutomationConfig:
         # Load Jules wait timeout from config
         # Load Jules wait timeout from config
         from .llm_backend_config import (
-            get_dependabot_wait_interval_hours_from_config,
             get_github_action_log_max_length_from_config,
             get_jules_failure_threshold_from_config,
             get_jules_wait_timeout_hours_from_config,
         )
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
-        object.__setattr__(self, "DEPENDABOT_WAIT_INTERVAL_HOURS", get_dependabot_wait_interval_hours_from_config())
         object.__setattr__(self, "JULES_FAILURE_THRESHOLD", get_jules_failure_threshold_from_config())
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config())
 
@@ -491,10 +489,6 @@ class AutomationConfig:
     # Jules wait timeout in hours (default: 2)
     # Configurable via [jules].wait_timeout_hours in config.toml
     JULES_WAIT_TIMEOUT_HOURS: int = 2
-
-    # Dependabot wait interval in hours (default: 24)
-    # Configurable via [dependabot].wait_interval_hours in config.toml
-    DEPENDABOT_WAIT_INTERVAL_HOURS: int = 24
 
     # Jules failure threshold (default: 10)
     # Configurable via [jules].failure_threshold in config.toml

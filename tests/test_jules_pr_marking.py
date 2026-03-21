@@ -47,7 +47,7 @@ class TestJulesPRMarking:
         # Python allows calling private methods.
 
         # patch the source modules directly since they are imported inside the function
-        with patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr", return_value=False), patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
+        with patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
 
             candidates = engine._get_candidates("owner/repo")
 
@@ -77,7 +77,7 @@ class TestJulesPRMarking:
 
         mock_github_client.get_open_prs_json.return_value = [pr_data]
 
-        with patch("auto_coder.util.dependabot_timestamp.should_process_dependabot_pr", return_value=False), patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
+        with patch("auto_coder.util.github_action.preload_github_actions_status"), patch("auto_coder.pr_processor._is_jules_pr", return_value=True):
 
             engine._get_candidates("owner/repo")
 
