@@ -504,6 +504,7 @@ class TestAutomationEngine:
         # Setup
         mock_exists.return_value = True
         from auto_coder.utils import CommandResult
+
         mock_run_command.return_value = CommandResult(success=True, stdout="All tests passed", stderr="", returncode=0)
 
         engine = AutomationEngine(mock_github_client)
@@ -524,6 +525,7 @@ class TestAutomationEngine:
         # Setup
         mock_exists.return_value = True
         from auto_coder.utils import CommandResult
+
         mock_run_command.return_value = CommandResult(success=False, stdout="", stderr="Test failed: assertion error", returncode=1)
 
         engine = AutomationEngine(mock_github_client)

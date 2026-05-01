@@ -614,7 +614,7 @@ def _process_pr_for_merge(
 
         # Check for disable-auto-merge label
         labels = pr_data.get("labels", [])
-        if any((isinstance(l, dict) and l.get("name") == "disable-auto-merge") or (isinstance(l, str) and l == "disable-auto-merge") for l in labels):
+        if any((isinstance(label, dict) and label.get("name") == "disable-auto-merge") or (isinstance(label, str) and label == "disable-auto-merge") for label in labels):
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to 'disable-auto-merge' label")
             return processed_pr
 
@@ -875,7 +875,7 @@ def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> st
         return "Could not retrieve PR diff"
 
 
-def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig, github_client: Optional[Any] = None) -> str:
+def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig, github_client: Optional[Any] = None, is_jules: bool = False) -> str:
     """Create a PR prompt that prioritizes direct code changes over comments with label-based selection."""
     pr_body = pr_data.get("body") or ""
 
@@ -906,6 +906,7 @@ def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff:
         labels=pr_labels_list,
         label_prompt_mappings=config.pr_label_prompt_mappings,
         label_priorities=config.label_priorities,
+        is_jules=is_jules,
     )
     return result
 
@@ -941,7 +942,7 @@ def _process_pr_jules_mode(
 
         # Get prompt
         pr_diff = _get_pr_diff(repo_name, pr_number, config)
-        action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config, github_client)
+        action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config, github_client, is_jules=True)
 
         pr_branch = pr_data.get("head", {}).get("ref")
         session_title = f"PR #{pr_number}: {pr_data.get('title', 'Unknown')}"
@@ -1123,7 +1124,7 @@ def _handle_pr_merge(
 
             # Check for disable-auto-merge label
             labels = pr_data.get("labels", [])
-            if any((isinstance(l, dict) and l.get("name") == "disable-auto-merge") or (isinstance(l, str) and l == "disable-auto-merge") for l in labels):
+            if any((isinstance(label, dict) and label.get("name") == "disable-auto-merge") or (isinstance(label, str) and label == "disable-auto-merge") for label in labels):
                 actions.append(f"Skipping merge for PR #{pr_number} due to 'disable-auto-merge' label")
                 return actions
 

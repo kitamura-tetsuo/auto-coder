@@ -444,6 +444,7 @@ def _process_issue_jules_mode(
             issue_state=issue_data.get("state", "open"),
             issue_author=issue_data.get("user", {}).get("login", "unknown"),
             commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
+            is_jules=True,
         )
 
         logger.info(f"Starting Jules session for issue #{issue_number}")

@@ -1,6 +1,10 @@
 header: |
   Read AGENTS.md before proceeding if you haven't read it yet.
 
+jules_header: |
+  Read AGENTS.md before proceeding if you haven't read it yet.
+
+
 pr:
   action: |-
     You are operating directly in the repository workspace with write access and the git and gh CLIs available.
@@ -1222,5 +1226,92 @@ mcp:
     - Use get_dependencies to understand module structure
 
     MCP Resources:
-    - https://graphrag.db/schema/neo4j - Detailed Neo4j schema with node/edge definitions
     - https://graphrag.db/collection/qdrant - Qdrant vector collection info (embeddings)
+
+jules:
+  pr:
+    action: |-
+      STRICT DIRECTIVES (follow exactly):
+      - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+      - Do NOT post any comments to the PR, reviews, or issues.
+      - Prefer targeted edits that make CI pass while preserving intent.
+      - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+      - If you cannot deterministically fix the PR, stop without posting comments.
+
+      Context:
+      Repository: $repo_name
+      PR #$pr_number: $pr_title
+
+      PR Description (truncated):
+      $pr_body...
+
+      PR Author: $pr_author
+      PR State: $pr_state
+      Draft: $pr_draft
+      Mergeable: $pr_mergeable
+
+      PR Changes (first $diff_limit chars):
+      $pr_diff
+
+      Commit History Since Branch Creation:
+      $commit_log
+      $linked_issues_context
+
+  issue:
+    action: |-
+      Analyze the following GitHub issue and take appropriate actions:
+
+      Repository: $repo_name
+      Issue #$issue_number: $issue_title
+
+      Issue Description:
+      $issue_body...
+
+      $if(parent_issue_number)
+      PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+      This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+      Parent Issue Description:
+      $parent_issue_body...
+
+      IMPORTANT SCOPE LIMITATIONS:
+      - The parent issue content above is for CONTEXT ONLY
+      - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+      - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+      - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+      $endif
+      Issue Labels: $issue_labels
+      Issue State: $issue_state
+      Created by: $issue_author
+
+      Commit History Since Branch Creation:
+      $commit_log
+
+      $linked_issues_context
+
+      DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+
+      Please analyze this issue and determine the appropriate action:
+
+      1. If this needs clarification, add a comment requesting more information
+      2. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
+      3. If this is a valid bug report or feature request, provide analysis and implementation
+
+      For valid issues:
+      - Analyze the requirements
+      - Implement the necessary code changes
+      - Create or modify files as needed
+      - Ensure the implementation follows best practices
+      - Prefer the smart, reasonable and logically beautiful change that resolves issues.
+      - Keep open the issue
+      - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+      For duplicate/invalid issues:
+      - Close the issue
+      - Add a polite comment explaining why it was closed
+
+      After taking action, respond with a summary of what you did.
+
+      Please proceed with analyzing and taking action on this issue now.
+

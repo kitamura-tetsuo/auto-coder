@@ -293,6 +293,7 @@ def render_prompt(
     label_prompt_mappings: Optional[Dict[str, str]] = None,
     label_priorities: Optional[List[str]] = None,
     parent_issue_body: Optional[str] = None,
+    is_jules: bool = False,
     **kwargs: Any,
 ) -> str:
     """Render a prompt template identified by key with optional label-based selection.
@@ -305,6 +306,7 @@ def render_prompt(
         label_prompt_mappings: Optional dict mapping labels to prompt template keys
         label_priorities: Optional list of labels in priority order (highest priority first)
         parent_issue_body: Optional parent issue body text for template substitution
+        is_jules: Optional boolean to indicate if this is for Jules mode
         **kwargs: Additional keyword arguments for template substitution
 
     Returns:
@@ -316,6 +318,19 @@ def render_prompt(
         If the label-specific template fails to render or doesn't exist,
         it will fall back to the default key.
     """
+    # If is_jules, try to use jules-specific template first
+    if is_jules and not key.startswith("jules."):
+        jules_key = f"jules.{key}"
+        # Use load_prompts and _traverse to check if key exists without SystemExit
+        prompts = load_prompts(path)
+        try:
+            _traverse(prompts, jules_key)
+            key = jules_key
+            logger.debug(f"Jules mode: Redirected prompt key to '{key}'")
+        except KeyError:
+            # Fall back to default key if jules-specific one doesn't exist
+            pass
+
     # If labels and mappings are provided, attempt label-based prompt selection
     if labels and label_prompt_mappings and label_priorities:
         label_specific_key = _get_prompt_for_labels(labels, label_prompt_mappings, label_priorities)
@@ -333,6 +348,7 @@ def render_prompt(
                     label_prompt_mappings=None,
                     label_priorities=None,
                     parent_issue_body=parent_issue_body,
+                    is_jules=is_jules,
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
@@ -364,7 +380,14 @@ def render_prompt(
 
         # Load prompts to get header
         prompts = load_prompts(path)
-        header = prompts.get("header", "")
+        header_key = "jules_header" if is_jules else "header"
+        header = prompts.get(header_key)
+        # Fallback to default header if jules_header is missing
+        if header is None and is_jules:
+            header = prompts.get("header", "")
+
+        if header is None:
+            header = ""
 
         # Prepend header to the rendered prompt
         if header:
