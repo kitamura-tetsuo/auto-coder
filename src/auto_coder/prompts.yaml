@@ -1236,6 +1236,8 @@ jules:
       - Do NOT post any comments to the PR, reviews, or issues.
       - Prefer targeted edits that make CI pass while preserving intent.
       - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+      - This environment is a speculative execution (sandbox), so write your code to completion and run tests without fear of breaking changes or errors.
+      - Do not seek human confirmation or permission along the way. If you get stuck, try to overcome the problem by forming a hypothesis on your own, and only terminate after outputting the log up to that point if you absolutely cannot resolve the issue.
       - If you cannot deterministically fix the PR, stop without posting comments.
 
       Context:
@@ -1312,6 +1314,9 @@ jules:
       - Add a polite comment explaining why it was closed
 
       After taking action, respond with a summary of what you did.
+
+      This environment is a speculative execution (sandbox), so write your code to completion and run tests without fear of breaking changes or errors.
+      Do not seek human confirmation or permission along the way. If you get stuck, try to overcome the problem by forming a hypothesis on your own, and only terminate after outputting the log up to that point if you absolutely cannot resolve the issue.
 
       Please proceed with analyzing and taking action on this issue now.
 
