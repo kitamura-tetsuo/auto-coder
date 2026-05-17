@@ -38,7 +38,7 @@ from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
 from .cli_ui import print_lock_error
 from .lock_manager import LockManager
-from .update_manager import maybe_run_auto_update, record_startup_options
+from .update_manager import check_for_updates_and_restart, record_startup_options
 
 # Load environment variables
 # We explicitly set override=False to ensure that environment variables exported in the shell
@@ -170,7 +170,7 @@ def main(ctx: click.Context, force: bool) -> None:
             ctx.with_resource(lock_manager_context(force))
 
         record_startup_options(sys.argv, os.environ)
-        maybe_run_auto_update()
+        check_for_updates_and_restart()
 
 
 # Set the command name to 'auto-coder' when used as a CLI

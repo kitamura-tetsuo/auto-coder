@@ -47,15 +47,31 @@ def _auto_update_disabled() -> bool:
     return flag.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _running_inside_pipx_env() -> bool:
-    """Best-effort detection for pipx-managed execution environments."""
+def _detect_install_method() -> Optional[str]:
+    """Detect whether the package was installed via pipx or uv tool.
+
+    Returns:
+        ``"pipx"`` when running inside a pipx-managed venv,
+        ``"uv"`` when running inside a uv-tool-managed venv,
+        or ``None`` when the install method cannot be determined.
+    """
     prefix_path = Path(sys.prefix)
-    if any(part.lower() == "pipx" for part in prefix_path.parts):
-        return True
+    prefix_parts_lower = [part.lower() for part in prefix_path.parts]
+
+    # Check for pipx first (e.g. ~/.local/pipx/venvs/auto-coder/...)
+    if "pipx" in prefix_parts_lower:
+        return "pipx"
     for env_name in ("PIPX_HOME", "PIPX_BIN_DIR"):
         if os.environ.get(env_name):
-            return True
-    return False
+            return "pipx"
+
+    # Check for uv tool installations (e.g. ~/.local/share/uv/tools/auto-coder/...)
+    if "uv" in prefix_parts_lower:
+        return "uv"
+    if os.environ.get("UV_TOOL_DIR"):
+        return "uv"
+
+    return None
 
 
 def _get_interval_seconds() -> int:
@@ -108,9 +124,13 @@ def _save_state(path: Path, state: Dict[str, Any]) -> None:
         logger.warning("Unable to persist auto-update state at %s: %s", path, exc)
 
 
-def _notify_manual_update(reason: str) -> None:
+def _notify_manual_update(reason: str, install_method: Optional[str] = None) -> None:
     """Display a manual update instruction to the user."""
-    message = "Auto-Coder auto-update could not be completed (" f"{reason}" "). " "Please run 'pipx upgrade auto-coder' manually."
+    if install_method == "uv":
+        upgrade_cmd = "uv tool upgrade auto-coder"
+    else:
+        upgrade_cmd = "pipx upgrade auto-coder"
+    message = f"Auto-Coder auto-update could not be completed ({reason}). Please run '{upgrade_cmd}' manually."
     click.secho(message, fg="yellow", err=True)
     logger.warning("Auto-update unavailable: %s", reason)
 
@@ -233,15 +253,40 @@ def _pipx_upgrade_indicated_change(stdout: str, stderr: str) -> bool:
     return any(marker in combined for marker in positive_markers)
 
 
+def _uv_upgrade_indicated_change(stdout: str, stderr: str) -> bool:
+    """Best-effort heuristic to detect if uv tool upgrade applied changes."""
+
+    combined = f"{stdout}\n{stderr}".lower()
+    negative_markers = [
+        "already up to date",
+        "nothing to do",
+        "no updates",
+        "unchanged",
+    ]
+    if any(marker in combined for marker in negative_markers):
+        return False
+
+    positive_markers = [
+        "upgraded",
+        "updated",
+        "installed",
+        "downloading",
+        "resolved",
+        "prepared",
+    ]
+    return any(marker in combined for marker in positive_markers)
+
+
 def maybe_run_auto_update() -> AutoUpdateResult:
-    """Attempt to upgrade pipx installations automatically."""
+    """Attempt to upgrade the package via pipx or uv tool automatically."""
     if _auto_update_disabled():
         logger.debug("Auto-update disabled via AUTO_CODER_DISABLE_AUTO_UPDATE")
         return AutoUpdateResult(False, False, reason="disabled")
 
-    if not _running_inside_pipx_env():
-        logger.debug("Not running inside pipx environment; skipping auto-update")
-        return AutoUpdateResult(False, False, reason="outside-pipx")
+    install_method = _detect_install_method()
+    if install_method is None:
+        logger.debug("Not running inside pipx or uv tool environment; skipping auto-update")
+        return AutoUpdateResult(False, False, reason="outside-managed-env")
 
     state_file = _state_path()
     state = _load_state(state_file)
@@ -253,23 +298,36 @@ def maybe_run_auto_update() -> AutoUpdateResult:
         logger.debug("Last auto-update check %.1f seconds ago; skipping", now - last_check)
         return AutoUpdateResult(False, False, reason="interval")
 
-    pipx_executable = shutil.which("pipx")
-    if not pipx_executable:
-        _notify_manual_update("pipx executable not found in PATH")
-        return AutoUpdateResult(False, False, reason="pipx-missing")
+    # Resolve the upgrade command based on the install method
+    if install_method == "uv":
+        tool_executable = shutil.which("uv")
+        tool_label = "uv"
+        if not tool_executable:
+            _notify_manual_update("uv executable not found in PATH", install_method="uv")
+            return AutoUpdateResult(False, False, reason="uv-missing")
+        upgrade_cmd = [tool_executable, "tool", "upgrade", _PACKAGE_NAME]
+        change_detector = _uv_upgrade_indicated_change
+    else:
+        tool_executable = shutil.which("pipx")
+        tool_label = "pipx"
+        if not tool_executable:
+            _notify_manual_update("pipx executable not found in PATH", install_method="pipx")
+            return AutoUpdateResult(False, False, reason="pipx-missing")
+        upgrade_cmd = [tool_executable, "upgrade", _PACKAGE_NAME]
+        change_detector = _pipx_upgrade_indicated_change
 
     state["last_check"] = now
     _save_state(state_file, state)
 
     try:
         result = subprocess.run(
-            [pipx_executable, "upgrade", _PACKAGE_NAME],
+            upgrade_cmd,
             capture_output=True,
             text=True,
             timeout=900,
         )
     except Exception as exc:
-        _notify_manual_update(f"pipx upgrade execution failed: {exc}")
+        _notify_manual_update(f"{tool_label} upgrade execution failed: {exc}", install_method=install_method)
         state["last_result"] = "error"
         state["last_error"] = str(exc)
         _save_state(state_file, state)
@@ -278,7 +336,7 @@ def maybe_run_auto_update() -> AutoUpdateResult:
     if result.returncode == 0:
         stdout = result.stdout or ""
         stderr = result.stderr or ""
-        updated = _pipx_upgrade_indicated_change(stdout, stderr)
+        updated = change_detector(stdout, stderr)
         state["last_result"] = "success"
         state["last_error"] = ""
         if stdout:
@@ -286,13 +344,13 @@ def maybe_run_auto_update() -> AutoUpdateResult:
         state["last_returncode"] = 0
         _save_state(state_file, state)
         if updated:
-            logger.info("Auto-update completed via pipx")
+            logger.info("Auto-update completed via %s", tool_label)
         else:
-            logger.debug("pipx upgrade reported success with no changes")
+            logger.debug("%s upgrade reported success with no changes", tool_label)
         return AutoUpdateResult(True, updated, stdout=stdout, stderr=stderr)
 
-    reason = result.stderr.strip() or "pipx upgrade returned non-zero exit status"
-    _notify_manual_update(reason)
+    reason = result.stderr.strip() or f"{tool_label} upgrade returned non-zero exit status"
+    _notify_manual_update(reason, install_method=install_method)
     state["last_result"] = "failure"
     state["last_error"] = reason
     if result.stdout:
