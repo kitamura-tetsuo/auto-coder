@@ -200,6 +200,8 @@ class TestJulesEngine(unittest.TestCase):
         mock_jules_client.list_sessions.return_value = [
             {"name": "projects/p/locations/l/sessions/s8", "state": "FAILED", "automationMode": "NONE"},
             {"name": "projects/p/locations/l/sessions/s9", "state": "AWAITING_USER_FEEDBACK", "automationMode": "NONE"},
+            {"name": "projects/p/locations/l/sessions/s_comment_none", "state": "AWAITING_COMMENT", "automationMode": "NONE"},
+            {"name": "projects/p/locations/l/sessions/s_comments_none", "state": "AWAITING_COMMENTS", "automationMode": "NONE"},
             {"name": "projects/p/locations/l/sessions/s10", "state": "COMPLETED", "outputs": {}, "automationMode": "NONE"},
         ]
         mock_load_state.return_value = {}
@@ -210,3 +212,66 @@ class TestJulesEngine(unittest.TestCase):
         # Verify
         mock_jules_client.send_message.assert_not_called()
         mock_save_state.assert_not_called()
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_resume_awaiting_comments_session(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {"name": "projects/p/locations/l/sessions/s_comment", "state": "AWAITING_COMMENT", "automationMode": "AUTO_CREATE_PR"},
+            {"name": "projects/p/locations/l/sessions/s_comments", "state": "AWAITING_COMMENTS", "automationMode": "AUTO_CREATE_PR"},
+        ]
+        mock_load_state.return_value = {}
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify
+        self.assertEqual(mock_jules_client.send_message.call_count, 2)
+        mock_jules_client.send_message.assert_any_call("s_comment", "ok")
+        mock_jules_client.send_message.assert_any_call("s_comments", "ok")
+        mock_save_state.assert_called_once_with({"s_comment": 1, "s_comments": 1})
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_resume_custom_awaiting_states(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {"name": "projects/p/locations/l/sessions/s_custom_input", "state": "AWAITING_USER_INPUT", "automationMode": "AUTO_CREATE_PR"},
+            {"name": "projects/p/locations/l/sessions/s_custom_feedback", "state": "AWAITING_USER_FEEDBACK", "automationMode": "AUTO_CREATE_PR"},
+        ]
+        mock_load_state.return_value = {}
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify
+        self.assertEqual(mock_jules_client.send_message.call_count, 2)
+        mock_jules_client.send_message.assert_any_call("s_custom_input", "ok")
+        mock_jules_client.send_message.assert_any_call("s_custom_feedback", "ok")
+        mock_save_state.assert_called_once_with({"s_custom_input": 1, "s_custom_feedback": 1})
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_resume_session_missing_automation_mode(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {"name": "projects/p/locations/l/sessions/s_missing_mode", "state": "AWAITING_USER_FEEDBACK"},
+        ]
+        mock_load_state.return_value = {}
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify
+        mock_jules_client.send_message.assert_called_once_with("s_missing_mode", "ok")
+        mock_save_state.assert_called_once_with({"s_missing_mode": 1})

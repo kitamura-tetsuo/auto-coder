@@ -44,6 +44,8 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
     """Check for Jules sessions to resume or archive.
 
     - If state is FAILED: Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
+    - If state is AWAITING_USER_FEEDBACK, AWAITING_COMMENT, or AWAITING_COMMENTS:
+        - Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
     - If state is COMPLETED and no "outputs"/"pullRequest":
         - If retried < 5 times: Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
         - If retried >= 5 times: Request to create PR.
@@ -116,7 +118,9 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                     outputs = {}
 
             pull_request = outputs.get("pullRequest")
-            automation_mode = session.get("automationMode")
+            automation_mode = session.get("automationMode") or session.get("automation_mode")
+            if automation_mode is None:
+                automation_mode = "AUTO_CREATE_PR"
 
             # Check for timeout if IN_PROGRESS
             is_timeout = False
@@ -156,8 +160,8 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         logger.error(f"Failed to approve plan for session {session_id}")
                 except Exception as e:
                     logger.error(f"Failed to approve plan for session {session_id}: {e}")
-            # Case 2: Awaiting User Feedback or Completed session without PR -> Resume with retry logic (only if automationMode is AUTO_CREATE_PR)
-            elif (state == "AWAITING_USER_FEEDBACK" or (state == "COMPLETED" and not pull_request)) and automation_mode == "AUTO_CREATE_PR":
+            # Case 2: Awaiting User Feedback, Comments, or Completed session without PR -> Resume with retry logic (only if automationMode is AUTO_CREATE_PR)
+            elif ((state in ("AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS") or (isinstance(state, str) and state.startswith("AWAITING_") and state != "AWAITING_PLAN_APPROVAL")) or (state == "COMPLETED" and not pull_request)) and automation_mode == "AUTO_CREATE_PR":
                 retry_count = retry_state.get(session_id, 0)
 
                 if retry_count < 5:
