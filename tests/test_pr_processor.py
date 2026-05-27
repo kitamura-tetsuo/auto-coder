@@ -15,6 +15,17 @@ from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
 class TestPRProcessorBackendSwitching:
     """Test cases for backend switching in PR processor."""
 
+    def setup_method(self):
+        # Mock GitHubClient.get_instance to avoid ValueError due to missing token
+        self.github_client_patcher = patch("src.auto_coder.util.gh_cache.GitHubClient")
+        self.mock_github_client = self.github_client_patcher.start()
+        mock_instance = MagicMock()
+        mock_instance.token = "fake-token"
+        self.mock_github_client.get_instance.return_value = mock_instance
+
+    def teardown_method(self):
+        self.github_client_patcher.stop()
+
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
@@ -477,3 +488,141 @@ class TestKeepLabelOnPRMerge:
 
         # Verify keep_label was NOT called
         assert len(keep_label_called) == 0, "keep_label should not be called when no merge occurs"
+
+
+class TestPRProcessorMerge:
+    """Test cases for PR merge functionality, including auto-approval and fallback methods."""
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("src.auto_coder.pr_processor._get_allowed_merge_methods")
+    def test_merge_pr_auto_approve_dependabot(self, mock_get_allowed_methods, mock_github_client_class, mock_get_ghapi_client):
+        """Test that _merge_pr auto-approves Dependabot PRs before merging."""
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _merge_pr
+
+        # Setup config
+        config = AutomationConfig()
+        config.MERGE_METHOD = "--squash"
+
+        # Mock GitHubClient
+        mock_instance = MagicMock()
+        mock_instance.token = "fake-token"
+        mock_github_client_class.get_instance.return_value = mock_instance
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+
+        # Mock Dependabot PR info
+        mock_pr_info = {"number": 123, "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/npm_and_yarn/some-package-1.0.0"}}
+        mock_api.pulls.get.return_value = mock_pr_info
+
+        # Mock successful merge
+        mock_api.pulls.merge.return_value = {"merged": True}
+
+        # Mock close and archive methods to avoid side effects
+        with patch("src.auto_coder.pr_processor._close_linked_issues") as mock_close, patch("src.auto_coder.pr_processor._archive_jules_session") as mock_archive:
+
+            result = _merge_pr("owner/repo", 123, {}, config)
+
+            # Assertions
+            assert result is True
+            # Verify pulls.get was called
+            mock_api.pulls.get.assert_called_with("owner", "repo", 123)
+            # Verify auto-approval review was created
+            mock_api.pulls.create_review.assert_called_once_with("owner", "repo", 123, event="APPROVE", body="Auto-approved by Auto-Coder")
+            # Verify merge was called
+            mock_api.pulls.merge.assert_called_once_with("owner", "repo", 123, merge_method="squash")
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("src.auto_coder.pr_processor._get_allowed_merge_methods")
+    def test_merge_pr_no_approve_regular_user(self, mock_get_allowed_methods, mock_github_client_class, mock_get_ghapi_client):
+        """Test that _merge_pr does not auto-approve PRs from regular users."""
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _merge_pr
+
+        # Setup config
+        config = AutomationConfig()
+        config.MERGE_METHOD = "--squash"
+
+        # Mock GitHubClient
+        mock_instance = MagicMock()
+        mock_instance.token = "fake-token"
+        mock_github_client_class.get_instance.return_value = mock_instance
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+
+        # Mock regular user PR info
+        mock_pr_info = {"number": 124, "user": {"login": "some-developer"}, "head": {"ref": "feature/some-feature"}}
+        mock_api.pulls.get.return_value = mock_pr_info
+
+        # Mock successful merge
+        mock_api.pulls.merge.return_value = {"merged": True}
+
+        # Mock close and archive methods
+        with patch("src.auto_coder.pr_processor._close_linked_issues"), patch("src.auto_coder.pr_processor._archive_jules_session"):
+
+            result = _merge_pr("owner/repo", 124, {}, config)
+
+            # Assertions
+            assert result is True
+            # Verify pulls.get was called
+            mock_api.pulls.get.assert_called_with("owner", "repo", 124)
+            # Verify auto-approval review was NOT created
+            mock_api.pulls.create_review.assert_not_called()
+            # Verify merge was called
+            mock_api.pulls.merge.assert_called_once_with("owner", "repo", 124, merge_method="squash")
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("src.auto_coder.pr_processor._get_allowed_merge_methods")
+    def test_merge_pr_fallback_methods(self, mock_get_allowed_methods, mock_github_client_class, mock_get_ghapi_client):
+        """Test that _merge_pr falls back to alternative merge methods if primary method fails."""
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _merge_pr
+
+        # Setup config
+        config = AutomationConfig()
+        config.MERGE_METHOD = "--squash"
+
+        # Mock GitHubClient
+        mock_instance = MagicMock()
+        mock_instance.token = "fake-token"
+        mock_github_client_class.get_instance.return_value = mock_instance
+
+        # Mock GhApi client
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+
+        # Mock PR info
+        mock_pr_info = {"number": 125, "user": {"login": "some-developer"}, "head": {"ref": "feature/some-feature"}}
+        mock_api.pulls.get.return_value = mock_pr_info
+
+        # Mock allowed merge methods
+        mock_get_allowed_methods.return_value = ["--merge"]
+
+        # Mock merge calls: first (--squash) fails, second (--merge) succeeds
+        def fake_merge(owner, repo, pr_number, merge_method):
+            if merge_method == "squash":
+                return {"merged": False}
+            elif merge_method == "merge":
+                return {"merged": True}
+            return {"merged": False}
+
+        mock_api.pulls.merge.side_effect = fake_merge
+
+        # Mock close and archive methods
+        with patch("src.auto_coder.pr_processor._close_linked_issues"), patch("src.auto_coder.pr_processor._archive_jules_session"):
+
+            result = _merge_pr("owner/repo", 125, {}, config)
+
+            # Assertions
+            assert result is True
+            # Verify primary method was tried
+            mock_api.pulls.merge.assert_any_call("owner", "repo", 125, merge_method="squash")
+            # Verify fallback method was tried and succeeded
+            mock_api.pulls.merge.assert_any_call("owner", "repo", 125, merge_method="merge")

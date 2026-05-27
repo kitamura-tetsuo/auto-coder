@@ -2130,9 +2130,31 @@ def _merge_pr(
                 logger.warning(f"Merge failed for PR #{pr_number} with method {method}: {e}")
                 return False
 
+        # Check if the PR is authored by a dependency bot and auto-approve it
+        try:
+            pr_info = api.pulls.get(owner, repo, pr_number)
+            if _is_dependabot_pr(pr_info):
+                logger.info(f"Auto-approving Dependabot PR #{pr_number}")
+                api.pulls.create_review(owner, repo, pr_number, event="APPROVE", body="Auto-approved by Auto-Coder")
+                log_action(f"Auto-approved Dependabot PR #{pr_number}")
+        except Exception as e:
+            logger.warning(f"Could not auto-approve Dependabot PR #{pr_number}: {e}")
+
         # Attempt merge with configured method
         if _attempt_api_merge(config.MERGE_METHOD):
             return True
+
+        # Try alternative merge methods if the primary method failed (even when not a conflict)
+        try:
+            allowed = _get_allowed_merge_methods(repo_name)
+            methods_order = [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
+            for m in methods_order:
+                if m in allowed:
+                    logger.info(f"Primary merge method {config.MERGE_METHOD} failed. Trying fallback allowed method {m} for PR #{pr_number}")
+                    if _attempt_api_merge(m):
+                        return True
+        except Exception as e:
+            logger.warning(f"Error trying fallback merge methods: {e}")
 
         # If failed, check if it was due to conflicts (check mergeable state)
         is_conflict = False
