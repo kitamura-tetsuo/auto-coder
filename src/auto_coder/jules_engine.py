@@ -2,11 +2,14 @@
 Jules engine module for managing Jules sessions.
 """
 
+import glob
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
+import yaml
 from dateutil import parser
 
 from .jules_client import JulesClient
@@ -240,3 +243,231 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
 
     except Exception as e:
         logger.warning(f"Failed to check/resume/archive Jules sessions: {e}")
+
+
+def _parse_prompt_file_content(content: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter and prompt content from prompt string."""
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
+    if match:
+        frontmatter_str = match.group(1)
+        prompt_text = match.group(2)
+        try:
+            metadata = yaml.safe_load(frontmatter_str) or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception as e:
+            logger.warning(f"Failed to parse YAML frontmatter: {e}")
+            metadata = {}
+        return metadata, prompt_text
+    else:
+        return {}, content
+
+
+def _parse_prompt_file(file_path: str) -> tuple[dict, str]:
+    """Read a prompt file and parse its frontmatter and full content."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        logger.warning(f"Failed to read prompt file {file_path}: {e}")
+        return {}, ""
+    metadata, _ = _parse_prompt_file_content(content)
+    return metadata, content
+
+
+def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
+    """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
+    try:
+        prompts_dir = os.path.join(os.getcwd(), ".auto-coder", "prompts")
+        if not os.path.isdir(prompts_dir):
+            logger.debug(f"Prompts directory {prompts_dir} does not exist. Skipping.")
+            return
+
+        md_files = glob.glob(os.path.join(prompts_dir, "*.md"))
+        if not md_files:
+            logger.debug(f"No prompt files (*.md) found in {prompts_dir}")
+            return
+
+        jules_client = JulesClient()
+        try:
+            sessions = jules_client.list_sessions(repo_name=repo_name)
+        except Exception as e:
+            logger.error(f"Failed to list Jules sessions: {e}")
+            return
+
+        for file_path in md_files:
+            metadata, full_prompt = _parse_prompt_file(file_path)
+            tags = metadata.get("tags", [])
+            name_val = metadata.get("name", [])
+
+            # Normalize tags and name
+            if isinstance(tags, str):
+                tag_list = [tags.strip().lower()]
+            elif isinstance(tags, list):
+                tag_list = [str(t).strip().lower() for t in tags]
+            else:
+                tag_list = []
+
+            if isinstance(name_val, str):
+                names = [name_val.strip()]
+            elif isinstance(name_val, list):
+                names = [str(n).strip() for n in name_val]
+            else:
+                names = []
+
+            if not ("jules" in tag_list and "recurrent" in tag_list):
+                continue
+
+            if not names:
+                logger.warning(f"Prompt file {file_path} has jules and recurrent tags but no valid name. Skipping.")
+                continue
+
+            is_running = False
+            for session in sessions:
+                session_id = session.get("name", "").split("/")[-1]
+                if not session_id:
+                    session_id = session.get("id")
+                if not session_id:
+                    continue
+
+                session_prompt = session.get("prompt")
+                if not session_prompt:
+                    try:
+                        full_session = jules_client.get_session(session_id)
+                        session_prompt = full_session.get("prompt")
+                    except Exception as e:
+                        logger.warning(f"Failed to get full session for {session_id} to check prompt: {e}")
+
+                if not session_prompt:
+                    continue
+
+                session_metadata, _ = _parse_prompt_file_content(session_prompt)
+                session_names_val = session_metadata.get("name", [])
+                if isinstance(session_names_val, str):
+                    session_names = [session_names_val.strip()]
+                elif isinstance(session_names_val, list):
+                    session_names = [str(n).strip() for n in session_names_val]
+                else:
+                    session_names = []
+
+                match_found = False
+                for n in names:
+                    for sn in session_names:
+                        if n.strip().lower() == sn.strip().lower():
+                            match_found = True
+                            break
+                    if match_found:
+                        break
+
+                if match_found:
+                    logger.info(f"Found active Jules session '{session_id}' matching name: {names}")
+                    is_running = True
+                    break
+
+            if not is_running:
+                logger.info(f"No active Jules session found for recurrent prompt: {names}. Starting a new Jules session...")
+                try:
+                    from .automation_config import AutomationConfig
+
+                    config = AutomationConfig()
+                    base_branch = config.MAIN_BRANCH
+
+                    session_title = names[0]
+                    new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                    logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
+                except Exception as e:
+                    logger.error(f"Failed to start new recurrent Jules session for {names}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error checking/starting recurrent Jules tasks: {e}")
+
+
+def check_and_restart_recurrent_jules_task_for_pr(repo_name: str, pr_number: int, session_id: str) -> None:
+    """Check if the merged PR's Jules session has matching recurrent prompt and restart it if so."""
+    try:
+        jules_client = JulesClient()
+        logger.info(f"Checking if merged PR #{pr_number} (session: {session_id}) was a recurrent task...")
+
+        try:
+            session = jules_client.get_session(session_id)
+        except Exception as e:
+            logger.warning(f"Failed to get session details for {session_id}: {e}")
+            return
+
+        session_prompt = session.get("prompt")
+        if not session_prompt:
+            logger.info(f"No startup prompt found in session {session_id}")
+            return
+
+        session_metadata, _ = _parse_prompt_file_content(session_prompt)
+        session_names_val = session_metadata.get("name", [])
+        if isinstance(session_names_val, str):
+            session_names = [session_names_val.strip()]
+        elif isinstance(session_names_val, list):
+            session_names = [str(n).strip() for n in session_names_val]
+        else:
+            session_names = []
+
+        if not session_names:
+            logger.info(f"No names found in frontmatter of session {session_id}'s prompt")
+            return
+
+        logger.info(f"Merged session names: {session_names}")
+
+        prompts_dir = os.path.join(os.getcwd(), ".auto-coder", "prompts")
+        if not os.path.isdir(prompts_dir):
+            logger.debug(f"Prompts directory {prompts_dir} does not exist.")
+            return
+
+        md_files = glob.glob(os.path.join(prompts_dir, "*.md"))
+        if not md_files:
+            return
+
+        for file_path in md_files:
+            metadata, full_prompt = _parse_prompt_file(file_path)
+            tags = metadata.get("tags", [])
+            name_val = metadata.get("name", [])
+
+            # Normalize tags and name
+            if isinstance(tags, str):
+                tag_list = [tags.strip().lower()]
+            elif isinstance(tags, list):
+                tag_list = [str(t).strip().lower() for t in tags]
+            else:
+                tag_list = []
+
+            if isinstance(name_val, str):
+                names = [name_val.strip()]
+            elif isinstance(name_val, list):
+                names = [str(n).strip() for n in name_val]
+            else:
+                names = []
+
+            if not ("jules" in tag_list and "recurrent" in tag_list):
+                continue
+
+            match_found = False
+            for n in names:
+                for sn in session_names:
+                    if n.strip().lower() == sn.strip().lower():
+                        match_found = True
+                        break
+                if match_found:
+                    break
+
+            if match_found:
+                logger.info(f"Found matching recurrent prompt file: {file_path} for merged session {session_id}")
+                try:
+                    from .automation_config import AutomationConfig
+
+                    config = AutomationConfig()
+                    base_branch = config.MAIN_BRANCH
+
+                    session_title = names[0]
+                    new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                    logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' after merge of PR #{pr_number}")
+                except Exception as e:
+                    logger.error(f"Failed to start new recurrent Jules session after merge: {e}")
+
+    except Exception as e:
+        logger.error(f"Error in check_and_restart_recurrent_jules_task_for_pr: {e}")

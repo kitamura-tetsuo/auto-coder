@@ -17,7 +17,7 @@ from .git_commit import git_push
 from .git_info import get_current_branch
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
-from .jules_engine import check_and_resume_or_archive_sessions
+from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
 from .llm_backend_config import get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
 from .logger_config import get_logger
@@ -58,6 +58,13 @@ class AutomationEngine:
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
 
+    async def check_and_start_recurrent_jules_tasks_async(self, repo_name: str) -> None:
+        """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
+        try:
+            await asyncio.to_thread(check_and_start_recurrent_jules_tasks, repo_name)
+        except Exception as e:
+            logger.error(f"Error checking/starting recurrent Jules tasks on startup: {e}")
+
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
         if concurrency is None:
@@ -67,6 +74,9 @@ class AutomationEngine:
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
+
+        # Start checking and starting recurrent Jules tasks on startup in background
+        asyncio.create_task(self.check_and_start_recurrent_jules_tasks_async(repo_name))
 
         # Start producer
         producer_task = asyncio.create_task(self._producer_loop(repo_name))

@@ -2,7 +2,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from auto_coder.jules_engine import check_and_resume_or_archive_sessions
+from auto_coder.jules_engine import (
+    check_and_restart_recurrent_jules_task_for_pr,
+    check_and_resume_or_archive_sessions,
+    check_and_start_recurrent_jules_tasks,
+)
 
 
 class TestJulesEngine(unittest.TestCase):
@@ -275,3 +279,108 @@ class TestJulesEngine(unittest.TestCase):
         # Verify
         mock_jules_client.send_message.assert_called_once_with("s_missing_mode", "ok")
         mock_save_state.assert_called_once_with({"s_missing_mode": 1})
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_check_and_start_recurrent_jules_tasks_starts_new_session(self, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):
+        # Setup
+        mock_isdir.return_value = True
+        mock_glob.return_value = ["/path/to/prompts/recurrent_prompt.md"]
+
+        # Mock file contents with valid jules, recurrent tags and name
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt."""
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = []  # No active sessions
+
+        # Execute
+        check_and_start_recurrent_jules_tasks("owner/repo")
+
+        # Verify
+        mock_jules_client.start_session.assert_called_once()
+        args, kwargs = mock_jules_client.start_session.call_args
+        self.assertIn("This is a recurrent task prompt.", kwargs["prompt"])
+        self.assertEqual(kwargs["repo_name"], "owner/repo")
+        self.assertEqual(kwargs["title"], "auto improvement with demo site")
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_check_and_start_recurrent_jules_tasks_already_running(self, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):
+        # Setup
+        mock_isdir.return_value = True
+        mock_glob.return_value = ["/path/to/prompts/recurrent_prompt.md"]
+
+        # Mock file contents with valid jules, recurrent tags and name
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt."""
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        # Session already contains the same prompt and name
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {
+                "name": "projects/p/locations/l/sessions/s_active",
+                "prompt": """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt.""",
+            }
+        ]
+
+        # Execute
+        check_and_start_recurrent_jules_tasks("owner/repo")
+
+        # Verify
+        mock_jules_client.start_session.assert_not_called()
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_check_and_restart_recurrent_jules_task_for_pr(self, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):
+        # Setup
+        mock_isdir.return_value = True
+        mock_glob.return_value = ["/path/to/prompts/recurrent_prompt.md"]
+
+        # Mock file contents with valid jules, recurrent tags and name
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt."""
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.get_session.return_value = {
+            "name": "projects/p/locations/l/sessions/s_merged",
+            "prompt": """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt.""",
+        }
+
+        # Execute
+        check_and_restart_recurrent_jules_task_for_pr("owner/repo", 123, "s_merged")
+
+        # Verify
+        mock_jules_client.get_session.assert_called_once_with("s_merged")
+        mock_jules_client.start_session.assert_called_once()
+        args, kwargs = mock_jules_client.start_session.call_args
+        self.assertEqual(kwargs["title"], "auto improvement with demo site")

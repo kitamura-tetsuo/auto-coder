@@ -1987,6 +1987,10 @@ def _archive_jules_session(repo_name: str, pr_number: int) -> None:
             if success:
                 logger.info(f"Archived Jules session '{session_id}' for PR #{pr_number}")
                 log_action(f"Archived Jules session for PR #{pr_number}")
+                # Check and restart recurrent tasks
+                from .jules_engine import check_and_restart_recurrent_jules_task_for_pr
+
+                check_and_restart_recurrent_jules_task_for_pr(repo_name, pr_number, session_id)
             else:
                 logger.warning(f"Failed to archive Jules session '{session_id}' for PR #{pr_number}")
         except Exception as e:
