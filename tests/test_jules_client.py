@@ -29,7 +29,7 @@ class TestJulesClient:
 
         client = JulesClient()
         assert client.backend_name == "jules"
-        assert client.timeout is None
+        assert client.timeout == 30
         assert len(client.active_sessions) == 0
         assert client.session is not None
         assert client.base_url == "https://jules.googleapis.com/v1alpha"

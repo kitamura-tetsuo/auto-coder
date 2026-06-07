@@ -384,3 +384,55 @@ This is a recurrent task prompt.""",
         mock_jules_client.start_session.assert_called_once()
         args, kwargs = mock_jules_client.start_session.call_args
         self.assertEqual(kwargs["title"], "auto improvement with demo site")
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_session_error_resilience(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup: Two sessions. s1 will raise an error on send_message, s2 should still be processed.
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {"name": "projects/p/locations/l/sessions/s1", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"},
+            {"name": "projects/p/locations/l/sessions/s2", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"},
+        ]
+        mock_load_state.return_value = {}
+
+        # s1 send_message will raise RuntimeError
+        mock_jules_client.send_message.side_effect = lambda session_id, msg: exec("raise RuntimeError('unexpected failure')") if session_id == "s1" else None
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify: both sessions were attempted
+        self.assertEqual(mock_jules_client.send_message.call_count, 2)
+        mock_jules_client.send_message.assert_any_call("s1", "ok")
+        mock_jules_client.send_message.assert_any_call("s2", "ok")
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_session_404_error_handling(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        # Setup: Session s1 gets 404 error during resume.
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {"name": "projects/p/locations/l/sessions/s1", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"},
+        ]
+        mock_load_state.return_value = {}
+
+        # Mock send_message to raise a 404 RuntimeError
+        mock_jules_client.send_message.side_effect = RuntimeError("Failed to send message: HTTP 404: Requested entity was not found.")
+
+        # Execute
+        check_and_resume_or_archive_sessions()
+
+        # Verify state is set to -1 (NOT_FOUND) and saved
+        mock_save_state.assert_called_with({"s1": -1})
+
+        # Test that session is skipped when retry_state contains -1
+        mock_jules_client.send_message.reset_mock()
+        mock_load_state.return_value = {"s1": -1}
+
+        check_and_resume_or_archive_sessions()
+        mock_jules_client.send_message.assert_not_called()

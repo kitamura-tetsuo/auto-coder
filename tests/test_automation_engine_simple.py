@@ -139,14 +139,13 @@ class TestAutomationEngine:
             "gemini-2.5-pro",
         )
 
-        with patch("src.auto_coder.automation_engine.get_current_branch") as mock_get_current_branch, \
-             patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager, \
-             patch("src.auto_coder.automation_engine.git_pull") as mock_git_pull:
+        with patch("src.auto_coder.automation_engine.get_current_branch") as mock_get_current_branch, patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager, patch("src.auto_coder.automation_engine.git_pull") as mock_git_pull:
             mock_get_current_branch.return_value = "main"
             mock_get_manager.return_value = mock_backend_manager
-            
+
             # Setup - git_pull returns success
             from src.auto_coder.utils import CommandResult
+
             mock_git_pull.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
             mock_github_client.get_open_pull_requests.return_value = []

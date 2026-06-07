@@ -41,7 +41,7 @@ def test_check_gemini_cli_override():
     with patch.dict(os.environ, {"AUTOCODER_GEMINI_CLI": "/path/to/custom-gemini"}), patch("subprocess.run", return_value=mock_result) as mock_run, patch("click.echo") as mock_echo:
         check_gemini_cli_or_fail()
         # Verify it called the custom path
-        mock_run.assert_called_with(["/path/to/custom-gemini", "--version"], capture_output=True, text=True, timeout=10)
+        mock_run.assert_called_with(["/path/to/custom-gemini", "--version"], capture_output=True, text=True, timeout=60)
         assert mock_echo.call_count >= 1
         # Check if "Using gemini CLI (override: /path/to/custom-gemini)" was echoed
         # Note: click.echo might be called multiple times, we just want to see if our message is there.
@@ -58,7 +58,7 @@ def test_gemini_client_init_with_override():
     with patch.dict(os.environ, {"AUTOCODER_GEMINI_CLI": "custom-gemini-v2"}), patch("subprocess.run", return_value=mock_result) as mock_run, patch("shutil.which", return_value=None):  # Even if not in PATH, override should work
         client = GeminiClient()
         # Verify it called the custom path with --version
-        mock_run.assert_any_call(["custom-gemini-v2", "--version"], capture_output=True, text=True, timeout=10)
+        mock_run.assert_any_call(["custom-gemini-v2", "--version"], capture_output=True, text=True, timeout=60)
 
 
 def test_gemini_client_init_failure_diagnostics():
