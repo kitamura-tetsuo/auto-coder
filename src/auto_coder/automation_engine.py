@@ -12,7 +12,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
-from .git_branch import extract_number_from_branch, git_commit_with_retry
+from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .issue_context import get_linked_issues_context
@@ -107,6 +107,15 @@ class AutomationEngine:
 
                 # Resume sessions
                 await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
+
+                # Pull latest changes for monitored repository
+                try:
+                    logger.info("Pulling latest changes for monitored repository...")
+                    pull_res = await asyncio.to_thread(git_pull)
+                    if not pull_res.success:
+                        logger.warning(f"Failed to pull latest changes: {pull_res.stderr}")
+                except Exception as e:
+                    logger.warning(f"Failed to pull monitored repository: {e}")
 
                 # Get candidates
                 candidates = await asyncio.to_thread(self._get_candidates, repo_name)
@@ -951,6 +960,15 @@ class AutomationEngine:
 
                 # Check and resume failed Jules sessions
                 check_and_resume_or_archive_sessions()
+
+                # Pull latest changes for monitored repository
+                try:
+                    logger.info("Pulling latest changes for monitored repository...")
+                    pull_res = git_pull()
+                    if not pull_res.success:
+                        logger.warning(f"Failed to pull latest changes: {pull_res.stderr}")
+                except Exception as e:
+                    logger.warning(f"Failed to pull monitored repository: {e}")
 
                 # Get candidates
                 candidates = self._get_candidates(repo_name)

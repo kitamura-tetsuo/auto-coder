@@ -349,6 +349,15 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     if not skip_stub:
         CommandExecutor._should_stream_output = staticmethod(patched_should_stream)
+        # Stub git_pull globally to return success and avoid network/hanging issues in tests
+        from src.auto_coder.utils import CommandResult
+        import src.auto_coder.git_branch as git_branch_mod
+        import src.auto_coder.automation_engine as automation_engine_mod
+        import src.auto_coder.git_utils as git_utils_mod
+        mock_git_pull = Mock(return_value=CommandResult(success=True, stdout="", stderr="", returncode=0))
+        monkeypatch.setattr(git_branch_mod, "git_pull", mock_git_pull)
+        monkeypatch.setattr(automation_engine_mod, "git_pull", mock_git_pull)
+        monkeypatch.setattr(git_utils_mod, "git_pull", mock_git_pull)
 
     orig_run = subprocess.run
     orig_popen = subprocess.Popen

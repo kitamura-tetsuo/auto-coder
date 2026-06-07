@@ -123,6 +123,46 @@ class TestAutomationEngine:
 
                 engine._save_report.assert_called_once()
 
+    def test_run_git_pull_is_called(
+        self,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that git_pull is called during run loop."""
+        from src.auto_coder.backend_manager import get_llm_backend_manager
+
+        mock_backend_manager = Mock()
+        mock_backend_manager.get_last_backend_provider_and_model.return_value = (
+            "gemini",
+            "open-router",
+            "gemini-2.5-pro",
+        )
+
+        with patch("src.auto_coder.automation_engine.get_current_branch") as mock_get_current_branch, \
+             patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager, \
+             patch("src.auto_coder.automation_engine.git_pull") as mock_git_pull:
+            mock_get_current_branch.return_value = "main"
+            mock_get_manager.return_value = mock_backend_manager
+            
+            # Setup - git_pull returns success
+            from src.auto_coder.utils import CommandResult
+            mock_git_pull.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+
+            mock_github_client.get_open_pull_requests.return_value = []
+            mock_github_client.get_open_issues.return_value = []
+            mock_github_client.disable_labels = False
+
+            config = AutomationConfig()
+            engine = AutomationEngine(mock_github_client, config=config)
+            engine._save_report = Mock()
+
+            # Execute
+            result = engine.run(test_repo_name)
+
+            # Assert git_pull was called
+            mock_git_pull.assert_called()
+
 
 class TestAutomationConfig:
     """Test cases for AutomationConfig class."""
