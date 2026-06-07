@@ -68,9 +68,15 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
         try:
             github_client = GitHubClient.get_instance()
         except ValueError:
-            # If not initialized (e.g. running in isolation), we can't check PR status
-            logger.warning("GitHubClient not initialized, skipping PR status checks")
-            github_client = None
+            # If not initialized (e.g. running in isolation), try to initialize with env token
+            from .auth_utils import get_github_token
+
+            token = get_github_token()
+            if token:
+                github_client = GitHubClient.get_instance(token=token)
+            else:
+                logger.warning("GitHubClient not initialized and no token found, skipping PR status checks")
+                github_client = None
 
         now = datetime.now(timezone.utc)
         expiration_days = get_jules_session_expiration_days_from_config()
@@ -126,7 +132,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         logger.warning(f"Failed to convert list outputs to dict: {outputs} - {e}")
                         outputs = {}
 
-                pull_request = outputs.get("pullRequest")
+                pull_request = outputs.get("pullRequest") or outputs.get("pull_request")
                 automation_mode = session.get("automationMode") or session.get("automation_mode")
                 if automation_mode is None:
                     automation_mode = "AUTO_CREATE_PR"
@@ -233,6 +239,20 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                                 repo_name_pr = pull_request["repository"].get("name")  # format owner/repo?
                                 if not repo_name_pr and "full_name" in pull_request["repository"]:
                                     repo_name_pr = pull_request["repository"]["full_name"]
+                            # Try to parse repository and PR number from URL if repository is missing but URL is present
+                            if not repo_name_pr and "url" in pull_request:
+                                url = pull_request["url"]
+                                if isinstance(url, str) and "github.com" in url:
+                                    parts = url.split("/")
+                                    if "pull" in parts:
+                                        pull_idx = parts.index("pull")
+                                        if pull_idx > 2 and pull_idx + 1 < len(parts):
+                                            repo_name_pr = f"{parts[pull_idx-2]}/{parts[pull_idx-1]}"
+                                            if not pr_number:
+                                                try:
+                                                    pr_number = int(parts[pull_idx + 1])
+                                                except ValueError:
+                                                    pass
 
                         elif isinstance(pull_request, str) and "github.com" in pull_request:
                             # Parse URL: https://github.com/owner/repo/pull/123
@@ -423,12 +443,18 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                             logger.warning(f"Failed to convert list outputs to dict: {e}")
                             outputs = {}
 
-                    pull_request = outputs.get("pullRequest")
+                    pull_request = outputs.get("pullRequest") or outputs.get("pull_request")
                     if state == "COMPLETED" and pull_request:
                         try:
                             github_client = GitHubClient.get_instance()
                         except ValueError:
-                            github_client = None
+                            from .auth_utils import get_github_token
+
+                            token = get_github_token()
+                            if token:
+                                github_client = GitHubClient.get_instance(token=token)
+                            else:
+                                github_client = None
 
                         if github_client:
                             repo_name_pr = None
@@ -440,6 +466,19 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                                     repo_name_pr = pull_request["repository"].get("name")
                                     if not repo_name_pr and "full_name" in pull_request["repository"]:
                                         repo_name_pr = pull_request["repository"]["full_name"]
+                                if not repo_name_pr and "url" in pull_request:
+                                    url = pull_request["url"]
+                                    if isinstance(url, str) and "github.com" in url:
+                                        parts = url.split("/")
+                                        if "pull" in parts:
+                                            pull_idx = parts.index("pull")
+                                            if pull_idx > 2 and pull_idx + 1 < len(parts):
+                                                repo_name_pr = f"{parts[pull_idx-2]}/{parts[pull_idx-1]}"
+                                                if not pr_number:
+                                                    try:
+                                                        pr_number = int(parts[pull_idx + 1])
+                                                    except ValueError:
+                                                        pass
                             elif isinstance(pull_request, str) and "github.com" in pull_request:
                                 parts = pull_request.split("/")
                                 if "pull" in parts:

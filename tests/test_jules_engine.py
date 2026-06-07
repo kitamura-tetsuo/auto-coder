@@ -574,3 +574,130 @@ This is a recurrent task prompt."""
         mock_jules_client.start_session.assert_called_once()
         args, kwargs = mock_jules_client.start_session.call_args
         self.assertEqual(kwargs["title"], "auto improvement with demo site")
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    def test_check_and_start_recurrent_jules_tasks_completed_and_merged_snake_case_pr(self, mock_github_client_cls, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):
+        # Setup
+        mock_isdir.return_value = True
+        mock_glob.return_value = ["/path/to/prompts/recurrent_prompt.md"]
+
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt."""
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        # Session contains snake_case pull_request
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {
+                "name": "projects/p/locations/l/sessions/s_completed",
+                "state": "COMPLETED",
+                "outputs": {"pull_request": "https://github.com/owner/repo/pull/123"},
+                "prompt": '---\ntags: [jules, recurrent, auto-improvement]\nname: ["auto improvement with demo site"]\n---\nThis is a recurrent task prompt.',
+            }
+        ]
+
+        mock_github_client = mock_github_client_cls.get_instance.return_value
+        mock_github_client.get_pull_request.return_value = {"state": "closed", "merged": True}
+
+        # Execute
+        check_and_start_recurrent_jules_tasks("owner/repo")
+
+        # Verify
+        mock_github_client.get_pull_request.assert_called_once_with("owner/repo", 123)
+        mock_jules_client.start_session.assert_called_once()
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.auth_utils.get_github_token")
+    def test_check_and_start_recurrent_jules_tasks_completed_and_merged_token_fallback(self, mock_get_token, mock_github_client_cls, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):
+        # Setup
+        mock_isdir.return_value = True
+        mock_glob.return_value = ["/path/to/prompts/recurrent_prompt.md"]
+
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt."""
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {
+                "name": "projects/p/locations/l/sessions/s_completed",
+                "state": "COMPLETED",
+                "outputs": {"pullRequest": "https://github.com/owner/repo/pull/123"},
+                "prompt": '---\ntags: [jules, recurrent, auto-improvement]\nname: ["auto improvement with demo site"]\n---\nThis is a recurrent task prompt.',
+            }
+        ]
+
+        mock_get_token.return_value = "dummy_token"
+        mock_github_client = MagicMock()
+        mock_github_client.get_pull_request.return_value = {"state": "closed", "merged": True}
+
+        # Make get_instance raise ValueError when called with no token, but return client with token
+        def get_instance_side_effect(token=None, **kwargs):
+            if token is None:
+                raise ValueError("GitHub token is required on first call")
+            return mock_github_client
+
+        mock_github_client_cls.get_instance.side_effect = get_instance_side_effect
+
+        # Execute
+        check_and_start_recurrent_jules_tasks("owner/repo")
+
+        # Verify
+        mock_get_token.assert_called_once()
+        mock_github_client.get_pull_request.assert_called_once_with("owner/repo", 123)
+        mock_jules_client.start_session.assert_called_once()
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    def test_check_and_start_recurrent_jules_tasks_completed_and_merged_pr_dict_url_only(self, mock_github_client_cls, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):
+        # Setup
+        mock_isdir.return_value = True
+        mock_glob.return_value = ["/path/to/prompts/recurrent_prompt.md"]
+
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent, auto-improvement]
+name: ["auto improvement with demo site"]
+---
+This is a recurrent task prompt."""
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        # Session contains pullRequest dict with url but no repository
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [
+            {
+                "name": "projects/p/locations/l/sessions/s_completed",
+                "state": "COMPLETED",
+                "outputs": {"pullRequest": {"number": 123, "url": "https://github.com/owner/repo/pull/123"}},
+                "prompt": '---\ntags: [jules, recurrent, auto-improvement]\nname: ["auto improvement with demo site"]\n---\nThis is a recurrent task prompt.',
+            }
+        ]
+
+        mock_github_client = mock_github_client_cls.get_instance.return_value
+        mock_github_client.get_pull_request.return_value = {"state": "closed", "merged": True}
+
+        # Execute
+        check_and_start_recurrent_jules_tasks("owner/repo")
+
+        # Verify
+        mock_github_client.get_pull_request.assert_called_once_with("owner/repo", 123)
+        mock_jules_client.start_session.assert_called_once()
