@@ -7,7 +7,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from dateutil import parser
@@ -308,6 +308,24 @@ def _parse_prompt_file(file_path: str) -> tuple[dict, str]:
     return metadata, content
 
 
+def _normalize_tags(tags: Any) -> List[str]:
+    """Normalize tags from frontmatter metadata into a list of lowercase strings."""
+    if not tags:
+        return []
+    if isinstance(tags, str):
+        parts = tags.split(",")
+        res = []
+        for part in parts:
+            res.extend([p.strip().lower() for p in part.split() if p.strip()])
+        return res
+    elif isinstance(tags, list):
+        res = []
+        for t in tags:
+            res.extend(_normalize_tags(t))
+        return res
+    return [str(tags).strip().lower()]
+
+
 def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
     """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
     try:
@@ -334,12 +352,7 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
             name_val = metadata.get("name", [])
 
             # Normalize tags and name
-            if isinstance(tags, str):
-                tag_list = [tags.strip().lower()]
-            elif isinstance(tags, list):
-                tag_list = [str(t).strip().lower() for t in tags]
-            else:
-                tag_list = []
+            tag_list = _normalize_tags(tags)
 
             if isinstance(name_val, str):
                 names = [name_val.strip()]
@@ -462,12 +475,7 @@ def check_and_restart_recurrent_jules_task_for_pr(repo_name: str, pr_number: int
             name_val = metadata.get("name", [])
 
             # Normalize tags and name
-            if isinstance(tags, str):
-                tag_list = [tags.strip().lower()]
-            elif isinstance(tags, list):
-                tag_list = [str(t).strip().lower() for t in tags]
-            else:
-                tag_list = []
+            tag_list = _normalize_tags(tags)
 
             if isinstance(name_val, str):
                 names = [name_val.strip()]
