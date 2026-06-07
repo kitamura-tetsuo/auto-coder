@@ -381,6 +381,7 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                     try:
                         full_session = jules_client.get_session(session_id)
                         session_prompt = full_session.get("prompt")
+                        session = full_session
                     except Exception as e:
                         logger.warning(f"Failed to get full session for {session_id} to check prompt: {e}")
 
@@ -406,6 +407,59 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                         break
 
                 if match_found:
+                    # Check if the session is completed and merged/closed on GitHub
+                    state = session.get("state")
+                    outputs = session.get("outputs", {})
+                    if isinstance(outputs, list):
+                        try:
+                            new_outputs = {}
+                            for item in outputs:
+                                if isinstance(item, dict):
+                                    new_outputs.update(item)
+                                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                                    new_outputs[item[0]] = item[1]
+                            outputs = new_outputs
+                        except Exception as e:
+                            logger.warning(f"Failed to convert list outputs to dict: {e}")
+                            outputs = {}
+
+                    pull_request = outputs.get("pullRequest")
+                    if state == "COMPLETED" and pull_request:
+                        try:
+                            github_client = GitHubClient.get_instance()
+                        except ValueError:
+                            github_client = None
+
+                        if github_client:
+                            repo_name_pr = None
+                            pr_number = None
+
+                            if isinstance(pull_request, dict):
+                                pr_number = pull_request.get("number")
+                                if "repository" in pull_request:
+                                    repo_name_pr = pull_request["repository"].get("name")
+                                    if not repo_name_pr and "full_name" in pull_request["repository"]:
+                                        repo_name_pr = pull_request["repository"]["full_name"]
+                            elif isinstance(pull_request, str) and "github.com" in pull_request:
+                                parts = pull_request.split("/")
+                                if "pull" in parts:
+                                    pull_idx = parts.index("pull")
+                                    if pull_idx > 2 and pull_idx + 1 < len(parts):
+                                        repo_name_pr = f"{parts[pull_idx-2]}/{parts[pull_idx-1]}"
+                                        try:
+                                            pr_number = int(parts[pull_idx + 1])
+                                        except ValueError:
+                                            pass
+
+                            if repo_name_pr and pr_number:
+                                try:
+                                    pr = github_client.get_pull_request(repo_name_pr, pr_number)
+                                    if pr and pr.get("state") == "closed":
+                                        logger.info(f"Session {session_id} has a closed/merged PR #{pr_number}. Not considering it as running.")
+                                        continue
+                                except Exception as e:
+                                    logger.warning(f"Failed to check PR status for session {session_id}: {e}")
+
                     logger.info(f"Found active Jules session '{session_id}' matching name: {names}")
                     is_running = True
                     break
