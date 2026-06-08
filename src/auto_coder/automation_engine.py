@@ -63,7 +63,7 @@ class AutomationEngine:
         try:
             await asyncio.to_thread(check_and_start_recurrent_jules_tasks, repo_name)
         except Exception as e:
-            logger.error(f"Error checking/starting recurrent Jules tasks on startup: {e}")
+            logger.error(f"Error checking/starting recurrent Jules tasks: {e}")
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
@@ -74,9 +74,6 @@ class AutomationEngine:
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
-
-        # Start checking and starting recurrent Jules tasks on startup in background
-        asyncio.create_task(self.check_and_start_recurrent_jules_tasks_async(repo_name))
 
         # Start producer
         producer_task = asyncio.create_task(self._producer_loop(repo_name))
@@ -107,6 +104,9 @@ class AutomationEngine:
 
                 # Resume sessions
                 await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
+
+                # Check and start recurrent Jules tasks
+                await self.check_and_start_recurrent_jules_tasks_async(repo_name)
 
                 # Pull latest changes for monitored repository
                 try:
@@ -960,6 +960,9 @@ class AutomationEngine:
 
                 # Check and resume failed Jules sessions
                 check_and_resume_or_archive_sessions()
+
+                # Check and start recurrent Jules tasks
+                check_and_start_recurrent_jules_tasks(repo_name)
 
                 # Pull latest changes for monitored repository
                 try:

@@ -2,6 +2,8 @@ import json
 import os
 from unittest.mock import Mock, patch
 
+import pytest
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
@@ -161,6 +163,73 @@ class TestAutomationEngine:
 
             # Assert git_pull was called
             mock_git_pull.assert_called()
+
+    def test_run_calls_recurrent_jules_tasks(
+        self,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that check_and_start_recurrent_jules_tasks is called during run loop."""
+        from src.auto_coder.backend_manager import get_llm_backend_manager
+
+        mock_backend_manager = Mock()
+        mock_backend_manager.get_last_backend_provider_and_model.return_value = (
+            "gemini",
+            "open-router",
+            "gemini-2.5-pro",
+        )
+
+        with (
+            patch("src.auto_coder.automation_engine.get_current_branch") as mock_get_current_branch,
+            patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager,
+            patch("src.auto_coder.automation_engine.git_pull") as mock_git_pull,
+            patch("src.auto_coder.automation_engine.check_and_start_recurrent_jules_tasks") as mock_check_recurrent,
+        ):
+            mock_get_current_branch.return_value = "main"
+            mock_get_manager.return_value = mock_backend_manager
+
+            from src.auto_coder.utils import CommandResult
+
+            mock_git_pull.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+
+            mock_github_client.get_open_pull_requests.return_value = []
+            mock_github_client.get_open_issues.return_value = []
+            mock_github_client.disable_labels = False
+
+            config = AutomationConfig()
+            engine = AutomationEngine(mock_github_client, config=config)
+            engine._save_report = Mock()
+
+            # Execute
+            result = engine.run(test_repo_name)
+
+            # Assert check_and_start_recurrent_jules_tasks was called with repo_name
+            mock_check_recurrent.assert_called_once_with(test_repo_name)
+
+    @pytest.mark.asyncio
+    async def test_producer_loop_calls_recurrent_jules_tasks(self, mock_github_client):
+        """Test that _producer_loop calls check_and_start_recurrent_jules_tasks_async."""
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, config=config)
+
+        # Mock dependencies in loop
+        with (
+            patch("src.auto_coder.automation_engine.check_for_updates_and_restart") as mock_updates,
+            patch("src.auto_coder.automation_engine.check_and_resume_or_archive_sessions") as mock_resume,
+            patch.object(engine, "_check_and_handle_closed_branch", return_value=True),
+            patch.object(engine, "check_and_start_recurrent_jules_tasks_async") as mock_recurrent,
+        ):
+
+            # Make the mock raise a ValueError to break the infinite loop
+            mock_recurrent.side_effect = ValueError("Stop Loop")
+
+            # Execute - run producer loop
+            with pytest.raises(ValueError, match="Stop Loop"):
+                await engine._producer_loop("owner/repo")
+
+            # Assertions
+            mock_recurrent.assert_called_once_with("owner/repo")
 
 
 class TestAutomationConfig:
