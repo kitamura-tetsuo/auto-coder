@@ -1204,6 +1204,17 @@ class GitHubClient:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")
             return []
 
+    def update_comment_for_issue(self, repo_name: str, comment_id: int, body: str) -> None:
+        """Update an existing comment."""
+        try:
+            owner, repo = self._parse_repo_name(repo_name)
+            api = self._get_api()
+            api.issues.update_comment(owner, repo, comment_id, body=body)
+            logger.info(f"Updated comment {comment_id} in {repo_name}")
+        except Exception as e:
+            logger.error(f"Failed to update comment {comment_id} in {repo_name}: {e}")
+            raise
+
     def get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff content (raw text)."""
         try:

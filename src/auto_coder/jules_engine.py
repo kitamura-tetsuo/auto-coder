@@ -137,6 +137,66 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                 if automation_mode is None:
                     automation_mode = "AUTO_CREATE_PR"
 
+                # Check for specific error message
+                error_msg = outputs.get("error", "")
+                if error_msg and "Jules encountered an error" in str(error_msg):
+                    logger.info(f"Session {session_id} encountered an error: {error_msg}. Processing as a failed session requiring restart.")
+
+                    try:
+                        github_client = GitHubClient.get_instance()
+                        from .cloud_manager import CloudManager
+
+                        cloud_manager = CloudManager(repo_name) if repo_name else None
+                        issue_num = cloud_manager.get_issue_by_session(session_id) if cloud_manager else None
+
+                        pr_number = None
+                        if not issue_num:
+                            from .pr_processor import _find_issue_by_session_id_in_comments
+
+                            pr_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+
+                        # If we found an issue or PR associated with this session
+                        target_num = issue_num or pr_number
+                        logger.info(f"Restarting session because Jules encountered an error.")
+                        session_details = jules_client.get_session(session_id)
+                        session_prompt = session_details.get("prompt")
+                        if session_prompt:
+                            source_ctx = session_details.get("sourceContext", {})
+                            base_branch = source_ctx.get("githubRepoContext", {}).get("startingBranch", "main")
+                            if target_num:
+                                title = session_details.get("title", f"Restarted session for issue/PR #{target_num}")
+                            else:
+                                title = session_details.get("title", f"Restarted session from {session_id}")
+                            new_session_id = jules_client.start_session(prompt=session_prompt, repo_name=repo_name or "unknown", base_branch=base_branch, title=title)
+                            logger.info(f"Started new session {new_session_id}")
+                            if target_num:
+                                if cloud_manager:
+                                    cloud_manager.add_session(target_num, new_session_id)
+                                if repo_name:
+                                    comments = github_client.get_issue_comments(repo_name, target_num)
+                                    comment_updated = False
+                                    for comment in comments:
+                                        if comment.get("body") and session_id in comment.get("body"):
+                                            new_body = comment.get("body").replace(session_id, new_session_id)
+                                            github_client.update_comment_for_issue(repo_name, comment.get("id"), new_body)
+                                            comment_updated = True
+                                            logger.info(f"Updated comment {comment.get('id')} to reference new session {new_session_id}")
+                                            break
+                                    if not comment_updated:
+                                        comment_body = f"I started a new Jules session to work on this issue because the previous one encountered an error. New Session ID: {new_session_id}\n\nhttps://jules.google.com/session/{new_session_id}"
+                                        github_client.add_comment_to_issue(repo_name, target_num, comment_body)
+                            logger.info(f"Ignoring failed session {session_id} as archive API is not available.")
+                            retry_state[session_id] = -1
+                            state_changed = True
+                            state = "FAILED"
+                            continue
+                        else:
+                            logger.warning(f"Could not get prompt for session {session_id} to restart it.")
+                    except Exception as inner_e:
+                        logger.error(f"Failed to handle error for session {session_id}: {inner_e}")
+
+                    state = "FAILED"
+
                 # Check for timeout if IN_PROGRESS
                 is_timeout = False
                 if state == "IN_PROGRESS":
