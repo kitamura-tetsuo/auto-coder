@@ -177,6 +177,7 @@ class GeminiClient(LLMClientBase):
                 cmd,
                 stream_output=True,
                 idle_timeout=1800,
+                env_overrides={"GEMINI_CLI_TRUST_WORKSPACE": "true"},
             )
 
             logger.info("=" * 60)
