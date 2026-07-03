@@ -575,6 +575,11 @@ def _perform_base_branch_merge_and_conflict_resolution(
                     if repo_name:
                         _close_pr(repo_name, pr_number)
                         _archive_jules_session(repo_name, pr_number, pr_body)
+                        _trigger_fallback_for_conflict_failure(
+                            repo_name,
+                            pr_number,
+                            "Closing PR due to merge conflicts and potential degradation risk.",
+                        )
                     return False
 
                 # Trigger fallback and signal to proceed to fixing
