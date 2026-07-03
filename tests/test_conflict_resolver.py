@@ -61,6 +61,7 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager") as mock_create_backend,
         patch("src.auto_coder.conflict_resolver._archive_jules_session") as mock_archive,
         patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as mock_check_mergeability,
+        patch("src.auto_coder.conflict_resolver._trigger_fallback_for_conflict_failure") as mock_trigger_fallback,
     ):
         mock_check_mergeability.return_value = False
         # Setup mocks
@@ -101,6 +102,9 @@ def test_perform_base_merge_closes_jules_pr_on_degrade_with_linked_issues():
         assert ok is False
         mock_client.close_pr.assert_called_once()
         mock_archive.assert_called_once()
+        mock_trigger_fallback.assert_called_once_with(
+            "test/repo", 1253, "Closing PR due to merge conflicts and potential degradation risk."
+        )
 
 
 def test_perform_base_merge_enriches_pr_data_when_missing_fields():
