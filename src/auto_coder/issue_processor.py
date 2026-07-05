@@ -771,6 +771,14 @@ def _apply_issue_actions_directly(
             work_branch = generate_work_branch_name(issue_number, current_attempt)
             logger.info(f"Determining work branch for issue: {work_branch}")
 
+            # Check if current issue has sub-issues
+            has_sub_issues = False
+            try:
+                sub_issues_list = github_client.get_all_sub_issues(repo_name, issue_number)
+                has_sub_issues = len(sub_issues_list) > 0
+            except Exception as e:
+                logger.warning(f"Failed to check sub-issues for #{issue_number}: {e}")
+
             # Check for parent issue
             parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
 
@@ -809,6 +817,13 @@ def _apply_issue_actions_directly(
                         # Create parent issue branch if it doesn't exist
                         logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
+                        # The parent issue HAS sub-issues (since the current issue is its sub-issue)
+                        logger.info(f"Parent issue #{parent_issue_number} has sub-issues. Discarding local changes and pulling {config.MAIN_BRANCH} before creating branch.")
+                        cmd.run_command(["git", "reset", "--hard", "HEAD"])
+                        cmd.run_command(["git", "clean", "-fd"])
+                        cmd.run_command(["git", "checkout", config.MAIN_BRANCH])
+                        cmd.run_command(["git", "pull", "origin", config.MAIN_BRANCH])
+
                         # Create parent issue branch from the configured main branch (automatically pushed to remote)
                         with BranchManager(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
                             actions.append(f"Created and published parent branch: {parent_branch}")
@@ -829,6 +844,15 @@ def _apply_issue_actions_directly(
                 target_branch = work_branch
             else:
                 logger.info(f"Work branch {work_branch} does not exist, will create from {base_branch}")
+                
+                if has_sub_issues:
+                    logger.info(f"Issue #{issue_number} has sub-issues. Discarding local changes and pulling {config.MAIN_BRANCH} before creating branch {work_branch}.")
+                    cmd.run_command(["git", "reset", "--hard", "HEAD"])
+                    cmd.run_command(["git", "clean", "-fd"])
+                    cmd.run_command(["git", "checkout", config.MAIN_BRANCH])
+                    cmd.run_command(["git", "pull", "origin", config.MAIN_BRANCH])
+                    base_branch = config.MAIN_BRANCH
+
                 target_branch = work_branch
                 create_new_work_branch = True
 
