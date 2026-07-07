@@ -147,3 +147,79 @@ def test_perform_base_merge_enriches_pr_data_when_missing_fields():
 
         assert ok is True
         mock_client.get_pr_details.assert_called()
+
+
+def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
+    """Test that Jules PR is closed on degradation and its session is recreated."""
+    config = AutomationConfig()
+    with (
+        patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
+        patch("src.auto_coder.conflict_resolver.GitHubClient") as mock_gh_client_class,
+        patch("src.auto_coder.conflict_resolver.scan_conflict_markers") as mock_scan,
+        patch("src.auto_coder.conflict_resolver._archive_jules_session") as mock_archive,
+        patch("src.auto_coder.conflict_resolver._close_pr") as mock_close,
+        patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as mock_check_mergeability,
+        patch("src.auto_coder.conflict_resolver._extract_session_id_from_pr_body") as mock_extract_session_id,
+        patch("src.auto_coder.cloud_manager.CloudManager") as mock_cloud_manager_class,
+        patch("src.auto_coder.conflict_resolver.increment_attempt") as mock_increment_attempt,
+        patch("src.auto_coder.issue_processor._process_issue_jules_mode") as mock_process_issue_jules,
+    ):
+        mock_check_mergeability.return_value = False
+        mock_extract_session_id.return_value = "session_xyz"
+
+        # Setup GitHubClient mock
+        mock_client = MagicMock()
+        mock_gh_client_class.get_instance.return_value = mock_client
+        mock_repo = MagicMock()
+        mock_client.get_repository.return_value = mock_repo
+        mock_pr = MagicMock()
+        mock_repo.get_pull.return_value = mock_pr
+
+        # Setup CloudManager mock
+        mock_cloud_manager = MagicMock()
+        mock_cloud_manager_class.return_value = mock_cloud_manager
+        mock_cloud_manager.get_issue_by_session.return_value = 123
+
+        # Setup issue mock details
+        mock_issue = MagicMock()
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_issue_details.return_value = {
+            "number": 123,
+            "title": "Test Title",
+            "body": "Test Body",
+        }
+
+        # Sequence: reset, clean, abort, fetch pr, checkout, fetch base, rev-parse, merge (fails)
+        mock_cmd.run_command.side_effect = [
+            CommandResult(True, "", "", 0),  # reset
+            CommandResult(True, "", "", 0),  # clean
+            CommandResult(True, "", "", 0),  # merge --abort
+            CommandResult(True, "", "", 0),  # fetch pr
+            CommandResult(True, "", "", 0),  # checkout pr
+            CommandResult(True, "", "", 0),  # fetch origin main
+            CommandResult(True, "abc123\n", "", 0),  # rev-parse
+            CommandResult(False, "CONFLICT", "", 1),  # git merge fails
+        ]
+
+        mock_scan.return_value = ["file1.py"]
+
+        pr_data = {"number": 1253, "title": "Fix something", "body": "Session ID: session_xyz", "author": {"login": "google-labs-jules"}, "baseRefName": "main"}
+
+        ok = _perform_base_branch_merge_and_conflict_resolution(
+            pr_number=1253,
+            base_branch="main",
+            config=config,
+            repo_name="test/repo",
+            pr_data=pr_data,
+        )
+
+        assert ok is False
+        mock_close.assert_called_once_with("test/repo", 1253)
+        mock_archive.assert_called_once_with("test/repo", 1253, "Session ID: session_xyz")
+        mock_increment_attempt.assert_called_once_with("test/repo", 123)
+        mock_process_issue_jules.assert_called_once()
+        # Verify it was called with correct arguments
+        kwargs = mock_process_issue_jules.call_args[1]
+        assert kwargs["repo_name"] == "test/repo"
+        assert kwargs["issue_data"]["number"] == 123
+        assert kwargs["config"] == config

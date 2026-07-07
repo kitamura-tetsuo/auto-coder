@@ -575,6 +575,46 @@ def _perform_base_branch_merge_and_conflict_resolution(
                     if repo_name:
                         _close_pr(repo_name, pr_number)
                         _archive_jules_session(repo_name, pr_number, pr_body)
+                        # Recreate Jules session
+                        try:
+                            session_id = _extract_session_id_from_pr_body(pr_body)
+                            if session_id:
+                                from .cloud_manager import CloudManager
+
+                                cloud_manager = CloudManager(repo_name)
+                                issue_number = cloud_manager.get_issue_by_session(session_id)
+                                if not issue_number:
+                                    from .pr_processor import _find_issue_by_session_id_in_comments
+
+                                    github_client = GitHubClient.get_instance()
+                                    issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+
+                                if issue_number:
+                                    logger.info(f"Found issue #{issue_number} for closed Jules PR #{pr_number}. Re-creating session.")
+                                    # Increment attempt (add attempt)
+                                    increment_attempt(repo_name, issue_number)
+
+                                    # Start new Jules session for the issue
+                                    github_client = GitHubClient.get_instance()
+                                    issue = github_client.get_issue(repo_name, issue_number)
+                                    if issue:
+                                        issue_data = github_client.get_issue_details(issue)
+                                        from .issue_processor import _process_issue_jules_mode
+
+                                        _process_issue_jules_mode(
+                                            repo_name=repo_name,
+                                            issue_data=issue_data,
+                                            config=config,
+                                            github_client=github_client,
+                                        )
+                                    else:
+                                        logger.warning(f"Failed to fetch issue #{issue_number} details from GitHub to recreate Jules session")
+                                else:
+                                    logger.warning(f"No issue found associated with session ID '{session_id}' to recreate Jules session")
+                            else:
+                                logger.warning(f"Could not extract session ID from Jules PR #{pr_number} body to recreate session")
+                        except Exception as jerr:
+                            logger.error(f"Error while attempting to recreate Jules session for PR #{pr_number}: {jerr}")
                     return False
 
                 # Trigger fallback and signal to proceed to fixing
