@@ -137,7 +137,7 @@ def get_ghapi_client(token: str) -> GhApi:
 
             return resp
 
-    return CachedGhApi(token=token)
+    return CachedGhApi(token=token, client=get_caching_client())
 
 
 class GitHubClient:
