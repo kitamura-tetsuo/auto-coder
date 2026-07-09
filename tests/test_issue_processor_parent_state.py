@@ -159,3 +159,71 @@ def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_cl
                 break
 
     assert found_parent_check, "Should have checked for parent branch issue-102 after reopening"
+
+
+@patch("auto_coder.issue_processor.cmd")
+@patch("auto_coder.issue_processor.get_current_attempt")
+@patch("auto_coder.issue_processor.BranchManager")
+@patch("auto_coder.issue_processor.LabelManager")
+@patch("auto_coder.issue_processor.get_current_branch")
+@patch("auto_coder.issue_processor.get_commit_log")
+@patch("auto_coder.issue_processor.get_llm_backend_manager")
+@patch("auto_coder.git_info.CommandExecutor")
+def test_apply_issue_actions_directly_failed_reopen_still_checks_parent_branch(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_get_commit_log, mock_get_current_branch, mock_label_manager, mock_branch_manager, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
+    # Setup
+    repo_name = "owner/repo"
+    issue_data = {"number": 126, "title": "Test Issue Closed Parent Failed Reopen", "body": "Body", "labels": []}
+
+    # Mock parent issue details as CLOSED
+    mock_github_client.get_parent_issue_details.return_value = {"number": 103, "title": "Parent Issue Closed", "state": "CLOSED", "url": "http://github.com/owner/repo/issues/103"}
+
+    # Mock reopen_issue to raise an exception, so ensure_parent_issue_open returns False
+    mock_github_client.reopen_issue.side_effect = Exception("Reopen failed")
+
+    # Mock git commands
+    mock_cmd.run_command.return_value = _cmd_result(success=True, returncode=0, stdout="main")
+
+    # Mock CommandExecutor used by get_current_branch
+    mock_git_info_cmd = MagicMock()
+    mock_git_info_cmd.run_command.return_value = _cmd_result(success=True, returncode=0, stdout="main")
+    mock_cmd_executor_class.return_value = mock_git_info_cmd
+
+    # Mock get_current_attempt
+    mock_get_current_attempt.return_value = 1
+
+    # Mock get_commit_log to return empty string
+    mock_get_commit_log.return_value = ""
+
+    # Mock get_current_branch to return main
+    mock_get_current_branch.return_value = "main"
+
+    # Mock BranchManager context manager
+    mock_branch_manager.return_value.__enter__ = MagicMock(return_value=None)
+    mock_branch_manager.return_value.__exit__ = MagicMock(return_value=None)
+
+    # Mock LabelManager context manager
+    mock_label_manager.return_value.__enter__ = MagicMock(return_value=True)
+    mock_label_manager.return_value.__exit__ = MagicMock(return_value=None)
+
+    # Run
+    _apply_issue_actions_directly(repo_name, issue_data, mock_config, mock_github_client)
+
+    # Verify
+    # Should call get_parent_issue_details
+    mock_github_client.get_parent_issue_details.assert_called_with(repo_name, 126)
+
+    # Verify that reopen_issue was called
+    expected_audit_comment = "Auto-Coder: Reopened this parent issue to process child issue #126. Branch and base selection will use the parent context."
+    mock_github_client.reopen_issue.assert_called_with(repo_name, 103, expected_audit_comment)
+
+    # Verify that it STILL checked for parent branch existence
+    found_parent_check = False
+    for call in mock_cmd.run_command.call_args_list:
+        args, _ = call
+        cmd_list = args[0]
+        if "rev-parse" in cmd_list and "--verify" in cmd_list:
+            if "issue-103" in cmd_list[3]:
+                found_parent_check = True
+                break
+
+    assert found_parent_check, "Should have checked for parent branch issue-103 even when reopening failed"
