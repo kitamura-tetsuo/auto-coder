@@ -384,61 +384,58 @@ class GitHubClient:
         """
         try:
             owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
+            client = get_caching_client()
+            headers = {
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
 
-            # List PRs (automatically pages)
-            # GhApi paged operations return a generator or we can just fetch pages manually or use max limit
-            # For simplicity with 'limit', we can use per_page.
-            # GhApi doesn't auto-page in simple calls usually unless using paged helper.
-            # Let's use simple list for now, assuming < 100 PRs usually, or implement paging if needed.
-            # limit defaults to 100.
-
-            prs_summary = api.pulls.list(owner, repo, state="open", per_page=limit)
+            per_page = min(limit, 100) if limit else 100
+            list_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page={per_page}"
+            
+            list_resp = client.request("GET", list_url, headers=headers)
+            list_resp.raise_for_status()
+            prs_summary = list_resp.json()
 
             all_prs: List[Dict[str, Any]] = []
 
             for pr_summary in prs_summary:
-                # Fetch full details for mergeable status, etc.
                 try:
                     pr_num = pr_summary["number"] if isinstance(pr_summary, dict) else pr_summary.number
-                    pr_details = api.pulls.get(owner, repo, pr_num)
+                    detail_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_num}"
+                    detail_resp = client.request("GET", detail_url, headers=headers)
+                    detail_resp.raise_for_status()
+                    pr_details = detail_resp.json()
                 except Exception as e:
-                    logger.warning(f"Failed to fetch details for PR #{pr_summary.get('number', 'unknown')}: {e}")
+                    logger.warning(f"Failed to fetch details for PR #{pr_summary.get('number', 'unknown') if isinstance(pr_summary, dict) else getattr(pr_summary, 'number', 'unknown')}: {e}")
                     continue
 
-                # Map to required format (safely handling dict vs AttrDict)
-                def get_val(obj, key, default=None):
-                    if isinstance(obj, dict):
-                        return obj.get(key, default)
-                    return getattr(obj, key, default)
-
-                # Helper since GhApi might return different types
-                # Using bracket access is safer if we know it works for both (AttrDict is dict)
-                # But let's use a safe accessor to be sure.
                 d = pr_details
 
                 pr_data: Dict[str, Any] = {
-                    "number": d["number"],
-                    "title": d["title"],
-                    "node_id": d["node_id"],
-                    "body": d["body"] or "",
-                    "state": d["state"].lower(),
-                    "url": d["html_url"],
-                    "created_at": d["created_at"],
-                    "updated_at": d["updated_at"],
-                    "draft": d["draft"],
-                    "mergeable": d["mergeable"],
-                    "head_branch": d["head"]["ref"],
-                    "head": {"ref": d["head"]["ref"], "sha": d["head"]["sha"]},
-                    "base_branch": d["base"]["ref"],
-                    "author": d["user"]["login"] if d["user"] else None,
-                    "assignees": [a["login"] for a in d["assignees"]],
-                    "labels": [lbl["name"] for lbl in d["labels"]],
-                    "comments_count": d["comments"] + d["review_comments"],
-                    "commits_count": d["commits"],
-                    "additions": d["additions"],
-                    "deletions": d["deletions"],
-                    "changed_files": d["changed_files"],
+                    "number": d.get("number"),
+                    "title": d.get("title"),
+                    "node_id": d.get("node_id"),
+                    "body": d.get("body") or "",
+                    "state": d.get("state", "").lower(),
+                    "url": d.get("html_url"),
+                    "created_at": d.get("created_at"),
+                    "updated_at": d.get("updated_at"),
+                    "draft": d.get("draft"),
+                    "mergeable": d.get("mergeable"),
+                    "head_branch": d.get("head", {}).get("ref"),
+                    "head": {"ref": d.get("head", {}).get("ref"), "sha": d.get("head", {}).get("sha")},
+                    "base_branch": d.get("base", {}).get("ref"),
+                    "author": d.get("user", {}).get("login") if d.get("user") else None,
+                    "assignees": [a.get("login") for a in d.get("assignees", [])],
+                    "labels": [lbl.get("name") for lbl in d.get("labels", [])],
+                    "comments_count": d.get("comments", 0) + d.get("review_comments", 0),
+                    "commits_count": d.get("commits", 0),
+                    "additions": d.get("additions", 0),
+                    "deletions": d.get("deletions", 0),
+                    "changed_files": d.get("changed_files", 0),
                 }
                 all_prs.append(pr_data)
 
