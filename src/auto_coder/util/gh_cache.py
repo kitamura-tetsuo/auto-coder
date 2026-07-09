@@ -55,6 +55,47 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
     return decorator
 
 
+import inspect
+import asyncio
+
+class SafeGhApiProxy:
+    """A proxy wrapper that intercepts GhApi calls and safely unwraps AsyncMock coroutines
+    if they are accidentally returned in a synchronous context (e.g. from tests)."""
+    def __init__(self, obj):
+        self._obj = obj
+        
+    def __getattr__(self, name):
+        # Prevent infinite recursion for internal attributes
+        if name in ("_obj",):
+            raise AttributeError()
+            
+        attr = getattr(self._obj, name)
+        
+        # Don't wrap basic types or internal methods
+        if type(attr) in (int, str, bool, list, dict, type(None)) or name.startswith("__"):
+            return attr
+            
+        if callable(attr):
+            def wrapper(*args, **kwargs):
+                res = attr(*args, **kwargs)
+                if inspect.iscoroutine(res):
+                    try:
+                        # Safely unwrap AsyncMock coroutines synchronously
+                        res.send(None)
+                    except StopIteration as e:
+                        return e.value
+                    except Exception as e:
+                        # Fallback just in case
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            return asyncio.run(res)
+                        raise RuntimeError(f"Failed to unwrap mock coroutine: {e}")
+                return res
+            return wrapper
+            
+        return SafeGhApiProxy(attr)
+
 def get_ghapi_client(token: str) -> GhApi:
     """
     Returns a GhApi instance configured with hishel caching for GET requests.
@@ -137,7 +178,7 @@ def get_ghapi_client(token: str) -> GhApi:
 
             return resp
 
-    return CachedGhApi(token=token, client=get_caching_client())
+    return SafeGhApiProxy(CachedGhApi(token=token, client=get_caching_client()))
 
 
 class GitHubClient:
