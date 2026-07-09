@@ -56,45 +56,69 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
 
 
 import inspect
-import asyncio
+
+
+def _resolve_coroutine_synchronously(coro: Any, name: str) -> Any:
+    """Resolve a coroutine returned in a synchronous context (e.g. an AsyncMock from tests).
+
+    The coroutine is stepped exactly once. An exception raised inside the coroutine
+    propagates unchanged; the coroutine is never awaited a second time, so the real
+    error is not masked by "cannot reuse already awaited coroutine".
+    """
+    origin = getattr(coro, "cr_code", None)
+    origin_desc = f"{coro!r} defined at {origin.co_filename}:{origin.co_firstlineno}" if origin else repr(coro)
+
+    if inspect.getcoroutinestate(coro) != inspect.CORO_CREATED:
+        # The same coroutine object was handed out for a second call (e.g. a Mock
+        # with a fixed coroutine return_value). Its result is unrecoverable here.
+        raise RuntimeError(f"{name}() returned an already-awaited coroutine ({origin_desc}); each call must return a fresh coroutine")
+
+    try:
+        coro.send(None)
+    except StopIteration as e:
+        return e.value
+    # The coroutine suspended: it performs real async I/O and cannot be completed
+    # in this synchronous context.
+    coro.close()
+    raise RuntimeError(f"{name}() returned a coroutine that requires a running event loop ({origin_desc}); it cannot be resolved synchronously")
+
 
 class SafeGhApiProxy:
     """A proxy wrapper that intercepts GhApi calls and safely unwraps AsyncMock coroutines
     if they are accidentally returned in a synchronous context (e.g. from tests)."""
+
     def __init__(self, obj):
         self._obj = obj
-        
+
+    def __call__(self, *args, **kwargs):
+        res = self._obj(*args, **kwargs)
+        if inspect.iscoroutine(res):
+            return _resolve_coroutine_synchronously(res, type(self._obj).__name__)
+        return res
+
     def __getattr__(self, name):
         # Prevent infinite recursion for internal attributes
         if name in ("_obj",):
             raise AttributeError()
-            
+
         attr = getattr(self._obj, name)
-        
+
         # Don't wrap basic types or internal methods
         if type(attr) in (int, str, bool, list, dict, type(None)) or name.startswith("__"):
             return attr
-            
+
         if callable(attr):
+
             def wrapper(*args, **kwargs):
                 res = attr(*args, **kwargs)
                 if inspect.iscoroutine(res):
-                    try:
-                        # Safely unwrap AsyncMock coroutines synchronously
-                        res.send(None)
-                    except StopIteration as e:
-                        return e.value
-                    except Exception as e:
-                        # Fallback just in case
-                        try:
-                            loop = asyncio.get_running_loop()
-                        except RuntimeError:
-                            return asyncio.run(res)
-                        raise RuntimeError(f"Failed to unwrap mock coroutine: {e}")
+                    return _resolve_coroutine_synchronously(res, name)
                 return res
+
             return wrapper
-            
+
         return SafeGhApiProxy(attr)
+
 
 def get_ghapi_client(token: str) -> GhApi:
     """
@@ -178,7 +202,9 @@ def get_ghapi_client(token: str) -> GhApi:
 
             return resp
 
-    return SafeGhApiProxy(CachedGhApi(token=token, client=get_caching_client()))
+    # Note: GhApi.__init__ has no client parameter; CachedGhApi.__call__ obtains the
+    # thread-local caching client itself via get_caching_client().
+    return SafeGhApiProxy(CachedGhApi(token=token))
 
 
 class GitHubClient:
@@ -426,16 +452,13 @@ class GitHubClient:
         try:
             owner, repo = repo_name.split("/")
             client = get_caching_client()
-            headers = {
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28"
-            }
+            headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
 
             per_page = min(limit, 100) if limit else 100
             list_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page={per_page}"
-            
+
             list_resp = client.request("GET", list_url, headers=headers)
             list_resp.raise_for_status()
             prs_summary = list_resp.json()
@@ -1255,8 +1278,8 @@ class GitHubClient:
     def update_comment_for_issue(self, repo_name: str, comment_id: int, body: str) -> None:
         """Update an existing comment."""
         try:
-            owner, repo = self._parse_repo_name(repo_name)
-            api = self._get_api()
+            owner, repo = repo_name.split("/")
+            api = get_ghapi_client(self.token)
             api.issues.update_comment(owner, repo, comment_id, body=body)
             logger.info(f"Updated comment {comment_id} in {repo_name}")
         except Exception as e:
