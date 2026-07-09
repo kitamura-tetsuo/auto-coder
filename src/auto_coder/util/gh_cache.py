@@ -332,16 +332,19 @@ class GitHubClient:
         """
         try:
             owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
+            client = get_caching_client()
+            headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
 
-            per_page = 100
-            if limit and limit < 100:
-                per_page = limit
+            per_page = min(limit, 100) if limit else 100
+            url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=created&direction=asc&per_page={per_page}"
 
-            prs = api.pulls.list(owner, repo, state="open", sort="created", direction="asc", per_page=per_page)
+            resp = client.request("GET", url, headers=headers)
+            resp.raise_for_status()
+            pr_list = resp.json()
 
-            pr_list = list(prs)
-            if limit and limit > 0:
+            if limit:
                 pr_list = pr_list[:limit]
 
             logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)")
@@ -358,8 +361,15 @@ class GitHubClient:
         """
         try:
             owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
-            return api.pulls.get(owner, repo, pr_number)
+            client = get_caching_client()
+            headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+
+            url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+            resp = client.request("GET", url, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.warning(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
             return None
