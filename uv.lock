@@ -352,7 +352,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "flake8", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "ghapi", specifier = ">=1.0.0" },
+    { name = "ghapi", specifier = ">=1.0.0,<2.0.0" },
     { name = "gitpython", specifier = ">=3.1.0" },
     { name = "google-auth", specifier = ">=2.0.0" },
     { name = "hishel", extras = ["sqlite"], specifier = ">=1.0.0" },

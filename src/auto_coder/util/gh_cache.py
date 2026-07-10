@@ -6,7 +6,7 @@ import threading
 import time
 import types
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import httpx
 from ghapi.all import GhApi
@@ -204,7 +204,21 @@ def get_ghapi_client(token: str) -> GhApi:
 
     # Note: GhApi.__init__ has no client parameter; CachedGhApi.__call__ obtains the
     # thread-local caching client itself via get_caching_client().
-    return SafeGhApiProxy(CachedGhApi(token=token))
+    #
+    # ghapi must stay pinned below 2.0 (see pyproject.toml): ghapi>=2.0 rebuilds
+    # GhApi on top of the `fastspec` package and defaults to async transports
+    # (GhApi(sync=False), httpx.AsyncClient). Every call site in this codebase
+    # invokes GhApi methods synchronously and never awaits them, so on ghapi>=2.0
+    # attribute-style calls (api.<group>.<op>()) return unresolved coroutines
+    # whose async httpx internals need a real running event loop -- driving them
+    # synchronously raises sniffio.AsyncLibraryNotFoundError ("unknown async
+    # library, or not in async context"). ghapi<2.0's GhApi.__call__ is the single
+    # dispatch point all verb calls funnel through, which is what CachedGhApi
+    # overrides below to inject the caching client.
+    # SafeGhApiProxy dynamically forwards attribute access/calls to the wrapped
+    # GhApi instance rather than subclassing it, so it isn't a real GhApi for
+    # mypy; cast to preserve the GhApi-shaped return type for callers.
+    return cast(GhApi, SafeGhApiProxy(CachedGhApi(token=token)))
 
 
 class GitHubClient:
