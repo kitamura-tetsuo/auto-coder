@@ -42,6 +42,10 @@ dependencies = [
     "httpx>=0.27.0",
     "hishel[sqlite]>=1.0.0",
     "ghapi>=1.0.0,<2.0.0",
+    # fastcore is a transitive dep of ghapi with no upper bound in ghapi's own
+    # metadata. fastcore>=2.0 removed L.starmap(), which ghapi<2.0's
+    # GhApi.__init__ still calls -- see gh_cache.py's get_ghapi_client() comment.
+    "fastcore>=1.7.2,<2.0.0",
     "aider-chat>=0.1.0",
     "rapidfuzz>=3.0.0",
     "PyGithub>=2.0.0",
