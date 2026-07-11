@@ -196,10 +196,18 @@ def _create_pr_for_parent_issue(
         # If branch doesn't exist, create it from main
         if not branch_exists:
             logger.info(f"Creating parent issue branch: {parent_branch}")
+            cmd.run_command(["git", "fetch", "origin", config.MAIN_BRANCH])
             create_branch_result = cmd.run_command(["git", "checkout", "-b", parent_branch, config.MAIN_BRANCH])
             if not create_branch_result.success:
                 logger.error(f"Failed to create branch {parent_branch}: {create_branch_result.stderr}")
                 return f"Failed to create branch for parent issue #{issue_number}"
+
+            local_hash = cmd.run_command(["git", "rev-parse", "HEAD"]).stdout.strip()
+            remote_hash = cmd.run_command(["git", "rev-parse", f"origin/{config.MAIN_BRANCH}"]).stdout.strip()
+            if local_hash != remote_hash:
+                error_msg = f"Branch {parent_branch} diverged from origin/{config.MAIN_BRANCH} after creation."
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
 
             # Push the new branch
             push_result = cmd.run_command(["git", "push", "-u", "origin", parent_branch])
@@ -485,6 +493,9 @@ def _process_issue_jules_mode(
                     # Doesn't exist on remote either - create and push it
                     logger.info(f"Parent branch {parent_branch} does not exist locally or on remote. Creating it from {config.MAIN_BRANCH}...")
 
+                    # Fetch to ensure we have the latest
+                    cmd.run_command(["git", "fetch", "origin", config.MAIN_BRANCH])
+
                     # Create branch locally (without checkout)
                     create_result = cmd.run_command(["git", "branch", parent_branch, config.MAIN_BRANCH])
                     if not create_result.success:
@@ -492,6 +503,13 @@ def _process_issue_jules_mode(
                         # Still try to use it as base, though it will likely fail later if it doesn't exist
                         base_branch = parent_branch
                     else:
+                        local_hash = cmd.run_command(["git", "rev-parse", parent_branch]).stdout.strip()
+                        remote_hash = cmd.run_command(["git", "rev-parse", f"origin/{config.MAIN_BRANCH}"]).stdout.strip()
+                        if local_hash != remote_hash:
+                            error_msg = f"Branch {parent_branch} diverged from origin/{config.MAIN_BRANCH} after creation."
+                            logger.error(error_msg)
+                            raise RuntimeError(error_msg)
+
                         # Push to remote
                         push_result = cmd.run_command(["git", "push", "-u", "origin", parent_branch])
                         if not push_result.success:
@@ -817,6 +835,7 @@ def _apply_issue_actions_directly(
 
                     # The parent issue HAS sub-issues (since the current issue is its sub-issue)
                     logger.info(f"Parent issue #{parent_issue_number} has sub-issues. Discarding local changes and pulling {config.MAIN_BRANCH} before creating branch.")
+                    cmd.run_command(["git", "fetch", "origin", config.MAIN_BRANCH])
                     cmd.run_command(["git", "reset", "--hard", "HEAD"])
                     cmd.run_command(["git", "clean", "-fd"])
                     cmd.run_command(["git", "checkout", config.MAIN_BRANCH])
@@ -824,6 +843,13 @@ def _apply_issue_actions_directly(
 
                     # Create parent issue branch from the configured main branch (automatically pushed to remote)
                     with BranchManager(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
+                        local_hash = cmd.run_command(["git", "rev-parse", "HEAD"]).stdout.strip()
+                        remote_hash = cmd.run_command(["git", "rev-parse", f"origin/{config.MAIN_BRANCH}"]).stdout.strip()
+                        if local_hash != remote_hash:
+                            error_msg = f"Branch {parent_branch} diverged from origin/{config.MAIN_BRANCH} after creation."
+                            logger.error(error_msg)
+                            raise RuntimeError(error_msg)
+
                         actions.append(f"Created and published parent branch: {parent_branch}")
                         logger.info(f"Successfully created and published parent branch: {parent_branch}")
 

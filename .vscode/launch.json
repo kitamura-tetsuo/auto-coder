@@ -106,6 +106,8 @@
                 // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
                 "--force",
+                "--port",
+                "8001"
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {
