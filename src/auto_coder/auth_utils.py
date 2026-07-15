@@ -88,51 +88,32 @@ def get_gemini_api_key() -> Optional[str]:
         logger.debug("Using Gemini API key from GEMINI_API_KEY environment variable")
         return api_key
 
-    # 2. Try to get from gemini CLI config
+    # 2. Try to get from antigravity CLI config
     try:
-        # Check if gemini CLI has stored credentials
-        result = subprocess.run(
-            ["gemini", "config", "get", "api_key"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode == 0:
-            api_key = result.stdout.strip()
-            if api_key and api_key != "null":
-                logger.info("Using Gemini API key from gemini CLI config")
-                return api_key
+        # Check if antigravity CLI has stored credentials (disabled due to interactive hang)
+        pass
     except (
+        subprocess.TimeoutExpired,
         subprocess.TimeoutExpired,
         subprocess.CalledProcessError,
         FileNotFoundError,
     ) as e:
-        logger.debug(f"Could not get API key from gemini CLI: {e}")
+        logger.debug(f"Could not get API key from antigravity CLI: {e}")
 
-    # 3. Try alternative gemini CLI command
+    # 3. Try alternative antigravity CLI command
     try:
-        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=60)
-        if result.returncode == 0 and "authenticated" in result.stdout.lower():
-            # Try to extract API key from status output
-            lines = result.stdout.split("\n")
-            for line in lines:
-                if "api_key" in line.lower() or "key" in line.lower():
-                    parts = line.split(":")
-                    if len(parts) > 1:
-                        api_key = parts[1].strip()
-                        if api_key and api_key != "null":
-                            logger.info("Using Gemini API key from gemini CLI status")
-                            return api_key
+        # disabled due to interactive hang
+        pass
     except (
         subprocess.TimeoutExpired,
         subprocess.CalledProcessError,
         FileNotFoundError,
     ) as e:
-        logger.debug(f"Could not get API key from gemini CLI status: {e}")
+        logger.debug(f"Could not get API key from antigravity CLI status: {e}")
 
     # 4. Try to read from common config locations
     config_paths = [
-        Path.home() / ".config" / "gemini" / "config.json",
+        Path.home() / ".config" / "antigravity" / "config.json",
         Path.home() / ".gemini" / "config.json",
         Path.home() / ".config" / "google-ai-studio" / "config.json",
     ]
@@ -202,26 +183,16 @@ def check_gh_auth() -> bool:
 
 def check_gemini_auth() -> bool:
     """
-    Check if gemini CLI is authenticated.
+    Check if antigravity CLI is authenticated.
 
     Returns:
         True if authenticated, False otherwise.
     """
     try:
-        # Try to check if gemini CLI is authenticated
-        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=60)
-        if result.returncode == 0:
-            return "authenticated" in result.stdout.lower()
-
-        # Alternative: try to get config
-        result = subprocess.run(
-            ["gemini", "config", "get", "api_key"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        return result.returncode == 0 and result.stdout.strip() not in ["", "null"]
-
+        # agy CLI runs interactively if auth status is not supported
+        # For now, just check if the CLI responds to --version
+        result = subprocess.run(["agy", "--version"], capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
     except Exception:
         return False
 
@@ -238,7 +209,7 @@ def get_auth_status() -> dict:
             "authenticated": check_gh_auth(),
             "token_available": get_github_token() is not None,
         },
-        "gemini": {
+        "antigravity": {
             "authenticated": check_gemini_auth(),
             "api_key_available": get_gemini_api_key() is not None,
         },

@@ -22,7 +22,7 @@ def check_graphrag_mcp_for_backend(backend: str) -> bool:
     Returns:
         True if graphrag MCP is available, False otherwise
     """
-    if backend == "gemini":
+    if backend == "antigravity":
         return _check_gemini_mcp()
     elif backend == "qwen":
         return _check_qwen_mcp()
@@ -38,9 +38,9 @@ def check_graphrag_mcp_for_backend(backend: str) -> bool:
 
 
 def _check_gemini_mcp() -> bool:
-    """Check if graphrag MCP is configured for Gemini CLI.
+    """Check if graphrag MCP is configured for Antigravity CLI.
 
-    Gemini CLI stores MCP configuration in ~/.gemini/config.json
+    Antigravity CLI stores MCP configuration in ~/.gemini/config.json
     """
     try:
         config_path = Path.home() / ".gemini" / "config.json"
@@ -216,11 +216,11 @@ If automatic setup failed, you can run the setup command manually:
 
 """
 
-    if backend == "gemini":
+    if backend == "antigravity":
         return (
             base_setup
-            + """3. Restart Gemini CLI
-4. Verify with: gemini (then type /mcp)
+            + """3. Restart Antigravity CLI
+4. Verify with: antigravity (then type /mcp)
 """
         )
     elif backend == "qwen":
@@ -262,7 +262,7 @@ def add_graphrag_mcp_config(backend: str) -> bool:
     Returns:
         True if configuration was added successfully, False otherwise
     """
-    if backend == "gemini":
+    if backend == "antigravity":
         return _add_gemini_mcp_config()
     elif backend == "qwen":
         return _add_qwen_mcp_config()
@@ -278,7 +278,7 @@ def add_graphrag_mcp_config(backend: str) -> bool:
 
 
 def _add_gemini_mcp_config() -> bool:
-    """Add graphrag MCP configuration to Gemini CLI config.
+    """Add graphrag MCP configuration to Antigravity CLI config.
 
     Note: This function requires setup of GraphRAG MCP server.
     The setup is usually done automatically by ensure_graphrag_mcp_configured().

@@ -56,8 +56,8 @@ temperature = 0.2
 # Optional: Override default timeout (in seconds)
 timeout = 120
 
-# Optional: Backend type (e.g., "codex", "gemini", "qwen")
-backend_type = "gemini"
+# Optional: Backend type (e.g., "codex", "antigravity", "qwen")
+backend_type = "antigravity"
 
 # Optional: Usage limit retry configuration
 usage_limit_retry_count = 3
@@ -70,7 +70,7 @@ usage_limit_retry_wait_seconds = 30
 # Configuration with Qwen as default and Gemini as fallback
 [backend]
 default = "qwen"
-order = ["qwen", "gemini", "codex"]
+order = ["qwen", "antigravity", "codex"]
 
 [backends.qwen]
 enabled = true
@@ -81,14 +81,14 @@ backend_type = "qwen"
 enabled = true
 model = "gemini-2.5-pro"
 api_key = "your-gemini-api-key"
-backend_type = "gemini"
+backend_type = "antigravity"
 
 # Fallback backend for failed PRs (uses different model/provider)
 [backend_for_failed_pr]
 enabled = true
 model = "gemini-2.5-flash"
 api_key = "your-fallback-api-key"
-backend_type = "gemini"
+backend_type = "antigravity"
 temperature = 0.2
 ```
 

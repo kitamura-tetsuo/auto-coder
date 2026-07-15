@@ -135,7 +135,7 @@ def test_jules_config_with_other_backends():
             f.write(
                 """
 [backend]
-order = ["codex", "gemini", "jules"]
+order = ["codex", "antigravity", "jules"]
 default = "codex"
 
 [backends.codex]
@@ -157,7 +157,7 @@ model = "jules-model"
 
         # Check all backends are loaded
         assert config.get_backend_config("codex") is not None
-        assert config.get_backend_config("gemini") is not None
+        assert config.get_backend_config("antigravity") is not None
         assert config.get_backend_config("jules") is not None
 
         # Check jules config specifically

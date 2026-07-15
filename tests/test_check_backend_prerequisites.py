@@ -25,9 +25,9 @@ class TestCheckBackendPrerequisites:
             assert mock_check.call_count == 1
 
     def test_known_backend_gemini(self):
-        """Test that known backend 'gemini' triggers gemini CLI check."""
+        """Test that known backend 'antigravity' triggers antigravity CLI check."""
         with patch("src.auto_coder.cli_helpers.check_gemini_cli_or_fail") as mock_check:
-            check_backend_prerequisites(["gemini"])
+            check_backend_prerequisites(["agy"])
             assert mock_check.call_count == 1
 
     def test_known_backend_qwen(self):
@@ -51,7 +51,7 @@ class TestCheckBackendPrerequisites:
     def test_multiple_known_backends(self):
         """Test multiple known backends trigger respective CLI checks."""
         with patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail") as mock_codex, patch("src.auto_coder.cli_helpers.check_gemini_cli_or_fail") as mock_gemini, patch("src.auto_coder.cli_helpers.check_qwen_cli_or_fail") as mock_qwen:
-            check_backend_prerequisites(["codex", "gemini", "qwen"])
+            check_backend_prerequisites(["codex", "antigravity", "qwen"])
             assert mock_codex.call_count == 1
             assert mock_gemini.call_count == 1
             assert mock_qwen.call_count == 1
@@ -94,7 +94,7 @@ class TestCheckBackendPrerequisites:
             config = LLMBackendConfiguration()
             config.backends["my-gemini-alias"] = BackendConfig(
                 name="my-gemini-alias",
-                backend_type="gemini",
+                backend_type="antigravity",
                 model="gemini-2.5-flash",
             )
             mock_get_config.return_value = config

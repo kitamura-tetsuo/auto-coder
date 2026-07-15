@@ -269,7 +269,7 @@ class CommandExecutor:
         "auggie": 7200,
         "claude": 7200,
         "codex": 7200,
-        "gemini": 7200,
+        "antigravity": 7200,
         "qwen": 7200,
         "aider": 7200,
         "default": 60,
@@ -418,6 +418,7 @@ class CommandExecutor:
                     if chunk is None:
                         streams_active.discard(stream_name)
                     else:
+                        start = time.monotonic()  # Reset overall timeout timer on output
                         if stream_name == "stdout":
                             stdout_lines.append(chunk)
                         else:

@@ -221,7 +221,7 @@ class MCPServerManager:
 
         # Configure backends
         if backends is None:
-            backends = ["codex", "gemini", "qwen", "auggie", "claude"]
+            backends = ["codex", "antigravity", "qwen", "auggie", "claude"]
 
         success = True
         for backend in backends:
@@ -250,7 +250,7 @@ class MCPServerManager:
         try:
             if backend == "codex":
                 return self._add_codex_config(server_name, install_path)
-            elif backend == "gemini":
+            elif backend == "antigravity":
                 return self._add_gemini_config(server_name, install_path)
             elif backend == "qwen":
                 return self._add_qwen_config(server_name, install_path)
@@ -292,7 +292,7 @@ class MCPServerManager:
             return False
 
     def _add_gemini_config(self, server_name: str, install_path: Path) -> bool:
-        """Add MCP server configuration to Gemini CLI config.
+        """Add MCP server configuration to Antigravity CLI config.
 
         Args:
             server_name: MCP server name

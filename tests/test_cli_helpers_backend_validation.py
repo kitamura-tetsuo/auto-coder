@@ -106,7 +106,7 @@ class TestCheckBackendPrerequisites:
                 mock_codex.reset_mock()
 
                 # Test gemini
-                check_backend_prerequisites(["gemini"])
+                check_backend_prerequisites(["agy"])
                 assert mock_gemini.call_count == 1
 
                 # Test qwen
@@ -165,11 +165,11 @@ class TestCheckBackendPrerequisites:
             config.backends["my-gemini-alias"] = BackendConfig(
                 name="my-gemini-alias",
                 model="gemini-2.5-flash",
-                backend_type="gemini",
+                backend_type="antigravity",
             )
             mock_get_config.return_value = config
 
-            # Mock gemini CLI check
+            # Mock antigravity CLI check
             with patch("src.auto_coder.cli_helpers.check_gemini_cli_or_fail") as mock_gemini:
                 # Call with custom backend
                 check_backend_prerequisites(["my-gemini-alias"])
@@ -188,7 +188,7 @@ class TestCheckBackendPrerequisites:
             )
             config.backends["gemini-experimental"] = BackendConfig(
                 name="gemini-experimental",
-                backend_type="gemini",
+                backend_type="antigravity",
             )
             config.backends["qwen-custom"] = BackendConfig(
                 name="qwen-custom",

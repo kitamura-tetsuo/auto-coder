@@ -18,14 +18,14 @@ The name "message_backend" was vague and didn't clearly convey that it's used fo
 ```toml
 [message_backend]
 default = "codex"
-order = ["codex", "gemini", "qwen"]
+order = ["codex", "antigravity", "qwen"]
 ```
 
 **New Format:**
 ```toml
 [backend_for_noedit]
 default = "codex"
-order = ["codex", "gemini", "qwen"]
+order = ["codex", "antigravity", "qwen"]
 ```
 
 ### 2. Update Environment Variables
@@ -117,11 +117,11 @@ If you encounter issues during migration:
 # ~/.auto-coder/llm_config.toml
 [backend]
 default = "codex"
-order = ["codex", "gemini"]
+order = ["codex", "antigravity"]
 
 [message_backend]
-default = "gemini"
-order = ["gemini", "qwen"]
+default = "antigravity"
+order = ["agy", "qwen"]
 
 [backends.codex]
 enabled = true
@@ -137,11 +137,11 @@ model = "gemini-2.5-pro"
 # ~/.auto-coder/llm_config.toml
 [backend]
 default = "codex"
-order = ["codex", "gemini"]
+order = ["codex", "antigravity"]
 
 [backend_for_noedit]
-default = "gemini"
-order = ["gemini", "qwen"]
+default = "antigravity"
+order = ["agy", "qwen"]
 
 [backends.codex]
 enabled = true

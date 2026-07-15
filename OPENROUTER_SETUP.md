@@ -23,7 +23,7 @@ Create or update `~/.auto-coder/llm_config.toml`:
 ```toml
 [backend]
 default = "qwen-openrouter"
-order = ["qwen-openrouter", "codex", "gemini"]
+order = ["qwen-openrouter", "codex", "antigravity"]
 
 [backends.qwen-openrouter]
 model = "qwen/qwen3-coder:free"
@@ -91,7 +91,7 @@ openai_base_url = "https://openrouter.ai/api/v1"
 backend_type = "codex"
 
 [backend]
-order = ["qwen-openrouter-free", "qwen-openrouter-plus", "gemini"]
+order = ["qwen-openrouter-free", "qwen-openrouter-plus", "antigravity"]
 default = "qwen-openrouter-free"
 ```
 

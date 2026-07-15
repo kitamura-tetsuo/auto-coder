@@ -21,7 +21,7 @@ This migration guide helps users update their configurations from the old hardco
 ```toml
 [message_backend]
 default = "codex"
-order = ["codex", "gemini"]
+order = ["codex", "antigravity"]
 
 [backends.codex]
 model = "codex"
@@ -33,7 +33,7 @@ model = "codex"
 ```toml
 [backend_for_noedit]
 default = "codex"
-order = ["codex", "gemini"]
+order = ["codex", "antigravity"]
 
 [backends.codex]
 model = "codex"
@@ -93,8 +93,8 @@ model = "gemini-2.5-pro"
 ```toml
 [backends.gemini]
 model = "gemini-2.5-pro"
-options = ["--yolo", "--force-model"]
-options_for_noedit = ["--yolo", "--force-model"]
+options = ["--dangerously-skip-permissions", "--force-model"]
+options_for_noedit = ["--dangerously-skip-permissions", "--force-model"]
 ```
 
 #### Qwen Backend
@@ -204,12 +204,12 @@ created_at = "2023-01-01T00:00:00"
 updated_at = "2023-01-01T00:00:00"
 
 [backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
+order = ["agy", "qwen", "claude"]
+default = "antigravity"
 
 # New configuration section
 [backend_for_noedit]
-order = ["claude", "gemini"]
+order = ["claude", "antigravity"]
 default = "claude"
 
 [backends.codex]
@@ -246,8 +246,8 @@ max_retries = 3
 usage_limit_retry_count = 3
 usage_limit_retry_wait_seconds = 30
 always_switch_after_execution = false
-options = ["--yolo", "--force-model"]
-options_for_noedit = ["--yolo", "--force-model"]
+options = ["--dangerously-skip-permissions", "--force-model"]
+options_for_noedit = ["--dangerously-skip-permissions", "--force-model"]
 
 [backends.qwen]
 api_key = "your-qwen-api-key"
@@ -326,19 +326,19 @@ Rename the section in your config file:
 # Old (deprecated)
 [message_backend]
 default = "claude"
-order = ["claude", "gemini"]
+order = ["claude", "antigravity"]
 
 # New (required)
 [backend_for_noedit]
 default = "claude"
-order = ["claude", "gemini"]
+order = ["claude", "antigravity"]
 ```
 
 ### Error: "Backend 'X' not found in configured backends"
 
 **Problem:**
 ```
-ERROR: Backend 'gemini' not found in configured backends
+ERROR: Backend 'antigravity' not found in configured backends
 ```
 
 **Solution:**
@@ -346,8 +346,8 @@ Ensure all referenced backends in `backend_for_noedit.order` are defined in `[ba
 
 ```toml
 [backend_for_noedit]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
+order = ["agy", "qwen", "claude"]
+default = "antigravity"
 
 [backends.gemini]
 # ... configuration

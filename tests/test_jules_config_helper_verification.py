@@ -190,7 +190,7 @@ def test_helper_integration_complete():
             f.write(
                 """
 [backend]
-order = ["codex", "jules", "gemini"]
+order = ["codex", "jules", "antigravity"]
 default = "codex"
 
 [backends.codex]

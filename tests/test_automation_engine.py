@@ -202,7 +202,7 @@ class TestAutomationEngine:
             mock_take_actions.assert_called_once()
 
     def test_apply_issue_actions_directly(self, mock_github_client, mock_gemini_client):
-        """Test direct issue actions application using Gemini CLI."""
+        """Test direct issue actions application using Antigravity CLI."""
         # Setup
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
@@ -218,7 +218,7 @@ class TestAutomationEngine:
         # Mock the underlying function to return expected results
         with patch("auto_coder.issue_processor._apply_issue_actions_directly") as mock_apply:
             mock_apply.return_value = [
-                "Gemini CLI analyzed and took action on issue: Analyzed the issue and added implementation...",
+                "Antigravity CLI analyzed and took action on issue: Analyzed the issue and added implementation...",
                 "Added analysis comment to issue #123",
                 "Committed changes: Auto-Coder: Address issue #123",
             ]
@@ -228,7 +228,7 @@ class TestAutomationEngine:
 
         # Assert
         assert len(result) == 3
-        assert "Gemini CLI analyzed and took action" in result[0]
+        assert "Antigravity CLI analyzed and took action" in result[0]
         assert "Added analysis comment" in result[1]
         assert "Committed changes" in result[2]
 

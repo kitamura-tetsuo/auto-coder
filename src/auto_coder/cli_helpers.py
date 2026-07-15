@@ -235,10 +235,10 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
 
 def check_gemini_cli_or_fail() -> None:
-    """Check if gemini CLI is available and working."""
+    """Check if antigravity CLI is available and working."""
     check_cli_tool(
-        tool_name="gemini",
-        install_url="https://github.com/google-gemini/gemini-cli\nOr use: npm install -g @google/gemini-cli",
+        tool_name="agy",
+        install_url="https://antigravity.google/download#antigravity-cli\nOr use: curl -fsSL https://antigravity.google/cli/install.sh | bash",
         version_flag="--version",
         cmd_override_env="AUTOCODER_GEMINI_CLI",
     )
@@ -417,7 +417,7 @@ def build_models_map() -> Dict[str, str]:
     models["codex"] = "codex"
     models["codex-mcp"] = "codex-mcp"
     # gemini - Check config, then default
-    models["gemini"] = config.get_model_for_backend("gemini") or "gemini-2.5-pro"
+    models["agy"] = config.get_model_for_backend("antigravity") or "gemini-2.5-pro"
     # qwen
     models["qwen"] = config.get_model_for_backend("qwen") or "qwen3-coder-plus"
     # auggie
@@ -458,11 +458,14 @@ def check_backend_prerequisites(backends: list[str]) -> None:
     """
     config = get_llm_config()
 
+    # Handle legacy "gemini" backend name translation
+    backends = ["antigravity" if b == "gemini" else b for b in backends]
+
     for backend_name in backends:
         # Known backend types
         if backend_name in ("codex", "codex-mcp"):
             check_codex_cli_or_fail()
-        elif backend_name == "gemini":
+        elif backend_name == "antigravity":
             check_gemini_cli_or_fail()
         elif backend_name == "qwen":
             check_qwen_cli_or_fail()
@@ -479,7 +482,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
                 # Recursively check the backend_type
                 check_backend_prerequisites([backend_config.backend_type])
             else:
-                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, gemini, qwen, auggie, claude) " f"or configure backend_type in llm_config.toml")
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
@@ -489,6 +492,11 @@ def build_backend_manager(
     enable_graphrag: bool = True,
     use_noedit_options: bool = False,
 ) -> BackendManager:
+    # Handle legacy "gemini" backend name translation
+    selected_backends = ["antigravity" if b == "gemini" else b for b in selected_backends]
+    if primary_backend == "gemini":
+        primary_backend = "antigravity"
+
     """Construct BackendManager with per-backend model selection.
 
     models: mapping backend -> model_name (all backends respect this configuration).
@@ -498,12 +506,12 @@ def build_backend_manager(
     config = get_llm_config()
 
     # Get API keys and base URLs from configuration
-    gemini_config = config.get_backend_config("gemini")
+    gemini_config = config.get_backend_config("antigravity")
 
     effective_gemini_api_key = gemini_config.api_key if gemini_config else None
 
     def _gm() -> str:
-        return models.get("gemini", "gemini-2.5-pro")
+        return models.get("antigravity", "gemini-2.5-pro")
 
     def _qm() -> str:
         return models.get("qwen", "qwen3-coder-plus")
@@ -571,7 +579,7 @@ def build_backend_manager(
     # Mapping of backend types to factory functions
     backend_type_factories = {
         "qwen": _create_qwen_client,
-        "gemini": _create_gemini_client,
+        "antigravity": _create_gemini_client,
         "claude": _create_claude_client,
         "auggie": _create_auggie_client,
         "codex": _create_codex_client,
@@ -583,13 +591,13 @@ def build_backend_manager(
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude", "aider"]:
+        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "claude", "aider"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
             elif backend_name == "codex-mcp":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_mcp_client, backend_name))
-            elif backend_name == "gemini":
+            elif backend_name == "antigravity":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_gemini_client, backend_name))
             elif backend_name == "qwen":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_qwen_client, backend_name))

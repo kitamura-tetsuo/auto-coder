@@ -43,7 +43,7 @@ def test_check_gemini_cli_override():
         # Verify it called the custom path
         mock_run.assert_called_with(["/path/to/custom-gemini", "--version"], capture_output=True, text=True, timeout=60)
         assert mock_echo.call_count >= 1
-        # Check if "Using gemini CLI (override: /path/to/custom-gemini)" was echoed
+        # Check if "Using antigravity CLI (override: /path/to/custom-gemini)" was echoed
         # Note: click.echo might be called multiple times, we just want to see if our message is there.
         # But we changed it to click.echo in my latest fix.
         args, _ = mock_echo.call_args
@@ -71,6 +71,6 @@ def test_gemini_client_init_failure_diagnostics():
     with patch("shutil.which", return_value="/bin/gemini"), patch("subprocess.run", return_value=mock_result):
         with pytest.raises(RuntimeError) as exc_info:
             GeminiClient()
-        assert "Gemini CLI (gemini) found but version check failed" in str(exc_info.value)
+        assert "Antigravity CLI (gemini) found but version check failed" in str(exc_info.value)
         assert "stdout: perm denied" in str(exc_info.value)
         assert "stderr: crit error" in str(exc_info.value)

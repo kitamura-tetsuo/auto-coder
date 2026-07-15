@@ -117,22 +117,23 @@ def auth_status() -> None:
 
     click.echo()
 
-    # Gemini CLI status
-    print_header("🤖", "Gemini CLI")
+    # Antigravity CLI status
+    print_header("🤖", "Antigravity CLI")
     try:
         import subprocess
 
-        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(["agy", "--version"], capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
-            print_item(True, "gemini CLI available")
+            print_item(True, "antigravity CLI available")
             version_info = result.stdout.strip()
             if version_info:
                 click.echo(f"     Version: {version_info}")
         else:
-            print_item(False, "gemini CLI not working")
+            print_item(False, "antigravity CLI not working")
     except Exception:
-        print_item(False, "gemini CLI not found")
-        click.echo("     Please install from: https://github.com/google-gemini/gemini-cli")
+        print_item(False, "antigravity CLI not found")
+        click.echo("     Please install from: https://antigravity.google/download#antigravity-cli")
+        click.echo("     Or run: curl -fsSL https://antigravity.google/cli/install.sh | bash")
 
     click.echo()
 

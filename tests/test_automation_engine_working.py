@@ -31,7 +31,7 @@ class TestAutomationEngine:
 
         mock_backend_manager = Mock()
         mock_backend_manager.get_last_backend_provider_and_model.return_value = (
-            "gemini",
+            "antigravity",
             "open-router",
             "gemini-2.5-pro",
         )
@@ -54,7 +54,7 @@ class TestAutomationEngine:
 
             # Assert basic result structure
             assert result["repository"] == test_repo_name
-            assert result["llm_backend"] == "gemini"
+            assert result["llm_backend"] == "antigravity"
             assert result["llm_provider"] == "open-router"
             assert result["llm_model"] is not None
             assert "issues_processed" in result
@@ -78,7 +78,7 @@ class TestAutomationEngine:
 
         mock_backend_manager = Mock()
         mock_backend_manager.get_last_backend_provider_and_model.return_value = (
-            "gemini",
+            "antigravity",
             "open-router",
             "gemini-2.5-pro",
         )

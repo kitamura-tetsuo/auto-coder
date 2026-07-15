@@ -113,7 +113,7 @@ auto-coder process-issues --repo owner/repo --backend qwen-openrouter
 
 # Or add to backend order
 [backend]
-order = ["qwen-openrouter", "gemini", "codex"]
+order = ["qwen-openrouter", "antigravity", "codex"]
 default = "qwen-openrouter"
 ```
 
@@ -147,7 +147,7 @@ Here's a complete `llm_config.toml` example with both Qwen configurations:
 ```toml
 [backend]
 default = "qwen-openrouter"
-order = ["qwen-openrouter", "qwen", "gemini", "codex"]
+order = ["qwen-openrouter", "qwen", "antigravity", "codex"]
 
 [backends.qwen-openrouter]
 model = "qwen/qwen3-coder:free"
@@ -163,7 +163,7 @@ backend_type = "qwen"
 [backends.gemini]
 model = "gemini-2.5-pro"
 api_key = "your-gemini-api-key"
-backend_type = "gemini"
+backend_type = "antigravity"
 
 [backends.codex]
 model = "codex"
@@ -221,7 +221,7 @@ The configuration system allows you to use arbitrary names for your backends and
 - **`backend_type = "codex"`**: Uses CodexClient, which accepts OpenAI-compatible API keys and base URLs
 - **`backend_type = "claude"`**: Uses ClaudeClient, which accepts Claude-specific API keys and base URLs
 - **`backend_type = "qwen"`**: Uses QwenClient, which uses OAuth-based authentication only
-- **`backend_type = "gemini"`**: Uses GeminiClient, which requires Gemini-specific API keys
+- **`backend_type = "antigravity"`**: Uses GeminiClient, which requires Gemini-specific API keys
 
 This allows you to create intuitive aliases for different models while using the appropriate underlying client technology.
 

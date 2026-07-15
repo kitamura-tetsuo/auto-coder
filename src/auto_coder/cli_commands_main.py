@@ -150,7 +150,7 @@ def process_issues(
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Disable labels: {disable_labels}")
     logger.info(f"Check labels: {check_labels}")
@@ -169,7 +169,7 @@ def process_issues(
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         summary["Model"] = primary_model
     summary.update(
         {
@@ -211,7 +211,7 @@ def process_issues(
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
     primary_model = None
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         client = manager._clients.get(primary_backend)
         if client is not None:
             primary_model = getattr(client, "model_name", None)
@@ -489,7 +489,7 @@ def create_feature_issues(
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
@@ -499,7 +499,7 @@ def create_feature_issues(
         "Repository": repo_name,
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         summary["Model"] = primary_model
     summary.update(
         {
@@ -534,7 +534,7 @@ def create_feature_issues(
 
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         client = manager._clients.get(primary_backend)
         if client is not None:
             primary_model = getattr(client, "model_name", None)
@@ -652,7 +652,7 @@ def fix_to_pass_tests_command(
     summary: Dict[str, Any] = {
         "Backends": f"{backend_list_str} (default: {primary_backend})",
     }
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         summary["Model"] = primary_model
     summary.update(
         {
@@ -697,7 +697,7 @@ def fix_to_pass_tests_command(
 
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
-    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         client = manager._clients.get(primary_backend)
         if client is not None:
             primary_model = getattr(client, "model_name", None)

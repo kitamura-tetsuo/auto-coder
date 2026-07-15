@@ -149,7 +149,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * **Automatic Model Switching:** automatically switches to `gemini-2.5-flash` for fast conflict resolution during PR merges.
 * **Special Handling for Package-Lock Conflicts:** automatically deletes and regenerates lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) to resolve conflicts.
 * **Automatic Resolution of Dependency-Only `package.json` Conflicts:** if only dependency sections differ, automatically merges preferring newer or larger dependency sets.
-* **Gemini Prompt Escaping:** automatically escapes `@` as `\@` in prompts to safely pass to the Gemini CLI.
+* **Gemini Prompt Escaping:** automatically escapes `@` as `\@` in prompts to safely pass to the Antigravity CLI.
 * Automatic detection of missing features and issue creation.
 * Automated code fixes and builds.
 * PR prioritization (merge if GitHub Actions pass and PR is mergeable; otherwise, fix).

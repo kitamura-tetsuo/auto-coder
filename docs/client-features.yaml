@@ -94,7 +94,7 @@ The system supports extensive backend configuration options. Key fields include:
   - Example:
     ```toml
     [backend_with_high_score]
-    name = "gemini"
+    name = "antigravity"
     model = "gemini-2.5-flash"
     api_key = "your-api-key"
     ```
@@ -158,7 +158,7 @@ The system supports extensive backend configuration options. Key fields include:
     ```toml
     [backend]
     default = "qwen"
-    order = ["qwen", "gemini", "claude"]
+    order = ["qwen", "antigravity", "claude"]
 
     [backend_for_noedit]
     default = "claude"
@@ -286,7 +286,7 @@ The system supports extensive backend configuration options. Key fields include:
       example:
         toml_example: |
           [backend]
-          order = ["gemini", "qwen", "claude"]
+          order = ["agy", "qwen", "claude"]
 
           [backends.gemini]
           model = "gemini-2.5-pro"
@@ -325,16 +325,16 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
   - Automatic flags: `--print`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`
   - Custom options: Path to settings file, debug modes
 
-- **Gemini Backend** (`backend_type = "gemini"`):
+- **Gemini Backend** (`backend_type = "antigravity"`):
   ```toml
   [gemini]
   model = "gemini-2.5-pro"
-  backend_type = "gemini"
+  backend_type = "antigravity"
   options = []
   options_for_noedit = []
   ```
   - Typical use: Google Gemini API
-  - Automatic flags: `--yolo`, `--force-model`
+  - Automatic flags: `--dangerously-skip-permissions`, `--force-model`
   - Custom options: Debug modes, output formatting
 
 - **Qwen Backend** (`backend_type = "qwen"`):
@@ -430,7 +430,7 @@ Recent configuration schema changes that require migration:
    - **Before**: CLI options were hardcoded in client implementations
      - Codex: always used `--dangerously-bypass-approvals-and-sandbox`
      - Claude: always used `--print --dangerously-skip-permissions --allow-dangerously-skip-permissions`
-     - Gemini: always used `--yolo --force-model`
+     - Gemini: always used `--dangerously-skip-permissions --force-model`
      - Qwen: always used `-y`
    - **After**: Options are configurable through `options` and `options_for_noedit` fields
      - System automatically adds required flags for each backend

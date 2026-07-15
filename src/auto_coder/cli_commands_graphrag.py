@@ -378,7 +378,7 @@ if __name__ == "__main__":
             logger.info("=" * 60)
 
         # Automatically configure all backends
-        backends_to_configure = ["codex", "gemini", "qwen", "windsurf"]
+        backends_to_configure = ["codex", "antigravity", "qwen", "windsurf"]
 
         if not silent:
             logger.info("Automatically updating configuration files for each backend...")
@@ -391,7 +391,7 @@ if __name__ == "__main__":
             if backend == "codex":
                 if _add_codex_config(install_path):
                     success_count += 1
-            elif backend == "gemini":
+            elif backend == "antigravity":
                 if _add_gemini_config(install_path):
                     success_count += 1
             elif backend == "qwen":
@@ -445,7 +445,7 @@ def _add_codex_config(install_path: Path) -> bool:
 
 
 def _add_gemini_config(install_path: Path) -> bool:
-    """Add GraphRAG MCP configuration to Gemini CLI config using GeminiClient.
+    """Add GraphRAG MCP configuration to Antigravity CLI config using GeminiClient.
 
     Args:
         install_path: Path to graphrag_mcp installation

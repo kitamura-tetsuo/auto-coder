@@ -55,7 +55,7 @@ See [docs/client-features.yaml](docs/client-features.yaml) for complete technica
 - Python 3.9 or higher
 - [gh CLI](https://cli.github.com/) pre-authenticated (`gh auth login`)
 - [Codex CLI](https://github.com/openai/codex) installed (default backend)
-- [Gemini CLI](https://ai.google.dev/gemini-api/docs/cli?hl=en) required when using Gemini backend (`gemini login`)
+- [Antigravity CLI](https://ai.google.dev/gemini-api/docs/cli?hl=en) required when using Gemini backend (`antigravity login`)
 
 ### Setup
 
@@ -180,7 +180,7 @@ This ensures dependency updates are merged quickly when safe, without manual int
 
 ### Authentication
 
-Basically, just run `gh auth login`. When using the Gemini backend, running `gemini login` allows you to use it without setting API keys in environment variables (the --model flag is ignored for the codex backend).
+Basically, just run `gh auth login`. When using the Gemini backend, running `antigravity login` allows you to use it without setting API keys in environment variables (the --model flag is ignored for the codex backend).
 
 
 #### Regarding Qwen Usage (Authentication)
@@ -768,8 +768,8 @@ created_at = "2023-01-01T00:00:00"
 updated_at = "2023-01-01T00:00:00"
 
 [backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
+order = ["agy", "qwen", "claude"]
+default = "antigravity"
 
 [backends.codex]
 api_key = ""
@@ -846,7 +846,7 @@ Auto-Coder supports multiple backend types. When using custom backend names, you
 |-------------|-------------|----------------|-----------|
 | `codex` | OpenAI Codex and OpenAI-compatible APIs | Codex CLI | OpenRouter, Azure OpenAI, custom endpoints |
 | `codex-mcp` | Codex with MCP support | Codex CLI | Advanced MCP integrations |
-| `gemini` | Google Gemini | Gemini CLI | Direct Google API integration |
+| `gemini` | Google Gemini | Antigravity CLI | Direct Google API integration |
 | `qwen` | Qwen Code | Qwen CLI | Native Qwen CLI with OAuth |
 | `claude` | Anthropic Claude | Claude CLI | Direct Anthropic API integration |
 | `jules` | Jules AI Assistant | Jules CLI | Session-based AI with PR feedback loop |
@@ -884,7 +884,7 @@ You can configure Jules as a backend in your `llm_config.toml` file for persiste
 ```toml
 [backend]
 # Add jules to your backend order
-order = ["jules", "gemini", "codex", "claude"]
+order = ["jules", "antigravity", "codex", "claude"]
 default = "codex"
 
 [backends.jules]
@@ -970,8 +970,8 @@ Example:
 
 ```toml
 [backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
+order = ["agy", "qwen", "claude"]
+default = "antigravity"
 
 [backends.gemini]
 model = "gemini-2.5-pro"
@@ -1013,7 +1013,7 @@ The `[sessionId]` placeholder will be automatically replaced with the actual ses
 
 ```toml
 [backend]
-order = ["claude", "gemini", "codex"]
+order = ["claude", "antigravity", "codex"]
 default = "claude"
 
 [backends.claude]
@@ -1086,8 +1086,8 @@ Auto-Coder includes automatic timeout handling that triggers fallback to the nex
 With the following configuration:
 ```toml
 [backend]
-order = ["gemini", "qwen", "claude"]
-default = "gemini"
+order = ["agy", "qwen", "claude"]
+default = "antigravity"
 
 [backends.gemini]
 model = "gemini-2.5-pro"
@@ -1132,7 +1132,7 @@ Adjust timeout values based on your network conditions and the complexity of tas
 
 Timeout fallback events are logged for debugging:
 ```
-WARNING - Timeout error on backend 'gemini', switching to next backend
+WARNING - Timeout error on backend 'antigravity', switching to next backend
 ```
 
 Check the logs at `~/.auto-coder/logs/llm_output.jsonl` for detailed information about timeout occurrences and backend rotations.
@@ -1148,7 +1148,7 @@ Environment variables can be used to override configuration file values or provi
 | `MAX_ISSUES_PER_RUN` | Maximum issues to process per run | `-1` | ❌ |
 | `MAX_PRS_PER_RUN` | Maximum PRs to process per run | `-1` | ❌ |
 | `LOG_LEVEL` | Log level | `INFO` | ❌ |
-| `AUTO_CODER_DEFAULT_BACKEND` | Set default backend (e.g., 'gemini', 'codex') | `codex` | ❌ |
+| `AUTO_CODER_DEFAULT_BACKEND` | Set default backend (e.g., 'antigravity', 'codex') | `codex` | ❌ |
 | `AUTO_CODER_<BACKEND>_API_KEY` | Set API key for specific backend | - | ❌ |
 | `AUTO_CODER_OPENAI_API_KEY` | Set OpenAI-compatible API key | - | ❌ |
 | `AUTO_CODER_OPENAI_BASE_URL` | Set OpenAI-compatible base URL | - | ❌ |
@@ -1255,7 +1255,7 @@ print(f"Found {len(codex_logs)} Codex interactions")
 |-------|------|-------------|
 | `timestamp` | string | ISO 8601 timestamp with timezone |
 | `event_type` | string | Event type: `llm_request`, `llm_response`, or `llm_interaction` |
-| `backend` | string | Backend name (e.g., "codex", "gemini", "qwen") |
+| `backend` | string | Backend name (e.g., "codex", "antigravity", "qwen") |
 | `model` | string | Model name |
 | `prompt_length` | integer | Prompt length in characters |
 | `response_length` | integer | Response length in characters |

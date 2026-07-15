@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 class QwenClient(LLMClientBase):
     """Qwen Code CLI client.
 
-    Note: Qwen Code is adapted from Gemini CLI. We assume a similar non-interactive CLI interface.
+    Note: Qwen Code is adapted from Antigravity CLI. We assume a similar non-interactive CLI interface.
     Tests mock subprocess, so no external dependency is required to run tests.
     """
 

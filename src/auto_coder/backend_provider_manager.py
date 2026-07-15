@@ -175,7 +175,7 @@ class BackendProviderManager:
         Get provider metadata for a specific backend.
 
         Args:
-            backend_name: Name of the backend (e.g., "qwen", "gemini", "claude")
+            backend_name: Name of the backend (e.g., "qwen", "antigravity", "claude")
 
         Returns:
             BackendProviderMetadata with all providers for the backend.

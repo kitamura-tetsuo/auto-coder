@@ -173,7 +173,7 @@ def test_jules_config_with_backend_order():
             f.write(
                 """
 [backend]
-order = ["codex", "jules", "gemini"]
+order = ["codex", "jules", "antigravity"]
 default = "codex"
 
 [backends.codex]
@@ -200,7 +200,7 @@ enabled = false
         active_backends = config.get_active_backends()
         assert "codex" in active_backends, "Codex should be active"
         assert "jules" in active_backends, "Jules should be active"
-        assert "gemini" not in active_backends, "Gemini should not be active (disabled)"
+        assert "antigravity" not in active_backends, "Gemini should not be active (disabled)"
 
 
 def test_jules_config_full_parameters():
@@ -276,7 +276,7 @@ model = "qwen-model"
 
         # Verify all backends are loaded
         assert config.get_backend_config("codex") is not None
-        assert config.get_backend_config("gemini") is not None
+        assert config.get_backend_config("antigravity") is not None
         assert config.get_backend_config("jules") is not None
         assert config.get_backend_config("qwen") is not None
 
@@ -287,7 +287,7 @@ model = "qwen-model"
         # Verify active backends
         active_backends = config.get_active_backends()
         assert "codex" in active_backends
-        assert "gemini" in active_backends
+        assert "antigravity" in active_backends
         assert "jules" not in active_backends, "Jules should not be active"
         assert "qwen" in active_backends
 

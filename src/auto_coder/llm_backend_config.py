@@ -18,7 +18,7 @@ from .logger_config import get_logger
 REQUIRED_OPTIONS_BY_BACKEND = {
     "codex": ["--dangerously-bypass-approvals-and-sandbox"],
     "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
-    "gemini": ["--yolo"],
+    "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],
     "qwen": ["-y"],
     "jules": [],  # Session-based, no required flags
@@ -202,7 +202,7 @@ class LLMBackendConfiguration:
         """Initialize default backends if none are configured."""
         if not self.backends:
             # Add default configurations for known backends
-            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
+            default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
 
@@ -242,11 +242,19 @@ class LLMBackendConfiguration:
 
     @classmethod
     def _load_from_data(cls, data: Dict[str, Any], config_path: Optional[str] = None) -> "LLMBackendConfiguration":
+        # Handle legacy "gemini" backend name translation
+        def _translate_backend(val: Any) -> Any:
+            if isinstance(val, str) and val == "gemini":
+                return "antigravity"
+            if isinstance(val, list):
+                return ["antigravity" if v == "gemini" else v for v in val]
+            return val
+
         # Parse general backend settings
-        backend_order = data.get("backend", {}).get("order", [])
+        backend_order = _translate_backend(data.get("backend", {}).get("order", []))
 
         # Determine default backend - prioritize explicit "default" field, then order[0], then fallback to "codex"
-        default_backend = data.get("backend", {}).get("default")
+        default_backend = _translate_backend(data.get("backend", {}).get("default"))
         if not default_backend:
             if backend_order:
                 default_backend = backend_order[0]
@@ -255,6 +263,9 @@ class LLMBackendConfiguration:
 
         # Parse backends
         backends_data = data.get("backends", {})
+        if "gemini" in backends_data and "antigravity" not in backends_data:
+            backends_data["antigravity"] = backends_data.pop("gemini")
+
         backends: Dict[str, BackendConfig] = {}
 
         # Helper to parse a backend config dict
@@ -357,7 +368,7 @@ class LLMBackendConfiguration:
 
         # Add default backends if they are not already in the configuration
         # This ensures that backends like 'jules' are available even if not explicitly defined in the file
-        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
+        default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
         for backend_name in default_backends:
             if backend_name not in backends:
                 backends[backend_name] = BackendConfig(name=backend_name)
@@ -374,16 +385,16 @@ class LLMBackendConfiguration:
 
         # Parse backend for non-editing operations settings
         # Try new key first, then fall back to old key for backward compatibility
-        backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
+        backend_for_noedit_order = _translate_backend(data.get("backend_for_noedit", {}).get("order", []))
 
         # Determine default for noedit - prioritize explicit "default" field, then order[0]
-        backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
+        backend_for_noedit_default = _translate_backend(data.get("backend_for_noedit", {}).get("default"))
         if not backend_for_noedit_default and backend_for_noedit_order:
             backend_for_noedit_default = backend_for_noedit_order[0]
 
         # Backward compatibility: check old key if new key not found
         if not backend_for_noedit_order:
-            old_order = data.get("message_backend", {}).get("order", [])
+            old_order = _translate_backend(data.get("message_backend", {}).get("order", []))
             if old_order:
                 logger = get_logger(__name__)
                 logger.warning("Configuration uses deprecated 'message_backend' key. " "Please update to 'backend_for_noedit' in your config file.")
@@ -618,7 +629,7 @@ class LLMBackendConfiguration:
             return config.model
 
         # Default models for known backends
-        default_models = {"gemini": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp", "aider": "aider"}
+        default_models = {"antigravity": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp", "aider": "aider"}
         return default_models.get(backend_name)
 
     def apply_env_overrides(self) -> None:

@@ -47,7 +47,7 @@ api_key = "your-gemini-api-key"
 options = [
     "--model", "[model_name]",
     "--output-format", "stream-json",
-    "--yolo",
+    "--dangerously-skip-permissions",
     "--prompt"
 ]
 options_for_noedit = [
@@ -68,7 +68,7 @@ options = [
     "-y",
     "-m", "[model_name]",
     "--output-format", "stream-json",
-    "--yolo",
+    "--dangerously-skip-permissions",
     "-p"
 ]
 options_for_noedit = [
@@ -196,7 +196,7 @@ backend_type = "gemini"
 options = [
     "--model", "[model_name]",
     "--output-format", "stream-json",
-    "--yolo",
+    "--dangerously-skip-permissions",
     "--prompt"
 ]
 
@@ -243,7 +243,7 @@ backend_type = "gemini"
 options = [
     "--model", "[model_name]",
     "--output-format", "stream-json",
-    "--yolo",
+    "--dangerously-skip-permissions",
     "--prompt"
 ]
 
@@ -257,6 +257,6 @@ usage_limit_retry_wait_seconds = 60
 options = [
     "--model", "[model_name]",
     "--output-format", "stream-json",
-    "--yolo",
+    "--dangerously-skip-permissions",
     "--prompt"
 ]

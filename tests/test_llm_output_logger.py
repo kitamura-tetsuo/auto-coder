@@ -112,7 +112,7 @@ class TestLLMOutputLogger:
             logger = LLMOutputLogger(log_path=log_file, enabled=True)
 
             logger.log_response(
-                backend="gemini",
+                backend="antigravity",
                 model="gemini-2.5-flash",
                 response_length=500,
                 duration_ms=1234,
@@ -128,7 +128,7 @@ class TestLLMOutputLogger:
             data = json.loads(content)
 
             assert data["event_type"] == "llm_response"
-            assert data["backend"] == "gemini"
+            assert data["backend"] == "antigravity"
             assert data["model"] == "gemini-2.5-flash"
             assert data["response_length"] == 500
             assert data["duration_ms"] == 1234
@@ -201,7 +201,7 @@ class TestLLMOutputLogger:
             }
 
             logger.log_request(
-                backend="gemini",
+                backend="antigravity",
                 metadata=metadata,
             )
 
@@ -225,7 +225,7 @@ class TestLLMOutputLogger:
 
             # Write multiple entries
             logger.log_request(backend="codex", model="codex", prompt_length=100)
-            logger.log_request(backend="gemini", model="gemini-2.5-flash", prompt_length=200)
+            logger.log_request(backend="antigravity", model="gemini-2.5-flash", prompt_length=200)
             logger.log_response(backend="codex", status="success", response_length=500)
 
             logger.flush()
@@ -245,7 +245,7 @@ class TestLLMOutputLogger:
             assert entry1["backend"] == "codex"
 
             assert entry2["event_type"] == "llm_request"
-            assert entry2["backend"] == "gemini"
+            assert entry2["backend"] == "antigravity"
 
             assert entry3["event_type"] == "llm_response"
             assert entry3["backend"] == "codex"

@@ -93,7 +93,7 @@ def test_skip_auto_setup_when_mcp_dir_exists(temp_home, mock_setup_mcp):
 
 def test_auto_setup_for_different_backends(temp_home, mock_setup_mcp):
     """Test that auto setup works for different backends."""
-    backends = ["codex", "gemini", "qwen", "auggie"]
+    backends = ["codex", "antigravity", "qwen", "auggie"]
 
     for backend in backends:
         # Reset mock
@@ -168,7 +168,7 @@ def test_suggest_graphrag_mcp_setup_mentions_auto_setup():
     """Test that setup suggestions mention automatic setup."""
     from src.auto_coder.mcp_checker import suggest_graphrag_mcp_setup
 
-    backends = ["codex", "gemini", "qwen", "auggie"]
+    backends = ["codex", "antigravity", "qwen", "auggie"]
 
     for backend in backends:
         suggestion = suggest_graphrag_mcp_setup(backend)

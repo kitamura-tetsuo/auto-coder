@@ -187,7 +187,7 @@ class TestBackendProviderManager:
 
             # Create metadata file
             metadata = {
-                "gemini": {
+                "antigravity": {
                     "gemini-direct": {
                         "command": "uvx",
                         "description": "Direct Gemini API",
@@ -204,7 +204,7 @@ class TestBackendProviderManager:
             assert manager._metadata_cache is None
 
             # Access providers - this should trigger lazy loading
-            backend_metadata = manager.get_backend_providers("gemini")
+            backend_metadata = manager.get_backend_providers("antigravity")
 
             # Now metadata should be loaded
             assert manager._metadata_cache is not None
@@ -280,22 +280,22 @@ class TestBackendProviderManager:
     def test_provider_rotation_and_tracking(self):
         """Providers rotate in a circular manner and track last used provider."""
         manager = BackendProviderManager()
-        manager._provider_cache["gemini"] = BackendProviderMetadata(
-            backend_name="gemini",
+        manager._provider_cache["agy"] = BackendProviderMetadata(
+            backend_name="antigravity",
             providers=[
                 ProviderMetadata(name="gemini-direct", command="uvx"),
                 ProviderMetadata(name="gemini-proxy", command="uvx"),
             ],
         )
 
-        assert manager.get_current_provider_name("gemini") == "gemini-direct"
-        assert manager.advance_to_next_provider("gemini") is True
-        assert manager.get_current_provider_name("gemini") == "gemini-proxy"
-        assert manager.advance_to_next_provider("gemini") is True
-        assert manager.get_current_provider_name("gemini") == "gemini-direct"
+        assert manager.get_current_provider_name("antigravity") == "gemini-direct"
+        assert manager.advance_to_next_provider("antigravity") is True
+        assert manager.get_current_provider_name("antigravity") == "gemini-proxy"
+        assert manager.advance_to_next_provider("antigravity") is True
+        assert manager.get_current_provider_name("antigravity") == "gemini-direct"
 
-        manager.mark_provider_used("gemini", "gemini-proxy")
-        assert manager.get_last_used_provider_name("gemini") == "gemini-proxy"
+        manager.mark_provider_used("antigravity", "gemini-proxy")
+        assert manager.get_last_used_provider_name("antigravity") == "gemini-proxy"
 
     def test_clear_cache(self):
         """Test clearing the provider metadata cache."""
@@ -399,7 +399,7 @@ class TestBackendProviderManager:
                         "description": "Qwen provider",
                     }
                 },
-                "gemini": {
+                "antigravity": {
                     "gemini-provider": {
                         "command": "uvx",
                         "description": "Gemini provider",
@@ -423,7 +423,7 @@ class TestBackendProviderManager:
             assert len(qwen_metadata.providers) == 1
             assert qwen_metadata.providers[0].name == "qwen-provider"
 
-            gemini_metadata = manager.get_backend_providers("gemini")
+            gemini_metadata = manager.get_backend_providers("antigravity")
             assert len(gemini_metadata.providers) == 1
             assert gemini_metadata.providers[0].name == "gemini-provider"
 

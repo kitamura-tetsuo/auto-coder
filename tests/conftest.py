@@ -374,7 +374,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     def fake_which(cmd, mode=os.F_OK | os.X_OK, path=None):
         # Allow specific tools to be "found"
-        if cmd in ("gemini", "codex", "uv", "node", "qwen", "auggie", "claude", "aider", "github-sub-issue"):
+        if cmd in ("antigravity", "codex", "uv", "node", "qwen", "auggie", "claude", "aider", "github-sub-issue"):
             return f"/mock/path/to/{cmd}"
         return orig_which(cmd, mode=mode, path=path)
 
@@ -487,7 +487,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 return result
 
             # Stubbed commands
-            if program not in ("git", "gh", "gemini", "codex", "uv", "node", "uname", "sleep"):
+            if program not in ("git", "gh", "antigravity", "codex", "uv", "node", "uname", "sleep"):
                 return orig_run(
                     cmd,
                     capture_output=capture_output,
@@ -614,7 +614,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
     ):
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
-            if program in ("git", "gh", "gemini", "codex", "uv", "node"):
+            if program in ("git", "gh", "antigravity", "codex", "uv", "node"):
 
                 class MockStream:
                     def __init__(self, content):
@@ -855,14 +855,14 @@ def mock_backend_manager():
 
     # Create mock backend manager
     mock_manager = Mock()
-    mock_manager.get_last_backend_and_model.return_value = ("gemini", "gemini-2.5-pro")
+    mock_manager.get_last_backend_and_model.return_value = ("antigravity", "gemini-2.5-pro")
     mock_manager._run_llm_cli.return_value = "Test response"
 
     # Initialize the singleton with our mock
     get_llm_backend_manager(
-        default_backend="gemini",
+        default_backend="antigravity",
         default_client=mock_gemini_client,
-        factories={"gemini": lambda: mock_gemini_client},
+        factories={"antigravity": lambda: mock_gemini_client},
     )
 
     return mock_manager

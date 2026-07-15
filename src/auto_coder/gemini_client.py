@@ -1,5 +1,5 @@
 """
-Gemini CLI client for Auto-Coder.
+Antigravity CLI client for Auto-Coder.
 """
 
 import json
@@ -34,7 +34,7 @@ class GeminiClient(LLMClientBase):
     def __init__(self, backend_name: Optional[str] = None) -> None:
         """Initialize Gemini client.
 
-        In tests, genai is patched and used. In production, we still verify gemini CLI presence
+        In tests, genai is patched and used. In production, we still verify antigravity CLI presence
         for the CLI-based paths used elsewhere in the tool.
 
         Args:
@@ -46,7 +46,7 @@ class GeminiClient(LLMClientBase):
 
         if backend_name:
             self.config_backend = config.get_backend_config(backend_name)
-            # Use backend config, fall back to default "gemini"
+            # Use backend config, fall back to default "antigravity"
             self.api_key = (self.config_backend and self.config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
             self.model_name = (self.config_backend and self.config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
@@ -56,7 +56,7 @@ class GeminiClient(LLMClientBase):
             self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         else:
             # Fall back to default gemini config
-            self.config_backend = config.get_backend_config("gemini")
+            self.config_backend = config.get_backend_config("antigravity")
             self.api_key = (self.config_backend and self.config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
             self.model_name = (self.config_backend and self.config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
@@ -67,7 +67,7 @@ class GeminiClient(LLMClientBase):
 
         self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
-        self.timeout = None  # No timeout - let gemini CLI run as long as needed
+        self.timeout = None  # No timeout - let antigravity CLI run as long as needed
 
         # Validate required options for this backend
         if self.config_backend:
@@ -90,28 +90,28 @@ class GeminiClient(LLMClientBase):
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
 
-        # Check if gemini CLI is available for CLI-based flows
+        # Check if antigravity CLI is available for CLI-based flows
         override = os.environ.get("AUTOCODER_GEMINI_CLI")
-        gemini_cmd = shlex.split(override) if override else ["gemini"]
+        gemini_cmd = shlex.split(override) if override else ["agy"]
 
         try:
-            # If not using override, check if 'gemini' exists in PATH
-            if not override and not shutil.which("gemini"):
-                raise RuntimeError("Gemini CLI ('gemini') not found in PATH. Please install it.")
+            # If not using override, check if 'antigravity' exists in PATH
+            if not override and not shutil.which("agy"):
+                raise RuntimeError("Antigravity CLI ('agy') not found in PATH. Please install it.")
 
             result = subprocess.run(gemini_cmd + ["--version"], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 stdout = (result.stdout or "").strip()[:200]
                 stderr = (result.stderr or "").strip()[:200]
                 diag = f" (stdout: {stdout} | stderr: {stderr})" if stdout or stderr else ""
-                error_msg = f"Gemini CLI ({' '.join(gemini_cmd)}) found but version check failed with exit code {result.returncode}{diag}"
+                error_msg = f"Antigravity CLI ({' '.join(gemini_cmd)}) found but version check failed with exit code {result.returncode}{diag}"
                 raise RuntimeError(error_msg)
         except (subprocess.TimeoutExpired, FileNotFoundError, RuntimeError) as e:
             if override:
-                raise RuntimeError(f"Gemini CLI override (AUTOCODER_GEMINI_CLI='{override}') is not working: {e}")
-            raise RuntimeError(f"Gemini CLI is not available or not working: {e}")
+                raise RuntimeError(f"Antigravity CLI override (AUTOCODER_GEMINI_CLI='{override}') is not working: {e}")
+            raise RuntimeError(f"Antigravity CLI is not available or not working: {e}")
         except Exception as e:
-            raise RuntimeError(f"Unexpected error checking Gemini CLI: {e}")
+            raise RuntimeError(f"Unexpected error checking Antigravity CLI: {e}")
 
     def switch_to_conflict_model(self) -> None:
         """Switch to faster model for conflict resolution."""
@@ -130,7 +130,7 @@ class GeminiClient(LLMClientBase):
         return prompt.replace("@", "\\@").strip()
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        """Run gemini CLI with the given prompt and show real-time output."""
+        """Run antigravity CLI with the given prompt and show real-time output."""
         start_time = time.time()
         status = "success"
         error_message = None
@@ -140,7 +140,7 @@ class GeminiClient(LLMClientBase):
             escaped_prompt = self._escape_prompt(prompt)
 
             override = os.environ.get("AUTOCODER_GEMINI_CLI")
-            cmd = shlex.split(override) if override else ["gemini"]
+            cmd = shlex.split(override) if override else ["agy"]
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
@@ -166,8 +166,8 @@ class GeminiClient(LLMClientBase):
             # Prompt should be last argument
             cmd.append(escaped_prompt)
 
-            logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
+            logger.warning("LLM invocation: antigravity CLI is being called. Keep LLM calls minimized.")
+            logger.debug(f"Running antigravity CLI with prompt length: {len(prompt)} characters")
             # Build display command for logging
             display_options = " ".join(self.options) if self.options else ""
             logger.info(f"🤖 Running: gemini {display_options} [prompt]")
@@ -213,7 +213,7 @@ class GeminiClient(LLMClientBase):
                     error_message = full_output
                     raise AutoCoderUsageLimitError(full_output)
                 status = "error"
-                error_message = f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
+                error_message = f"Antigravity CLI failed with return code {result.returncode}\n{full_output}"
                 raise RuntimeError(error_message)
 
             if usage_limit_detected:
@@ -230,14 +230,14 @@ class GeminiClient(LLMClientBase):
             # Re-raise timeout errors
             raise
         except Exception as e:
-            raise RuntimeError(f"Failed to run Gemini CLI: {e}")
+            raise RuntimeError(f"Failed to run Antigravity CLI: {e}")
         finally:
             # Always log the interaction and print summary
             duration_ms = (time.time() - start_time) * 1000
 
             # Log to JSON file
             self.output_logger.log_interaction(
-                backend="gemini",
+                backend="antigravity",
                 model=self.model_name,
                 prompt=prompt,
                 response=full_output,
@@ -248,7 +248,7 @@ class GeminiClient(LLMClientBase):
 
             # Print user-friendly summary to stdout
             print("\n" + "=" * 60)
-            print("🤖 Gemini CLI Execution Summary")
+            print("🤖 Antigravity CLI Execution Summary")
             print("=" * 60)
             print(f"Backend: gemini")
             print(f"Model: {self.model_name}")
@@ -372,7 +372,7 @@ class GeminiClient(LLMClientBase):
             return []
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
-        """Check if a specific MCP server is configured for Gemini CLI.
+        """Check if a specific MCP server is configured for Antigravity CLI.
 
         Args:
             server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
@@ -382,7 +382,7 @@ class GeminiClient(LLMClientBase):
         """
         try:
             override = os.environ.get("AUTOCODER_GEMINI_CLI")
-            base_cmd = shlex.split(override) if override else ["gemini"]
+            base_cmd = shlex.split(override) if override else ["agy"]
             result = subprocess.run(
                 base_cmd + ["mcp", "list"],
                 capture_output=True,
@@ -392,19 +392,19 @@ class GeminiClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(f"Found MCP server '{server_name}' via 'gemini mcp list'")
+                    logger.info(f"Found MCP server '{server_name}' via 'agy mcp list'")
                     return True
-                logger.debug(f"MCP server '{server_name}' not found via 'gemini mcp list'")
+                logger.debug(f"MCP server '{server_name}' not found via 'agy mcp list'")
                 return False
             else:
-                logger.debug(f"'gemini mcp list' command failed with return code {result.returncode}")
+                logger.debug(f"'agy mcp list' command failed with return code {result.returncode}")
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Gemini MCP config: {e}")
             return False
 
     def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
-        """Add MCP server configuration to Gemini CLI config.
+        """Add MCP server configuration to Antigravity CLI config.
 
         Args:
             server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
@@ -415,10 +415,10 @@ class GeminiClient(LLMClientBase):
             True if configuration was added successfully, False otherwise
         """
         try:
-            # Use gemini mcp add command
-            # Format: gemini mcp add <name> <command> [args...]
+            # Use agy mcp add command
+            # Format: agy mcp add <name> <command> [args...]
             override = os.environ.get("AUTOCODER_GEMINI_CLI")
-            base_cmd = shlex.split(override) if override else ["gemini"]
+            base_cmd = shlex.split(override) if override else ["agy"]
             cmd = base_cmd + ["mcp", "add", server_name, command] + args
 
             result = subprocess.run(

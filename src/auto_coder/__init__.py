@@ -1,10 +1,10 @@
 """
-Auto-Coder: Automated application development using Gemini CLI and GitHub integration.
+Auto-Coder: Automated application development using Antigravity CLI and GitHub integration.
 """
 
 __version__ = "2026.7.11+ga5be30b4"
 __author__ = "Auto-Coder Team"
-__description__ = "Automated application development using Gemini CLI and GitHub integration"
+__description__ = "Automated application development using Antigravity CLI and GitHub integration"
 
 # Make the module available as a submodule
 from . import llm_backend_config

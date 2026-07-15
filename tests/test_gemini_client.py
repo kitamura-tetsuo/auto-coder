@@ -48,9 +48,9 @@ class TestGeminiClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
     def test_extra_args_are_passed_to_cli(self, mock_run_command, mock_run, mock_logger, mock_get_config, mock_which, mock_gemini_api_key):
-        """Resume or continuation flags should be forwarded to gemini CLI."""
+        """Resume or continuation flags should be forwarded to antigravity CLI."""
         mock_which.return_value = "/usr/bin/gemini"
-        """Resume or continuation flags should be forwarded to gemini CLI."""
+        """Resume or continuation flags should be forwarded to antigravity CLI."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
@@ -608,8 +608,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = ["--yolo", "--force-model"]
-        mock_backend_config.options_for_noedit = ["--yolo", "--force-model"]
+        mock_backend_config.options = ["--dangerously-skip-permissions", "--force-model"]
+        mock_backend_config.options_for_noedit = ["--dangerously-skip-permissions", "--force-model"]
         mock_backend_config.api_key = "test-key"
         mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
@@ -618,8 +618,8 @@ class TestGeminiClient:
         client = GeminiClient()
 
         # Verify options are loaded
-        assert client.options == ["--yolo", "--force-model"]
-        assert client.options_for_noedit == ["--yolo", "--force-model"]
+        assert client.options == ["--dangerously-skip-permissions", "--force-model"]
+        assert client.options_for_noedit == ["--dangerously-skip-permissions", "--force-model"]
 
     @patch("src.auto_coder.gemini_client.shutil.which")
     @patch("src.auto_coder.gemini_client.get_llm_config")
@@ -636,11 +636,11 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = ["--yolo", "--model", "[model_name]"]
+        mock_backend_config.options = ["--dangerously-skip-permissions", "--model", "[model_name]"]
         mock_backend_config.options_for_noedit = []
         mock_backend_config.api_key = "test-key"
         mock_backend_config.validate_required_options.return_value = []
-        mock_backend_config.replace_placeholders.return_value = {"options": ["--yolo", "--model", "gemini-2.5-pro"], "options_for_noedit": [], "options_for_resume": []}
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--dangerously-skip-permissions", "--model", "gemini-2.5-pro"], "options_for_noedit": [], "options_for_resume": []}
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -651,10 +651,10 @@ class TestGeminiClient:
 
         # Verify command includes configured options
         called_cmd = mock_run_command.call_args[0][0]
-        assert "--yolo" in called_cmd
+        assert "--dangerously-skip-permissions" in called_cmd
         assert "--model" in called_cmd
         assert "gemini-2.5-pro" in called_cmd
-        assert "gemini" in called_cmd
+        assert "agy" in called_cmd
         assert "--prompt" not in called_cmd
 
     @patch("src.auto_coder.gemini_client.shutil.which")
@@ -731,6 +731,6 @@ class TestGeminiClient:
 
         # Verify command still works without options
         called_cmd = mock_run_command.call_args[0][0]
-        assert called_cmd[0] == "gemini"
-        assert "--yolo" not in called_cmd
+        assert called_cmd[0] == "agy"
+        assert "--dangerously-skip-permissions" not in called_cmd
         assert "--force-model" not in called_cmd

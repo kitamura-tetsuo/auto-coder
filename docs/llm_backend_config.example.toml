@@ -97,7 +97,7 @@ backend_type = "gemini"
 # Optional: Additional CLI options
 # options: Used for code editing operations
 # options_for_noedit: Used for message generation (commit messages, PR descriptions)
-# Note: The system automatically adds --yolo and --force-model flags during execution
+# Note: The system automatically adds --dangerously-skip-permissions and --force-model flags during execution
 options = []
 options_for_noedit = []
 
@@ -337,7 +337,7 @@ options_for_noedit = []
 # The system automatically adds required CLI flags during execution:
 # - Codex: --dangerously-bypass-approvals-and-sandbox (for exec mode)
 # - Claude: --print, --dangerously-skip-permissions, --allow-dangerously-skip-permissions
-# - Gemini: --yolo, --force-model
+# - Gemini: --dangerously-skip-permissions, --force-model
 # - Qwen: -y (auto-confirm)
 #
 # You do NOT need to include these flags in your options configuration.
@@ -351,7 +351,7 @@ options_for_noedit = []
 # OLD (hardcoded in code):
 #   - Codex always used: --dangerously-bypass-approvals-and-sandbox
 #   - Claude always used: --print --dangerously-skip-permissions --allow-dangerously-skip-permissions
-#   - Gemini always used: --yolo --force-model
+#   - Gemini always used: --dangerously-skip-permissions --force-model
 #   - Qwen always used: -y
 #
 # NEW (configurable):

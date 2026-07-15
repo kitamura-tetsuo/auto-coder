@@ -277,7 +277,7 @@ class TestBackendCLIOptions:
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
-            client = GeminiClient(backend_name="gemini")
+            client = GeminiClient(backend_name="antigravity")
             output = client._run_llm_cli("test prompt")
 
         # Verify the command structure includes options
@@ -293,7 +293,7 @@ class TestBackendCLIOptions:
         assert "2048" in cmd[cmd.index("0.7") + 1 :]
 
         # Verify the command starts with expected elements
-        assert cmd[0] == "gemini"
+        assert cmd[0] == "antigravity"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.gemini_client.shutil.which")
@@ -321,7 +321,7 @@ class TestBackendCLIOptions:
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
-            client = GeminiClient(backend_name="gemini")
+            client = GeminiClient(backend_name="antigravity")
             output = client._run_llm_cli("test prompt")
 
         # Verify the command structure without options
@@ -329,7 +329,7 @@ class TestBackendCLIOptions:
         cmd = mock_run_command.call_args[0][0]
 
         # Verify basic command structure
-        assert cmd[0] == "gemini"
+        assert cmd[0] == "antigravity"
 
         # Verify no options flags are present
         assert "-o" not in cmd

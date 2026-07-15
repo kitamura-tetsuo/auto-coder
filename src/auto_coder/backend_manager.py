@@ -861,9 +861,9 @@ class LLMBackendManager:
     1. First call: Provide initialization parameters (default_backend, default_client, factories)
        ```python
        manager = LLMBackendManager.get_llm_instance(
-           default_backend="gemini",
+           default_backend="antigravity",
            default_client=client,
-           factories={"gemini": lambda: client}
+           factories={"antigravity": lambda: client}
        )
        ```
 

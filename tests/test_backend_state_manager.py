@@ -36,7 +36,7 @@ class TestBackendStateManager:
             state_file = Path(tmpdir) / "state.json"
             manager = BackendStateManager(state_file_path=str(state_file))
 
-            backend = "gemini"
+            backend = "antigravity"
             timestamp = 1234567890.5
 
             # Save state
@@ -111,7 +111,7 @@ class TestBackendStateManager:
             state_file = Path(tmpdir) / "missing_fields.json"
 
             # Create file with only one field
-            data = {"current_backend": "gemini"}
+            data = {"current_backend": "antigravity"}
             with open(state_file, "w") as f:
                 json.dump(data, f)
 
@@ -126,7 +126,7 @@ class TestBackendStateManager:
 
             # Create file with extra fields
             data = {
-                "current_backend": "gemini",
+                "current_backend": "antigravity",
                 "last_switch_timestamp": 123.456,
                 "extra_field": "ignored",
             }
@@ -135,7 +135,7 @@ class TestBackendStateManager:
 
             manager = BackendStateManager(state_file_path=str(state_file))
             state = manager.load_state()
-            assert state["current_backend"] == "gemini"
+            assert state["current_backend"] == "antigravity"
             assert state["last_switch_timestamp"] == 123.456
 
     def test_save_state_permission_error(self):
@@ -233,7 +233,7 @@ class TestBackendStateManager:
             manager = BackendStateManager(state_file_path=str(state_file))
 
             # Save initial state
-            manager.save_state("gemini", 123.456)
+            manager.save_state("antigravity", 123.456)
 
             import threading
 
@@ -263,7 +263,7 @@ class TestBackendStateManager:
 
             # All loads should have succeeded and returned the same state
             for result in results:
-                assert result["current_backend"] == "gemini"
+                assert result["current_backend"] == "antigravity"
                 assert result["last_switch_timestamp"] == 123.456
 
     def test_path_expansion(self):

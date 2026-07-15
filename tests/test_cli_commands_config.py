@@ -37,17 +37,17 @@ def test_config_show(tmp_path: Path):
     assert result.exit_code == 0
     config_data = json.loads(result.output)
     assert "codex" in config_data["backends"]
-    assert "gemini" in config_data["backends"]
+    assert "antigravity" in config_data["backends"]
 
     # Test with an existing file
     config = LLMBackendConfiguration()
-    config.get_backend_config("gemini").model = "gemini-pro-test"
+    config.get_backend_config("antigravity").model = "gemini-pro-test"
     config.save_to_file(config_file)
 
     result = runner.invoke(main, ["config", "show", "--file", str(config_file)])
     assert result.exit_code == 0
     config_data = json.loads(result.output)
-    assert config_data["backends"]["gemini"]["model"] == "gemini-pro-test"
+    assert config_data["backends"]["antigravity"]["model"] == "gemini-pro-test"
 
 
 def test_config_set_and_get(tmp_path: Path):
@@ -63,23 +63,23 @@ def test_config_set_and_get(tmp_path: Path):
             "set",
             "--file",
             str(config_file),
-            "gemini.model",
+            "antigravity.model",
             "gemini-ultra-test",
         ],
     )
     assert result.exit_code == 0
-    assert "Set gemini.model = gemini-ultra-test" in result.output
+    assert "Set antigravity.model = gemini-ultra-test" in result.output
 
     # Get the value
-    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "gemini.model"])
+    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "antigravity.model"])
     assert result.exit_code == 0
     assert "gemini-ultra-test" in result.output.strip()
 
     # Test setting a float
-    result = runner.invoke(main, ["config", "set", "--file", str(config_file), "gemini.temperature", "0.8"])
+    result = runner.invoke(main, ["config", "set", "--file", str(config_file), "antigravity.temperature", "0.8"])
     assert result.exit_code == 0
 
-    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "gemini.temperature"])
+    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "antigravity.temperature"])
     assert result.exit_code == 0
     assert "0.8" in result.output
 
@@ -97,7 +97,7 @@ def test_config_reset(tmp_path: Path):
             "set",
             "--file",
             str(config_file),
-            "gemini.model",
+            "antigravity.model",
             "gemini-ultra-test",
         ],
     )
@@ -108,7 +108,7 @@ def test_config_reset(tmp_path: Path):
     assert "Configuration reset to default values" in result.output
 
     # Check if the value is reset
-    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "gemini.model"])
+    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "antigravity.model"])
     assert result.exit_code == 0
     assert result.output == "\n"
 
@@ -150,7 +150,7 @@ def test_config_validate(tmp_path: Path):
     # Add required options for all enabled backends
     config.get_backend_config("codex").options = ["--dangerously-bypass-approvals-and-sandbox"]
     config.get_backend_config("claude").options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
-    config.get_backend_config("gemini").options = ["--yolo"]
+    config.get_backend_config("antigravity").options = ["--dangerously-skip-permissions"]
     config.get_backend_config("qwen").options = ["-y"]
     config.get_backend_config("auggie").options = ["--print"]
     config.save_to_file(config_file)
@@ -160,9 +160,9 @@ def test_config_validate(tmp_path: Path):
 
     # Test with an invalid file
     with open(config_file, "w") as f:
-        f.write("[backends.gemini]\nmodel = 123")  # model should be a string
+        f.write("[backends.antigravity]\nmodel = 123")  # model should be a string
 
     result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
     assert result.exit_code == 0
     assert "Configuration validation errors found" in result.output
-    assert "gemini.model must be a string" in result.output
+    assert "antigravity.model must be a string" in result.output

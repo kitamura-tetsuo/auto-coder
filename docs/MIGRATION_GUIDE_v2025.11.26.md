@@ -95,7 +95,7 @@ base_url = "https://openrouter.ai/api/v1"
 
 ```toml
 [backends.gemini-flash-alias]
-backend_type = "gemini"
+backend_type = "antigravity"
 model = "gemini-2.5-flash"
 api_key = "your-gemini-key"
 ```

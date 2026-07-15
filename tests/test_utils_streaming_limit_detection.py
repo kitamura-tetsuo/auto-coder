@@ -78,7 +78,7 @@ class _FakePopen:
 
 
 class _FakeCompleted:
-    def __init__(self, returncode=0, stdout="gemini 0.0.0", stderr=""):
+    def __init__(self, returncode=0, stdout="antigravity 0.0.0", stderr=""):
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
@@ -92,6 +92,6 @@ def test_streaming_detects_usage_limit_and_aborts_early(mock_run, mock_config, m
     mock_which.return_value = "/usr/bin/gemini"
     mock_config.return_value.get_backend_config.return_value = None
     mock_run.return_value = _FakeCompleted()
-    client = GeminiClient(backend_name="gemini")
+    client = GeminiClient(backend_name="antigravity")
     with pytest.raises(AutoCoderUsageLimitError):
         client._run_llm_cli("hello")

@@ -86,9 +86,9 @@ def test_process_issues_sleep_logic(
     # Mock config
     mock_config_instance = MagicMock()
     mock_config.return_value = mock_config_instance
-    mock_config_instance.get_active_backends.return_value = ["gemini"]
+    mock_config_instance.get_active_backends.return_value = ["agy"]
     mock_config_instance.backend_order = []
-    mock_config_instance.default_backend = "gemini"
+    mock_config_instance.default_backend = "antigravity"
     mock_config_instance.get_backend_config.return_value = MagicMock(api_key="dummy")
 
     # Mock sleep to raise exception to break loop

@@ -58,7 +58,7 @@ Jules is now included in the default backend configurations:
 # In llm_config.toml, Jules is now a recognized backend
 [backend]
 default = "codex"
-order = ["jules", "gemini", "qwen", "codex", "claude"]
+order = ["jules", "antigravity", "qwen", "codex", "claude"]
 
 [backends.jules]
 enabled = true
@@ -122,7 +122,7 @@ Jules is now automatically included in default configurations. To explicitly con
 
 [backend]
 # Add jules to your backend order if desired
-order = ["jules", "gemini", "qwen", "codex"]
+order = ["jules", "antigravity", "qwen", "codex"]
 
 [backends.jules]
 enabled = true

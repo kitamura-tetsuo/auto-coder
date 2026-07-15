@@ -437,7 +437,7 @@ class TestGHCommandLogger:
 
             # Log another command with Gemini key
             logger.log_command(
-                command_list=["gemini", "config", "set", "api_key", gemini_key],
+                command_list=["agy", "config", "set", "api_key", gemini_key],
                 caller_file="/test/file.py",
                 caller_line=2,
             )

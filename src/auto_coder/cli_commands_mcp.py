@@ -93,7 +93,7 @@ def mcp_setup(
         server_name,
         install_dir=install_path,
         env_vars=env_vars,
-        backends=["codex", "gemini", "qwen", "auggie"],
+        backends=["codex", "antigravity", "qwen", "auggie"],
         silent=silent,
     )
 
@@ -252,6 +252,6 @@ def setup_mcp_programmatically(
         server_name,
         install_dir=install_path,
         env_vars=env_vars,
-        backends=["codex", "gemini", "qwen", "auggie"],
+        backends=["codex", "antigravity", "qwen", "auggie"],
         silent=silent,
     )

@@ -16,7 +16,7 @@ class TestRequiredOptionsValidation:
         assert isinstance(REQUIRED_OPTIONS_BY_BACKEND, dict)
         assert "codex" in REQUIRED_OPTIONS_BY_BACKEND
         assert "claude" in REQUIRED_OPTIONS_BY_BACKEND
-        assert "gemini" in REQUIRED_OPTIONS_BY_BACKEND
+        assert "antigravity" in REQUIRED_OPTIONS_BY_BACKEND
         assert "auggie" in REQUIRED_OPTIONS_BY_BACKEND
         assert "qwen" in REQUIRED_OPTIONS_BY_BACKEND
         assert "jules" in REQUIRED_OPTIONS_BY_BACKEND
@@ -53,12 +53,12 @@ class TestRequiredOptionsValidation:
 
     def test_backend_config_validate_required_options_falls_back_to_name(self):
         """Test validation falls back to name when backend_type is None."""
-        config = BackendConfig(name="gemini")
+        config = BackendConfig(name="antigravity")
         config.backend_type = None
         config.options = []  # Missing required option
         errors = config.validate_required_options()
         assert len(errors) == 1
-        assert "missing required option: --yolo" in errors[0]
+        assert "missing required option: --dangerously-skip-permissions" in errors[0]
 
     def test_backend_config_validate_multiple_required_options(self):
         """Test validation with multiple required options."""
@@ -124,7 +124,7 @@ class TestRequiredOptionsValidation:
         # Set up backends with all required options
         config.get_backend_config("codex").options = ["--dangerously-bypass-approvals-and-sandbox"]
         config.get_backend_config("claude").options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
-        config.get_backend_config("gemini").options = ["--yolo"]
+        config.get_backend_config("antigravity").options = ["--dangerously-skip-permissions"]
         config.get_backend_config("qwen").options = ["-y"]
         config.get_backend_config("auggie").options = ["--print"]
 
@@ -172,7 +172,7 @@ class TestConfigValidateCommand:
                     "model": "codex",
                     "options": ["--dangerously-bypass-approvals-and-sandbox"],
                 },
-                "gemini": {
+                "antigravity": {
                     "enabled": False,
                 },
                 "qwen": {
@@ -200,12 +200,12 @@ class TestConfigValidateCommand:
 
         config_file = tmp_path / "llm_config.toml"
         data = {
-            "backend": {"default": "gemini", "order": ["gemini", "qwen", "claude"]},
+            "backend": {"default": "antigravity", "order": ["agy", "qwen", "claude"]},
             "backends": {
-                "gemini": {
+                "antigravity": {
                     "enabled": True,
                     "model": "gemini-2.5-pro",
-                    "options": [],  # Missing --yolo
+                    "options": [],  # Missing --dangerously-skip-permissions
                 },
                 "qwen": {
                     "enabled": True,
@@ -226,7 +226,7 @@ class TestConfigValidateCommand:
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
         assert result.exit_code == 0
         assert "Configuration validation errors found" in result.output
-        assert "missing required option: --yolo" in result.output
+        assert "missing required option: --dangerously-skip-permissions" in result.output
         assert "missing required option: -y" in result.output
         assert "missing required option: --dangerously-skip-permissions" in result.output
 
@@ -251,7 +251,7 @@ class TestConfigValidateCommand:
                 "codex": {
                     "enabled": False,
                 },
-                "gemini": {
+                "antigravity": {
                     "enabled": False,
                 },
                 "qwen": {

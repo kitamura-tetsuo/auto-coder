@@ -196,7 +196,7 @@ class LLMOutputLogger:
         """Log an LLM request.
 
         Args:
-            backend: Name of the backend (e.g., 'codex', 'gemini', 'qwen')
+            backend: Name of the backend (e.g., 'codex', 'antigravity', 'qwen')
             model: Model name (optional)
             prompt: The prompt sent to LLM (optional)
             prompt_length: Length of prompt in characters (optional, can be auto-calculated)
@@ -235,7 +235,7 @@ class LLMOutputLogger:
         """Log an LLM response.
 
         Args:
-            backend: Name of the backend (e.g., 'codex', 'gemini', 'qwen')
+            backend: Name of the backend (e.g., 'codex', 'antigravity', 'qwen')
             model: Model name (optional)
             response: The response from LLM (optional)
             response_length: Length of response in characters (optional, can be auto-calculated)
@@ -287,7 +287,7 @@ class LLMOutputLogger:
         into a single entry.
 
         Args:
-            backend: Name of the backend (e.g., 'codex', 'gemini', 'qwen')
+            backend: Name of the backend (e.g., 'codex', 'antigravity', 'qwen')
             model: Model name (optional)
             prompt: The prompt sent to LLM (optional)
             response: The response from LLM (optional)

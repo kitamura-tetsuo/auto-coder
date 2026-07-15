@@ -316,7 +316,7 @@ def migrate(config_file: Optional[str]) -> None:
         click.echo()
 
     click.echo("The following environment variables can be used to configure backends:")
-    click.echo("  - AUTO_CODER_DEFAULT_BACKEND: Set default backend (e.g., 'gemini', 'codex')")
+    click.echo("  - AUTO_CODER_DEFAULT_BACKEND: Set default backend (e.g., 'antigravity', 'codex')")
     click.echo("  - AUTO_CODER_<BACKEND>_API_KEY: Set API key for specific backend")
     click.echo("  - AUTO_CODER_OPENAI_API_KEY: Set OpenAI API key")
     click.echo("  - AUTO_CODER_OPENAI_BASE_URL: Set OpenAI base URL")
@@ -637,10 +637,10 @@ def template(config_file: Optional[str]) -> None:
     # Generate a template configuration
     template_config = LLMBackendConfiguration()
     template_config.default_backend = "codex"
-    template_config.backend_order = ["codex", "gemini", "qwen", "claude", "auggie"]
+    template_config.backend_order = ["codex", "antigravity", "qwen", "claude", "auggie"]
 
     # Customize some default values for demonstration
-    gemini_config = template_config.get_backend_config("gemini")
+    gemini_config = template_config.get_backend_config("antigravity")
     if gemini_config:
         gemini_config.model = "gemini-2.5-pro"
         gemini_config.temperature = 0.7
@@ -932,8 +932,8 @@ def examples(config_file: Optional[str]) -> None:
     click.echo()
     click.echo("  # Configuration file (~/.auto-coder/llm_config.toml)")
     click.echo("  [backend]")
-    click.echo('  order = ["gemini", "qwen", "claude"]')
-    click.echo('  default = "gemini"')
+    click.echo('  order = ["agy", "qwen", "claude"]')
+    click.echo('  default = "antigravity"')
     click.echo()
     click.echo("  [backends.gemini]")
     click.echo('  model = "gemini-2.5-pro"')
@@ -1001,7 +1001,7 @@ def config_to_dict(config: LLMBackendConfiguration) -> Dict[str, Any]:
     # Ensure config has backends initialized
     if not config.backends:
         # Re-initialize with default backends if missing
-        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+        default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "codex-mcp"]
         for backend_name in default_backends:
             from .llm_backend_config import BackendConfig
 

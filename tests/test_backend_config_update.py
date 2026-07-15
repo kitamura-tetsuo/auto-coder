@@ -18,10 +18,10 @@ class TestBackendConfigUpdate:
 
     def test_backend_noedit_order_default_inference(self):
         """Test that noedit default backend is inferred from order[0]."""
-        config_data = {"backend": {"order": ["claude"]}, "backend_for_noedit": {"order": ["gemini", "claude"]}, "backends": {"claude": {"enabled": True}, "gemini": {"enabled": True}}}
+        config_data = {"backend": {"order": ["claude"]}, "backend_for_noedit": {"order": ["agy", "claude"]}, "backends": {"claude": {"enabled": True}, "antigravity": {"enabled": True}}}
 
         config = LLMBackendConfiguration.load_from_dict(config_data)
-        assert config.backend_for_noedit_default == "gemini"
+        assert config.backend_for_noedit_default == "antigravity"
 
     def test_backend_with_high_score_order(self):
         """Test parsing of backend_with_high_score order."""

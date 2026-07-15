@@ -16,7 +16,7 @@ class TestMCPChecker:
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        result = check_graphrag_mcp_for_backend("gemini")
+        result = check_graphrag_mcp_for_backend("antigravity")
         assert result is False
 
     def test_check_gemini_mcp_configured(self, tmp_path, monkeypatch):
@@ -41,7 +41,7 @@ class TestMCPChecker:
         with open(config_file, "w") as f:
             json.dump(config, f)
 
-        result = check_graphrag_mcp_for_backend("gemini")
+        result = check_graphrag_mcp_for_backend("antigravity")
         assert result is True
 
     def test_check_gemini_mcp_other_servers_only(self, tmp_path, monkeypatch):
@@ -66,7 +66,7 @@ class TestMCPChecker:
         with open(config_file, "w") as f:
             json.dump(config, f)
 
-        result = check_graphrag_mcp_for_backend("gemini")
+        result = check_graphrag_mcp_for_backend("antigravity")
         assert result is False
 
     def test_check_qwen_mcp_not_configured(self, tmp_path, monkeypatch):
@@ -156,12 +156,12 @@ args = []
 
     def test_suggest_graphrag_mcp_setup_gemini(self):
         """Test setup suggestion for Gemini."""
-        suggestion = suggest_graphrag_mcp_setup("gemini")
+        suggestion = suggest_graphrag_mcp_setup("antigravity")
         # Check for automatic setup command
         assert "auto-coder graphrag setup-mcp" in suggestion
-        assert "Gemini CLI" in suggestion
-        assert "Restart Gemini CLI" in suggestion
-        assert "gemini" in suggestion
+        assert "Antigravity CLI" in suggestion
+        assert "Restart Antigravity CLI" in suggestion
+        assert "antigravity" in suggestion
 
     def test_suggest_graphrag_mcp_setup_qwen(self):
         """Test setup suggestion for Qwen."""
@@ -197,7 +197,7 @@ args = []
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Add configuration - should return False because manual setup is required
-        result = add_graphrag_mcp_config("gemini")
+        result = add_graphrag_mcp_config("antigravity")
         assert result is False
 
     def test_add_qwen_mcp_config(self, tmp_path, monkeypatch):
@@ -233,7 +233,7 @@ args = []
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Ensure configuration - should return False because manual setup is required
-        result = ensure_graphrag_mcp_configured("gemini")
+        result = ensure_graphrag_mcp_configured("antigravity")
         assert result is False
 
     def test_ensure_graphrag_mcp_configured_already_configured(self, tmp_path, monkeypatch):
@@ -259,7 +259,7 @@ args = []
             json.dump(config, f)
 
         # Ensure configuration (should detect existing)
-        result = ensure_graphrag_mcp_configured("gemini")
+        result = ensure_graphrag_mcp_configured("antigravity")
         assert result is True
 
     def test_check_claude_mcp_not_configured(self, tmp_path, monkeypatch):

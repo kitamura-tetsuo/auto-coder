@@ -24,8 +24,8 @@ class TestBuildBackendManager:
                 openai_base_url="https://api.example.com",
                 options=["-o", "stream", "false", "--debug"],
             )
-            config.backends["gemini"] = BackendConfig(
-                name="gemini",
+            config.backends["agy"] = BackendConfig(
+                name="antigravity",
                 model="gemini-2.5-pro",
                 api_key="gemini_key",
             )

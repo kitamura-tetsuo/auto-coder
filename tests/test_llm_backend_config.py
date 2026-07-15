@@ -23,8 +23,8 @@ class TestBackendConfig:
 
     def test_backend_config_creation(self):
         """Test creating a BackendConfig with default values."""
-        config = BackendConfig(name="gemini")
-        assert config.name == "gemini"
+        config = BackendConfig(name="antigravity")
+        assert config.name == "antigravity"
         assert config.enabled is True
         assert config.model is None
         assert config.api_key is None
@@ -51,7 +51,7 @@ class TestBackendConfig:
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
         config = BackendConfig(
-            name="gemini",
+            name="antigravity",
             enabled=False,
             model="gemini-pro",
             api_key="test_key",
@@ -75,7 +75,7 @@ class TestBackendConfig:
             options_explicitly_set=True,
             options_for_noedit_explicitly_set=True,
         )
-        assert config.name == "gemini"
+        assert config.name == "antigravity"
         assert config.enabled is False
         assert config.model == "gemini-pro"
         assert config.api_key == "test_key"
@@ -315,7 +315,7 @@ class TestLLMBackendConfiguration:
 
         # Check default backends are created
         assert "codex" in config.backends
-        assert "gemini" in config.backends
+        assert "antigravity" in config.backends
         assert "qwen" in config.backends
         assert "auggie" in config.backends
         assert "claude" in config.backends
@@ -332,22 +332,22 @@ class TestLLMBackendConfiguration:
     def test_custom_initialization(self):
         """Test LLMBackendConfiguration with custom values."""
         backends = {
-            "gemini": BackendConfig(name="gemini", model="gemini-pro"),
+            "antigravity": BackendConfig(name="antigravity", model="gemini-pro"),
             "codex": BackendConfig(name="codex", enabled=False),
         }
         config = LLMBackendConfiguration(
-            backend_order=["gemini", "codex"],
-            default_backend="gemini",
+            backend_order=["agy", "codex"],
+            default_backend="antigravity",
             backends=backends,
             backend_for_noedit_order=["codex"],
             backend_for_noedit_default="codex",
         )
 
-        assert config.default_backend == "gemini"
-        assert config.backend_order == ["gemini", "codex"]
+        assert config.default_backend == "antigravity"
+        assert config.backend_order == ["agy", "codex"]
         assert config.backend_for_noedit_order == ["codex"]
         assert config.backend_for_noedit_default == "codex"
-        assert config.backends["gemini"].model == "gemini-pro"
+        assert config.backends["agy"].model == "gemini-pro"
         assert config.backends["codex"].enabled is False
 
     def test_options_for_noedit_field(self):
@@ -375,12 +375,12 @@ class TestLLMBackendConfiguration:
 
             # Create a configuration with custom values
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").model = "gemini-pro-custom"
-            config.get_backend_config("gemini").api_key = "test_key_123"
-            config.get_backend_config("gemini").temperature = 0.8
+            config.get_backend_config("antigravity").model = "gemini-pro-custom"
+            config.get_backend_config("antigravity").api_key = "test_key_123"
+            config.get_backend_config("antigravity").temperature = 0.8
             config.get_backend_config("qwen").providers = ["qwen-open-router", "qwen-azure"]
-            config.default_backend = "gemini"
-            config.backend_order = ["gemini", "codex", "qwen"]
+            config.default_backend = "antigravity"
+            config.backend_order = ["agy", "codex", "qwen"]
 
             # Save to file
             config.save_to_file(str(config_file))
@@ -394,9 +394,9 @@ class TestLLMBackendConfiguration:
             # Verify loaded configuration matches saved configuration
             assert loaded_config.default_backend == config.default_backend
             assert loaded_config.backend_order == config.backend_order
-            assert loaded_config.get_backend_config("gemini").model == "gemini-pro-custom"
-            assert loaded_config.get_backend_config("gemini").api_key == "test_key_123"
-            assert loaded_config.get_backend_config("gemini").temperature == 0.8
+            assert loaded_config.get_backend_config("antigravity").model == "gemini-pro-custom"
+            assert loaded_config.get_backend_config("antigravity").api_key == "test_key_123"
+            assert loaded_config.get_backend_config("antigravity").temperature == 0.8
             assert loaded_config.get_backend_config("qwen").providers == ["qwen-open-router", "qwen-azure"]
 
     def test_load_from_file_parses_provider_lists_and_uppercase_fields(self):
@@ -463,7 +463,7 @@ class TestLLMBackendConfiguration:
 
             # Verify default configuration was created
             assert config.default_backend == "codex"
-            assert "gemini" in config.backends
+            assert "antigravity" in config.backends
             assert "codex" in config.backends
 
             # Verify file was created
@@ -472,11 +472,11 @@ class TestLLMBackendConfiguration:
     def test_get_backend_config(self):
         """Test getting configuration for a specific backend."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").model = "custom-model"
+        config.get_backend_config("antigravity").model = "custom-model"
 
-        backend_config = config.get_backend_config("gemini")
+        backend_config = config.get_backend_config("antigravity")
         assert backend_config is not None
-        assert backend_config.name == "gemini"
+        assert backend_config.name == "antigravity"
         assert backend_config.model == "custom-model"
 
         # Test nonexistent backend
@@ -486,47 +486,47 @@ class TestLLMBackendConfiguration:
     def test_get_active_backends(self):
         """Test getting list of enabled backends."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").enabled = False
+        config.get_backend_config("antigravity").enabled = False
         config.get_backend_config("codex").enabled = True
         config.get_backend_config("qwen").enabled = False
-        config.backend_order = ["gemini", "codex", "qwen"]
+        config.backend_order = ["agy", "codex", "qwen"]
 
         active = config.get_active_backends()
         assert "codex" in active
-        assert "gemini" not in active
+        assert "antigravity" not in active
         assert "qwen" not in active
 
     def test_get_active_backends_no_order(self):
         """Test getting active backends when no order is specified."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").enabled = True
+        config.get_backend_config("antigravity").enabled = True
         config.get_backend_config("codex").enabled = False
         config.get_backend_config("qwen").enabled = True
 
         active = config.get_active_backends()
-        assert "gemini" in active
+        assert "antigravity" in active
         assert "codex" not in active
         assert "qwen" in active
 
     def test_get_active_noedit_backends(self):
         """Test getting active noedit backends."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").enabled = False
+        config.get_backend_config("antigravity").enabled = False
         config.get_backend_config("codex").enabled = True
         config.get_backend_config("qwen").enabled = False
-        config.backend_for_noedit_order = ["codex", "gemini", "qwen"]
+        config.backend_for_noedit_order = ["codex", "antigravity", "qwen"]
 
         active = config.get_active_noedit_backends()
         assert "codex" in active
-        assert "gemini" not in active
+        assert "antigravity" not in active
         assert "qwen" not in active
 
     def test_get_active_noedit_backends_fallback(self):
         """Test noedit backends fall back to general backends when not configured."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").enabled = False
+        config.get_backend_config("antigravity").enabled = False
         config.get_backend_config("codex").enabled = True
-        config.backend_order = ["codex", "gemini", "qwen"]
+        config.backend_order = ["codex", "antigravity", "qwen"]
         # No backend_for_noedit_order set
 
         active = config.get_active_noedit_backends()
@@ -538,28 +538,28 @@ class TestLLMBackendConfiguration:
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = True
         config.backend_for_noedit_default = "codex"
-        config.default_backend = "gemini"
+        config.default_backend = "antigravity"
 
         assert config.get_noedit_default_backend() == "codex"
 
     def test_get_noedit_default_backend_fallback(self):
         """Test noedit default falls back to general default."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").enabled = True
-        config.default_backend = "gemini"
+        config.get_backend_config("antigravity").enabled = True
+        config.default_backend = "antigravity"
 
         # No backend_for_noedit_default set
-        assert config.get_noedit_default_backend() == "gemini"
+        assert config.get_noedit_default_backend() == "antigravity"
 
     def test_get_noedit_default_backend_disabled(self):
         """Test that disabled noedit default falls back to general default."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = False
         config.backend_for_noedit_default = "codex"
-        config.default_backend = "gemini"
+        config.default_backend = "antigravity"
 
         # backend_for_noedit_default is disabled, should fall back
-        assert config.get_noedit_default_backend() == "gemini"
+        assert config.get_noedit_default_backend() == "antigravity"
 
     # Test backward compatibility with deprecated method names
     def test_get_active_message_backends_deprecated(self):
@@ -600,7 +600,7 @@ class TestLLMBackendConfiguration:
         assert config1.has_dual_configuration() is True
 
         config2 = LLMBackendConfiguration()
-        config2.backend_order = ["gemini", "codex"]
+        config2.backend_order = ["agy", "codex"]
         config2.backend_for_noedit_order = ["codex"]
         assert config2.has_dual_configuration() is True
 
@@ -619,12 +619,12 @@ class TestLLMBackendConfiguration:
         config = LLMBackendConfiguration()
 
         # Test with custom model
-        config.get_backend_config("gemini").model = "custom-gemini-model"
-        assert config.get_model_for_backend("gemini") == "custom-gemini-model"
+        config.get_backend_config("antigravity").model = "custom-gemini-model"
+        assert config.get_model_for_backend("antigravity") == "custom-gemini-model"
 
         # Test with default models (use a fresh config instance)
         config2 = LLMBackendConfiguration()
-        assert config2.get_model_for_backend("gemini") == "gemini-2.5-pro"
+        assert config2.get_model_for_backend("antigravity") == "gemini-2.5-pro"
         assert config2.get_model_for_backend("qwen") == "qwen3-coder-plus"
         assert config2.get_model_for_backend("auggie") == "GPT-5"
         assert config2.get_model_for_backend("claude") == "sonnet"
@@ -637,7 +637,7 @@ class TestLLMBackendConfiguration:
     def test_apply_env_overrides(self):
         """Test applying environment variable overrides."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").api_key = "original_key"
+        config.get_backend_config("antigravity").api_key = "original_key"
 
         with patch.dict(
             os.environ,
@@ -652,15 +652,15 @@ class TestLLMBackendConfiguration:
             config.apply_env_overrides()
 
         # Check that environment overrides were applied
-        assert config.get_backend_config("gemini").api_key == "env_gemini_key"
+        assert config.get_backend_config("antigravity").api_key == "env_gemini_key"
         assert config.default_backend == "qwen"
         assert config.backend_for_noedit_default == "claude"
 
     def test_apply_env_overrides_openai(self):
         """Test applying OpenAI environment variable overrides."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").openai_api_key = "original_openai_key"
-        config.get_backend_config("gemini").openai_base_url = "https://original.openai.com"
+        config.get_backend_config("antigravity").openai_api_key = "original_openai_key"
+        config.get_backend_config("antigravity").openai_base_url = "https://original.openai.com"
 
         with patch.dict(
             os.environ,
@@ -672,13 +672,13 @@ class TestLLMBackendConfiguration:
             config.apply_env_overrides()
 
         # Check that environment overrides were applied
-        assert config.get_backend_config("gemini").openai_api_key == "global_openai_key"
-        assert config.get_backend_config("gemini").openai_base_url == "https://global.openai.com"
+        assert config.get_backend_config("antigravity").openai_api_key == "global_openai_key"
+        assert config.get_backend_config("antigravity").openai_base_url == "https://global.openai.com"
 
     def test_apply_env_overrides_backend_specific(self):
         """Test that global OpenAI variables take precedence over backend-specific ones."""
         config = LLMBackendConfiguration()
-        config.get_backend_config("gemini").openai_api_key = "original_openai_key"
+        config.get_backend_config("antigravity").openai_api_key = "original_openai_key"
 
         with patch.dict(
             os.environ,
@@ -690,7 +690,7 @@ class TestLLMBackendConfiguration:
             config.apply_env_overrides()
 
         # Global should take precedence (checked first in the implementation)
-        assert config.get_backend_config("gemini").openai_api_key == "global_openai_key"
+        assert config.get_backend_config("antigravity").openai_api_key == "global_openai_key"
 
     def test_save_creates_directory(self):
         """Test that save creates parent directory if it doesn't exist."""
@@ -714,10 +714,10 @@ class TestLLMBackendConfiguration:
 
             # Create and save configuration
             config = LLMBackendConfiguration()
-            config.default_backend = "gemini"
-            config.backend_order = ["gemini", "codex"]
-            config.get_backend_config("gemini").model = "custom-model"
-            config.get_backend_config("gemini").temperature = 0.9
+            config.default_backend = "antigravity"
+            config.backend_order = ["agy", "codex"]
+            config.get_backend_config("antigravity").model = "custom-model"
+            config.get_backend_config("antigravity").temperature = 0.9
             config.get_backend_config("qwen").providers = ["qwen-open-router", "qwen-azure"]
             config.save_to_file(str(config_file))
 
@@ -728,10 +728,10 @@ class TestLLMBackendConfiguration:
             # Verify structure
             assert "backend" in data
             assert "backends" in data
-            assert data["backend"]["default"] == "gemini"
-            assert data["backend"]["order"] == ["gemini", "codex"]
-            assert data["backends"]["gemini"]["model"] == "custom-model"
-            assert data["backends"]["gemini"]["temperature"] == 0.9
+            assert data["backend"]["default"] == "antigravity"
+            assert data["backend"]["order"] == ["agy", "codex"]
+            assert data["backends"]["agy"]["model"] == "custom-model"
+            assert data["backends"]["agy"]["temperature"] == 0.9
             assert data["backends"]["qwen"]["providers"] == ["qwen-open-router", "qwen-azure"]
 
     def test_toml_save_and_load_retry_config(self):
@@ -741,8 +741,8 @@ class TestLLMBackendConfiguration:
 
             # Create configuration with retry settings
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").usage_limit_retry_count = 5
-            config.get_backend_config("gemini").usage_limit_retry_wait_seconds = 30
+            config.get_backend_config("antigravity").usage_limit_retry_count = 5
+            config.get_backend_config("antigravity").usage_limit_retry_wait_seconds = 30
             config.get_backend_config("qwen").usage_limit_retry_count = 3
             config.get_backend_config("qwen").usage_limit_retry_wait_seconds = 60
 
@@ -753,7 +753,7 @@ class TestLLMBackendConfiguration:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify retry configuration was persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.usage_limit_retry_count == 5
             assert gemini_config.usage_limit_retry_wait_seconds == 30
 
@@ -768,8 +768,8 @@ class TestLLMBackendConfiguration:
 
             # Create configuration with new fields
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").options = ["option1", "option2"]
-            config.get_backend_config("gemini").backend_type = "custom_type"
+            config.get_backend_config("antigravity").options = ["option1", "option2"]
+            config.get_backend_config("antigravity").backend_type = "custom_type"
             config.get_backend_config("qwen").options = ["option3"]
             config.get_backend_config("qwen").backend_type = "another_type"
 
@@ -780,7 +780,7 @@ class TestLLMBackendConfiguration:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify new fields were persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.options == ["option1", "option2"]
             assert gemini_config.backend_type == "custom_type"
 
@@ -795,7 +795,7 @@ class TestLLMBackendConfiguration:
 
             # Create configuration with options_for_resume settings
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").options_for_resume = ["resume_opt1", "resume_opt2"]
+            config.get_backend_config("antigravity").options_for_resume = ["resume_opt1", "resume_opt2"]
             config.get_backend_config("qwen").options_for_resume = ["resume_opt3"]
             config.get_backend_config("codex").options_for_resume = []
 
@@ -806,7 +806,7 @@ class TestLLMBackendConfiguration:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify options_for_resume was persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.options_for_resume == ["resume_opt1", "resume_opt2"]
 
             qwen_config = loaded_config.get_backend_config("qwen")
@@ -822,7 +822,7 @@ class TestLLMBackendConfiguration:
 
             # Create configuration with always_switch_after_execution settings
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").always_switch_after_execution = True
+            config.get_backend_config("antigravity").always_switch_after_execution = True
             config.get_backend_config("qwen").always_switch_after_execution = False
 
             # Save to file
@@ -832,7 +832,7 @@ class TestLLMBackendConfiguration:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify always_switch_after_execution field was persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.always_switch_after_execution is True
 
             qwen_config = loaded_config.get_backend_config("qwen")
@@ -845,7 +845,7 @@ class TestLLMBackendConfiguration:
 
             # Create configuration with options_for_noedit settings
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").options_for_noedit = ["noedit1", "noedit2"]
+            config.get_backend_config("antigravity").options_for_noedit = ["noedit1", "noedit2"]
             config.get_backend_config("qwen").options_for_noedit = ["noedit3"]
 
             # Save to file
@@ -855,7 +855,7 @@ class TestLLMBackendConfiguration:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify options_for_noedit was persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.options_for_noedit == ["noedit1", "noedit2"]
 
             qwen_config = loaded_config.get_backend_config("qwen")
@@ -868,7 +868,7 @@ class TestLLMBackendConfiguration:
 
             # Create a TOML file with the old structure (without retry fields)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -876,7 +876,7 @@ class TestLLMBackendConfiguration:
                         "providers": ["qwen-open-router"],
                         "temperature": 0.7,
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -897,7 +897,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.usage_limit_retry_count == 0
             assert gemini_config.usage_limit_retry_wait_seconds == 0
@@ -911,7 +911,7 @@ class TestLLMBackendConfiguration:
 
             # Create a TOML file with the old structure (without new fields)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -919,7 +919,7 @@ class TestLLMBackendConfiguration:
                         "providers": ["qwen-open-router"],
                         "temperature": 0.7,
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -943,7 +943,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.options == []
             assert gemini_config.options_for_resume == []
@@ -960,7 +960,7 @@ class TestLLMBackendConfiguration:
 
             # Create a TOML file with the old structure (without options_for_noedit field)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -968,7 +968,7 @@ class TestLLMBackendConfiguration:
                         "providers": ["qwen-open-router"],
                         "temperature": 0.7,
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -988,7 +988,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.options_for_noedit == []
             assert gemini_config.model == "gemini-pro"
@@ -1001,7 +1001,7 @@ class TestLLMBackendConfiguration:
 
             # Create a TOML file with the old structure (without options_for_resume field)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -1010,7 +1010,7 @@ class TestLLMBackendConfiguration:
                         "temperature": 0.7,
                         "options": ["option1", "option2"],
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -1032,7 +1032,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.options_for_resume == []
             assert gemini_config.backend_type == "custom_type"
@@ -1046,16 +1046,16 @@ class TestLLMBackendConfiguration:
 
             # Create first instance and save
             config1 = LLMBackendConfiguration()
-            config1.default_backend = "gemini"
-            config1.get_backend_config("gemini").model = "test-model"
+            config1.default_backend = "antigravity"
+            config1.get_backend_config("antigravity").model = "test-model"
             config1.save_to_file(str(config_file))
 
             # Create second instance and load
             config2 = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify values persisted
-            assert config2.default_backend == "gemini"
-            assert config2.get_backend_config("gemini").model == "test-model"
+            assert config2.default_backend == "antigravity"
+            assert config2.get_backend_config("antigravity").model == "test-model"
 
     def test_load_invalid_toml_file(self):
         """Test that loading an invalid TOML file raises an error."""
@@ -1082,8 +1082,8 @@ class TestLLMBackendConfiguration:
 
             # Create configuration with options set for gemini but not for qwen
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").options = ["--test-opt"]
-            config.get_backend_config("gemini").options_for_noedit = ["--noedit-opt"]
+            config.get_backend_config("antigravity").options = ["--test-opt"]
+            config.get_backend_config("antigravity").options_for_noedit = ["--noedit-opt"]
             # qwen has no options set (empty list from default)
 
             # Save to file
@@ -1093,7 +1093,7 @@ class TestLLMBackendConfiguration:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Gemini should have flags set because options keys are present in saved TOML
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.options_explicitly_set is True
             assert gemini_config.options_for_noedit_explicitly_set is True
             assert gemini_config.options == ["--test-opt"]
@@ -1117,7 +1117,7 @@ class TestLLMBackendConfiguration:
 
             # Create a TOML file with the old structure (without explicit set flags)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -1127,7 +1127,7 @@ class TestLLMBackendConfiguration:
                         "options": ["option1"],
                         "options_for_noedit": ["noedit1"],
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -1151,7 +1151,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.temperature == 0.7
 
             # Gemini doesn't have options key in TOML, so flags should be False
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.options_explicitly_set is False
             assert gemini_config.options_for_noedit_explicitly_set is False
@@ -1183,7 +1183,7 @@ class TestGlobalConfigInstance:
         with patch.dict(os.environ, {"AUTO_CODER_GEMINI_API_KEY": "test_key"}):
             config = get_llm_config()
 
-        assert config.get_backend_config("gemini").api_key == "test_key"
+        assert config.get_backend_config("antigravity").api_key == "test_key"
 
     def test_reset_llm_config(self):
         """Test that reset_llm_config clears the global instance."""
@@ -1201,7 +1201,7 @@ class TestGlobalConfigInstance:
         """Test get_llm_config with environment variables."""
         reset_llm_config()
         config = get_llm_config()
-        assert config.get_backend_config("gemini").api_key == "test_key"
+        assert config.get_backend_config("antigravity").api_key == "test_key"
 
 
 class TestConfigErrorHandling:
@@ -1470,7 +1470,7 @@ class TestConfigurationPriorityLogic:
 
                 # Verify default configuration
                 assert config.default_backend == "codex"
-                assert "gemini" in config.backends
+                assert "antigravity" in config.backends
                 assert "codex" in config.backends
                 assert "qwen" in config.backends
 
@@ -1489,9 +1489,9 @@ class TestConfigurationPriorityLogic:
 
             # Create config with specific values
             config = LLMBackendConfiguration()
-            config.default_backend = "gemini"
-            config.get_backend_config("gemini").model = "home-gemini-model"
-            config.get_backend_config("gemini").api_key = "home-api-key"
+            config.default_backend = "antigravity"
+            config.get_backend_config("antigravity").model = "home-gemini-model"
+            config.get_backend_config("antigravity").api_key = "home-api-key"
             config.save_to_file(home_config_file)
 
             original_cwd = os.getcwd()
@@ -1515,9 +1515,9 @@ class TestConfigurationPriorityLogic:
                     loaded_config = LLMBackendConfiguration.load_from_file()
 
                     # Verify it loaded from home config
-                    assert loaded_config.default_backend == "gemini"
-                    assert loaded_config.get_backend_config("gemini").model == "home-gemini-model"
-                    assert loaded_config.get_backend_config("gemini").api_key == "home-api-key"
+                    assert loaded_config.default_backend == "antigravity"
+                    assert loaded_config.get_backend_config("antigravity").model == "home-gemini-model"
+                    assert loaded_config.get_backend_config("antigravity").api_key == "home-api-key"
             finally:
                 os.chdir(original_cwd)
 
@@ -1534,7 +1534,7 @@ class TestConfigurationPriorityLogic:
             config.default_backend = "qwen"
             config.get_backend_config("qwen").model = "local-qwen-model"
             config.get_backend_config("qwen").api_key = "local-api-key"
-            config.backend_order = ["qwen", "gemini"]
+            config.backend_order = ["qwen", "antigravity"]
             config.save_to_file(local_config_file)
 
             original_cwd = os.getcwd()
@@ -1549,7 +1549,7 @@ class TestConfigurationPriorityLogic:
                 assert loaded_config.default_backend == "qwen"
                 assert loaded_config.get_backend_config("qwen").model == "local-qwen-model"
                 assert loaded_config.get_backend_config("qwen").api_key == "local-api-key"
-                assert loaded_config.backend_order == ["qwen", "gemini"]
+                assert loaded_config.backend_order == ["qwen", "antigravity"]
             finally:
                 os.chdir(original_cwd)
 
@@ -1562,9 +1562,9 @@ class TestConfigurationPriorityLogic:
             home_config_file = os.path.join(home_config_dir, "llm_config.toml")
 
             home_config = LLMBackendConfiguration()
-            home_config.default_backend = "gemini"
-            home_config.get_backend_config("gemini").model = "home-model"
-            home_config.get_backend_config("gemini").temperature = 0.5
+            home_config.default_backend = "antigravity"
+            home_config.get_backend_config("antigravity").model = "home-model"
+            home_config.get_backend_config("antigravity").temperature = 0.5
             home_config.save_to_file(home_config_file)
 
             # Create local config with different values
@@ -1604,8 +1604,8 @@ class TestConfigurationPriorityLogic:
                     assert loaded_config.backend_order == ["codex", "qwen"]
 
                     # Verify home config values were NOT loaded
-                    assert loaded_config.default_backend != "gemini"
-                    gemini_config = loaded_config.get_backend_config("gemini")
+                    assert loaded_config.default_backend != "antigravity"
+                    gemini_config = loaded_config.get_backend_config("antigravity")
                     assert gemini_config.model != "home-model"
             finally:
                 os.chdir(original_cwd)
@@ -1619,8 +1619,8 @@ class TestConfigurationPriorityLogic:
             home_config_file = os.path.join(home_config_dir, "llm_config.toml")
 
             home_config = LLMBackendConfiguration()
-            home_config.default_backend = "gemini"
-            home_config.get_backend_config("gemini").model = "home-model"
+            home_config.default_backend = "antigravity"
+            home_config.get_backend_config("antigravity").model = "home-model"
             home_config.save_to_file(home_config_file)
 
             # Create local config
@@ -1660,7 +1660,7 @@ class TestConfigurationPriorityLogic:
 
                 # Verify it did NOT load local or home values
                 assert loaded_config.default_backend != "codex"
-                assert loaded_config.default_backend != "gemini"
+                assert loaded_config.default_backend != "antigravity"
             finally:
                 os.chdir(original_cwd)
 
@@ -1674,23 +1674,23 @@ class TestConfigurationPriorityLogic:
 
             # Create config with various settings to test
             config = LLMBackendConfiguration()
-            config.default_backend = "gemini"
-            config.backend_order = ["gemini", "qwen", "codex"]
+            config.default_backend = "antigravity"
+            config.backend_order = ["agy", "qwen", "codex"]
             config.backend_for_noedit_order = ["codex"]
             config.backend_for_noedit_default = "codex"
 
             # Set detailed backend configs
-            config.get_backend_config("gemini").model = "gemini-test-model"
-            config.get_backend_config("gemini").api_key = "test-gemini-key"
-            config.get_backend_config("gemini").temperature = 0.7
-            config.get_backend_config("gemini").timeout = 60
-            config.get_backend_config("gemini").max_retries = 5
-            config.get_backend_config("gemini").providers = ["gemini-provider-1", "gemini-provider-2"]
-            config.get_backend_config("gemini").usage_limit_retry_count = 3
-            config.get_backend_config("gemini").usage_limit_retry_wait_seconds = 30
-            config.get_backend_config("gemini").options = ["option1", "option2"]
-            config.get_backend_config("gemini").backend_type = "custom_gemini"
-            config.get_backend_config("gemini").always_switch_after_execution = True
+            config.get_backend_config("antigravity").model = "gemini-test-model"
+            config.get_backend_config("antigravity").api_key = "test-gemini-key"
+            config.get_backend_config("antigravity").temperature = 0.7
+            config.get_backend_config("antigravity").timeout = 60
+            config.get_backend_config("antigravity").max_retries = 5
+            config.get_backend_config("antigravity").providers = ["gemini-provider-1", "gemini-provider-2"]
+            config.get_backend_config("antigravity").usage_limit_retry_count = 3
+            config.get_backend_config("antigravity").usage_limit_retry_wait_seconds = 30
+            config.get_backend_config("antigravity").options = ["option1", "option2"]
+            config.get_backend_config("antigravity").backend_type = "custom_gemini"
+            config.get_backend_config("antigravity").always_switch_after_execution = True
 
             config.get_backend_config("qwen").enabled = False
             config.get_backend_config("qwen").model = "qwen-test-model"
@@ -1707,13 +1707,13 @@ class TestConfigurationPriorityLogic:
                 loaded_config = LLMBackendConfiguration.load_from_file()
 
                 # Verify all values were correctly loaded
-                assert loaded_config.default_backend == "gemini"
-                assert loaded_config.backend_order == ["gemini", "qwen", "codex"]
+                assert loaded_config.default_backend == "antigravity"
+                assert loaded_config.backend_order == ["agy", "qwen", "codex"]
                 assert loaded_config.backend_for_noedit_order == ["codex"]
                 assert loaded_config.backend_for_noedit_default == "codex"
 
                 # Verify gemini backend settings
-                gemini = loaded_config.get_backend_config("gemini")
+                gemini = loaded_config.get_backend_config("antigravity")
                 assert gemini.model == "gemini-test-model"
                 assert gemini.api_key == "test-gemini-key"
                 assert gemini.temperature == 0.7
@@ -1749,8 +1749,8 @@ class TestConfigurationPriorityLogic:
             project1_config_file = os.path.join(project1_config_dir, "llm_config.toml")
 
             project1_config = LLMBackendConfiguration()
-            project1_config.default_backend = "gemini"
-            project1_config.get_backend_config("gemini").model = "project1-model"
+            project1_config.default_backend = "antigravity"
+            project1_config.get_backend_config("antigravity").model = "project1-model"
             project1_config.save_to_file(project1_config_file)
 
             # Project 2 config
@@ -1768,8 +1768,8 @@ class TestConfigurationPriorityLogic:
                 # Load from project 1
                 os.chdir(project1_dir)
                 config1 = LLMBackendConfiguration.load_from_file()
-                assert config1.default_backend == "gemini"
-                assert config1.get_backend_config("gemini").model == "project1-model"
+                assert config1.default_backend == "antigravity"
+                assert config1.get_backend_config("antigravity").model == "project1-model"
 
                 # Load from project 2
                 os.chdir(project2_dir)
@@ -1790,9 +1790,9 @@ class TestConfigurationPriorityLogic:
 
             # Create and save a config
             original_config = LLMBackendConfiguration()
-            original_config.default_backend = "gemini"
-            original_config.get_backend_config("gemini").model = "test-model"
-            original_config.backend_order = ["gemini", "codex"]
+            original_config.default_backend = "antigravity"
+            original_config.get_backend_config("antigravity").model = "test-model"
+            original_config.backend_order = ["agy", "codex"]
             original_config.save_to_file(config_file)
 
             # Load it back with explicit path (this was always supported)
@@ -1801,7 +1801,7 @@ class TestConfigurationPriorityLogic:
             # Verify it matches
             assert loaded_config.default_backend == original_config.default_backend
             assert loaded_config.backend_order == original_config.backend_order
-            assert loaded_config.get_backend_config("gemini").model == original_config.get_backend_config("gemini").model
+            assert loaded_config.get_backend_config("antigravity").model == original_config.get_backend_config("antigravity").model
 
             # Test that loading non-existent file creates default (existing behavior)
             nonexistent_file = os.path.join(tmpdir, "nonexistent.toml")
@@ -1817,7 +1817,7 @@ class TestConfigurationPriorityLogic:
 
             # Create configuration with model_provider settings
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").model_provider = "openrouter"
+            config.get_backend_config("antigravity").model_provider = "openrouter"
             config.get_backend_config("qwen").model_provider = "anthropic"
             config.get_backend_config("codex").model_provider = None
 
@@ -1828,7 +1828,7 @@ class TestConfigurationPriorityLogic:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify model_provider was persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.model_provider == "openrouter"
 
             qwen_config = loaded_config.get_backend_config("qwen")
@@ -1888,7 +1888,7 @@ class TestConfigurationPriorityLogic:
 
             # Create a TOML file with the old structure (without model_provider field)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -1896,7 +1896,7 @@ class TestConfigurationPriorityLogic:
                         "backend_type": "codex",
                         "temperature": 0.7,
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -1916,7 +1916,7 @@ class TestConfigurationPriorityLogic:
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.model_provider is None
             assert gemini_config.model == "gemini-pro"
@@ -2002,7 +2002,7 @@ enabled = true
 
             # Create configuration with usage_markers settings
             config = LLMBackendConfiguration()
-            config.get_backend_config("gemini").usage_markers = ["marker1", "marker2"]
+            config.get_backend_config("antigravity").usage_markers = ["marker1", "marker2"]
             config.get_backend_config("qwen").usage_markers = ["marker3"]
 
             # Save to file
@@ -2012,7 +2012,7 @@ enabled = true
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify usage_markers was persisted
-            gemini_config = loaded_config.get_backend_config("gemini")
+            gemini_config = loaded_config.get_backend_config("antigravity")
             assert gemini_config.usage_markers == ["marker1", "marker2"]
 
             qwen_config = loaded_config.get_backend_config("qwen")
@@ -2025,7 +2025,7 @@ enabled = true
 
             # Create a TOML file with the old structure (without usage_markers field)
             data = {
-                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backend": {"default": "qwen", "order": ["qwen", "antigravity"]},
                 "backends": {
                     "qwen": {
                         "enabled": True,
@@ -2033,7 +2033,7 @@ enabled = true
                         "providers": ["qwen-open-router"],
                         "temperature": 0.7,
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
@@ -2053,7 +2053,7 @@ enabled = true
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
-            gemini_config = config.get_backend_config("gemini")
+            gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.usage_markers == []
             assert gemini_config.model == "gemini-pro"
@@ -2101,7 +2101,7 @@ class TestBackendWithHighScore:
                 api_key="fallback_api_key",
                 temperature=0.3,
                 timeout=120,
-                backend_type="gemini",
+                backend_type="antigravity",
             )
             config.default_backend = "codex"
 
@@ -2122,7 +2122,7 @@ class TestBackendWithHighScore:
             assert fallback.api_key == "fallback_api_key"
             assert fallback.temperature == 0.3
             assert fallback.timeout == 120
-            assert fallback.backend_type == "gemini"
+            assert fallback.backend_type == "antigravity"
             assert fallback.enabled is True
 
     def test_load_toml_with_backend_with_high_score_section(self):
@@ -2130,13 +2130,13 @@ class TestBackendWithHighScore:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
             data = {
-                "backend": {"default": "codex", "order": ["codex", "gemini"]},
+                "backend": {"default": "codex", "order": ["codex", "antigravity"]},
                 "backends": {
                     "codex": {
                         "enabled": True,
                         "model": "codex-default",
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                     },
@@ -2147,7 +2147,7 @@ class TestBackendWithHighScore:
                     "api_key": "fallback_key_123",
                     "temperature": 0.2,
                     "timeout": 60,
-                    "backend_type": "gemini",
+                    "backend_type": "antigravity",
                     "providers": ["fallback-provider"],
                 },
             }
@@ -2163,7 +2163,7 @@ class TestBackendWithHighScore:
             assert fallback.api_key == "fallback_key_123"
             assert fallback.temperature == 0.2
             assert fallback.timeout == 60
-            assert fallback.backend_type == "gemini"
+            assert fallback.backend_type == "antigravity"
             assert fallback.providers == ["fallback-provider"]
             assert fallback.enabled is True
 
@@ -2172,13 +2172,13 @@ class TestBackendWithHighScore:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
             data = {
-                "backend": {"default": "codex", "order": ["codex", "gemini"]},
+                "backend": {"default": "codex", "order": ["codex", "antigravity"]},
                 "backends": {
                     "codex": {
                         "enabled": True,
                         "model": "codex-default",
                     },
-                    "gemini": {
+                    "antigravity": {
                         "enabled": True,
                         "model": "gemini-pro",
                     },
@@ -2229,8 +2229,8 @@ class TestBackendWithHighScore:
 
             # Create configuration without fallback backend
             config = LLMBackendConfiguration()
-            config.default_backend = "gemini"
-            config.get_backend_config("gemini").model = "gemini-pro"
+            config.default_backend = "antigravity"
+            config.get_backend_config("antigravity").model = "gemini-pro"
 
             # Save to file
             config.save_to_file(str(config_file))
@@ -2244,7 +2244,7 @@ class TestBackendWithHighScore:
 
             # Verify no backend_with_high_score section in the file
             assert "backend_with_high_score" not in data
-            assert data["backend"]["default"] == "gemini"
+            assert data["backend"]["default"] == "antigravity"
 
     def test_backend_with_high_score_all_fields(self):
         """Test that all BackendConfig fields are properly saved and loaded for fallback backend."""
@@ -2341,11 +2341,11 @@ class TestBackendWithHighScore:
             old_format_config = """
 [backend]
 default = "codex"
-order = ["codex", "gemini"]
+order = ["codex", "antigravity"]
 
 [message_backend]
-default = "gemini"
-order = ["gemini", "qwen"]
+default = "antigravity"
+order = ["agy", "qwen"]
 
 [backends.codex]
 enabled = true
@@ -2365,14 +2365,14 @@ model = "gemini-2.5-pro"
                 loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify it was converted to new format
-            assert loaded_config.backend_for_noedit_default == "gemini"
-            assert loaded_config.backend_for_noedit_order == ["gemini", "qwen"]
+            assert loaded_config.backend_for_noedit_default == "antigravity"
+            assert loaded_config.backend_for_noedit_order == ["agy", "qwen"]
 
             mock_logger.warning.assert_any_call("Configuration uses deprecated 'message_backend' key. Please update to 'backend_for_noedit' in your config file.")
 
             # Verify the deprecated methods still work
-            assert loaded_config.get_noedit_default_backend() == "gemini"
-            assert loaded_config.get_active_noedit_backends() == ["gemini", "qwen"]
+            assert loaded_config.get_noedit_default_backend() == "antigravity"
+            assert loaded_config.get_active_noedit_backends() == ["agy", "qwen"]
 
 
 class TestOptionInheritance:

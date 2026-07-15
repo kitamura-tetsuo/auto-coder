@@ -38,7 +38,7 @@ class TestGeminiClientMCP(unittest.TestCase):
             with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
                 client = GeminiClient()
 
-                # For check_mcp_server_configured, it calls subprocess.run(["gemini", "mcp", "list"]...)
+                # For check_mcp_server_configured, it calls subprocess.run(["agy", "mcp", "list"]...)
                 # We need to configure mock_run to return failure (not configured)
                 def side_effect(cmd, **kwargs):
                     if "--version" in cmd:
@@ -111,7 +111,7 @@ class TestGeminiClientMCP(unittest.TestCase):
             result = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
             self.assertTrue(result)
 
-            # Verify gemini mcp add was called with correct arguments
+            # Verify agy mcp add was called with correct arguments
             add_call = None
             for call in mock_run.call_args_list:
                 if len(call[0]) > 0 and "mcp" in call[0][0] and "add" in call[0][0]:
@@ -120,7 +120,7 @@ class TestGeminiClientMCP(unittest.TestCase):
 
             self.assertIsNotNone(add_call)
             cmd = add_call[0][0]
-            self.assertEqual(cmd[0], "gemini")
+            self.assertEqual(cmd[0], "antigravity")
             self.assertEqual(cmd[1], "mcp")
             self.assertEqual(cmd[2], "add")
             self.assertEqual(cmd[3], "mcp-pdb")
@@ -437,10 +437,10 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Create BackendManager with mock client
             manager = BackendManager(
-                default_backend="gemini",
+                default_backend="antigravity",
                 default_client=mock_client,
                 factories={},
-                order=["gemini"],
+                order=["agy"],
             )
 
             result = manager.check_mcp_server_configured("graphrag")
@@ -456,10 +456,10 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Create BackendManager with mock client
             manager = BackendManager(
-                default_backend="gemini",
+                default_backend="antigravity",
                 default_client=mock_client,
                 factories={},
-                order=["gemini"],
+                order=["agy"],
             )
 
             result = manager.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
@@ -493,14 +493,14 @@ class TestBackendManagerMCP(unittest.TestCase):
             # Create BackendManager with multiple backends
             # Note: we pass mock_gemini as default_client, so it won't use the factory for gemini
             manager = BackendManager(
-                default_backend="gemini",
+                default_backend="antigravity",
                 default_client=mock_gemini,
                 factories={
-                    "gemini": factory_gemini,
+                    "antigravity": factory_gemini,
                     "qwen": factory_qwen,
                     "codex": factory_codex,
                 },
-                order=["gemini", "qwen", "codex"],
+                order=["agy", "qwen", "codex"],
             )
 
             # Ensure MCP server is configured for all backends
@@ -530,10 +530,10 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Create BackendManager
             manager = BackendManager(
-                default_backend="gemini",
+                default_backend="antigravity",
                 default_client=mock_gemini,
                 factories={"qwen": factory_qwen},
-                order=["gemini", "qwen"],
+                order=["agy", "qwen"],
             )
 
             # Ensure MCP server is configured

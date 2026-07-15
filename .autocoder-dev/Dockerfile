@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://tailscale.com/install.sh | sh \
     && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && ln -sf /usr/bin/python3 /usr/bin/python \
-    && npm install -g @google/gemini-cli \
+    && curl -fsSL https://antigravity.google/cli/install.sh | bash \
     && npm cache clean --force \
     && apt-get purge -y --auto-remove software-properties-common \
     && rm -rf /var/lib/apt/lists/*

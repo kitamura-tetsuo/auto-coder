@@ -100,7 +100,7 @@ def lock_manager_context(force: bool = False):
 @click.group(
     cls=ForceAwareGroup,
     invoke_without_command=True,
-    help="Auto-Coder: Automated application development using Gemini CLI and GitHub integration.",
+    help="Auto-Coder: Automated application development using Antigravity CLI and GitHub integration.",
 )
 @click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
 @click.option(

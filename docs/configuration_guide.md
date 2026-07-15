@@ -117,7 +117,7 @@ claude --resume abc123
 ```toml
 [backend]
 default = "codex"
-order = ["codex", "gemini", "qwen"]
+order = ["codex", "antigravity", "qwen"]
 ```
 
 - **`default`**: Primary backend to use
@@ -128,7 +128,7 @@ order = ["codex", "gemini", "qwen"]
 ```toml
 [backend_for_noedit]
 default = "claude"
-order = ["claude", "gemini"]
+order = ["claude", "antigravity"]
 ```
 
 Separate configuration for message generation (commit messages, PR descriptions, etc.)
@@ -188,11 +188,11 @@ options_for_resume = ["--resume", "[sessionId]"]
 ```toml
 [backend]
 default = "codex"
-order = ["codex", "gemini", "claude"]
+order = ["codex", "antigravity", "claude"]
 
 [backend_for_noedit]
 default = "claude"
-order = ["claude", "gemini"]
+order = ["claude", "antigravity"]
 
 [backends.codex]
 model = "gpt-5.1-codex-max"
@@ -202,9 +202,9 @@ options_for_noedit = ["--model", "[model_name]", "--json"]
 
 [backends.gemini]
 model = "gemini-2.5-pro"
-backend_type = "gemini"
-options = ["--model", "[model_name]", "--yolo", "--prompt"]
-options_for_noedit = ["--model", "[model_name]", "--yolo", "--prompt"]
+backend_type = "antigravity"
+options = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]
+options_for_noedit = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]
 
 [backends.claude]
 model = "sonnet"
@@ -266,14 +266,14 @@ options = ["--model", "[model_name]", "-c", "model_provider=[model_provider]"]
 ```toml
 [backends.gemini]
 model = "gemini-2.5-pro"
-backend_type = "gemini"
-options = ["--model", "[model_name]", "--yolo", "--prompt"]
-options_for_noedit = ["--model", "[model_name]", "--yolo", "--prompt"]
+backend_type = "antigravity"
+options = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]
+options_for_noedit = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]
 ```
 
 **Important Notes**:
 - **`--prompt` flag must be the last option** before the prompt text
-- Supports automatic `@` escaping to `\@` in prompts for Gemini CLI compatibility
+- Supports automatic `@` escaping to `\@` in prompts for Antigravity CLI compatibility
 
 ### Claude Backend
 
@@ -350,7 +350,7 @@ Each backend has specific required options that **must** be included in the `opt
 |---------|-----------------|---------------------|
 | `codex` | `--dangerously-bypass-approvals-and-sandbox` | Yes |
 | `claude` | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` | Yes |
-| `gemini` | `--yolo` | Yes |
+| `gemini` | `--dangerously-skip-permissions` | Yes |
 | `auggie` | `--print` | Yes |
 | `qwen` | `-y` | Yes |
 | `jules` | None | N/A |
@@ -365,7 +365,7 @@ Each backend has specific required options that **must** be included in the `opt
 **Before** (hardcoded in code):
 ```python
 # CodexClient hardcoded: codex exec --model codex --json
-# GeminiClient hardcoded: gemini --model gemini-2.5-pro --yolo --prompt
+# GeminiClient hardcoded: antigravity --model gemini-2.5-pro --dangerously-skip-permissions --prompt
 ```
 
 **After** (configuration-based):
@@ -376,7 +376,7 @@ options = ["--model", "[model_name]", "--json", "--dangerously-bypass-approvals-
 
 [backends.gemini]
 model = "gemini-2.5-pro"
-options = ["--model", "[model_name]", "--yolo", "--prompt"]
+options = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]
 ```
 
 ### Migration Steps
@@ -420,14 +420,14 @@ options = ["--model", "[model_name]", "--json", "--dangerously-bypass-approvals-
 
 **Old** (hardcoded):
 ```
-gemini --model gemini-2.5-pro --yolo --prompt <prompt>
+antigravity --model gemini-2.5-pro --dangerously-skip-permissions --prompt <prompt>
 ```
 
 **New** (configuration):
 ```toml
 [backends.gemini]
 model = "gemini-2.5-pro"
-options = ["--model", "[model_name]", "--yolo", "--prompt"]
+options = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]
 ```
 
 **Important**: `--prompt` must be the last option!
@@ -480,14 +480,14 @@ options = ["--model", "[model_name]"]  # Correct placeholder syntax
 
 ### Gemini `--prompt` Flag Position
 
-**Problem**: Gemini CLI fails with option ordering errors
+**Problem**: Antigravity CLI fails with option ordering errors
 
 **Cause**: `--prompt` flag must be the **last option** before the prompt text
 
 **Solution**:
 ```toml
 [backends.gemini]
-options = ["--model", "[model_name]", "--yolo", "--prompt"]  # --prompt is last
+options = ["--model", "[model_name]", "--dangerously-skip-permissions", "--prompt"]  # --prompt is last
 ```
 
 ### Options Not Being Used

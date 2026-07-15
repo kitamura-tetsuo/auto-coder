@@ -14,7 +14,7 @@ def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_which, mock_
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "gem ok\n", "", 0)
 
-    client = GeminiClient(backend_name="gemini")
+    client = GeminiClient(backend_name="antigravity")
     out = client._run_llm_cli("hello")
     assert "gem ok" in out
 
