@@ -117,6 +117,17 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                     except Exception as e:
                         logger.error(f"Failed to check expiration for session {session_id}: {e}")
 
+                # Check if session was created more than 7 days ago
+                create_time_str = session.get("createTime")
+                if create_time_str:
+                    try:
+                        create_time = parser.parse(create_time_str)
+                        if (now - create_time) >= timedelta(days=7):
+                            logger.debug(f"Ignoring Jules session older than 7 days: {session_id} (Created: {create_time})")
+                            continue
+                    except Exception as e:
+                        logger.error(f"Failed to check creation time for session {session_id}: {e}")
+
                 state = session.get("state")
                 outputs = session.get("outputs", {})
                 if isinstance(outputs, list):
@@ -137,20 +148,59 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                 if automation_mode is None:
                     automation_mode = "AUTO_CREATE_PR"
 
+                # Check if the associated issue or PR is closed or merged
+                is_target_closed = False
+                if github_client and repo_name:
+                    try:
+                        from .cloud_manager import CloudManager
+
+                        cloud_manager = CloudManager(repo_name)
+                        target_num = cloud_manager.get_issue_by_session(session_id)
+
+                        if not target_num:
+                            from .pr_processor import _find_issue_by_session_id_in_comments
+
+                            target_num = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+
+                        if not target_num and pull_request:
+                            if isinstance(pull_request, dict):
+                                target_num = pull_request.get("number")
+                            elif isinstance(pull_request, str) and "github.com" in pull_request:
+                                parts = pull_request.split("/")
+                                if "pull" in parts:
+                                    pull_idx = parts.index("pull")
+                                    if pull_idx + 1 < len(parts):
+                                        try:
+                                            target_num = int(parts[pull_idx + 1])
+                                        except ValueError:
+                                            pass
+
+                        if target_num:
+                            issue = github_client.get_issue(repo_name, target_num)
+                            if issue and issue.get("state") == "closed":
+                                is_target_closed = True
+                                logger.info(f"Target PR/Issue #{target_num} for session {session_id} is already closed/merged. Skipping resume.")
+                    except Exception as e:
+                        logger.warning(f"Failed to check target status for session {session_id}: {e}")
+
                 # Check for specific error message
                 error_msg = outputs.get("error", "")
                 if error_msg and "Jules encountered an error" in str(error_msg):
+                    if is_target_closed:
+                        logger.info(f"Session {session_id} encountered an error but target is closed. Ignoring.")
+                        continue
+
                     logger.info(f"Session {session_id} encountered an error: {error_msg}. Processing as a failed session requiring restart.")
 
                     try:
                         github_client = GitHubClient.get_instance()
                         from .cloud_manager import CloudManager
 
-                        cloud_manager = CloudManager(repo_name) if repo_name else None
-                        issue_num = cloud_manager.get_issue_by_session(session_id) if cloud_manager else None
+                        error_cloud_manager = CloudManager(repo_name) if repo_name else None
+                        issue_num = error_cloud_manager.get_issue_by_session(session_id) if error_cloud_manager else None
 
                         pr_number = None
-                        if not issue_num:
+                        if not issue_num and repo_name:
                             from .pr_processor import _find_issue_by_session_id_in_comments
 
                             pr_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
@@ -170,17 +220,20 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                             new_session_id = jules_client.start_session(prompt=session_prompt, repo_name=repo_name or "unknown", base_branch=base_branch, title=title)
                             logger.info(f"Started new session {new_session_id}")
                             if target_num:
-                                if cloud_manager:
-                                    cloud_manager.add_session(target_num, new_session_id)
+                                if error_cloud_manager:
+                                    error_cloud_manager.add_session(target_num, new_session_id)
                                 if repo_name:
                                     comments = github_client.get_issue_comments(repo_name, target_num)
                                     comment_updated = False
                                     for comment in comments:
-                                        if comment.get("body") and session_id in comment.get("body"):
-                                            new_body = comment.get("body").replace(session_id, new_session_id)
-                                            github_client.update_comment_for_issue(repo_name, comment.get("id"), new_body)
+                                        body = comment.get("body")
+                                        if isinstance(body, str) and session_id in body:
+                                            new_body = body.replace(session_id, new_session_id)
+                                            comment_id = comment.get("id")
+                                            if isinstance(comment_id, int):
+                                                github_client.update_comment_for_issue(repo_name, comment_id, new_body)
                                             comment_updated = True
-                                            logger.info(f"Updated comment {comment.get('id')} to reference new session {new_session_id}")
+                                            logger.info(f"Updated comment {comment_id} to reference new session {new_session_id}")
                                             break
                                     if not comment_updated:
                                         comment_body = f"I started a new Jules session to work on this issue because the previous one encountered an error. New Session ID: {new_session_id}\n\nhttps://jules.google.com/session/{new_session_id}"
@@ -212,7 +265,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                             logger.warning(f"Failed to parse updateTime for session {session_id}: {e}")
 
                 # Case 1: Failed session or Timeout -> Resume (only if automationMode is AUTO_CREATE_PR)
-                if (state == "FAILED" or is_timeout) and automation_mode == "AUTO_CREATE_PR":
+                if (state == "FAILED" or is_timeout) and automation_mode == "AUTO_CREATE_PR" and not is_target_closed:
                     logger.info(f"Resuming failed/timed-out Jules session: {session_id}")
                     try:
                         jules_client.send_message(session_id, "ok")
@@ -230,7 +283,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                             logger.error(f"Failed to resume session {session_id}: {e}")
 
                 # Case 4: Awaiting Plan Approval -> Approve Plan
-                elif state == "AWAITING_PLAN_APPROVAL":
+                elif state == "AWAITING_PLAN_APPROVAL" and not is_target_closed:
                     logger.info(f"Approving plan for Jules session: {session_id}")
                     try:
                         if jules_client.approve_plan(session_id):
@@ -246,7 +299,11 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         else:
                             logger.error(f"Failed to approve plan for session {session_id}: {e}")
                 # Case 2: Awaiting User Feedback, Comments, or Completed session without PR -> Resume with retry logic (only if automationMode is AUTO_CREATE_PR)
-                elif ((state in ("AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS") or (isinstance(state, str) and state.startswith("AWAITING_") and state != "AWAITING_PLAN_APPROVAL")) or (state == "COMPLETED" and not pull_request)) and automation_mode == "AUTO_CREATE_PR":
+                elif (
+                    ((state in ("AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS") or (isinstance(state, str) and state.startswith("AWAITING_") and state != "AWAITING_PLAN_APPROVAL")) or (state == "COMPLETED" and not pull_request))
+                    and automation_mode == "AUTO_CREATE_PR"
+                    and not is_target_closed
+                ):
                     retry_count = retry_state.get(session_id, 0)
 
                     if retry_count < 5:
