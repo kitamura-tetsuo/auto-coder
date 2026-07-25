@@ -2,8 +2,16 @@ import json
 from unittest.mock import MagicMock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
+from src.auto_coder.conflict_resolver import _extract_session_id_from_pr_body, _perform_base_branch_merge_and_conflict_resolution
 from src.auto_coder.utils import CommandResult
+
+
+def test_extract_session_id_from_pr_body_jules_session_url():
+    """A real Jules session URL should be extracted even if the body also
+    contains a self-referencing GitHub PR link (regression for 404s when
+    archiving sessions for PRs Jules created directly)."""
+    pr_body = "This PR was created by Jules.\n\n" "https://jules.google.com/session/901463134778726610\n\n" "https://github.com/kitamura-tetsuo/outliner/pull/3976"
+    assert _extract_session_id_from_pr_body(pr_body) == "901463134778726610"
 
 
 def test_perform_base_merge_uses_fq_remote_ref():

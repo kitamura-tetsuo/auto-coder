@@ -119,6 +119,13 @@ class TestExtractSessionIdFromPrBody:
         # AND it should not extract the UUID value (since Pattern 6 is now refined)
         assert session_id is None
 
+    def test_extract_session_id_from_pr_body_jules_session_url(self):
+        """Test extracting session ID from a real Jules session URL, even when a
+        self-referencing GitHub PR link is also present in the body."""
+        pr_body = "This PR was created by Jules.\n\n" "https://jules.google.com/session/901463134778726610\n\n" "https://github.com/kitamura-tetsuo/outliner/pull/3976"
+        session_id = _extract_session_id_from_pr_body(pr_body)
+        assert session_id == "901463134778726610"
+
 
 class TestUpdateJulesPrBody:
     """Test cases for _update_jules_pr_body function."""

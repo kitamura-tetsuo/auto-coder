@@ -1616,13 +1616,24 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         logger.debug(f"Found session ID pattern 2: {session_id}")
         return session_id
 
-    # Pattern 3: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
+    # Pattern 3: Look for Jules session URLs (e.g., https://jules.google.com/session/901463134778726610)
+    # This is the real Jules session URL format and must be checked before the
+    # GitHub PR URL fallback below, otherwise a self-referencing PR link would be
+    # mistaken for a session ID and passed to the Jules API, which always 404s.
+    jules_session_url_pattern = r"jules\.google\.com/session/([a-zA-Z0-9-_]+)"
+    match = re.search(jules_session_url_pattern, pr_body)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 3 (Jules Session URL): {session_id}")
+        return session_id
+
+    # Pattern 3b: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
     # This pattern matches the full URL and extracts it as the session ID
     github_url_pattern = r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+"
     match = re.search(github_url_pattern, pr_body)
     if match:
         session_id = match.group(0).strip()
-        logger.debug(f"Found session ID pattern 3 (GitHub PR URL): {session_id}")
+        logger.debug(f"Found session ID pattern 3b (GitHub PR URL): {session_id}")
         return session_id
 
     # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345 or "task 12345")

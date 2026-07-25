@@ -387,7 +387,13 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     if match:
         return match.group(1).strip()
 
-    # Pattern 3: Look for Jules task URLs
+    # Pattern 3: Look for Jules session URLs (e.g., https://jules.google.com/session/901463134778726610)
+    jules_session_pattern = r"jules\.google\.com/session/([a-zA-Z0-9-_]+)"
+    match = re.search(jules_session_pattern, pr_body)
+    if match:
+        return match.group(1).strip()
+
+    # Pattern 4: Look for Jules task URLs
     jules_task_pattern = r"https?://jules\.google\.com/task/(\d+)"
     match = re.search(jules_task_pattern, pr_body)
     if match:
