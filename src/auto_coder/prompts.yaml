@@ -43,6 +43,9 @@ pr:
     $commit_log
     $linked_issues_context
 
+  jules_merge_conflict_resolution: |-
+    Merge conflicts detected. Please pull in the main branch and resolve the conflicts.
+
   merge_conflict_resolution: |-
     There are merge conflicts when trying to merge $base_branch branch into PR #$pr_number: $pr_title
 

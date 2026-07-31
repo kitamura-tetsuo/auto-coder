@@ -1540,8 +1540,27 @@ def _update_with_base_branch(
                     logger.error("Exiting application due to git push failure")
                     sys.exit(1)
         else:
-            # Merge conflict occurred, use common subroutine for conflict resolution
-            actions.append(f"Merge conflict detected for PR #{pr_number}, using common subroutine for resolution...")
+            # Merge conflict occurred, check if Jules PR
+            actions.append(f"Merge conflict detected for PR #{pr_number}")
+
+            if _is_jules_pr(pr_data):
+                actions.append(f"PR #{pr_number} is a Jules PR with merge conflicts. Requesting Jules to resolve it.")
+                try:
+                    from auto_coder.jules_client import JulesClient
+
+                    jules_client = JulesClient()
+                    session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
+                    if session_id:
+                        prompt = render_prompt("pr.jules_merge_conflict_resolution")
+                        jules_client.send_message(session_id, prompt)
+                        actions.append(f"Requested Jules to resolve merge conflict in session {session_id}")
+                        # We return here so we don't proceed with LLM fixing this PR right now
+                        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                        return actions
+                    else:
+                        actions.append(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
+                except Exception as e:
+                    actions.append(f"Error requesting Jules to resolve conflict: {e}")
 
             # Use the common subroutine for conflict resolution
             from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution, scan_conflict_markers
@@ -2183,6 +2202,24 @@ def _merge_pr(
         if is_conflict:
             logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
             log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
+
+            if _is_jules_pr(pr_info):
+                logger.info(f"PR #{pr_number} is a Jules PR with merge conflicts. Requesting Jules to resolve it.")
+                try:
+                    from auto_coder.jules_client import JulesClient
+
+                    jules_client = JulesClient()
+                    session_id = _extract_session_id_from_pr_body(pr_info.get("body", ""))
+                    if session_id:
+                        prompt = render_prompt("pr.jules_merge_conflict_resolution")
+                        jules_client.send_message(session_id, prompt)
+                        logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
+                        log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
+                        return False
+                    else:
+                        logger.warning(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
+                except Exception as e:
+                    logger.error(f"Error requesting Jules to resolve conflict: {e}")
 
             # Try to resolve merge conflicts
             if _resolve_pr_merge_conflicts(repo_name, pr_number, config):

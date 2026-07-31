@@ -174,3 +174,7 @@ When encountering Python dependency-related errors (`ImportError`, `ModuleNotFou
    - Similar reports on GitHub Issues and Stack Overflow.
 3. **Analyze the search results** to determine if the issue is environmental or version-specific before suggesting any changes.
 ---
+
+## Prompts and Language Rule
+* Write all AI prompts in English.
+* Do not hardcode prompts in Python source files. Instead, add them to `src/auto_coder/prompts.yaml` and load them using `render_prompt` from `prompt_loader.py`.
