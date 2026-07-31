@@ -335,6 +335,14 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             # API: api.checks.list_for_ref(owner, repo, ref)
             res = api.checks.list_for_ref(owner, repo, ref=current_head_sha, per_page=100)
             checks_data = res.get("check_runs", [])
+
+            # Fetch workflow runs to catch any queued workflows that haven't created check runs yet
+            try:
+                workflow_res = api.actions.list_workflow_runs_for_repo(owner, repo, head_sha=current_head_sha, per_page=100)
+                checks_data.extend(workflow_res.get("workflow_runs", []))
+            except Exception as w_err:
+                logger.warning(f"Failed to fetch workflow runs for PR #{pr_number}: {w_err}")
+
         except Exception as e:
             api_error = str(e)
             log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, api_error)
