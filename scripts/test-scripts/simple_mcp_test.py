@@ -92,7 +92,7 @@ def test_simple_mcp(server_path, server_name):
 def main():
     print("=== Simple MCP Server Test ===")
 
-    servers = [("src/auto_coder/mcp_servers/test_watcher/server.py", "Test Watcher"), ("src/auto_coder/mcp_servers/graphrag_mcp/server.py", "GraphRAG")]
+    servers = [("src/auto_coder/mcp_servers/test_watcher/server.py", "Test Watcher")]
 
     results = {}
     for server_path, server_name in servers:

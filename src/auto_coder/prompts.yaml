@@ -1178,59 +1178,6 @@ feature:
         }
     ]
 
-mcp:
-  # GraphRAG MCP server usage guidelines (CUSTOMIZED FORK)
-  # This is a customized fork of rileylemm/graphrag_mcp for TypeScript/JavaScript code analysis
-  # Located at: mcp/graphrag_mcp/
-  # The MCP server provides tools dynamically via MCP protocol
-
-  usage_guidelines: |-
-    GraphRAG MCP provides code analysis tools for TypeScript/JavaScript codebases.
-    Code structure is indexed using ts-morph and stored in Neo4j (graph) + Qdrant (vectors).
-
-    Available Tools:
-
-    1. find_symbol(fqname):
-       - Find a specific symbol by fully qualified name
-       - Example: find_symbol("src/utils.ts::calculateHash")
-       - Returns: id, kind, signature, complexity, location, etc.
-
-    2. get_call_graph(symbol_id, direction='both', depth=1):
-       - Analyze function/method call relationships
-       - direction: 'callers' | 'callees' | 'both'
-       - depth: 1-3 (higher = more indirect relationships)
-       - Returns: nodes (related symbols) and edges (call relationships)
-
-    3. get_dependencies(file_path):
-       - Analyze file import relationships
-       - Example: get_dependencies("src/utils.ts")
-       - Returns: imports (what this file imports) and imported_by (who imports this)
-
-    4. impact_analysis(symbol_ids, max_depth=2):
-       - Analyze impact of changing symbols
-       - Finds all affected symbols via CALLS/IMPORTS/EXTENDS/IMPLEMENTS
-       - Returns: affected_symbols, affected_files, impact_summary
-
-    5. semantic_code_search(query, limit=10, kind_filter=None):
-       - Search code using natural language
-       - Example: semantic_code_search("hash calculation functions", kind_filter=["Function"])
-       - Returns: semantically similar symbols with scores
-
-    Graph Schema (ts-morph):
-    - Nodes: File, Function, Method, Class, Interface, Type
-    - Edges: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS
-    - Properties: id, kind, fqname, sig, complexity, file, start_line, end_line, tags
-
-    Best Practices:
-    - Use find_symbol when you know the exact symbol name
-    - Use semantic_code_search when exploring unfamiliar code
-    - Use get_call_graph to understand function relationships
-    - Use impact_analysis before making changes to assess scope
-    - Use get_dependencies to understand module structure
-
-    MCP Resources:
-    - https://graphrag.db/collection/qdrant - Qdrant vector collection info (embeddings)
-
 jules:
   pr:
     action: |-

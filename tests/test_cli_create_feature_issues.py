@@ -14,10 +14,9 @@ from src.auto_coder.cli import create_feature_issues
 class TestCLICreateFeatureIssues:
     """Test cases for create-feature-issues CLI command."""
 
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.codex_client.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
     @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_codex_with_model_warns_and_ignores(
@@ -27,7 +26,6 @@ class TestCLICreateFeatureIssues:
         mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
-        mock_initialize_graphrag,
     ):
         """Test create-feature-issues with codex backend via config."""
         mock_github_client_class.return_value = Mock()
@@ -52,10 +50,9 @@ class TestCLICreateFeatureIssues:
         assert "Backends" in result.output
         assert "codex (default: codex)" in result.output
 
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.codex_client.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
     @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_success_default_codex(
@@ -65,7 +62,6 @@ class TestCLICreateFeatureIssues:
         mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
-        mock_initialize_graphrag,
     ):
         """create-feature-issues uses codex by default."""
         mock_github_client = Mock()
@@ -117,9 +113,8 @@ class TestCLICreateFeatureIssues:
         assert result.exit_code != 0
         assert "GitHub token is required" in result.output
 
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
-    def test_create_feature_issues_missing_codex_cli(self, mock_check_cli, mock_initialize_graphrag):
+    def test_create_feature_issues_missing_codex_cli(self, mock_check_cli):
         """Default backend codex missing should error."""
         mock_check_cli.side_effect = click.ClickException("Codex CLI missing")
         runner = CliRunner()
@@ -133,10 +128,9 @@ class TestCLICreateFeatureIssues:
         assert "Codex CLI" in result.output
 
     @patch.dict("os.environ", {"GITHUB_TOKEN": "env_github_token"})
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.codex_client.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
     @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_with_env_vars_default_codex(
@@ -146,7 +140,6 @@ class TestCLICreateFeatureIssues:
         mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
-        mock_initialize_graphrag,
     ):
         """create-feature-issues uses env GITHUB_TOKEN and default codex backend."""
         # Setup
@@ -173,10 +166,9 @@ class TestCLICreateFeatureIssues:
         mock_github_client_class.get_instance.assert_called_once_with("env_github_token", disable_labels=False)
         mock_codex_client_class.assert_called_once()
 
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.codex_client.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
     @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_with_configured_backend(
@@ -186,7 +178,6 @@ class TestCLICreateFeatureIssues:
         mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
-        mock_initialize_graphrag,
     ):
         """Test create-feature-issues uses default backend from configuration."""
         mock_github_client_class.return_value = Mock()
@@ -210,88 +201,3 @@ class TestCLICreateFeatureIssues:
         assert result.exit_code == 0
         # With the new configuration system, the default backend (codex) should be used
         mock_codex_client_class.assert_called_once()
-
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
-    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
-    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.CodexClient")
-    @patch("src.auto_coder.cli_commands_main.GitHubClient")
-    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
-    def test_create_feature_issues_force_reindex_flag(
-        self,
-        mock_check_github_sub_issue,
-        mock_github_client_class,
-        mock_codex_client_class,
-        mock_automation_engine_class,
-        mock_check_cli,
-        mock_initialize_graphrag,
-    ):
-        """--force-reindex should call initialize_graphrag with force_reindex=True."""
-        mock_github_client = Mock()
-        mock_codex_client = Mock()
-        automation_engine = Mock()
-        automation_engine.create_feature_issues.return_value = []
-        mock_github_client_class.return_value = mock_github_client
-        mock_codex_client_class.return_value = mock_codex_client
-        mock_automation_engine_class.return_value = automation_engine
-        mock_check_cli.return_value = None
-
-        runner = CliRunner()
-        result = runner.invoke(
-            create_feature_issues,
-            [
-                "--repo",
-                "test/repo",
-                "--github-token",
-                "test_token",
-                "--force-reindex",
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Verify output
-        assert "Force reindex" in result.output
-        # Verify initialize_graphrag was called with force_reindex=True
-        mock_initialize_graphrag.assert_called_once_with(force_reindex=True)
-
-    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
-    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
-    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.CodexClient")
-    @patch("src.auto_coder.cli_commands_main.GitHubClient")
-    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
-    def test_create_feature_issues_default_no_force_reindex(
-        self,
-        mock_check_github_sub_issue,
-        mock_github_client_class,
-        mock_codex_client_class,
-        mock_automation_engine_class,
-        mock_check_cli,
-        mock_initialize_graphrag,
-    ):
-        """Default should call initialize_graphrag with force_reindex=False."""
-        mock_github_client = Mock()
-        mock_codex_client = Mock()
-        automation_engine = Mock()
-        automation_engine.create_feature_issues.return_value = []
-        mock_github_client_class.return_value = mock_github_client
-        mock_codex_client_class.return_value = mock_codex_client
-        mock_automation_engine_class.return_value = automation_engine
-        mock_check_cli.return_value = None
-
-        runner = CliRunner()
-        result = runner.invoke(
-            create_feature_issues,
-            [
-                "--repo",
-                "test/repo",
-                "--github-token",
-                "test_token",
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Verify output
-        assert "Force reindex" in result.output
-        # Verify initialize_graphrag was called with force_reindex=False
-        mock_initialize_graphrag.assert_called_once_with(force_reindex=False)

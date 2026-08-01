@@ -48,7 +48,6 @@ class TestBackendConfigUpdate:
         assert call_args["selected_backends"] == ["codex", "claude"]
         assert call_args["primary_backend"] == "codex"
         assert call_args["models"] == {"codex": "model-codex", "claude": "model-claude"}
-        assert call_args["enable_graphrag"] is True
 
     def test_legacy_backend_with_high_score(self):
         """Test backward compatibility for backend_with_high_score as a config."""

@@ -795,7 +795,7 @@ class BackendManager(LLMBackendManagerBase):
         """Check if a specific MCP server is configured for the current backend.
 
         Args:
-            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server to check (e.g., 'test-watcher', 'mcp-pdb')
 
         Returns:
             True if the MCP server is configured, False otherwise
@@ -807,7 +807,7 @@ class BackendManager(LLMBackendManagerBase):
         """Add MCP server configuration for the current backend.
 
         Args:
-            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server (e.g., 'test-watcher', 'mcp-pdb')
             command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
             args: Arguments for the command (e.g., ['run', 'main.py'] or [])
 
@@ -824,7 +824,7 @@ class BackendManager(LLMBackendManagerBase):
         and if not, adds the configuration.
 
         Args:
-            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server (e.g., 'test-watcher', 'mcp-pdb')
             command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
             args: Arguments for the command (e.g., ['run', 'main.py'] or [])
 

@@ -123,16 +123,12 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   * All commit/push operations must use these helpers.
   * Direct invocations of `git commit` or `git push` via `CommandExecutor` are strictly prohibited outside these helpers.
 
-### GraphRAG MCP Auto-Setup
+### Startup Memory Policy (Important)
 
-* During normal command execution (`process-issues`, `create-feature-issues`, `fix-to-pass-tests`), the setup and startup of `graphrag_mcp` are automated.
-* The `initialize_graphrag()` function is invoked at startup to:
-  * Check if the `~/graphrag_mcp` directory exists.
-  * If missing, automatically run `run_graphrag_setup_mcp_programmatically(silent=True)`.
-  * Start the Docker container and update the index.
-  * Launch the MCP server.
-* The `check_graphrag_mcp_for_backends()` function verifies and adds configurations for each backend (server assumed already installed).
-* Implementation file: `src/auto_coder/cli_helpers.py`.
+* GraphRAG/RAG functionality has been removed. Do not reintroduce `sentence-transformers`, `torch`, `neo4j`, or `qdrant-client` as dependencies.
+* Never import an optional or heavy dependency at module import time merely to probe availability. Use `importlib.util.find_spec()`, which checks without executing the module.
+* Backend LLM clients (`CodexClient`, `GeminiClient`, `ClaudeClient`, `QwenClient`, `AuggieClient`, `AiderClient`, `CodexMCPClient`) must be imported lazily inside their factory functions in `cli_helpers.py`. A single run only ever instantiates one backend, and eager imports pull in `aider` and `google.generativeai` for every invocation.
+* Because these clients are imported lazily, tests must patch them at their defining module (e.g. `src.auto_coder.codex_client.CodexClient`), not at `src.auto_coder.cli_helpers.CodexClient`.
 
 ### MCP-PDB Setup Support
 

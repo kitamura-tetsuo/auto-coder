@@ -130,160 +130,6 @@ class TestEnhancedDebouncingPerformance:
         assert len(tests_files) >= 1
 
 
-class TestSmartUpdatePerformance:
-    """Test performance of smart update logic."""
-
-    def test_smart_update_skips_non_code_files(self):
-        """Test that smart update skips non-code files."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the update_index method
-        with patch.object(manager, "update_index") as mock_update:
-            # Test with non-code files
-            result = manager.smart_update_trigger(["README.md", "config.json", "data.txt"])
-
-            # Should return True (no update needed) without calling update_index
-            assert result is True
-            mock_update.assert_not_called()
-
-    def test_smart_update_processes_code_files(self):
-        """Test that smart update processes code files."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the update_index method
-        with patch.object(manager, "update_index", return_value=True) as mock_update:
-            # Test with code files
-            result = manager.smart_update_trigger(["src/main.py", "app.ts"])
-
-            # Should call update_index
-            assert result is True
-            mock_update.assert_called_once()
-
-    def test_smart_update_processes_config_files(self):
-        """Test that smart update processes config files."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the update_index method
-        with patch.object(manager, "update_index", return_value=True) as mock_update:
-            # Test with config files
-            result = manager.smart_update_trigger(["requirements.txt", "package.json", "pyproject.toml"])
-
-            # Should call update_index
-            assert result is True
-            mock_update.assert_called_once()
-
-    def test_smart_update_mixed_files(self):
-        """Test smart update with mixed file types."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the update_index method
-        with patch.object(manager, "update_index", return_value=True) as mock_update:
-            # Test with mixed files
-            result = manager.smart_update_trigger(["README.md", "src/main.py", "config.json"])
-
-            # Should process because at least one is a code file
-            assert result is True
-            mock_update.assert_called_once()
-
-
-class TestBatchUpdatePerformance:
-    """Test performance of batch update logic."""
-
-    def test_batch_update_accumulates_files(self):
-        """Test that batch update accumulates files before processing."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the smart_update_trigger method
-        with patch.object(manager, "smart_update_trigger", return_value=True) as mock_smart:
-            # Add files in batches
-            manager.batch_update_trigger(["file1.py"])
-            manager.batch_update_trigger(["file2.py"])
-            manager.batch_update_trigger(["file3.py"])
-
-            # Give timer a moment to process (if it triggers immediately)
-            time.sleep(0.1)
-
-            # Should accumulate files
-            assert len(manager._pending_files) > 0
-
-            # Now add enough to trigger immediate processing
-            manager.batch_update_trigger(["file4.py", "file5.py", "file6.py"], max_batch_size=5)
-
-            # Give time for processing
-            time.sleep(0.1)
-
-            # Files should be processed
-            assert mock_smart.called
-
-    def test_batch_update_immediate_processing(self):
-        """Test that batch update processes immediately when batch is full."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the smart_update_trigger method
-        with patch.object(manager, "smart_update_trigger", return_value=True) as mock_smart:
-            # Add enough files to trigger immediate processing
-            manager.batch_update_trigger(
-                ["file1.py", "file2.py", "file3.py", "file4.py", "file5.py"],
-                max_batch_size=5,
-            )
-
-            # Give time for processing
-            time.sleep(0.1)
-
-            # Should have been called
-            assert mock_smart.called
-
-    def test_batch_update_timer_cancellation(self):
-        """Test that batch update timer is cancelled when new batch arrives."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the smart_update_trigger method
-        with patch.object(manager, "smart_update_trigger", return_value=True) as mock_smart:
-            # Add first file (should start timer)
-            manager.batch_update_trigger(["file1.py"])
-
-            # Verify timer exists
-            assert manager._batch_timer is not None
-
-            # Add another file (should cancel timer and create new one)
-            manager.batch_update_trigger(["file2.py"])
-
-            # Verify timer still exists
-            assert manager._batch_timer is not None
-
-    def test_batch_update_cleanup(self):
-        """Test that batch update cleanup works correctly."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Add a file to start the timer
-        manager.batch_update_trigger(["file1.py"])
-
-        # Verify timer exists
-        assert manager._batch_timer is not None
-
-        # Clean up
-        manager.cleanup_batch_timer()
-
-        # Verify timer is cancelled
-        assert manager._batch_timer is None
-
-
 class TestPerformanceImpact:
     """Test overall performance impact on test execution."""
 
@@ -292,7 +138,7 @@ class TestPerformanceImpact:
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock the methods to avoid actual work
-        with patch.object(tool, "_run_playwright_tests") as mock_run_tests, patch.object(tool, "_trigger_graphrag_update") as mock_graphrag:
+        with patch.object(tool, "_run_playwright_tests") as mock_run_tests:
 
             # Create test files
             test_files = [f"src/file{i}.py" for i in range(10)]
@@ -310,14 +156,13 @@ class TestPerformanceImpact:
 
             # All files should have been processed
             assert mock_run_tests.call_count == 10
-            assert mock_graphrag.call_count == 10
 
     def test_enhanced_debouncing_reduces_updates(self, tmp_path):
         """Test that enhanced debouncing reduces unnecessary updates."""
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock the methods
-        with patch.object(tool, "_run_playwright_tests") as mock_run_tests, patch.object(tool, "_trigger_graphrag_update") as mock_graphrag:
+        with patch.object(tool, "_run_playwright_tests") as mock_run_tests:
 
             # Create files in the same directory
             files_in_same_dir = [f"src/file{i}.py" for i in range(5)]
@@ -339,7 +184,7 @@ class TestPerformanceImpact:
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock the methods
-        with patch.object(tool, "_run_playwright_tests") as mock_run_tests, patch.object(tool, "_trigger_graphrag_update") as mock_graphrag:
+        with patch.object(tool, "_run_playwright_tests") as mock_run_tests:
 
             # Simulate a burst of file changes
             burst_files = [f"src/module{i}/file.py" for i in range(20)]
@@ -360,7 +205,7 @@ class TestPerformanceImpact:
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock the methods
-        with patch.object(tool, "_run_playwright_tests") as mock_run_tests, patch.object(tool, "_trigger_graphrag_update") as mock_graphrag:
+        with patch.object(tool, "_run_playwright_tests") as mock_run_tests:
 
             # Create a mix of files in different directories
             files = []
@@ -382,44 +227,6 @@ class TestPerformanceImpact:
 
             # Should handle efficiently
             assert elapsed < 3.0
-
-    def test_minimal_performance_impact_requirement(self, tmp_path):
-        """
-        Test that the performance impact is less than 5% increase.
-        This is a meta-test to ensure the optimizations are working.
-        """
-        tool = TestWatcherTool(project_root=str(tmp_path))
-
-        # Baseline: measure time for basic operations
-        baseline_times = []
-
-        for _ in range(5):
-            start_time = time.time()
-            with patch.object(tool, "_run_playwright_tests"), patch.object(tool, "_trigger_graphrag_update"):
-                tool._on_file_changed("src/main.py")
-            baseline_times.append(time.time() - start_time)
-
-        baseline_avg = sum(baseline_times) / len(baseline_times)
-
-        # Test with enhanced debouncing
-        enhanced_times = []
-
-        for _ in range(5):
-            start_time = time.time()
-            with patch.object(tool, "_run_playwright_tests"), patch.object(tool, "_trigger_graphrag_update"):
-                # Trigger rapid changes in different directories
-                for i in range(5):
-                    tool._on_file_changed(f"dir{i}/file.py")
-            enhanced_times.append(time.time() - start_time)
-
-        enhanced_avg = sum(enhanced_times) / len(enhanced_times)
-
-        # Calculate overhead
-        if baseline_avg > 0:
-            overhead_percent = ((enhanced_avg - baseline_avg) / baseline_avg) * 100
-            # Should be under 25% overhead
-            # Note: This is a soft check as the test environment may vary
-            assert overhead_percent < 25  # Allow some margin for test environment
 
 
 class TestMemoryEfficiency:
@@ -445,24 +252,3 @@ class TestMemoryEfficiency:
 
         # Old entries should be cleaned up
         assert len(tool._recent_file_changes) < 1000
-
-    def test_batch_pending_files_cleanup(self, tmp_path):
-        """Test that pending batch files are cleaned up after processing."""
-        from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-        manager = GraphRAGIndexManager()
-
-        # Mock the smart_update_trigger method
-        with patch.object(manager, "smart_update_trigger", return_value=True) as mock_smart:
-            # Add files to batch
-            manager.batch_update_trigger(["file1.py", "file2.py"])
-
-            # Verify pending files exist
-            assert len(manager._pending_files) > 0
-
-            # Wait for processing
-            time.sleep(0.1)
-
-            # Files should be cleared
-            if mock_smart.called:
-                assert len(manager._pending_files) == 0

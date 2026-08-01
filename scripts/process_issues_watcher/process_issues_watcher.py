@@ -139,7 +139,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
-  python3 scripts/process_issues_watcher.py /workspaces/projects --opts "--disable-graphrag --verbose"
+  python3 scripts/process_issues_watcher.py /workspaces/projects --opts "--verbose"
         """
     )
     parser.add_argument("watch_path", nargs="?", default=".", help="Directory to watch (default: current directory)")

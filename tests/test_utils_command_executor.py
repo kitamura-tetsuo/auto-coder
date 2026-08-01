@@ -27,7 +27,7 @@ def test_run_command_streams_output(monkeypatch):
     def fail_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args")
         # Only fail if the command matches the one we're testing (which uses sys.executable)
-        # This prevents background threads (like GraphRAGIndexManager running git) from failing the test
+        # This prevents background threads (running git) from failing the test
         if isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == sys.executable:
             pytest.fail("subprocess.run should not be used when stream_output=True")
 

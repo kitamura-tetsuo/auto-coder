@@ -32,12 +32,12 @@ class TestBuildBackendManager:
             mock_get_config.return_value = config
 
             # Mock QwenClient to capture the options passed to it
-            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+            with patch("src.auto_coder.qwen_client.QwenClient") as mock_qwen_class:
                 mock_qwen_instance = MagicMock()
                 mock_qwen_class.return_value = mock_qwen_instance
 
                 # Mock GeminiClient
-                with patch("src.auto_coder.cli_helpers.GeminiClient") as mock_gemini_class:
+                with patch("src.auto_coder.gemini_client.GeminiClient") as mock_gemini_class:
                     mock_gemini_instance = MagicMock()
                     mock_gemini_class.return_value = mock_gemini_instance
 
@@ -46,7 +46,6 @@ class TestBuildBackendManager:
                         selected_backends=["qwen"],
                         primary_backend="qwen",
                         models={"qwen": "qwen3-coder-plus"},
-                        enable_graphrag=False,
                     )
 
                     # Verify QwenClient was called with backend_name
@@ -76,12 +75,12 @@ class TestBuildBackendManager:
             mock_get_config.return_value = config
 
             # Mock QwenClient
-            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+            with patch("src.auto_coder.qwen_client.QwenClient") as mock_qwen_class:
                 mock_qwen_instance = MagicMock()
                 mock_qwen_class.return_value = mock_qwen_instance
 
                 # Mock GeminiClient
-                with patch("src.auto_coder.cli_helpers.GeminiClient") as mock_gemini_class:
+                with patch("src.auto_coder.gemini_client.GeminiClient") as mock_gemini_class:
                     mock_gemini_instance = MagicMock()
                     mock_gemini_class.return_value = mock_gemini_instance
 
@@ -90,7 +89,6 @@ class TestBuildBackendManager:
                         selected_backends=["my-qwen-alias"],
                         primary_backend="my-qwen-alias",
                         models={"my-qwen-alias": "qwen3-coder-plus"},
-                        enable_graphrag=False,
                     )
 
                     # Verify QwenClient was called with backend_name
@@ -112,12 +110,12 @@ class TestBuildBackendManager:
             mock_get_config.return_value = config
 
             # Mock QwenClient
-            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+            with patch("src.auto_coder.qwen_client.QwenClient") as mock_qwen_class:
                 mock_qwen_instance = MagicMock()
                 mock_qwen_class.return_value = mock_qwen_instance
 
                 # Mock GeminiClient
-                with patch("src.auto_coder.cli_helpers.GeminiClient") as mock_gemini_class:
+                with patch("src.auto_coder.gemini_client.GeminiClient") as mock_gemini_class:
                     mock_gemini_instance = MagicMock()
                     mock_gemini_class.return_value = mock_gemini_instance
 
@@ -126,7 +124,6 @@ class TestBuildBackendManager:
                         selected_backends=["qwen"],
                         primary_backend="qwen",
                         models={"qwen": "qwen3-coder-plus"},
-                        enable_graphrag=False,
                     )
 
                     # Verify QwenClient was called
@@ -151,7 +148,7 @@ class TestBuildBackendManager:
             mock_get_config.return_value = config
 
             # Mock CodexClient
-            with patch("src.auto_coder.cli_helpers.CodexClient") as mock_codex_class:
+            with patch("src.auto_coder.codex_client.CodexClient") as mock_codex_class:
                 mock_codex_instance = MagicMock()
                 mock_codex_class.return_value = mock_codex_instance
 
@@ -160,7 +157,6 @@ class TestBuildBackendManager:
                     selected_backends=["my-openrouter-model"],
                     primary_backend="my-openrouter-model",
                     models={"my-openrouter-model": "open-router/grok-4.1-fast"},
-                    enable_graphrag=False,
                 )
 
                 # Verify CodexClient was called with backend_name
@@ -183,7 +179,7 @@ class TestBuildBackendManager:
             )
             mock_get_config.return_value = config
 
-            with patch("src.auto_coder.cli_helpers.CodexClient") as mock_codex_class:
+            with patch("src.auto_coder.codex_client.CodexClient") as mock_codex_class:
                 mock_codex_instance = MagicMock()
                 mock_codex_class.return_value = mock_codex_instance
 
@@ -192,7 +188,6 @@ class TestBuildBackendManager:
                     selected_backends=["codex"],
                     primary_backend="codex",
                     models={"codex": "some-codex-model"},
-                    enable_graphrag=False,
                 )
 
                 assert mock_codex_class.call_count == 1
@@ -214,7 +209,7 @@ class TestBuildBackendManager:
             )
             mock_get_config.return_value = config
 
-            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+            with patch("src.auto_coder.qwen_client.QwenClient") as mock_qwen_class:
                 mock_qwen_instance = MagicMock()
                 mock_qwen_class.return_value = mock_qwen_instance
 
@@ -223,7 +218,6 @@ class TestBuildBackendManager:
                     selected_backends=["qwen"],
                     primary_backend="qwen",
                     models={"qwen": "qwen-model"},
-                    enable_graphrag=False,
                 )
 
                 assert mock_qwen_class.call_count == 1
@@ -253,7 +247,6 @@ class TestBuildBackendManagerFromConfig:
 
                 # Call build_backend_manager_from_config
                 manager = build_backend_manager_from_config(
-                    enable_graphrag=False,
                     cli_backends=["qwen"],
                 )
 
@@ -265,7 +258,6 @@ class TestBuildBackendManagerFromConfig:
                 assert call_args.kwargs["selected_backends"] == ["qwen"]
                 assert call_args.kwargs["primary_backend"] == "qwen"
                 assert "qwen" in call_args.kwargs["models"]
-                assert call_args.kwargs["enable_graphrag"] is False
 
     def test_build_backend_manager_from_config_with_alias(self):
         """Test that config aliases are properly handled."""
@@ -290,7 +282,6 @@ class TestBuildBackendManagerFromConfig:
 
                 # Call build_backend_manager_from_config with the alias
                 manager = build_backend_manager_from_config(
-                    enable_graphrag=False,
                     cli_backends=["my-alias"],
                 )
 

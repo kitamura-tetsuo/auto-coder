@@ -10,16 +10,14 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 import click
 
-from .aider_client import AiderClient
-from .auggie_client import AuggieClient
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager
-from .claude_client import ClaudeClient
-from .codex_client import CodexClient
-from .codex_mcp_client import CodexMCPClient
-from .gemini_client import GeminiClient
 from .llm_backend_config import get_llm_config
-from .qwen_client import QwenClient
+
+# Backend client modules are imported lazily inside their factory functions.
+# Importing them eagerly pulls in heavy optional dependencies (e.g. aider and
+# google.generativeai) on every CLI invocation, even though a single run only
+# ever instantiates one backend.
 
 
 def ensure_test_script_or_fail() -> None:
@@ -34,204 +32,6 @@ def ensure_test_script_or_fail() -> None:
         cfg.JULES_ONLY_MODE = True
         # Also ensure the environment variable is set for any subprocesses or re-initializations
         os.environ["AUTOCODER_JULES_ONLY_MODE"] = "true"
-
-
-def initialize_graphrag(force_reindex: bool = False) -> None:
-    """Initialize GraphRAG integration (always enabled).
-
-    This function ensures GraphRAG environment is ready:
-    - Ensures GraphRAG MCP server is installed and configured
-    - Starts Docker containers if not running
-    - Updates index if outdated (or forces update if force_reindex=True)
-    - Starts MCP server if configured
-
-    Args:
-        force_reindex: Force reindexing even if index is up to date
-
-    Raises:
-        click.ClickException: If GraphRAG initialization fails
-    """
-    from pathlib import Path
-
-    from .graphrag_mcp_integration import GraphRAGMCPIntegration
-    from .logger_config import get_logger
-
-    logger = get_logger(__name__)
-    logger.info("Initializing GraphRAG integration...")
-    if force_reindex:
-        click.echo("GraphRAG integration: enabled (always) - forcing reindex")
-    else:
-        click.echo("GraphRAG integration: enabled (always)")
-
-    # 1. Ensure GraphRAG MCP server is installed
-    default_mcp_dir = Path.home() / "graphrag_mcp"
-    if not default_mcp_dir.exists():
-        logger.info(f"GraphRAG MCP server directory not found at {default_mcp_dir}")
-        logger.info("Automatically setting up GraphRAG MCP server...")
-        click.echo()
-        click.echo("⚠️  GraphRAG MCP server not installed")
-        click.echo()
-
-        # Import here to avoid circular dependency
-        from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
-        from .cli_ui import Spinner
-
-        success = False
-        try:
-            with Spinner("Automatically setting up GraphRAG MCP server...", show_timer=True) as spinner:
-                success = run_graphrag_setup_mcp_programmatically(
-                    install_dir=None,  # Use default ~/graphrag_mcp
-                    neo4j_uri="bolt://localhost:7687",
-                    neo4j_user="neo4j",
-                    neo4j_password=os.getenv("NEO4J_PASSWORD", "password"),
-                    qdrant_url="http://localhost:6333",
-                    skip_clone=False,
-                    silent=True,  # Suppress verbose output during auto-setup
-                )
-                if success:
-                    spinner.success_message = "GraphRAG MCP server setup completed successfully"
-                else:
-                    spinner.error_message = "GraphRAG MCP server setup failed"
-                    # Raise an exception to trigger the spinner's error state (red cross)
-                    raise RuntimeError("Setup failed")
-        except RuntimeError:
-            pass
-
-        if not success:
-            logger.error("Failed to automatically set up GraphRAG MCP server")
-            click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
-            raise click.ClickException("Failed to set up GraphRAG MCP server. " "Run 'auto-coder graphrag setup-mcp' manually.")
-
-        logger.info("✅ GraphRAG MCP server setup completed successfully")
-
-    # 2. Initialize GraphRAG environment (Docker, indexing, MCP server)
-    try:
-        graphrag_integration = GraphRAGMCPIntegration()
-        if not graphrag_integration.ensure_ready(force_reindex=force_reindex):
-            click.echo()
-            click.echo("❌ Failed to initialize GraphRAG environment")
-            click.echo()
-            click.echo("Troubleshooting tips:")
-            click.echo("   1. Start containers manually: auto-coder graphrag start")
-            click.echo("   2. Check container status: auto-coder graphrag status")
-            click.echo("   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
-            raise click.ClickException("Failed to initialize GraphRAG environment. " "Run 'auto-coder graphrag start' to start containers.")
-
-        logger.info("GraphRAG environment ready")
-        click.echo("✅ GraphRAG environment ready")
-
-        # Optionally run snapshot cleanup after successful initialization
-        cleanup_raw = os.environ.get("GRAPHRAG_CLEANUP_ON_INIT", "1")
-        cleanup_enabled = cleanup_raw.strip().lower() not in {"0", "false", "no", "off", ""}
-
-        if cleanup_enabled:
-            try:
-                logger.info("Running GraphRAG snapshot cleanup after initialization...")
-                graphrag_integration.run_cleanup(dry_run=False)
-            except Exception as cleanup_error:
-                logger.warning(f"GraphRAG cleanup during initialization failed: {cleanup_error}")
-    except click.ClickException:
-        raise
-    except Exception as e:
-        click.echo()
-        click.echo(f"❌ Error initializing GraphRAG: {e}")
-        click.echo()
-        click.echo("Troubleshooting tips:")
-        click.echo("   1. Ensure Docker is running: docker ps")
-        click.echo("   2. Check docker-compose.graphrag.yml exists")
-        click.echo("   3. Verify GRAPHRAG_MCP_SERVER_PATH if using MCP server")
-        raise click.ClickException(f"Error initializing GraphRAG: {e}")
-
-
-def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> None:
-    """Ensure GraphRAG MCP is configured for all selected backends.
-
-    This function checks if graphrag MCP server is configured for each backend,
-    and if not, automatically adds the configuration using the client's MCP methods.
-
-    Note: This function assumes that the MCP server is already installed by initialize_graphrag().
-    It only adds backend configurations, not the full setup.
-
-    Args:
-        backends: List of backend names to check
-        client: Optional LLM client instance to use for MCP configuration
-    """
-    from pathlib import Path
-
-    from .logger_config import get_logger
-
-    logger = get_logger(__name__)
-    logger.info("Ensuring GraphRAG MCP configuration for backends...")
-
-    # GraphRAG MCP server configuration
-    server_name = "graphrag"
-    default_mcp_dir = Path.home() / "graphrag_mcp"
-
-    # Verify MCP server is installed (should be done by initialize_graphrag)
-    if not default_mcp_dir.exists():
-        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " f"This should have been installed by initialize_graphrag().")
-        click.echo()
-        click.echo("⚠️  GraphRAG MCP server not found")
-        click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
-        click.echo()
-        return
-
-    # If client is provided, check if already configured
-    if client is not None:
-        logger.info("Checking GraphRAG MCP configuration for client...")
-        if not client.check_mcp_server_configured(server_name):
-            logger.info("GraphRAG MCP server not configured for client. " "Adding configuration...")
-            click.echo()
-            click.echo("⚠️  GraphRAG MCP server not configured for client")
-            click.echo("   Adding configuration...")
-            click.echo()
-
-            # Add configuration only (server is already installed)
-            from .mcp_manager import get_mcp_manager
-
-            manager = get_mcp_manager()
-            success = True
-            for backend in backends:
-                if not manager.add_backend_config(server_name, backend, default_mcp_dir):
-                    logger.warning(f"Failed to configure {backend} backend for {server_name}")
-                    success = False
-
-            if success:
-                logger.info("✅ GraphRAG MCP server configuration added successfully")
-                click.echo("✅ GraphRAG MCP server configuration added successfully")
-            else:
-                logger.error("❌ GraphRAG MCP server configuration failed")
-                click.echo("❌ GraphRAG MCP server configuration failed")
-                click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
-        else:
-            logger.info("✅ GraphRAG MCP server configured for client")
-    else:
-        # Fallback to file-based configuration for each backend
-        from .mcp_checker import ensure_graphrag_mcp_configured
-
-        for backend in backends:
-            if not ensure_graphrag_mcp_configured(backend, auto_setup=False):
-                logger.info(f"GraphRAG MCP server not configured for {backend}. " f"Adding configuration...")
-                click.echo()
-                click.echo(f"⚠️  GraphRAG MCP server not configured for {backend}")
-                click.echo("   Adding configuration...")
-                click.echo()
-
-                # Add configuration only (server is already installed)
-                from .mcp_manager import get_mcp_manager
-
-                manager = get_mcp_manager()
-                success = manager.add_backend_config(server_name, backend, default_mcp_dir)
-
-                if success:
-                    logger.info(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
-                    click.echo(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
-                else:
-                    logger.error(f"❌ GraphRAG MCP server configuration failed for {backend}")
-                    click.echo(f"❌ GraphRAG MCP server configuration failed for {backend}")
-                    click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
-            else:
-                logger.info(f"✅ GraphRAG MCP server already configured for {backend}")
 
 
 def check_gemini_cli_or_fail() -> None:
@@ -489,7 +289,6 @@ def build_backend_manager(
     selected_backends: list[str],
     primary_backend: str,
     models: dict[str, str],
-    enable_graphrag: bool = True,
     use_noedit_options: bool = False,
 ) -> BackendManager:
     # Handle legacy "gemini" backend name translation
@@ -500,7 +299,6 @@ def build_backend_manager(
     """Construct BackendManager with per-backend model selection.
 
     models: mapping backend -> model_name (all backends respect this configuration).
-    enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True).
     use_noedit_options: If True, use options_for_noedit instead of options for clients.
     """
     config = get_llm_config()
@@ -528,6 +326,8 @@ def build_backend_manager(
     # Create factory functions that support both direct backend names and aliases
     def _create_qwen_client(backend_name: str):
         """Create a QwenClient with options from config."""
+        from .qwen_client import QwenClient
+
         return QwenClient(
             backend_name=backend_name,
             use_env_vars=True,
@@ -536,20 +336,28 @@ def build_backend_manager(
 
     def _create_gemini_client(backend_name: str):
         """Create a GeminiClient."""
+        from .gemini_client import GeminiClient
+
         return GeminiClient(backend_name=backend_name)
 
     def _create_claude_client(backend_name: str):
         """Create a ClaudeClient with optional configuration for aliases."""
+        from .claude_client import ClaudeClient
+
         return ClaudeClient(
             backend_name=backend_name,
         )
 
     def _create_auggie_client(backend_name: str):
         """Create an AuggieClient."""
+        from .auggie_client import AuggieClient
+
         return AuggieClient(backend_name=backend_name)
 
     def _create_codex_client(backend_name: str):
         """Create a CodexClient with optional configuration for aliases."""
+        from .codex_client import CodexClient
+
         backend_config = config.get_backend_config(backend_name)
         return CodexClient(
             backend_name=backend_name,
@@ -562,10 +370,14 @@ def build_backend_manager(
 
     def _create_codex_mcp_client(backend_name: str):
         """Create a CodexMCPClient."""
-        return CodexMCPClient(backend_name=backend_name, enable_graphrag=enable_graphrag)
+        from .codex_mcp_client import CodexMCPClient
+
+        return CodexMCPClient(backend_name=backend_name)
 
     def _create_aider_client(backend_name: str):
         """Create an AiderClient."""
+        from .aider_client import AiderClient
+
         backend_config = config.get_backend_config(backend_name)
         return AiderClient(
             backend_name=backend_name,
@@ -716,7 +528,6 @@ def check_github_sub_issue_or_setup() -> None:
 
 
 def build_backend_manager_from_config(
-    enable_graphrag: bool = True,
     cli_models: Optional[Dict[str, str]] = None,
     cli_backends: Optional[List[str]] = None,
 ) -> BackendManager:
@@ -726,7 +537,6 @@ def build_backend_manager_from_config(
     specified in the TOML configuration file, with optional CLI overrides.
 
     Args:
-        enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True)
         cli_models: Dictionary mapping backend names to models specified via CLI, which will
                    override both config file and default models (optional)
         cli_backends: List of backend names specified via CLI. If provided, only these
@@ -769,7 +579,6 @@ def build_backend_manager_from_config(
         selected_backends=selected_backends,
         primary_backend=primary_backend,
         models=models,
-        enable_graphrag=enable_graphrag,
     )
 
 
@@ -859,7 +668,6 @@ def build_message_backend_manager(
         selected_backends=selected_backends,
         primary_backend=primary_backend,
         models=models,
-        enable_graphrag=False,  # GraphRAG not needed for messages
         use_noedit_options=True,  # Use noedit options for message generation
     )
 
@@ -916,12 +724,10 @@ def create_high_score_backend_manager() -> Optional[BackendManager]:
         models = {backend_name: model}
 
     try:
-        # We default enable_graphrag to True as we generally want context for fixes
         return build_backend_manager(
             selected_backends=selected_backends,
             primary_backend=primary_backend,
             models=models,
-            enable_graphrag=True,
         )
     except Exception as e:
         from .logger_config import get_logger

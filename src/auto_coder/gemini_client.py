@@ -375,7 +375,7 @@ class GeminiClient(LLMClientBase):
         """Check if a specific MCP server is configured for Antigravity CLI.
 
         Args:
-            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server to check (e.g., 'test-watcher', 'mcp-pdb')
 
         Returns:
             True if the MCP server is configured, False otherwise
@@ -407,7 +407,7 @@ class GeminiClient(LLMClientBase):
         """Add MCP server configuration to Antigravity CLI config.
 
         Args:
-            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server (e.g., 'test-watcher', 'mcp-pdb')
             command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
             args: Arguments for the command (e.g., ['run', 'main.py'] or [])
 

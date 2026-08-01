@@ -22,8 +22,6 @@ class TestProcessIssuesE2E:
             patch("src.auto_coder.cli_commands_main.build_message_backend_manager"),
             patch("src.auto_coder.cli.LockManager"),
             patch("src.auto_coder.cli_commands_main.check_backend_prerequisites"),
-            patch("src.auto_coder.cli_commands_main.initialize_graphrag"),
-            patch("src.auto_coder.cli_commands_main.check_graphrag_mcp_for_backends"),
             patch("src.auto_coder.cli_commands_main.ensure_test_script_or_fail"),
             patch("src.auto_coder.cli_commands_main.setup_progress_footer_logging"),
             patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup"),
@@ -63,7 +61,7 @@ class TestProcessIssuesE2E:
 
             with patch.dict(sys.modules, {"src.auto_coder.webhook_server": MagicMock(), "fastapi": MagicMock(), "uvicorn": mock_uvicorn}):
                 # Invoke command
-                runner.invoke(process_issues, ["--repo", target_repo, "--github-token", "dummy_token", "--disable-graphrag"], catch_exceptions=False)
+                runner.invoke(process_issues, ["--repo", target_repo, "--github-token", "dummy_token"], catch_exceptions=False)
 
             # Verifications
             MockGitHubClient.get_instance.assert_called()

@@ -56,7 +56,7 @@ class TestMCPServerManager:
         manager = MCPServerManager()
 
         # Should have built-in servers registered
-        assert "graphrag" in manager.servers
+        assert "test-watcher" in manager.servers
         assert "test-watcher" in manager.servers
 
     def test_register_server(self):
@@ -78,9 +78,9 @@ class TestMCPServerManager:
         manager = MCPServerManager()
 
         # Get existing server
-        config = manager.get_server_config("graphrag")
+        config = manager.get_server_config("test-watcher")
         assert config is not None
-        assert config.name == "graphrag"
+        assert config.name == "test-watcher"
 
         # Get non-existent server
         config = manager.get_server_config("non-existent")
@@ -244,7 +244,7 @@ class TestGetMCPManager:
         manager = get_mcp_manager()
 
         assert isinstance(manager, MCPServerManager)
-        assert "graphrag" in manager.servers
+        assert "test-watcher" in manager.servers
         assert "test-watcher" in manager.servers
 
 
@@ -254,13 +254,13 @@ class TestMCPServerManagerClaude:
     def test_add_backend_config_claude_success(self, tmp_path):
         manager = MCPServerManager()
         with patch.object(manager, "_add_claude_config", return_value=True) as mock_add:
-            ok = manager.add_backend_config("graphrag", "claude", tmp_path)
+            ok = manager.add_backend_config("test-watcher", "claude", tmp_path)
             assert ok is True
             mock_add.assert_called_once()
 
     def test_add_backend_config_claude_failure(self, tmp_path):
         manager = MCPServerManager()
         with patch.object(manager, "_add_claude_config", return_value=False) as mock_add:
-            ok = manager.add_backend_config("graphrag", "claude", tmp_path)
+            ok = manager.add_backend_config("test-watcher", "claude", tmp_path)
             assert ok is False
             mock_add.assert_called_once()

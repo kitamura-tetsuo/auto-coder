@@ -28,7 +28,7 @@ class LLMWrapper:
         cli_backends = [backend_name] if backend_name else None
 
         # Build backend manager using the helper that mirrors the main CLI logic
-        self.backend_manager = build_backend_manager_from_config(cli_backends=cli_backends, enable_graphrag=False)  # Not needed for simple summarization
+        self.backend_manager = build_backend_manager_from_config(cli_backends=cli_backends)
         # Prevent session resumption which causes context window issues by including previous chat history
         self.backend_manager._last_session_id = None
         # Ensure we don't start with a 'last backend' that triggers resume logic

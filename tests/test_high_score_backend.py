@@ -35,4 +35,3 @@ def test_create_high_score_backend_manager_with_config():
         assert call_args["selected_backends"] == ["high_score_backend"]
         assert call_args["primary_backend"] == "high_score_backend"
         assert call_args["models"] == {"high_score_backend": "high_score_model"}
-        assert call_args["enable_graphrag"] is True

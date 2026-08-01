@@ -24,4 +24,4 @@ if [ "$1" = "/bin/bash" ]; then
     shift
 fi
 
-exec process-issues-watcher --opts="--disable-graphrag --force" "$@"
+exec process-issues-watcher --opts="--force" "$@"

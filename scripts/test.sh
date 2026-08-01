@@ -101,7 +101,7 @@ check_cli_dependency() {
 echo "Checking CLI dependencies..."
 CLI_DEPS_OK=0
 
-# Check for Node.js (optional, used by graph-builder TypeScript CLI)
+# Check for Node.js (optional)
 if check_cli_dependency "node" "Node.js" "true"; then
     NODE_VERSION=$(node --version 2>/dev/null || echo "unknown")
     echo "       Node.js version: $NODE_VERSION"
@@ -115,22 +115,6 @@ fi
 PYTHON_VERSION=$(python3 --version 2>/dev/null || echo "unknown")
 echo "       Python version: $PYTHON_VERSION"
 
-# Check for graph-builder (optional)
-GRAPH_BUILDER_FOUND=false
-if [ -d "./src/auto_coder/graph_builder" ]; then
-    echo "[INFO] graph-builder found in ./src/auto_coder/graph_builder"
-    GRAPH_BUILDER_FOUND=true
-elif [ -d "./graph-builder" ]; then
-    echo "[INFO] graph-builder found in ./graph-builder"
-    GRAPH_BUILDER_FOUND=true
-elif [ -d "$HOME/graph-builder" ]; then
-    echo "[INFO] graph-builder found in $HOME/graph-builder"
-    GRAPH_BUILDER_FOUND=true
-else
-    echo "[WARN] graph-builder not found in common locations"
-    echo "       Searched: ./src/auto_coder/graph_builder, ./graph-builder, ~/graph-builder"
-fi
-
 # Summary
 echo ""
 echo "Dependency check summary:"
@@ -138,12 +122,6 @@ if [ $CLI_DEPS_OK -eq 0 ]; then
     echo "[OK] Core dependencies are available"
 else
     echo "[ERROR] Some required dependencies are missing"
-fi
-
-if [ "$GRAPH_BUILDER_FOUND" = "true" ]; then
-    echo "[OK] graph-builder is available"
-else
-    echo "[INFO] graph-builder not found - tests will use fallback Python indexing"
 fi
 
 echo ""

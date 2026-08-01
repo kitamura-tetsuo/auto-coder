@@ -30,10 +30,8 @@ class StopLoop(Exception):
 @patch("src.auto_coder.cli_commands_main.get_current_branch")
 @patch("src.auto_coder.cli_commands_main.setup_progress_footer_logging")  # dependency
 @patch("src.auto_coder.cli_commands_main.ensure_test_script_or_fail")  # dependency
-@patch("src.auto_coder.cli_commands_main.initialize_graphrag")  # dependency
 @patch("src.auto_coder.cli_commands_main.build_backend_manager_from_config")  # dependency
 @patch("src.auto_coder.backend_manager.LLMBackendManager")  # dependency
-@patch("src.auto_coder.cli_commands_main.check_graphrag_mcp_for_backends")  # dependency
 @patch("src.auto_coder.cli_commands_main.build_message_backend_manager")  # dependency
 @patch("src.auto_coder.cli_commands_main.check_backend_prerequisites")
 def test_process_issues_sleep_logic(
@@ -42,7 +40,6 @@ def test_process_issues_sleep_logic(
     mock_check_mcp,
     mock_llm_mgr,
     mock_build_backend,
-    mock_init_graphrag,
     mock_ensure_test,
     mock_setup_footer,
     mock_get_branch,
@@ -99,7 +96,7 @@ def test_process_issues_sleep_logic(
     # Mock webhook server components to avoid dependency issues
     with patch.dict(sys.modules, {"src.auto_coder.webhook_server": MagicMock(), "fastapi": MagicMock(), "uvicorn": MagicMock()}):
         runner = CliRunner()
-        result = runner.invoke(process_issues, ["--repo", "owner/repo", "--github-token", "dummy", "--disable-graphrag"])
+        result = runner.invoke(process_issues, ["--repo", "owner/repo", "--github-token", "dummy"])
 
     # Verify that start_automation was called (the new architecture entry point)
     mock_start_automation.assert_called_once_with("owner/repo")

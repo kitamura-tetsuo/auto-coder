@@ -54,7 +54,7 @@ class TestGeminiClientMCP(unittest.TestCase):
 
                 mock_run.side_effect = side_effect
 
-                result = client.check_mcp_server_configured("graphrag")
+                result = client.check_mcp_server_configured("test-watcher")
                 self.assertFalse(result)
 
     @patch("src.auto_coder.gemini_client.shutil.which")
@@ -63,7 +63,7 @@ class TestGeminiClientMCP(unittest.TestCase):
         """Test checking for MCP server when configured."""
         mock_which.return_value = "/usr/bin/gemini"
 
-        # Mock subprocess.run to return success for --version and mcp list with graphrag
+        # Mock subprocess.run to return success for --version and mcp list with test-watcher
         def mock_run_side_effect(cmd, **kwargs):
             if "--version" in cmd:
                 mock_result = MagicMock()
@@ -72,7 +72,7 @@ class TestGeminiClientMCP(unittest.TestCase):
             elif "mcp" in cmd and "list" in cmd:
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = "graphrag\nother-server\n"
+                mock_result.stdout = "test-watcher\nother-server\n"
                 return mock_result
             else:
                 raise FileNotFoundError()
@@ -81,7 +81,7 @@ class TestGeminiClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = GeminiClient()
-            result = client.check_mcp_server_configured("graphrag")
+            result = client.check_mcp_server_configured("test-watcher")
             self.assertTrue(result)
 
     @patch("src.auto_coder.gemini_client.shutil.which")
@@ -99,7 +99,7 @@ class TestGeminiClientMCP(unittest.TestCase):
             elif "mcp" in cmd and "add" in cmd:
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = "MCP server 'graphrag' added successfully"
+                mock_result.stdout = "MCP server 'test-watcher' added successfully"
                 return mock_result
             else:
                 raise FileNotFoundError()
@@ -288,7 +288,7 @@ class TestAuggieClientMCP(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout="1.0.0")
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = AuggieClient()
-            result = client.check_mcp_server_configured("graphrag")
+            result = client.check_mcp_server_configured("test-watcher")
             self.assertFalse(result)
 
     @patch("subprocess.run")
@@ -305,7 +305,7 @@ class TestAuggieClientMCP(unittest.TestCase):
             elif "mcp" in cmd and "add" in cmd:
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = 'MCP server "graphrag" added successfully'
+                mock_result.stdout = 'MCP server "test-watcher" added successfully'
                 return mock_result
             else:
                 raise FileNotFoundError()
@@ -350,7 +350,7 @@ class TestCodexClientMCP(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout="1.0.0")
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = CodexClient()
-            result = client.check_mcp_server_configured("graphrag")
+            result = client.check_mcp_server_configured("test-watcher")
             self.assertFalse(result)
 
     @patch("subprocess.run")
@@ -392,7 +392,7 @@ class TestCodexMCPClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = CodexMCPClient()
-            result = client.check_mcp_server_configured("graphrag")
+            result = client.check_mcp_server_configured("test-watcher")
             self.assertFalse(result)
             client.close()
 
@@ -443,9 +443,9 @@ class TestBackendManagerMCP(unittest.TestCase):
                 order=["agy"],
             )
 
-            result = manager.check_mcp_server_configured("graphrag")
+            result = manager.check_mcp_server_configured("test-watcher")
             self.assertTrue(result)
-            mock_client.check_mcp_server_configured.assert_called_once_with("graphrag")
+            mock_client.check_mcp_server_configured.assert_called_once_with("test-watcher")
 
     def test_add_mcp_server_config(self):
         """Test adding MCP server config through BackendManager."""
@@ -585,7 +585,7 @@ class TestClaudeClientMCP(unittest.TestCase):
             from src.auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
-            result = client.check_mcp_server_configured("graphrag")
+            result = client.check_mcp_server_configured("test-watcher")
             self.assertFalse(result)
 
     @patch("subprocess.run")
@@ -601,7 +601,7 @@ class TestClaudeClientMCP(unittest.TestCase):
             elif len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
                 m = MagicMock()
                 m.returncode = 0
-                m.stdout = "graphrag\n"
+                m.stdout = "test-watcher\n"
                 return m
             raise FileNotFoundError()
 
@@ -611,7 +611,7 @@ class TestClaudeClientMCP(unittest.TestCase):
             from src.auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
-            self.assertTrue(client.check_mcp_server_configured("graphrag"))
+            self.assertTrue(client.check_mcp_server_configured("test-watcher"))
 
     @patch("subprocess.run")
     def test_add_mcp_server_config(self, mock_run):
@@ -648,7 +648,7 @@ class TestClaudeClientMCP(unittest.TestCase):
                 m = MagicMock()
                 m.returncode = 0
                 # first check -> not configured, second check -> configured
-                m.stdout = "other\n" if calls["mcp"] == 1 else "graphrag\n"
+                m.stdout = "other\n" if calls["mcp"] == 1 else "test-watcher\n"
                 return m
             raise FileNotFoundError()
 
@@ -658,5 +658,5 @@ class TestClaudeClientMCP(unittest.TestCase):
             from src.auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
-            ok = client.ensure_mcp_server_configured("graphrag", "uv", ["run", "main.py"])
+            ok = client.ensure_mcp_server_configured("test-watcher", "uv", ["run", "main.py"])
             self.assertTrue(ok)

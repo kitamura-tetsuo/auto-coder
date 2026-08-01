@@ -69,45 +69,6 @@ class GitIgnoreFileHandler(FileSystemEventHandler):
                 pass
 
 
-class SharedWatcherErrorHandler:
-    """Handles errors in shared watcher without breaking test execution."""
-
-    def __init__(self) -> None:
-        self.failure_count = 0
-        self.last_failure_time = 0.0
-        self.max_failures = 3
-        self.failure_window = 300  # 5 minutes
-
-    def handle_graphrag_failure(self, error: Exception) -> bool:
-        """Handle GraphRAG failures gracefully.
-
-        Args:
-            error: The exception that occurred
-
-        Returns:
-            True to continue trying, False to disable updates temporarily
-        """
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-
-        if self.failure_count <= self.max_failures:
-            logger.debug(f"GraphRAG failure {self.failure_count}/{self.max_failures}: {error}")
-            return True  # Continue trying
-        elif time.time() - self.last_failure_time > self.failure_window:
-            # Reset counter after quiet period
-            self.failure_count = 0
-            return True
-        else:
-            # Too many failures, disable GraphRAG updates temporarily
-            logger.warning("Disabling GraphRAG updates due to repeated failures")
-            return False  # Stop trying temporarily
-
-    def reset_failures(self) -> None:
-        """Reset the failure count (e.g., after successful update)."""
-        self.failure_count = 0
-        self.last_failure_time = 0.0
-
-
 class TestWatcherTool:
     """Tool for watching and managing test execution."""
 
@@ -138,9 +99,6 @@ class TestWatcherTool:
 
         # Failed tests tracking for --last-failed
         self.last_failed_tests: Set[str] = set()
-
-        # Error handler for GraphRAG failures
-        self.error_handler = SharedWatcherErrorHandler()
 
         # Performance optimization: track recent files for debouncing
         self._recent_file_changes: Dict[str, float] = {}
@@ -296,13 +254,6 @@ class TestWatcherTool:
                 self._run_playwright_tests(True)
             except Exception:
                 pass
-            # Trigger GraphRAG update (only for code files) in pytest
-            # Tests need to verify this behavior
-            if self._is_code_file(file_path):
-                try:
-                    self._trigger_graphrag_update(file_path)
-                except Exception:
-                    pass
             return
 
         # Normal path with logging and background threads
@@ -322,140 +273,6 @@ class TestWatcherTool:
         except Exception:
             # Silently ignore thread creation errors during shutdown
             pass
-
-        # Trigger GraphRAG update (only for code files)
-        if self._is_code_file(file_path):
-            try:
-                threading.Thread(
-                    target=self._trigger_graphrag_update,
-                    args=(file_path,),
-                    daemon=True,
-                ).start()
-            except Exception:
-                # Silently ignore thread creation errors during shutdown
-                pass
-
-    def _is_code_file(self, file_path: str) -> bool:
-        """
-        Check if file is a code file that should trigger GraphRAG updates.
-
-        Args:
-            file_path: Path to the file to check
-
-        Returns:
-            True if the file is a code file, False otherwise
-        """
-        return file_path.endswith((".py", ".ts", ".js"))
-
-    def _trigger_graphrag_update(self, file_path: str) -> None:
-        """
-        Trigger GraphRAG index update for code changes with retry logic.
-
-        Args:
-            file_path: Path to the changed file that triggered the update
-        """
-        # Skip GraphRAG updates if disabled via environment variable
-        if os.environ.get("AC_DISABLE_GRAPH") or os.environ.get("AC_DISABLE_GRAPH_UPDATES"):
-            return
-
-        try:
-            from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-            manager = GraphRAGIndexManager(repo_path=str(self.project_root))
-
-            # Use smart update for better performance
-            if hasattr(manager, "smart_update_trigger"):
-                success = manager.smart_update_trigger([file_path])
-            else:
-                # Fallback to simple update for older versions
-                success = manager.update_index()
-
-            if success:
-                try:
-                    logger.debug(f"GraphRAG index updated after change: {file_path}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-                # Reset failure count on success
-                self.error_handler.reset_failures()
-            else:
-                try:
-                    logger.debug(f"GraphRAG index update returned False: {file_path}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-                # Don't treat False as an error, just log it
-        except Exception as e:
-            if self.error_handler.handle_graphrag_failure(e):
-                # Retry logic with exponential backoff
-                retry_delay = min(10 * (2 ** (self.error_handler.failure_count - 1)), 60)
-                try:
-                    logger.debug(f"Retrying GraphRAG update in {retry_delay} seconds")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-                try:
-                    timer = threading.Timer(retry_delay, lambda: self._retry_graphrag_update(file_path))
-                    # Ensure retry timer thread does not block process exit
-                    timer.daemon = True
-                    timer.start()
-                except Exception:
-                    # Silently ignore timer creation errors during shutdown
-                    pass
-            else:
-                try:
-                    logger.warning(f"GraphRAG updates disabled due to failures: {e}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-
-    def _retry_graphrag_update(self, file_path: str) -> None:
-        """
-        Retry GraphRAG update with a simpler approach.
-
-        Args:
-            file_path: Path to the changed file
-        """
-        # Skip GraphRAG updates if disabled via environment variable
-        if os.environ.get("AC_DISABLE_GRAPH") or os.environ.get("AC_DISABLE_GRAPH_UPDATES"):
-            return
-
-        try:
-            from auto_coder.graphrag_index_manager import GraphRAGIndexManager
-
-            manager = GraphRAGIndexManager(repo_path=str(self.project_root))
-            # Use lightweight check to avoid heavy operations during retries
-            if hasattr(manager, "lightweight_update_check"):
-                success = manager.lightweight_update_check()
-            else:
-                success = manager.update_index()
-
-            if success:
-                try:
-                    logger.debug(f"GraphRAG index updated after retry: {file_path}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-                self.error_handler.reset_failures()
-            else:
-                try:
-                    logger.debug(f"GraphRAG index retry returned False: {file_path}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-        except Exception as e:
-            if self.error_handler.handle_graphrag_failure(e):
-                try:
-                    logger.debug(f"GraphRAG retry failed, will try again later: {e}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
-            else:
-                try:
-                    logger.warning(f"GraphRAG updates disabled due to repeated failures: {e}")
-                except Exception:
-                    # Silently ignore logging errors during shutdown
-                    pass
 
     def _enhanced_debounce_files(self, files: List[str]) -> List[str]:
         """

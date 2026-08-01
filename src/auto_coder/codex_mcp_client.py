@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
 from .exceptions import AutoCoderTimeoutError
-from .graphrag_mcp_integration import GraphRAGMCPIntegration
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
@@ -88,7 +87,6 @@ class CodexMCPClient(LLMClientBase):
     def __init__(
         self,
         backend_name: Optional[str] = None,
-        enable_graphrag: bool = False,
     ) -> None:
         super().__init__()
         config = get_llm_config()
@@ -103,8 +101,6 @@ class CodexMCPClient(LLMClientBase):
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.proc: Optional[subprocess.Popen] = None
-        self.enable_graphrag = enable_graphrag
-        self.graphrag_integration: Optional[GraphRAGMCPIntegration] = None
 
         # Store options from config for MCP session and fallback exec calls
         self.options = (config_backend and config_backend.options) or []
@@ -115,11 +111,6 @@ class CodexMCPClient(LLMClientBase):
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
-
-        # Initialize GraphRAG integration if enabled
-        if self.enable_graphrag:
-            logger.info("GraphRAG integration enabled for CodexMCPClient")
-            self.graphrag_integration = GraphRAGMCPIntegration()
 
         # Verify codex CLI is available
         try:
@@ -385,14 +376,6 @@ class CodexMCPClient(LLMClientBase):
             prompt: The prompt to send
             is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
         """
-        # Ensure GraphRAG environment is ready if enabled
-        if self.graphrag_integration:
-            try:
-                if not self.graphrag_integration.ensure_ready():
-                    logger.warning("GraphRAG environment not ready, continuing without it")
-            except Exception as e:
-                logger.warning(f"Failed to ensure GraphRAG environment: {e}")
-
         escaped_prompt = self._escape_prompt(prompt)
         extra_args = self.consume_extra_args()
 
@@ -504,13 +487,6 @@ class CodexMCPClient(LLMClientBase):
     def close(self) -> None:
         """Terminate the persistent MCP process if running."""
         try:
-            # Cleanup GraphRAG integration
-            if self.graphrag_integration:
-                try:
-                    self.graphrag_integration.cleanup()
-                except Exception as e:
-                    logger.warning(f"Error cleaning up GraphRAG integration: {e}")
-
             if self.proc is not None:
                 try:
                     # Try a graceful wait first (short)
@@ -528,7 +504,7 @@ class CodexMCPClient(LLMClientBase):
         """Check if a specific MCP server is configured for Codex CLI.
 
         Args:
-            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server to check (e.g., 'test-watcher', 'mcp-pdb')
 
         Returns:
             True if the MCP server is configured, False otherwise
@@ -558,7 +534,7 @@ class CodexMCPClient(LLMClientBase):
         """Add MCP server configuration to Codex CLI config.
 
         Args:
-            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            server_name: Name of the MCP server (e.g., 'test-watcher', 'mcp-pdb')
             command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
             args: Arguments for the command (e.g., ['run', 'main.py'] or [])
 

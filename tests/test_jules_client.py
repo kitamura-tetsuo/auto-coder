@@ -553,7 +553,7 @@ class TestJulesClient:
         client = JulesClient()
 
         # Jules does not support MCP servers
-        assert client.check_mcp_server_configured("graphrag") is False
+        assert client.check_mcp_server_configured("test-watcher") is False
         assert client.check_mcp_server_configured("mcp-pdb") is False
 
     @patch("src.auto_coder.jules_client.get_llm_config")
@@ -571,4 +571,4 @@ class TestJulesClient:
         client = JulesClient()
 
         # Jules does not support MCP server configuration
-        assert client.add_mcp_server_config("graphrag", "uv", []) is False
+        assert client.add_mcp_server_config("test-watcher", "uv", []) is False

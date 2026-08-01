@@ -29,7 +29,6 @@ except ImportError:
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_config import config_group
 from .cli_commands_debug import debug
-from .cli_commands_graphrag import graphrag_group
 from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues, serve
 from .cli_commands_mcp import mcp_group
@@ -185,7 +184,6 @@ main.add_command(serve)
 
 # Register commands and command groups
 main.add_command(config_group)
-main.add_command(graphrag_group)
 main.add_command(lock_group)  # Keep for backward compatibility
 main.add_command(mcp_group)
 main.add_command(mcp_pdb_group)

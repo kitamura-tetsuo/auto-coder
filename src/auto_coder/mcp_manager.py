@@ -2,7 +2,7 @@
 MCP Server Manager - Common management for multiple MCP servers.
 
 This module provides a unified interface for managing multiple MCP servers
-(graphrag_mcp, test_watcher, etc.) with automatic setup and configuration.
+(test_watcher, etc.) with automatic setup and configuration.
 """
 
 import os
@@ -20,7 +20,7 @@ class MCPServerConfig:
     """Configuration for an MCP server."""
 
     name: str
-    """Server name (e.g., 'graphrag', 'test-watcher')"""
+    """Server name (e.g., 'test-watcher')"""
 
     bundled_path: Path
     """Path to bundled server in auto_coder package"""
@@ -56,24 +56,6 @@ class MCPServerManager:
         except ImportError:
             # Development mode
             package_dir = Path(__file__).parent
-
-        # Register graphrag_mcp
-        self.register_server(
-            MCPServerConfig(
-                name="graphrag",
-                bundled_path=package_dir / "mcp_servers" / "graphrag_mcp",
-                install_dir=Path.home() / "graphrag_mcp",
-                requires_uv=True,
-                env_vars={
-                    "NEO4J_URI": "bolt://localhost:7687",
-                    "NEO4J_USER": "neo4j",
-                    "NEO4J_PASSWORD": "password",
-                    "QDRANT_HOST": "localhost",
-                    "QDRANT_PORT": "6333",
-                    "QDRANT_COLLECTION": "document_chunks",
-                },
-            )
-        )
 
         # Register test_watcher
         self.register_server(

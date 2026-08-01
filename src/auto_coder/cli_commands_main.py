@@ -9,7 +9,7 @@ import click
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
-from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
+from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, ensure_test_script_or_fail
 from .cli_ui import Spinner, create_terminal_link, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .llm_backend_config import get_llm_config
@@ -63,20 +63,9 @@ logger = get_logger(__name__)
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
 )
 @click.option(
-    "--enable-graphrag/--disable-graphrag",
-    default=True,
-    help="Enable GraphRAG integration (default: enabled)",
-)
-@click.option(
     "--only",
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
-)
-@click.option(
-    "--force-reindex",
-    is_flag=True,
-    default=False,
-    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
 )
 @click.option(
     "--log-level",
@@ -102,8 +91,6 @@ def process_issues(
     auto_merge_dependabot_prs: bool,
     force_clean_before_checkout: bool,
     only_target: Optional[str],
-    enable_graphrag: bool,
-    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -180,20 +167,14 @@ def process_issues(
             "Auto-merge": auto_merge,
             "Auto-merge Dependabot PRs": auto_merge_dependabot_prs,
             "Force clean before checkout": force_clean_before_checkout,
-            "Force reindex": force_reindex,
             "Verbose logging": verbose,
         }
     )
     print_configuration_summary("Processing Configuration", summary)
 
-    # Initialize GraphRAG (conditionally enabled)
-    if enable_graphrag:
-        initialize_graphrag(force_reindex=force_reindex)
-
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
     manager = build_backend_manager_from_config(
-        enable_graphrag=enable_graphrag,
         cli_models=models,
         cli_backends=selected_backends,
     )
@@ -215,8 +196,6 @@ def process_issues(
         client = manager._clients.get(primary_backend)
         if client is not None:
             primary_model = getattr(client, "model_name", None)
-
-    check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     message_manager = build_message_backend_manager(models=models)
     message_backend_list = message_manager._all_backends[:]
@@ -429,17 +408,6 @@ def process_issues(
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
 @click.option(
-    "--enable-graphrag/--disable-graphrag",
-    default=True,
-    help="Enable GraphRAG integration (default: enabled)",
-)
-@click.option(
-    "--force-reindex",
-    is_flag=True,
-    default=False,
-    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
-)
-@click.option(
     "--log-level",
     default="INFO",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -451,8 +419,6 @@ def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
     disable_labels: Optional[bool],
-    enable_graphrag: bool,
-    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -504,20 +470,14 @@ def create_feature_issues(
     summary.update(
         {
             "Disable labels": disable_labels,
-            "Force reindex": force_reindex,
             "Verbose logging": verbose,
         }
     )
     print_configuration_summary("Feature Analysis Configuration", summary)
 
-    # Initialize GraphRAG (conditionally enabled)
-    if enable_graphrag:
-        initialize_graphrag(force_reindex=force_reindex)
-
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
     manager = build_backend_manager_from_config(
-        enable_graphrag=enable_graphrag,
         cli_models=models,
         cli_backends=selected_backends,
     )
@@ -538,8 +498,6 @@ def create_feature_issues(
         client = manager._clients.get(primary_backend)
         if client is not None:
             primary_model = getattr(client, "model_name", None)
-
-    check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -591,17 +549,6 @@ def create_feature_issues(
     help="Maximum fix attempts before giving up (defaults to engine config)",
 )
 @click.option(
-    "--enable-graphrag/--disable-graphrag",
-    default=True,
-    help="Enable GraphRAG integration (default: enabled)",
-)
-@click.option(
-    "--force-reindex",
-    is_flag=True,
-    default=False,
-    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
-)
-@click.option(
     "--log-level",
     default="INFO",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -612,8 +559,6 @@ def create_feature_issues(
 def fix_to_pass_tests_command(
     disable_labels: Optional[bool],
     max_attempts: Optional[int],
-    enable_graphrag: bool,
-    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -657,15 +602,10 @@ def fix_to_pass_tests_command(
     summary.update(
         {
             "Disable labels": disable_labels,
-            "Force reindex": force_reindex,
             "Verbose logging": verbose,
         }
     )
     print_configuration_summary("Fix Tests Configuration", summary)
-
-    # Initialize GraphRAG (conditionally enabled)
-    if enable_graphrag:
-        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize minimal clients (GitHub not used here, but engine expects a client)
     try:
@@ -680,7 +620,6 @@ def fix_to_pass_tests_command(
         github_client = _Dummy()  # type: ignore
 
     manager = build_backend_manager_from_config(
-        enable_graphrag=enable_graphrag,
         cli_models=models,
         cli_backends=selected_backends,
     )
@@ -701,8 +640,6 @@ def fix_to_pass_tests_command(
         client = manager._clients.get(primary_backend)
         if client is not None:
             primary_model = getattr(client, "model_name", None)
-
-    check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     message_manager = build_message_backend_manager(models=models)
     message_backend_list = message_manager._all_backends[:]
@@ -777,17 +714,6 @@ def fix_to_pass_tests_command(
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
 )
 @click.option(
-    "--enable-graphrag/--disable-graphrag",
-    default=True,
-    help="Enable GraphRAG integration (default: enabled)",
-)
-@click.option(
-    "--force-reindex",
-    is_flag=True,
-    default=False,
-    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
-)
-@click.option(
     "--log-level",
     default="INFO",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -809,8 +735,6 @@ def serve(
     auto_merge: bool,
     auto_merge_dependabot_prs: bool,
     force_clean_before_checkout: bool,
-    enable_graphrag: bool,
-    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -855,14 +779,9 @@ def serve(
     logger.info(f"Starting Auto-Coder Daemon for repository: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
 
-    # Initialize GraphRAG (conditionally enabled)
-    if enable_graphrag:
-        initialize_graphrag(force_reindex=force_reindex)
-
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
     manager = build_backend_manager_from_config(
-        enable_graphrag=enable_graphrag,
         cli_models=models,
         cli_backends=selected_backends,
     )
@@ -878,8 +797,6 @@ def serve(
     )
 
     selected_backends = manager._all_backends[:]
-    check_graphrag_mcp_for_backends(selected_backends, client=manager)
-
     message_manager = build_message_backend_manager(models=models)
 
     # Configure engine behavior flags
