@@ -42,6 +42,7 @@ class ClaudeClient(LLMClientBase):
             self.base_url = self.config_backend and self.config_backend.base_url
             self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
             self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
+            self.claude_code_oauth_token = self.config_backend and self.config_backend.claude_code_oauth_token
             if self.config_backend:
                 self.settings = self.config_backend.settings
             else:
@@ -60,6 +61,7 @@ class ClaudeClient(LLMClientBase):
             self.base_url = self.config_backend and self.config_backend.base_url
             self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
             self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
+            self.claude_code_oauth_token = self.config_backend and self.config_backend.claude_code_oauth_token
             if self.config_backend:
                 self.settings = self.config_backend.settings
             else:
@@ -258,6 +260,8 @@ class ClaudeClient(LLMClientBase):
                 env["OPENAI_API_KEY"] = self.openai_api_key
             if self.openai_base_url:
                 env["OPENAI_BASE_URL"] = self.openai_base_url
+            if self.claude_code_oauth_token:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = self.claude_code_oauth_token
 
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")

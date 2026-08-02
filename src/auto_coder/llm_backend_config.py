@@ -77,6 +77,8 @@ class BackendConfig:
     # For OpenRouter-compatible backends
     openrouter_api_key: Optional[str] = None
     openrouter_base_url: Optional[str] = None
+    # For Claude Code CLI authentication
+    claude_code_oauth_token: Optional[str] = None
     # For custom configurations
     extra_args: Dict[str, str] = field(default_factory=dict)
     # List of provider names available for this backend
@@ -287,6 +289,7 @@ class LLMBackendConfiguration:
                 openai_base_url=config_data.get("openai_base_url"),
                 openrouter_api_key=config_data.get("openrouter_api_key"),
                 openrouter_base_url=config_data.get("openrouter_base_url"),
+                claude_code_oauth_token=config_data.get("claude_code_oauth_token"),
                 extra_args=config_data.get("extra_args", {}),
                 providers=config_data.get("providers", []),
                 usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
@@ -459,6 +462,7 @@ class LLMBackendConfiguration:
                 "openai_base_url": config.openai_base_url,
                 "openrouter_api_key": config.openrouter_api_key,
                 "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -493,6 +497,7 @@ class LLMBackendConfiguration:
                 "openai_base_url": config.openai_base_url,
                 "openrouter_api_key": config.openrouter_api_key,
                 "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -648,6 +653,10 @@ class LLMBackendConfiguration:
             openai_base_url_env = os.environ.get(f"AUTO_CODER_OPENAI_BASE_URL") or os.environ.get(f"AUTO_CODER_{backend_name.upper()}_OPENAI_BASE_URL")
             if openai_base_url_env:
                 backend_config.openai_base_url = openai_base_url_env
+
+            claude_code_oauth_token_env = os.environ.get(f"AUTO_CODER_{backend_name.upper()}_CLAUDE_CODE_OAUTH_TOKEN")
+            if claude_code_oauth_token_env:
+                backend_config.claude_code_oauth_token = claude_code_oauth_token_env
 
         # Also check for general environment overrides
         default_backend_env = os.environ.get("AUTO_CODER_DEFAULT_BACKEND")
