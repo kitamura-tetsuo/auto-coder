@@ -1880,28 +1880,51 @@ def _link_jules_pr_to_issue(
 
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
-        if not session_id:
+
+        issue_number = None
+        if session_id:
+            logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
+            # Step 2: Store session_id in pr_data for later use in the feedback loop
+            pr_data["_jules_session_id"] = session_id
+
+            # Step 3: Use CloudManager to find the original issue number
+            cloud_manager = CloudManager(repo_name)
+            issue_number = cloud_manager.get_issue_by_session(session_id)
+
+            if not issue_number:
+                logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
+                issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+        else:
             logger.warning(f"No session ID found in Jules PR #{pr_number} body")
-            return False
 
-        logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
+        # Fallback: Extract from branch name or PR title
+        if not issue_number:
+            branch_name = pr_data.get("head", {}).get("ref", "")
+            if branch_name:
+                import re
 
-        # Step 2: Store session_id in pr_data for later use in the feedback loop
-        pr_data["_jules_session_id"] = session_id
-
-        # Step 3: Use CloudManager to find the original issue number
-        cloud_manager = CloudManager(repo_name)
-        issue_number = cloud_manager.get_issue_by_session(session_id)
+                # Match patterns like issue-123
+                match = re.search(r"\bissue[-_](\d+)\b", branch_name, re.IGNORECASE)
+                if match:
+                    issue_number = int(match.group(1))
+                    logger.info(f"Extracted issue #{issue_number} from branch name '{branch_name}'")
 
         if not issue_number:
-            logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
-            issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+            pr_title = pr_data.get("title", "")
+            if pr_title:
+                import re
+
+                # Match patterns like "Issue #123" or "Fix #123"
+                match = re.search(r"(?:issue|fix|close|resolve)s?\s*#(\d+)", pr_title, re.IGNORECASE)
+                if match:
+                    issue_number = int(match.group(1))
+                    logger.info(f"Extracted issue #{issue_number} from PR title '{pr_title}'")
 
         if not issue_number:
-            logger.warning(f"No issue found for session ID '{session_id}' in Jules PR #{pr_number}")
+            logger.warning(f"No issue found for Jules PR #{pr_number} (checked session, branch, and title)")
             return False
 
-        logger.info(f"Found issue #{issue_number} for session ID '{session_id}' in Jules PR #{pr_number}")
+        logger.info(f"Found issue #{issue_number} for Jules PR #{pr_number}")
 
         # Step 4: Update PR body to include close #<issue_number> and link to issue
         success = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
