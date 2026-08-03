@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _close_stale_jules_pr, _handle_pr_merge, _should_skip_waiting_for_jules
+from src.auto_coder.pr_processor import _close_stale_jules_pr, _handle_pr_merge, _should_skip_waiting_for_jules, process_pull_request
 from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 JULES_PR_BODY = "Fixes the reported bug.\n\nSession ID: 901463134778726610\nhttps://jules.google.com/session/901463134778726610\n\nclose #4636"
@@ -216,6 +216,83 @@ class TestHandlePrMergeJulesPR:
         mock_checkout.assert_not_called()
         github_client.close_pr.assert_not_called()
         assert "Jules will handle fixing PR #4643, skipping local fixes" in actions[-1]
+
+
+class TestStaleJulesPRWithAutoCoderLabel:
+    """A stale Jules PR must be closed even when the @auto-coder label is still attached.
+
+    The label stays on the PR from an earlier processing run, so every gate that skips
+    labelled items has to be reached only after the staleness check.
+    """
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_process_pull_request_closes_labelled_stale_jules_pr(self, mock_check_status, mock_increment):
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=30)
+        pr_data["labels"] = [{"name": "@auto-coder"}]
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 4
+
+        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+
+        github_client.close_pr.assert_called_once()
+        mock_increment.assert_called_once_with("owner/repo", 4636)
+        assert any("Closed stale Jules PR #4643" in action for action in result.actions_taken)
+        assert not any("already being processed" in action for action in result.actions_taken)
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_get_candidates_closes_labelled_stale_jules_pr(self, mock_check_status, mock_increment):
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=30)
+        pr_data["labels"] = [{"name": "@auto-coder"}]
+        pr_data["draft"] = False
+        github_client.get_open_prs_json.return_value = [pr_data]
+        github_client.get_open_issues.return_value = []
+        github_client.get_open_issues_json.return_value = []
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 4
+
+        engine = AutomationEngine(github_client, config=config)
+        with patch("src.auto_coder.util.github_action.preload_github_actions_status"):
+            candidates = engine._get_candidates("owner/repo")
+
+        github_client.close_pr.assert_called_once()
+        mock_increment.assert_called_once_with("owner/repo", 4636)
+        assert all(candidate.data.get("number") != 4643 for candidate in candidates)
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_single_candidate_closes_labelled_stale_jules_pr(self, mock_check_status, mock_increment):
+        from src.auto_coder.automation_config import Candidate
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=30)
+        pr_data["labels"] = [{"name": "@auto-coder"}]
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 4
+
+        engine = AutomationEngine(github_client, config=config)
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+
+        with patch("src.auto_coder.pr_processor.process_pull_request") as mock_process:
+            result = engine._process_single_candidate_unified("owner/repo", candidate, config)
+
+        github_client.close_pr.assert_called_once()
+        mock_increment.assert_called_once_with("owner/repo", 4636)
+        mock_process.assert_not_called()
+        assert result.success is True
+        assert any("Closed stale Jules PR #4643" in action for action in result.actions)
 
 
 class TestShouldSkipWaitingForJules:

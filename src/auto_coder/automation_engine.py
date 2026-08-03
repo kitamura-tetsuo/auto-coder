@@ -380,7 +380,7 @@ class AutomationEngine:
         - Creation time ascending (oldest first)
         """
         from .issue_context import extract_linked_issues_from_pr_body
-        from .pr_processor import _is_dependabot_pr, _is_jules_pr
+        from .pr_processor import _close_stale_jules_pr, _is_dependabot_pr, _is_jules_pr
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
@@ -457,6 +457,16 @@ class AutomationEngine:
                             logger.warning(f"Could not mark Jules PR #{pr_number} as ready: missing node_id after fetch attempt")
                     except Exception as e:
                         logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {e}")
+
+                # Close Jules PRs that could not get CI green within the configured timeout.
+                # This runs before the label and "waiting for Jules" skips below, because a
+                # stale Jules PR normally still carries the @auto-coder label from an earlier
+                # run and would otherwise never be looked at again.
+                stale_jules_actions = _close_stale_jules_pr(self.github, repo_name, pr_data, self.config)
+                if stale_jules_actions:
+                    for action in stale_jules_actions:
+                        logger.info(f"PR #{pr_number}: {action}")
+                    continue
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
                 with LabelManager(
@@ -827,6 +837,20 @@ class AutomationEngine:
             # Ensure item_number is not None
             if item_number is None:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
+
+            # Close Jules PRs that could not get CI green within the configured timeout.
+            # Checked before the label gate below, which would otherwise skip the PR for as
+            # long as the @auto-coder label from an earlier run stays attached.
+            if item_type == "pr":
+                from .pr_processor import _close_stale_jules_pr
+
+                stale_jules_actions = _close_stale_jules_pr(self.github, repo_name, candidate.data, config)
+                if stale_jules_actions:
+                    for action in stale_jules_actions:
+                        logger.info(f"PR #{item_number}: {action}")
+                    result.actions = stale_jules_actions
+                    result.success = True
+                    return result
 
             # Use LabelManager context manager to handle @auto-coder label automatically
             with LabelManager(

@@ -380,6 +380,7 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
       - "The issue is resolved from the PR body links first, then from the Jules session ID, branch name, or PR title."
       - "Default timeout: 12 hours. Configurable via [jules].pr_ci_timeout_hours in config.toml."
       - "PRs whose CI is still running, or whose CI passed, are never closed by this rule."
+      - "The check runs before every '@auto-coder label present' skip (candidate collection, single-target processing, and process_pull_request); a stale PR normally still carries the label from an earlier run and would otherwise never be revisited."
 
 #### Breaking Changes Documentation
 

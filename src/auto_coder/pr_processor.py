@@ -174,6 +174,16 @@ def process_pull_request(
 
         pr_number = pr_data["number"]
 
+        # Close Jules PRs that could not get CI green within the configured timeout.
+        # This runs before the @auto-coder label check on purpose: a stale Jules PR
+        # usually still carries the label from an earlier run, and skipping on the
+        # label would leave the PR open forever.
+        stale_jules_actions = _close_stale_jules_pr(github_client, repo_name, pr_data, config)
+        if stale_jules_actions:
+            processed_pr.actions_taken = stale_jules_actions
+            processed_pr.priority = "close"
+            return processed_pr
+
         # Skip immediately if PR already has @auto-coder label
         with LabelManager(
             github_client,
@@ -189,13 +199,6 @@ def process_pull_request(
                 get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - already processed", item_type="pr", item_number=pr_number, details={"skip_reason": "already_processed"})
                 processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
                 return processed_pr
-
-        # Close Jules PRs that could not get CI green within the configured timeout
-        stale_jules_actions = _close_stale_jules_pr(github_client, repo_name, pr_data, config)
-        if stale_jules_actions:
-            processed_pr.actions_taken = stale_jules_actions
-            processed_pr.priority = "close"
-            return processed_pr
 
         # Check if we should skip this PR because it's waiting for Jules
         if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
