@@ -794,28 +794,6 @@ def is_jules_mode_enabled() -> bool:
     return jules_backend_enabled and jules_config_enabled
 
 
-def get_jules_fallback_enabled_from_config(config_path: Optional[str] = None) -> bool:
-    """Check if Jules fallback to local is enabled via [jules].enabled_fallback_to_local in config.toml.
-
-    This function reads from ~/.auto-coder/config.toml (or local .auto-coder/config.toml)
-    and checks for a [jules] section with an 'enabled_fallback_to_local' field.
-
-    Args:
-        config_path: Optional explicit path to config.toml file. If not provided,
-                    will check standard locations.
-
-    Returns:
-        True if fallback is enabled (default), False if explicitly disabled.
-    """
-    return _get_config_value(
-        section="jules",
-        key="enabled_fallback_to_local",
-        default=True,
-        config_path=config_path,
-        value_type=bool,
-    )
-
-
 def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
     """Get the Jules wait timeout in hours from config.toml.
 
@@ -834,19 +812,19 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
     )
 
 
-def get_jules_failure_threshold_from_config(config_path: Optional[str] = None) -> int:
-    """Get the Jules failure threshold from config.toml.
+def get_jules_pr_ci_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+    """Get the maximum time a Jules PR may stay open without passing CI.
 
     Args:
         config_path: Optional explicit path to config.toml file.
 
     Returns:
-        Failure threshold (default: 3)
+        Timeout in hours (default: 12)
     """
     return _get_config_value(
         section="jules",
-        key="failure_threshold",
-        default=3,
+        key="pr_ci_timeout_hours",
+        default=12,
         config_path=config_path,
         value_type=int,
     )

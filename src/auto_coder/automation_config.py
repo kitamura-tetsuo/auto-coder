@@ -155,12 +155,12 @@ class AutomationConfig:
         # Load Jules wait timeout from config
         from .llm_backend_config import (
             get_github_action_log_max_length_from_config,
-            get_jules_failure_threshold_from_config,
+            get_jules_pr_ci_timeout_hours_from_config,
             get_jules_wait_timeout_hours_from_config,
         )
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
-        object.__setattr__(self, "JULES_FAILURE_THRESHOLD", get_jules_failure_threshold_from_config())
+        object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config())
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config())
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
@@ -490,9 +490,10 @@ class AutomationConfig:
     # Configurable via [jules].wait_timeout_hours in config.toml
     JULES_WAIT_TIMEOUT_HOURS: int = 2
 
-    # Jules failure threshold (default: 10)
-    # Configurable via [jules].failure_threshold in config.toml
-    JULES_FAILURE_THRESHOLD: int = 10
+    # Maximum time a Jules PR may stay open without passing CI (default: 12 hours)
+    # After this timeout the PR is closed and the linked issue attempt is incremented.
+    # Configurable via [jules].pr_ci_timeout_hours in config.toml
+    JULES_PR_CI_TIMEOUT_HOURS: int = 12
 
     # GitHub Action log max length (default: 50000)
     # Configurable via [github_action].max_log_length in config.toml

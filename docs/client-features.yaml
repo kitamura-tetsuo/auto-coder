@@ -366,6 +366,21 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
   - Automatic flags: Minimal - Jules manages sessions internally
   - Custom options: Usually minimal due to session-based nature
 
+#### Jules PR Handling
+
+  jules_pr_handling:
+    description: "Rules applied to PRs created by Jules (google-labs-jules)."
+    no_automatic_local_fixes:
+      - "Auto-Coder never pushes automatic fix commits to a Jules PR branch: Jules does not recognize commits made to its branch by other actors, so such commits desynchronize the Jules session."
+      - "CI failures are reported back to the Jules session instead, and Jules is expected to push the fix itself."
+      - "Only an explicit local run that is already checked out on the PR branch keeps fixing the working copy directly."
+    ci_timeout:
+      - "When a Jules PR still has failing (completed) CI more than [jules].pr_ci_timeout_hours after it was created, the PR is closed as unfixable."
+      - "The attempt counter of the issue linked to the PR is incremented so the issue is retried from scratch."
+      - "The issue is resolved from the PR body links first, then from the Jules session ID, branch name, or PR title."
+      - "Default timeout: 12 hours. Configurable via [jules].pr_ci_timeout_hours in config.toml."
+      - "PRs whose CI is still running, or whose CI passed, are never closed by this rule."
+
 #### Breaking Changes Documentation
 
 Recent configuration schema changes that require migration:
@@ -463,6 +478,7 @@ Recent configuration schema changes that require migration:
       - "New attempt branches are created from the validated base branch (main or the parent's current attempt branch) to re-implement changes safely."
     fallback:
       - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
+      - "Jules PRs that still have failing CI more than [jules].pr_ci_timeout_hours (default 12) after PR creation are closed, and the attempt counter of the linked issue is incremented so the issue is retried from scratch."
       - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
       - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
       - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."

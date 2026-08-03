@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
@@ -191,8 +190,15 @@ def process_pull_request(
                 processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
                 return processed_pr
 
+        # Close Jules PRs that could not get CI green within the configured timeout
+        stale_jules_actions = _close_stale_jules_pr(github_client, repo_name, pr_data, config)
+        if stale_jules_actions:
+            processed_pr.actions_taken = stale_jules_actions
+            processed_pr.priority = "close"
+            return processed_pr
+
         # Check if we should skip this PR because it's waiting for Jules
-        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
+        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
@@ -212,7 +218,7 @@ def process_pull_request(
             # Continue with normal processing even if Jules processing fails
 
         # Check if we should skip this PR because it's waiting for Jules
-        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
+        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
@@ -299,13 +305,15 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
     return False
 
 
-def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: Dict[str, Any]) -> bool:
+def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: Dict[str, Any], config: Optional[AutomationConfig] = None) -> bool:
     """Check if PR should be skipped because it's waiting for Jules to fix CI failures.
 
     Returns True if:
     1. The last comment on the PR is the specific "CI checks failed..." message from Auto-Coder.
     2. There are no commits after that comment.
+    3. The wait has not exceeded ``config.JULES_WAIT_TIMEOUT_HOURS``.
     """
+    wait_timeout_hours = (config or AutomationConfig()).JULES_WAIT_TIMEOUT_HOURS
     try:
         pr_number = pr_data["number"]
 
@@ -408,15 +416,15 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
             logger.info(f"PR #{pr_number} has new commits after Jules wait message, processing...")
             return False
 
-        # Check if it has been waiting for more than 2 hour
+        # Check if it has been waiting longer than the configured timeout
         try:
             # Parse GitHub timestamp (ISO 8601)
             # Example: 2023-10-27T10:00:00Z
             last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
             current_time = datetime.now(timezone.utc)
 
-            if current_time - last_comment_dt > timedelta(hours=2):
-                logger.info(f"PR #{pr_number} has been waiting for Jules for > 2 hour. Switching to local processing.")
+            if current_time - last_comment_dt > timedelta(hours=wait_timeout_hours):
+                logger.info(f"PR #{pr_number} has been waiting for Jules for > {wait_timeout_hours} hour(s). Re-processing.")
                 return False
         except Exception as e:
             logger.warning(f"Failed to parse timestamp or compare time for PR #{pr_number}: {e}")
@@ -427,6 +435,109 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
     except Exception as e:
         logger.error(f"Error checking if PR #{pr_data.get('number')} should be skipped: {e}")
         return False
+
+
+def _close_stale_jules_pr(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_checks: Optional[Any] = None,
+) -> List[str]:
+    """Close a Jules PR that failed to get CI green within the configured timeout.
+
+    Jules is the only actor allowed to push to its own PR branch, so a Jules PR that
+    still has failing CI after ``config.JULES_PR_CI_TIMEOUT_HOURS`` is considered
+    unfixable. The PR is closed and the attempt count of the linked issue(s) is
+    incremented so the issue is picked up again from scratch.
+
+    Args:
+        github_client: GitHub client instance
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        config: Automation configuration
+        github_checks: Optional already-fetched GitHub Actions status result
+
+    Returns:
+        List of actions taken. Empty when the PR was not closed.
+    """
+    actions: List[str] = []
+    pr_number = int(pr_data["number"])
+
+    try:
+        if not _is_jules_pr(pr_data):
+            return actions
+
+        created_at = pr_data.get("created_at")
+        if not created_at:
+            logger.debug(f"PR #{pr_number} has no created_at timestamp, skipping Jules staleness check")
+            return actions
+
+        try:
+            created_dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except ValueError as e:
+            logger.warning(f"Failed to parse created_at '{created_at}' for PR #{pr_number}: {e}")
+            return actions
+
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+
+        age = datetime.now(timezone.utc) - created_dt
+        timeout = timedelta(hours=config.JULES_PR_CI_TIMEOUT_HOURS)
+        if age <= timeout:
+            return actions
+
+        # Only close when CI is actually not passing. Completed runs are required:
+        # a run still in progress may yet turn green.
+        if github_checks is None:
+            github_checks = _check_github_actions_status(repo_name, pr_data, config)
+
+        if github_checks.success:
+            logger.info(f"Jules PR #{pr_number} is older than {config.JULES_PR_CI_TIMEOUT_HOURS}h but CI passed, keeping it open")
+            return actions
+
+        if getattr(github_checks, "in_progress", False):
+            logger.info(f"Jules PR #{pr_number} is older than {config.JULES_PR_CI_TIMEOUT_HOURS}h but CI is still running, keeping it open")
+            return actions
+
+        logger.info(f"Jules PR #{pr_number} did not pass CI within {config.JULES_PR_CI_TIMEOUT_HOURS} hours. Closing it.")
+
+        # Resolve the issue(s) that this PR was created for
+        issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body", "") or "")
+        if not issue_numbers:
+            resolved_issue = _resolve_jules_pr_issue_number(repo_name, pr_data, github_client)
+            if resolved_issue:
+                issue_numbers = [resolved_issue]
+
+        close_comment = f"Auto-Coder: Closing this PR because Jules did not get CI to pass within {config.JULES_PR_CI_TIMEOUT_HOURS} hours after the PR was created. The linked issue(s) will be retried with an incremented attempt count."
+        client = github_client or GitHubClient.get_instance()
+        client.close_pr(repo_name, pr_number, close_comment)
+        actions.append(f"Closed stale Jules PR #{pr_number} (no passing CI within {config.JULES_PR_CI_TIMEOUT_HOURS}h)")
+        get_trace_logger().log(
+            "Jules Timeout",
+            f"Closed stale Jules PR #{pr_number}",
+            item_type="pr",
+            item_number=pr_number,
+            details={"timeout_hours": config.JULES_PR_CI_TIMEOUT_HOURS, "linked_issues": issue_numbers},
+        )
+
+        if not issue_numbers:
+            logger.warning(f"No linked issue found for closed Jules PR #{pr_number}, cannot increment attempt")
+            actions.append(f"No linked issue found for PR #{pr_number} to increment attempt")
+            return actions
+
+        for issue_number in issue_numbers:
+            try:
+                new_attempt = increment_attempt(repo_name, issue_number)
+                actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+            except Exception as e:
+                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error handling stale Jules PR #{pr_number}: {e}")
+
+    return actions
 
 
 def _get_mergeable_state(
@@ -1198,49 +1309,25 @@ def _handle_pr_merge(
             current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
             already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
 
-        # Check if this is a Jules PR
+        # Check if this is a Jules PR.
+        #
+        # Jules PRs are never fixed automatically: Jules does not pick up commits pushed to
+        # its branch by anyone else, so auto-fix commits would silently diverge from the
+        # Jules session. Either Jules fixes the PR itself, or the PR is closed once it has
+        # not passed CI within JULES_PR_CI_TIMEOUT_HOURS. Only an explicit local run that
+        # already sits on the PR branch keeps fixing the checkout directly.
         if _is_jules_pr(pr_data) and not already_on_pr_branch:
-            # Check if we should fallback to local llm_backend due to too many Jules failures
-            # First check if fallback is enabled in config
-            fallback_enabled = get_jules_fallback_enabled_from_config()
-            should_fallback = False
-
-            if not fallback_enabled:
-                logger.info(f"Jules fallback to local is disabled in config. Skipping fallback checks for PR #{pr_number}.")
-            else:
-                try:
-                    # Count specific failure comments
-                    comments = github_client.get_pr_comments(repo_name, pr_number)
-                    target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-                    failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
-
-                    if failure_count > config.JULES_FAILURE_THRESHOLD:
-                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> {config.JULES_FAILURE_THRESHOLD}). Switching to local llm_backend.")
-                        should_fallback = True
-                        get_trace_logger().log("Jules Fallback", f"Switching to local backend for PR #{pr_number} (threshold)", item_type="pr", item_number=pr_number, details={"reason": "failure_threshold"})
-                    else:
-                        # Check if the last failure comment was more than 2 hour ago
-                        last_failure_comment = next((c for c in reversed(comments) if target_message in c.get("body", "")), None)
-                        if last_failure_comment:
-                            last_comment_time = last_failure_comment["created_at"]
-                            last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
-                            current_time = datetime.now(timezone.utc)
-
-                            if current_time - last_comment_dt > timedelta(hours=config.JULES_WAIT_TIMEOUT_HOURS):
-                                logger.info(f"PR #{pr_number} has been waiting for Jules for > {config.JULES_WAIT_TIMEOUT_HOURS} hour (last failure). Switching to local llm_backend.")
-                                should_fallback = True
-                                get_trace_logger().log("Jules Fallback", f"Switching to local backend for PR #{pr_number} (timeout)", item_type="pr", item_number=pr_number, details={"reason": "timeout"})
-
-                except Exception as e:
-                    logger.error(f"Error checking Jules failure count/time for PR #{pr_number}: {e}")
-
-            if not should_fallback:
-                actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
-                # Send error logs to Jules and skip local fixing - let Jules handle it
-                jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
-                actions.extend(jules_feedback_actions)
-                actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
+            stale_jules_actions = _close_stale_jules_pr(github_client, repo_name, pr_data, config, github_checks)
+            if stale_jules_actions:
+                actions.extend(stale_jules_actions)
                 return actions
+
+            actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
+            # Send error logs to Jules and skip local fixing - let Jules handle it
+            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+            actions.extend(jules_feedback_actions)
+            actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
+            return actions
 
         # Step 5: Process PR in Jules mode if it's not a Jules PR
         if not _is_jules_pr(pr_data):
@@ -1844,6 +1931,68 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     return False
 
 
+def _resolve_jules_pr_issue_number(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Any,
+) -> Optional[int]:
+    """Find the issue a Jules PR was created for.
+
+    The lookup order is session ID (local DB, then issue comments), branch name,
+    and finally the PR title.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        github_client: GitHub client instance
+
+    Returns:
+        Issue number if found, None otherwise
+    """
+    pr_number = pr_data.get("number")
+    pr_body = pr_data.get("body", "") or ""
+
+    session_id = _extract_session_id_from_pr_body(pr_body)
+
+    issue_number: Optional[int] = None
+    if session_id:
+        logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
+        # Store session_id in pr_data for later use in the feedback loop
+        pr_data["_jules_session_id"] = session_id
+
+        # Use CloudManager to find the original issue number
+        cloud_manager = CloudManager(repo_name)
+        issue_number = cloud_manager.get_issue_by_session(session_id)
+
+        if not issue_number:
+            logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
+            issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+    else:
+        logger.warning(f"No session ID found in Jules PR #{pr_number} body")
+
+    # Fallback: Extract from branch name
+    if not issue_number:
+        branch_name = pr_data.get("head", {}).get("ref", "")
+        if branch_name:
+            # Match patterns like issue-123
+            match = re.search(r"\bissue[-_](\d+)\b", branch_name, re.IGNORECASE)
+            if match:
+                issue_number = int(match.group(1))
+                logger.info(f"Extracted issue #{issue_number} from branch name '{branch_name}'")
+
+    # Fallback: Extract from PR title
+    if not issue_number:
+        pr_title = pr_data.get("title", "")
+        if pr_title:
+            # Match patterns like "Issue #123" or "Fix #123"
+            match = re.search(r"(?:issue|fix|close|resolve)s?\s*#(\d+)", pr_title, re.IGNORECASE)
+            if match:
+                issue_number = int(match.group(1))
+                logger.info(f"Extracted issue #{issue_number} from PR title '{pr_title}'")
+
+    return issue_number
+
+
 def _link_jules_pr_to_issue(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -1878,47 +2027,7 @@ def _link_jules_pr_to_issue(
             logger.info(f"Skipping issue lookup for Jules special PR #{pr_number} ('{pr_title}')")
             return True
 
-        # Step 1: Extract Session ID from PR body
-        session_id = _extract_session_id_from_pr_body(pr_body)
-
-        issue_number = None
-        if session_id:
-            logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
-            # Step 2: Store session_id in pr_data for later use in the feedback loop
-            pr_data["_jules_session_id"] = session_id
-
-            # Step 3: Use CloudManager to find the original issue number
-            cloud_manager = CloudManager(repo_name)
-            issue_number = cloud_manager.get_issue_by_session(session_id)
-
-            if not issue_number:
-                logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
-                issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
-        else:
-            logger.warning(f"No session ID found in Jules PR #{pr_number} body")
-
-        # Fallback: Extract from branch name or PR title
-        if not issue_number:
-            branch_name = pr_data.get("head", {}).get("ref", "")
-            if branch_name:
-                import re
-
-                # Match patterns like issue-123
-                match = re.search(r"\bissue[-_](\d+)\b", branch_name, re.IGNORECASE)
-                if match:
-                    issue_number = int(match.group(1))
-                    logger.info(f"Extracted issue #{issue_number} from branch name '{branch_name}'")
-
-        if not issue_number:
-            pr_title = pr_data.get("title", "")
-            if pr_title:
-                import re
-
-                # Match patterns like "Issue #123" or "Fix #123"
-                match = re.search(r"(?:issue|fix|close|resolve)s?\s*#(\d+)", pr_title, re.IGNORECASE)
-                if match:
-                    issue_number = int(match.group(1))
-                    logger.info(f"Extracted issue #{issue_number} from PR title '{pr_title}'")
+        issue_number = _resolve_jules_pr_issue_number(repo_name, pr_data, github_client)
 
         if not issue_number:
             logger.warning(f"No issue found for Jules PR #{pr_number} (checked session, branch, and title)")
