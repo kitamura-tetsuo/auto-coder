@@ -2245,7 +2245,7 @@ class TestGetCandidates:
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
-    def test_get_candidates_skips_issues_with_sub_issues_or_linked_prs(
+    def test_get_candidates_skips_issues_with_sub_issues_or_open_linked_prs(
         self,
         mock_extract_issues,
         mock_check_actions,
@@ -2253,7 +2253,10 @@ class TestGetCandidates:
         mock_gemini_client,
         test_repo_name,
     ):
-        """Test that issues with sub-issues or linked PRs are skipped."""
+        """Issues with sub-issues, or with a linked PR that is still open, are skipped.
+
+        A closed PR stays in the issue timeline forever, so it must not hide the issue.
+        """
         # Setup
         engine = AutomationEngine(mock_github_client)
 
@@ -2300,12 +2303,29 @@ class TestGetCandidates:
             },
         ]
 
-        # Execute
-        candidates = engine._get_candidates(test_repo_name, max_items=10)
+        # PR #999 (linked from issue #12) is still open
+        mock_github_client.get_open_prs_json.return_value = [
+            {
+                "number": 999,
+                "title": "PR 999",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "draft": False,
+                "created_at": "2024-01-03T00:00:00Z",
+                "head": {"ref": "feature", "sha": "sha999"},
+            }
+        ]
 
-        # Assert - Only issue #10 should be returned
-        assert len(candidates) == 1
-        assert candidates[0].data["number"] == 10
+        # Execute
+        with patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=False):
+            candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - of the issues only #10 is collected
+        issue_numbers = [c.data["number"] for c in candidates if c.type == "issue"]
+        assert issue_numbers == [10]
+        assert 11 not in issue_numbers  # has open sub-issues
+        assert 12 not in issue_numbers  # linked PR #999 is open
         assert candidates[0].type == "issue"
 
     @patch("auto_coder.util.github_action._check_github_actions_status")

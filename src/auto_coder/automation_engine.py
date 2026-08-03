@@ -389,6 +389,8 @@ class AutomationEngine:
 
         candidates: List[Candidate] = []
         candidates_count = 0
+        # Issues queued from the stale-Jules-PR path, to avoid queueing them twice
+        requeued_issue_numbers: set[int] = set()
 
         try:
 
@@ -462,10 +464,20 @@ class AutomationEngine:
                 # This runs before the label and "waiting for Jules" skips below, because a
                 # stale Jules PR normally still carries the @auto-coder label from an earlier
                 # run and would otherwise never be looked at again.
-                stale_jules_actions = _close_stale_jules_pr(self.github, repo_name, pr_data, self.config)
-                if stale_jules_actions:
-                    for action in stale_jules_actions:
+                stale_jules_result = _close_stale_jules_pr(self.github, repo_name, pr_data, self.config)
+                if stale_jules_result.closed:
+                    for action in stale_jules_result.actions:
                         logger.info(f"PR #{pr_number}: {action}")
+                    # Queue the unlocked issue(s) right away so the new attempt starts in
+                    # this cycle instead of waiting for the next poll.
+                    for issue_number in stale_jules_result.issue_numbers:
+                        issue_candidate = self._create_candidate_from_single(repo_name, "issue", issue_number)
+                        if issue_candidate:
+                            issue_candidate.priority = 3
+                            candidates.append(issue_candidate)
+                            requeued_issue_numbers.add(issue_number)
+                            candidates_count += 1
+                            logger.info(f"Queued issue #{issue_number} for a new attempt after closing stale Jules PR #{pr_number}")
                     continue
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
@@ -654,6 +666,10 @@ class AutomationEngine:
                 # Build map for fast lookup of open issues
                 issue_map = {i["number"]: i for i in all_issues}
 
+                # Numbers of the PRs that are currently open, used to tell a live PR apart
+                # from a closed one still listed in an issue timeline
+                open_pr_numbers = {pr.get("number") for pr in pr_data_list if isinstance(pr.get("number"), int)}
+
                 for issue_data in all_issues:
                     labels = issue_data.get("labels", []) or []
 
@@ -680,6 +696,10 @@ class AutomationEngine:
                     number = issue_data.get("number")
                     if not isinstance(number, int):
                         logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                        continue
+
+                    # Already queued by the stale-Jules-PR path above
+                    if number in requeued_issue_numbers:
                         continue
 
                     # Skip if another instance is processing (@auto-coder label present) using LabelManager check
@@ -725,8 +745,14 @@ class AutomationEngine:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
 
-                    # Use pre-fetched data
-                    if issue_data.get("has_linked_prs"):
+                    # Skip only while an *open* PR covers the issue; the work happens on that
+                    # PR. Closed or merged PRs stay in the issue timeline forever, so counting
+                    # them here would permanently hide any issue that once had a PR - including
+                    # issues whose stale Jules PR was just closed for a new attempt.
+                    linked_pr_numbers = set(issue_data.get("linked_pr_numbers") or [])
+                    open_linked_prs = linked_pr_numbers & open_pr_numbers
+                    if open_linked_prs:
+                        logger.debug(f"Skipping issue #{number} - open PR(s) {sorted(open_linked_prs)} already cover it")
                         continue
 
                     # Calculate priority
@@ -844,11 +870,14 @@ class AutomationEngine:
             if item_type == "pr":
                 from .pr_processor import _close_stale_jules_pr
 
-                stale_jules_actions = _close_stale_jules_pr(self.github, repo_name, candidate.data, config)
-                if stale_jules_actions:
-                    for action in stale_jules_actions:
+                stale_jules_result = _close_stale_jules_pr(self.github, repo_name, candidate.data, config)
+                if stale_jules_result.closed:
+                    for action in stale_jules_result.actions:
                         logger.info(f"PR #{item_number}: {action}")
-                    result.actions = stale_jules_actions
+                    result.actions = list(stale_jules_result.actions)
+                    # Start the new attempt on the unlocked issue(s) right away
+                    for issue_number in stale_jules_result.issue_numbers:
+                        result.actions.extend(self._process_unlocked_issue(repo_name, issue_number, config, jules_mode))
                     result.success = True
                     return result
 
@@ -921,6 +950,36 @@ class AutomationEngine:
             logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
 
         return result
+
+    def _process_unlocked_issue(
+        self,
+        repo_name: str,
+        issue_number: int,
+        config: AutomationConfig,
+        jules_mode: bool,
+    ) -> List[str]:
+        """Process an issue whose Jules attempt was just abandoned.
+
+        Args:
+            repo_name: Repository name
+            issue_number: Issue to start the next attempt on
+            config: AutomationConfig instance
+            jules_mode: Whether to use Jules mode for processing
+
+        Returns:
+            Actions taken while processing the issue
+        """
+        issue_candidate = self._create_candidate_from_single(repo_name, "issue", issue_number)
+        if not issue_candidate:
+            logger.warning(f"Could not build a candidate for issue #{issue_number}, skipping the new attempt")
+            return [f"Failed to start a new attempt for issue #{issue_number}"]
+
+        logger.info(f"Starting a new attempt for issue #{issue_number}")
+        issue_result = self._process_single_candidate_unified(repo_name, issue_candidate, config, jules_mode=jules_mode)
+        actions = [f"Started a new attempt for issue #{issue_number}"] + list(issue_result.actions)
+        if issue_result.error:
+            actions.append(f"Error processing issue #{issue_number}: {issue_result.error}")
+        return actions
 
     def _process_single_candidate(self, repo_name: str, candidate: Candidate) -> CandidateProcessingResult:
         """Process a single candidate (issue/PR).
@@ -1821,22 +1880,27 @@ class AutomationEngine:
         try:
             # Handle 'auto' type
             if target_type == "auto":
-                # Prefer PR to avoid mislabeling PR issues
+                # Prefer PR to avoid mislabeling PR issues.
+                # get_pull_request() returns an empty result instead of raising when the
+                # number belongs to an issue, so the number has to be verified.
+                target_type = "issue"
                 try:
-                    # repo = self.github.get_repository(repo_name)
-                    # pr = repo.get_pull(number)
                     pr = self.github.get_pull_request(repo_name, number)
-                    pr_data = self.github.get_pr_details(pr)
-                    target_type = "pr"
+                    pr_data = self.github.get_pr_details(pr) if pr else None
+                    if pr_data and pr_data.get("number"):
+                        target_type = "pr"
                 except Exception:
-                    target_type = "issue"
+                    pass
 
             if target_type == "pr":
                 # Get PR data
                 # repo = self.github.get_repository(repo_name)
                 # pr = repo.get_pull(number)
                 pr = self.github.get_pull_request(repo_name, number)
-                pr_data = self.github.get_pr_details(pr)
+                pr_data = self.github.get_pr_details(pr) if pr else None
+                if not pr_data or not pr_data.get("number"):
+                    logger.error(f"PR #{number} not found in {repo_name}")
+                    return None
                 branch_name = pr_data.get("head_branch")
                 pr_body = pr_data.get("body", "")
                 related_issues = []

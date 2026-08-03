@@ -381,6 +381,11 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
       - "Default timeout: 12 hours. Configurable via [jules].pr_ci_timeout_hours in config.toml."
       - "PRs whose CI is still running, or whose CI passed, are never closed by this rule."
       - "The check runs before every '@auto-coder label present' skip (candidate collection, single-target processing, and process_pull_request); a stale PR normally still carries the label from an earlier run and would otherwise never be revisited."
+      - "Closing also releases the issue: the @auto-coder label that the dead Jules session kept on the linked issue is removed, and the issue is processed again in the same run (queued as a candidate in the daemon, processed inline for single-target runs)."
+      - "PRs that are already closed are ignored, so the attempt counter is never incremented twice for the same PR."
+    label_locking:
+      - "Jules mode keeps the @auto-coder label on an issue for the lifetime of its session, so an aborted session would otherwise lock the issue permanently."
+      - "With check_labels=False (--only and WIP-branch resume) an existing @auto-coder label no longer blocks processing; the label is left in place because the run does not own it."
 
 #### Breaking Changes Documentation
 

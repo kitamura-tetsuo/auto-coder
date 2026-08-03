@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
-from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.automation_config import AutomationConfig, StaleJulesPRResult
 from src.auto_coder.pr_processor import _close_stale_jules_pr, _handle_pr_merge, _should_skip_waiting_for_jules, process_pull_request
 from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
@@ -36,7 +36,8 @@ class TestCloseStaleJulesPR:
         checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
         mock_increment.return_value = 3
 
-        actions = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        actions = result.actions
 
         github_client.close_pr.assert_called_once()
         close_args = github_client.close_pr.call_args[0]
@@ -55,8 +56,10 @@ class TestCloseStaleJulesPR:
         pr_data = _jules_pr_data(hours_old=11)
         checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
 
-        actions = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        actions = result.actions
 
+        assert result.closed is False
         assert actions == []
         github_client.close_pr.assert_not_called()
         mock_increment.assert_not_called()
@@ -69,8 +72,10 @@ class TestCloseStaleJulesPR:
         pr_data = _jules_pr_data(hours_old=48)
         checks = MagicMock(spec=GitHubActionsStatusResult, success=True, in_progress=False)
 
-        actions = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        actions = result.actions
 
+        assert result.closed is False
         assert actions == []
         github_client.close_pr.assert_not_called()
         mock_increment.assert_not_called()
@@ -83,8 +88,10 @@ class TestCloseStaleJulesPR:
         pr_data = _jules_pr_data(hours_old=48)
         checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=True)
 
-        actions = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        actions = result.actions
 
+        assert result.closed is False
         assert actions == []
         github_client.close_pr.assert_not_called()
         mock_increment.assert_not_called()
@@ -98,9 +105,27 @@ class TestCloseStaleJulesPR:
         pr_data["user"] = {"login": "human-dev"}
         pr_data["body"] = "A regular PR without a session reference"
 
-        actions = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, None)
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, None)
+        actions = result.actions
 
+        assert result.closed is False
         assert actions == []
+        github_client.close_pr.assert_not_called()
+        mock_increment.assert_not_called()
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    def test_ignores_already_closed_pr(self, mock_increment):
+        """A PR closed by an earlier run must not be closed (and counted) twice."""
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=30)
+        pr_data["state"] = "closed"
+        checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+
+        assert result.closed is False
         github_client.close_pr.assert_not_called()
         mock_increment.assert_not_called()
 
@@ -116,7 +141,8 @@ class TestCloseStaleJulesPR:
         mock_resolve.return_value = 4636
         mock_increment.return_value = 2
 
-        actions = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+        actions = result.actions
 
         mock_resolve.assert_called_once_with("owner/repo", pr_data, github_client)
         mock_increment.assert_called_once_with("owner/repo", 4636)
@@ -295,6 +321,99 @@ class TestStaleJulesPRWithAutoCoderLabel:
         assert any("Closed stale Jules PR #4643" in action for action in result.actions)
 
 
+class TestUnlockAndRetryLinkedIssue:
+    """Closing a stale Jules PR must hand the linked issue back for a new attempt.
+
+    Jules mode keeps the @auto-coder label on the issue while its session works, so a
+    dead session leaves the issue locked forever unless the label is released.
+    """
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    def test_close_releases_issue_label_and_reports_issue(self, mock_increment):
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=13)
+        checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 2
+
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+
+        github_client.remove_labels.assert_called_once_with("owner/repo", 4636, [config.AUTO_CODER_LABEL], item_type="issue")
+        assert result.issue_numbers == [4636]
+        assert any(f"Removed {config.AUTO_CODER_LABEL} label from issue #4636" in action for action in result.actions)
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    def test_close_keeps_issue_label_when_labels_disabled(self, mock_increment):
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        config.DISABLE_LABELS = True
+        pr_data = _jules_pr_data(hours_old=13)
+        checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 2
+
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+
+        github_client.remove_labels.assert_not_called()
+        assert result.issue_numbers == [4636]
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_single_candidate_starts_new_attempt_on_issue(self, mock_check_status, mock_increment):
+        from src.auto_coder.automation_config import Candidate
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=30)
+        pr_data["labels"] = [{"name": "@auto-coder"}]
+        issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
+        github_client.get_issue.return_value = issue_data
+        github_client.get_issue_details.return_value = issue_data
+        github_client.get_all_sub_issues.return_value = []
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 4
+
+        engine = AutomationEngine(github_client, config=config)
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+
+        with patch.object(AutomationEngine, "_take_issue_actions", return_value=["Created branch issue-4636/attempt-4"]) as mock_take_issue:
+            result = engine._process_single_candidate_unified("owner/repo", candidate, config)
+
+        mock_take_issue.assert_called_once()
+        assert mock_take_issue.call_args[0][1] == issue_data
+        assert any("Started a new attempt for issue #4636" in action for action in result.actions)
+        assert any("Created branch issue-4636/attempt-4" in action for action in result.actions)
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_get_candidates_queues_unlocked_issue(self, mock_check_status, mock_increment):
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=30)
+        pr_data["labels"] = [{"name": "@auto-coder"}]
+        pr_data["draft"] = False
+        issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
+        github_client.get_open_prs_json.return_value = [pr_data]
+        github_client.get_open_issues_json.return_value = [issue_data]
+        github_client.get_issue.return_value = issue_data
+        github_client.get_issue_details.return_value = issue_data
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+        mock_increment.return_value = 4
+
+        engine = AutomationEngine(github_client, config=config)
+        with patch("src.auto_coder.util.github_action.preload_github_actions_status"):
+            candidates = engine._get_candidates("owner/repo")
+
+        issue_candidates = [c for c in candidates if c.type == "issue" and c.data.get("number") == 4636]
+        assert len(issue_candidates) == 1, "the unlocked issue must be queued exactly once"
+
+
 class TestShouldSkipWaitingForJules:
     """Test cases for _should_skip_waiting_for_jules time-based behavior."""
 
@@ -320,3 +439,90 @@ class TestShouldSkipWaitingForJules:
         github_client = self._client_with_wait_comment(comment_age_hours=0.5)
 
         assert _should_skip_waiting_for_jules(github_client, "owner/repo", {"number": 123}, config) is True
+
+
+class TestSingleTargetTypeDetection:
+    """--only <number> must resolve issues that are not PRs.
+
+    get_pull_request() returns an empty result instead of raising for an issue number,
+    so the candidate builder has to verify the payload before treating it as a PR.
+    """
+
+    def test_auto_detection_falls_back_to_issue(self):
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        github_client = Mock()
+        config = AutomationConfig()
+        issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
+        # 404 for a PR lookup surfaces as an empty payload, not an exception
+        github_client.get_pull_request.return_value = {}
+        github_client.get_pr_details.return_value = {}
+        github_client.get_issue.return_value = issue_data
+        github_client.get_issue_details.return_value = issue_data
+
+        engine = AutomationEngine(github_client, config=config)
+        candidate = engine._create_candidate_from_single("owner/repo", "auto", 4636)
+
+        assert candidate is not None
+        assert candidate.type == "issue"
+        assert candidate.data["number"] == 4636
+
+    def test_missing_pr_returns_no_candidate(self):
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        github_client = Mock()
+        config = AutomationConfig()
+        github_client.get_pull_request.return_value = {}
+        github_client.get_pr_details.return_value = {}
+
+        engine = AutomationEngine(github_client, config=config)
+
+        assert engine._create_candidate_from_single("owner/repo", "pr", 4636) is None
+
+
+class TestLinkedPRSkipUsesOpenPRs:
+    """Closed PRs stay in an issue timeline forever and must not hide the issue."""
+
+    def _engine(self, github_client, config):
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        return AutomationEngine(github_client, config=config)
+
+    def _issue(self, linked_pr_numbers):
+        return {
+            "number": 4636,
+            "title": "Reduce warm /demo load time",
+            "labels": [],
+            "created_at": "2026-08-02T06:44:45Z",
+            "linked_pr_numbers": linked_pr_numbers,
+            "has_linked_prs": bool(linked_pr_numbers),
+        }
+
+    def test_issue_with_only_closed_linked_pr_is_collected(self):
+        github_client = Mock()
+        config = AutomationConfig()
+        github_client.get_open_prs_json.return_value = []
+        github_client.get_open_issues_json.return_value = [self._issue([4643])]
+
+        engine = self._engine(github_client, config)
+        with patch("src.auto_coder.util.github_action.preload_github_actions_status"):
+            candidates = engine._get_candidates("owner/repo")
+
+        assert [c.data["number"] for c in candidates if c.type == "issue"] == [4636]
+
+    def test_issue_with_open_linked_pr_is_skipped(self):
+        github_client = Mock()
+        config = AutomationConfig()
+        open_pr = {"number": 4643, "title": "Fix", "labels": [], "draft": False, "created_at": "2026-08-02T16:22:10Z", "head": {"ref": "b", "sha": "s"}, "body": ""}
+        github_client.get_open_prs_json.return_value = [open_pr]
+        github_client.get_open_issues_json.return_value = [self._issue([4643])]
+
+        engine = self._engine(github_client, config)
+        with (
+            patch("src.auto_coder.util.github_action.preload_github_actions_status"),
+            patch("src.auto_coder.pr_processor._close_stale_jules_pr", return_value=StaleJulesPRResult()),
+            patch("src.auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=False),
+        ):
+            candidates = engine._get_candidates("owner/repo")
+
+        assert [c.data["number"] for c in candidates if c.type == "issue"] == []

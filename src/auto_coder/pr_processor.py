@@ -23,7 +23,7 @@ from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
-from .automation_config import AutomationConfig, ProcessedPRResult
+from .automation_config import AutomationConfig, ProcessedPRResult, StaleJulesPRResult
 from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
@@ -178,9 +178,9 @@ def process_pull_request(
         # This runs before the @auto-coder label check on purpose: a stale Jules PR
         # usually still carries the label from an earlier run, and skipping on the
         # label would leave the PR open forever.
-        stale_jules_actions = _close_stale_jules_pr(github_client, repo_name, pr_data, config)
-        if stale_jules_actions:
-            processed_pr.actions_taken = stale_jules_actions
+        stale_jules_result = _close_stale_jules_pr(github_client, repo_name, pr_data, config)
+        if stale_jules_result.closed:
+            processed_pr.actions_taken = stale_jules_result.actions
             processed_pr.priority = "close"
             return processed_pr
 
@@ -446,13 +446,14 @@ def _close_stale_jules_pr(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_checks: Optional[Any] = None,
-) -> List[str]:
+) -> StaleJulesPRResult:
     """Close a Jules PR that failed to get CI green within the configured timeout.
 
     Jules is the only actor allowed to push to its own PR branch, so a Jules PR that
     still has failing CI after ``config.JULES_PR_CI_TIMEOUT_HOURS`` is considered
-    unfixable. The PR is closed and the attempt count of the linked issue(s) is
-    incremented so the issue is picked up again from scratch.
+    unfixable. The PR is closed, the attempt count of the linked issue(s) is
+    incremented, and the ``@auto-coder`` label that the dead Jules run left on those
+    issues is removed so they can be picked up again from scratch.
 
     Args:
         github_client: GitHub client instance
@@ -462,25 +463,29 @@ def _close_stale_jules_pr(
         github_checks: Optional already-fetched GitHub Actions status result
 
     Returns:
-        List of actions taken. Empty when the PR was not closed.
+        StaleJulesPRResult; ``closed`` is False when the PR was left open.
     """
-    actions: List[str] = []
+    result = StaleJulesPRResult()
     pr_number = int(pr_data["number"])
 
     try:
         if not _is_jules_pr(pr_data):
-            return actions
+            return result
+
+        if pr_data.get("state") == "closed":
+            logger.debug(f"PR #{pr_number} is already closed, skipping Jules staleness check")
+            return result
 
         created_at = pr_data.get("created_at")
         if not created_at:
             logger.debug(f"PR #{pr_number} has no created_at timestamp, skipping Jules staleness check")
-            return actions
+            return result
 
         try:
             created_dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
         except ValueError as e:
             logger.warning(f"Failed to parse created_at '{created_at}' for PR #{pr_number}: {e}")
-            return actions
+            return result
 
         if created_dt.tzinfo is None:
             created_dt = created_dt.replace(tzinfo=timezone.utc)
@@ -488,7 +493,7 @@ def _close_stale_jules_pr(
         age = datetime.now(timezone.utc) - created_dt
         timeout = timedelta(hours=config.JULES_PR_CI_TIMEOUT_HOURS)
         if age <= timeout:
-            return actions
+            return result
 
         # Only close when CI is actually not passing. Completed runs are required:
         # a run still in progress may yet turn green.
@@ -497,11 +502,11 @@ def _close_stale_jules_pr(
 
         if github_checks.success:
             logger.info(f"Jules PR #{pr_number} is older than {config.JULES_PR_CI_TIMEOUT_HOURS}h but CI passed, keeping it open")
-            return actions
+            return result
 
         if getattr(github_checks, "in_progress", False):
             logger.info(f"Jules PR #{pr_number} is older than {config.JULES_PR_CI_TIMEOUT_HOURS}h but CI is still running, keeping it open")
-            return actions
+            return result
 
         logger.info(f"Jules PR #{pr_number} did not pass CI within {config.JULES_PR_CI_TIMEOUT_HOURS} hours. Closing it.")
 
@@ -515,7 +520,8 @@ def _close_stale_jules_pr(
         close_comment = f"Auto-Coder: Closing this PR because Jules did not get CI to pass within {config.JULES_PR_CI_TIMEOUT_HOURS} hours after the PR was created. The linked issue(s) will be retried with an incremented attempt count."
         client = github_client or GitHubClient.get_instance()
         client.close_pr(repo_name, pr_number, close_comment)
-        actions.append(f"Closed stale Jules PR #{pr_number} (no passing CI within {config.JULES_PR_CI_TIMEOUT_HOURS}h)")
+        result.closed = True
+        result.actions.append(f"Closed stale Jules PR #{pr_number} (no passing CI within {config.JULES_PR_CI_TIMEOUT_HOURS}h)")
         get_trace_logger().log(
             "Jules Timeout",
             f"Closed stale Jules PR #{pr_number}",
@@ -526,21 +532,59 @@ def _close_stale_jules_pr(
 
         if not issue_numbers:
             logger.warning(f"No linked issue found for closed Jules PR #{pr_number}, cannot increment attempt")
-            actions.append(f"No linked issue found for PR #{pr_number} to increment attempt")
-            return actions
+            result.actions.append(f"No linked issue found for PR #{pr_number} to increment attempt")
+            return result
 
         for issue_number in issue_numbers:
             try:
                 new_attempt = increment_attempt(repo_name, issue_number)
-                actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+                result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
             except Exception as e:
                 logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
-                actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+
+            # The dead Jules run kept the @auto-coder label on the issue to mark it as
+            # being worked on. Release it, otherwise the issue is never processed again.
+            if _release_issue_processing_label(github_client, repo_name, issue_number, config):
+                result.actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
+
+            result.issue_numbers.append(issue_number)
 
     except Exception as e:
         logger.error(f"Error handling stale Jules PR #{pr_number}: {e}")
 
-    return actions
+    return result
+
+
+def _release_issue_processing_label(
+    github_client: Any,
+    repo_name: str,
+    issue_number: int,
+    config: AutomationConfig,
+) -> bool:
+    """Remove the @auto-coder label an aborted run left behind on an issue.
+
+    Args:
+        github_client: GitHub client instance
+        repo_name: Repository name (owner/repo)
+        issue_number: Issue to unlock
+        config: Automation configuration
+
+    Returns:
+        True if the label was removed, False otherwise
+    """
+    label = config.AUTO_CODER_LABEL
+    if not label or config.DISABLE_LABELS:
+        return False
+
+    try:
+        client = github_client or GitHubClient.get_instance()
+        client.remove_labels(repo_name, issue_number, [label], item_type="issue")
+        logger.info(f"Removed '{label}' label from issue #{issue_number} so it can be processed again")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to remove '{label}' label from issue #{issue_number}: {e}")
+        return False
 
 
 def _get_mergeable_state(
@@ -1320,9 +1364,9 @@ def _handle_pr_merge(
         # not passed CI within JULES_PR_CI_TIMEOUT_HOURS. Only an explicit local run that
         # already sits on the PR branch keeps fixing the checkout directly.
         if _is_jules_pr(pr_data) and not already_on_pr_branch:
-            stale_jules_actions = _close_stale_jules_pr(github_client, repo_name, pr_data, config, github_checks)
-            if stale_jules_actions:
-                actions.extend(stale_jules_actions)
+            stale_jules_result = _close_stale_jules_pr(github_client, repo_name, pr_data, config, github_checks)
+            if stale_jules_result.closed:
+                actions.extend(stale_jules_result.actions)
                 return actions
 
             actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, StaleJulesPRResult
 from auto_coder.automation_engine import AutomationEngine
 
 
@@ -39,7 +39,7 @@ class TestAutomationEngineCandidates:
             mock_check_actions.return_value = True
             mock_check_status.return_value = Mock(success=True)
             mock_skip_jules.return_value = False
-            mock_close_stale.return_value = []
+            mock_close_stale.return_value = StaleJulesPRResult()
 
             # Execute
             candidates = engine._get_candidates(repo_name)
@@ -88,7 +88,7 @@ class TestAutomationEngineCandidates:
             mock_check_actions.return_value = True
             mock_check_status.return_value = Mock(success=True)
             mock_skip_jules.return_value = False
-            mock_close_stale.return_value = []
+            mock_close_stale.return_value = StaleJulesPRResult()
 
             # Execute
             candidates = engine._get_candidates(repo_name)
@@ -130,7 +130,7 @@ class TestAutomationEngineCandidates:
             mock_check_actions.return_value = True
             mock_check_status.return_value = Mock(success=True)
             mock_skip_jules.return_value = False
-            mock_close_stale.return_value = []
+            mock_close_stale.return_value = StaleJulesPRResult()
 
             # Execute
             candidates = engine._get_candidates(repo_name)
