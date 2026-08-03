@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, StaleJulesPRResult
 from auto_coder.automation_engine import AutomationEngine
 
 
@@ -32,12 +32,14 @@ class TestAutomationEngineCandidates:
             patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress") as mock_check_actions,
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_status,
             patch("auto_coder.pr_processor._should_skip_waiting_for_jules") as mock_skip_jules,
+            patch("auto_coder.pr_processor._close_stale_jules_pr") as mock_close_stale,
         ):
 
             mock_label_manager.return_value.__enter__.return_value = True
             mock_check_actions.return_value = True
             mock_check_status.return_value = Mock(success=True)
             mock_skip_jules.return_value = False
+            mock_close_stale.return_value = StaleJulesPRResult()
 
             # Execute
             candidates = engine._get_candidates(repo_name)
@@ -79,12 +81,14 @@ class TestAutomationEngineCandidates:
             patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress") as mock_check_actions,
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_status,
             patch("auto_coder.pr_processor._should_skip_waiting_for_jules") as mock_skip_jules,
+            patch("auto_coder.pr_processor._close_stale_jules_pr") as mock_close_stale,
         ):
 
             mock_label_manager.return_value.__enter__.return_value = True
             mock_check_actions.return_value = True
             mock_check_status.return_value = Mock(success=True)
             mock_skip_jules.return_value = False
+            mock_close_stale.return_value = StaleJulesPRResult()
 
             # Execute
             candidates = engine._get_candidates(repo_name)
@@ -119,12 +123,14 @@ class TestAutomationEngineCandidates:
             patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress") as mock_check_actions,
             patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_status,
             patch("auto_coder.pr_processor._should_skip_waiting_for_jules") as mock_skip_jules,
+            patch("auto_coder.pr_processor._close_stale_jules_pr") as mock_close_stale,
         ):
 
             mock_label_manager.return_value.__enter__.return_value = True
             mock_check_actions.return_value = True
             mock_check_status.return_value = Mock(success=True)
             mock_skip_jules.return_value = False
+            mock_close_stale.return_value = StaleJulesPRResult()
 
             # Execute
             candidates = engine._get_candidates(repo_name)

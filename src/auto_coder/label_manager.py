@@ -490,6 +490,12 @@ class LabelManager:
                         self._label_added = True
                         self._context = LabelManagerContext(self, True)
                         return self._context
+                    elif not self.check_labels:
+                        # Explicitly requested work (--only / WIP resume): the label must not
+                        # gate processing. It is left untouched because this run does not own it.
+                        logger.info(f"Processing {self.item_type} #{self.item_number} despite the existing '{self.label_name}' label (check_labels=False)")
+                        self._context = LabelManagerContext(self, True)
+                        return self._context
                     else:
                         logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance")
                         self._context = LabelManagerContext(self, False)

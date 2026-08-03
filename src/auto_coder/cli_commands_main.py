@@ -310,14 +310,10 @@ def process_issues(
         result = {}
         with Spinner(f"Processing {target_type if target_type else 'item'} #{number}...", show_timer=True) as spinner:
             if target_type is None:
-                # Auto-detect: try PR first, then issue
-                try:
-                    result = automation_engine.process_single(repo_name, "pr", number)
-                    target_type = "pr"
-                except Exception:
-                    # Fall back to issue
-                    result = automation_engine.process_single(repo_name, "issue", number)
-                    target_type = "issue"
+                # Auto-detect the type; process_single reports failures in its result
+                # instead of raising, so the detection happens while building the candidate.
+                result = automation_engine.process_single(repo_name, "auto", number)
+                target_type = "pr" if result.get("prs_processed") else "issue"
             else:
                 result = automation_engine.process_single(repo_name, target_type, number)
 

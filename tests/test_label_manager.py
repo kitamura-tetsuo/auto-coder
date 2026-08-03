@@ -497,6 +497,39 @@ class TestLabelManager:
         # Label should be removed
         mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
+    def test_label_manager_check_labels_false_proceeds_when_label_cannot_be_acquired(self):
+        """A leftover label must not block explicitly requested work (--only / WIP resume).
+
+        try_add_labels returns False when the label is already present, which happens when a
+        previous run died while holding it. With check_labels=False the caller asked to ignore
+        labels, so processing continues and the foreign label is left untouched.
+        """
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.try_add_labels.return_value = False
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, check_labels=False) as should_process:
+            assert should_process
+
+        # The label belongs to the earlier run, so this run must not remove it
+        mock_github_client.remove_labels.assert_not_called()
+
+    def test_label_manager_check_labels_true_skips_when_label_cannot_be_acquired(self):
+        """With check_labels=True an already-held label still means "another instance owns it"."""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = False
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, check_labels=True) as should_process:
+            assert not should_process
+
+        mock_github_client.remove_labels.assert_not_called()
+
 
 class TestSemanticLabelFunctions:
     """Test semantic label detection and priority resolution functions."""
