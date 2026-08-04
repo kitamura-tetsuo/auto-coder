@@ -389,7 +389,8 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
       - "The session-to-issue mapping comes from cloud.csv; sessions tracked against a PR number are ignored by this rule."
       - "Sessions whose outputs already contain a pullRequest, and issues that already have a linked PR on GitHub, are never stopped."
       - "Closed issues are skipped, and a session that fails to accept the stop message keeps the issue."
-      - "The @auto-coder label the Jules run left on the issue is removed before the fallback implementation runs, otherwise the label gate would skip the issue."
+      - "The attempt counter of the issue is incremented, so the fallback starts from a fresh attempt branch instead of the one the Jules run left behind."
+      - "The @auto-coder label the Jules run left on the issue is kept in place so no other instance picks the issue up while the fallback works on it; the fallback run passes check_labels=False so the label gate does not skip the issue it already owns."
       - "Stopped sessions are recorded in .auto-coder/jules_session_state.json so they are neither resumed nor handed over twice."
       - "The check runs once per producer/run loop iteration, right after the Jules session resume/archive pass."
     label_locking:
@@ -494,7 +495,7 @@ Recent configuration schema changes that require migration:
     fallback:
       - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
       - "Jules PRs that still have failing CI more than [jules].pr_ci_timeout_hours (default 12) after PR creation are closed, and the attempt counter of the linked issue is incremented so the issue is retried from scratch."
-      - "Jules sessions that do not open a PR within [jules].issue_pr_timeout_hours (default 12) are stopped, and the issue is implemented by the backend_with_high_score backend instead."
+      - "Jules sessions that do not open a PR within [jules].issue_pr_timeout_hours (default 12) are stopped, the attempt counter of the issue is incremented, and the issue is implemented by the backend_with_high_score backend instead."
       - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
       - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
       - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."

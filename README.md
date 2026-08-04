@@ -906,7 +906,9 @@ backend_type = "jules"
 
 When a Jules session works on an issue for longer than `[jules].issue_pr_timeout_hours`
 (default: 12) without opening a pull request, Auto-Coder sends a `stop` message to the
-session and implements the issue with the `backend_with_high_score` backend instead:
+session, increments the attempt counter of the issue, and implements the issue with the
+`backend_with_high_score` backend instead. The `@auto-coder` label stays on the issue for
+the whole hand-over so no other instance starts working on it in parallel:
 
 ```toml
 # config.toml

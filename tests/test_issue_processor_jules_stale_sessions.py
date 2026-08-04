@@ -69,7 +69,7 @@ class TestHandleStaleJulesIssueSessions:
             patch("src.auto_coder.issue_processor.is_session_stopped", return_value=stopped),
             patch("src.auto_coder.issue_processor.mark_session_stopped") as mark_stopped,
             patch("src.auto_coder.issue_processor._take_issue_actions", take_actions),
-            patch("src.auto_coder.pr_processor._release_issue_processing_label", return_value=True),
+            patch("src.auto_coder.issue_processor.increment_attempt", return_value=3) as increment,
             patch(
                 "src.auto_coder.cli_helpers.create_high_score_backend_manager",
                 return_value=backend_manager,
@@ -77,14 +77,14 @@ class TestHandleStaleJulesIssueSessions:
         ):
             result = handle_stale_jules_issue_sessions("owner/repo", config, github_client)
 
-        return result, jules_client, take_actions, mark_stopped
+        return result, jules_client, take_actions, mark_stopped, increment
 
     def test_stops_session_and_delegates_to_high_score_backend(self, config):
         """A session older than the timeout without a PR is stopped and handed over."""
         github_client = _github_client()
         backend_manager = MagicMock()
 
-        result, jules_client, take_actions, mark_stopped = self._run(
+        result, jules_client, take_actions, mark_stopped, increment = self._run(
             [_session("sess-1", age_hours=13)],
             github_client,
             config,
@@ -100,6 +100,15 @@ class TestHandleStaleJulesIssueSessions:
         assert take_actions.call_args.args[0] == "owner/repo"
         assert "Implemented issue #42" in result.actions
 
+        # The abandoned Jules run counts as a failed attempt
+        increment.assert_called_once_with("owner/repo", 42)
+        assert "Incremented attempt for issue #42 to 3" in result.actions
+
+        # The @auto-coder label stays on the issue so no other instance picks it up,
+        # and the label gate must not skip the fallback run because of it
+        assert take_actions.call_args.kwargs["check_labels"] is False
+        github_client.remove_labels.assert_not_called()
+
         # The issue gets a comment explaining the hand-over
         github_client.add_comment_to_issue.assert_called_once()
         comment = github_client.add_comment_to_issue.call_args.args[2]
@@ -110,7 +119,7 @@ class TestHandleStaleJulesIssueSessions:
         """A session that is still within the timeout keeps working on the issue."""
         github_client = _github_client()
 
-        result, jules_client, take_actions, mark_stopped = self._run(
+        result, jules_client, take_actions, mark_stopped, increment = self._run(
             [_session("sess-1", age_hours=11)],
             github_client,
             config,
@@ -119,6 +128,7 @@ class TestHandleStaleJulesIssueSessions:
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
         mark_stopped.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
         assert result.actions == []
 
@@ -127,37 +137,40 @@ class TestHandleStaleJulesIssueSessions:
         github_client = _github_client()
         session = _session("sess-1", age_hours=48, outputs={"pullRequest": {"url": "https://github.com/owner/repo/pull/7"}})
 
-        result, jules_client, take_actions, _ = self._run([session], github_client, config)
+        result, jules_client, take_actions, _, increment = self._run([session], github_client, config)
 
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
     def test_issue_with_linked_pr_is_left_alone(self, config):
         """A PR linked on GitHub counts even when session outputs do not show it yet."""
         github_client = _github_client(has_linked_pr=True)
 
-        result, jules_client, take_actions, _ = self._run([_session("sess-1", age_hours=13)], github_client, config)
+        result, jules_client, take_actions, _, increment = self._run([_session("sess-1", age_hours=13)], github_client, config)
 
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
     def test_closed_issue_is_left_alone(self, config):
         """Closed issues are not re-implemented."""
         github_client = _github_client(state="closed")
 
-        result, jules_client, take_actions, _ = self._run([_session("sess-1", age_hours=13)], github_client, config)
+        result, jules_client, take_actions, _, increment = self._run([_session("sess-1", age_hours=13)], github_client, config)
 
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
     def test_already_stopped_session_is_not_handled_twice(self, config):
         """A session that was already stopped is skipped on the next run."""
         github_client = _github_client()
 
-        result, jules_client, take_actions, _ = self._run(
+        result, jules_client, take_actions, _, increment = self._run(
             [_session("sess-1", age_hours=30)],
             github_client,
             config,
@@ -166,6 +179,7 @@ class TestHandleStaleJulesIssueSessions:
 
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
     def test_pull_request_number_in_cloud_csv_is_skipped(self, config):
@@ -178,10 +192,11 @@ class TestHandleStaleJulesIssueSessions:
             "pull_request": {"url": "https://github.com/owner/repo/pull/42"},
         }
 
-        result, jules_client, take_actions, _ = self._run([_session("sess-1", age_hours=13)], github_client, config)
+        result, jules_client, take_actions, _, increment = self._run([_session("sess-1", age_hours=13)], github_client, config)
 
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
     def test_failed_stop_message_does_not_delegate(self, config):
@@ -202,18 +217,20 @@ class TestHandleStaleJulesIssueSessions:
             patch("src.auto_coder.issue_processor.is_session_stopped", return_value=False),
             patch("src.auto_coder.issue_processor.mark_session_stopped") as mark_stopped,
             patch("src.auto_coder.issue_processor._take_issue_actions", take_actions),
+            patch("src.auto_coder.issue_processor.increment_attempt") as increment,
         ):
             result = handle_stale_jules_issue_sessions("owner/repo", config, github_client)
 
         mark_stopped.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
     def test_no_session_for_issue_is_skipped(self, config):
         """Sessions without a tracked issue number are ignored."""
         github_client = _github_client()
 
-        result, jules_client, take_actions, _ = self._run(
+        result, jules_client, take_actions, _, increment = self._run(
             [_session("sess-1", age_hours=13)],
             github_client,
             config,
@@ -222,6 +239,7 @@ class TestHandleStaleJulesIssueSessions:
 
         jules_client.send_message.assert_not_called()
         take_actions.assert_not_called()
+        increment.assert_not_called()
         assert result.issue_numbers == []
 
 
@@ -250,3 +268,61 @@ class TestAutomationEngineHook:
 
         with patch("src.auto_coder.issue_processor.handle_stale_jules_issue_sessions", side_effect=RuntimeError("boom")):
             assert engine.handle_stale_jules_issue_sessions("owner/repo") == []
+
+
+class TestLabelGateOverride:
+    """The fallback run keeps the label it inherited and is not blocked by it."""
+
+    def _cmd_result(self, success=True, stdout="", stderr="", returncode=0):
+        result = MagicMock()
+        result.success = success
+        result.stdout = stdout
+        result.stderr = stderr
+        result.returncode = returncode
+        return result
+
+    def _run_with_label_manager(self, check_labels):
+        from contextlib import contextmanager
+
+        from src.auto_coder.issue_processor import _apply_issue_actions_directly
+
+        captured = {}
+
+        @contextmanager
+        def fake_label_manager(*args, **kwargs):
+            captured.update(kwargs)
+            yield False  # stop right after the label gate
+
+        @contextmanager
+        def fake_branch_context(*_args, **_kwargs):
+            yield
+
+        github_client = MagicMock()
+        github_client.get_parent_issue_details.return_value = None
+        github_client.get_all_sub_issues.return_value = []
+
+        with (
+            patch("src.auto_coder.issue_processor.cmd") as mock_cmd,
+            patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager),
+            patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context),
+            patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"),
+            patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2),
+        ):
+            mock_cmd.run_command.return_value = self._cmd_result(success=True)
+            _apply_issue_actions_directly(
+                "owner/repo",
+                {"number": 4636, "title": "Test Issue"},
+                AutomationConfig(),
+                github_client,
+                check_labels=check_labels,
+            )
+
+        return captured
+
+    def test_check_labels_override_reaches_label_manager(self):
+        """check_labels=False lets the run through the gate it already owns."""
+        assert self._run_with_label_manager(check_labels=False)["check_labels"] is False
+
+    def test_check_labels_defaults_to_config(self):
+        """Without an override the configured behaviour is unchanged."""
+        assert self._run_with_label_manager(check_labels=None)["check_labels"] == AutomationConfig().CHECK_LABELS
