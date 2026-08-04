@@ -233,15 +233,38 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         assert kwargs["config"] == config
 
 
-def test_check_mergeability_skips_llm_for_dependabot_pr():
-    """Dependabot PRs must never consult the LLM for mergeability."""
+def test_perform_base_merge_skips_conflict_resolution_for_dependabot_pr():
+    """Merge conflicts of dependency-bot PRs must never be resolved."""
     config = AutomationConfig()
 
     with (
-        patch("src.auto_coder.conflict_resolver.run_llm_noedit_prompt") as mock_llm,
-        patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager") as mock_create_backend,
-        patch("src.auto_coder.conflict_resolver.render_prompt") as mock_render_prompt,
+        patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
+        patch("src.auto_coder.conflict_resolver.GitHubClient") as mock_gh_client_class,
+        patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as mock_check_mergeability,
+        patch("src.auto_coder.conflict_resolver.resolve_merge_conflicts_with_llm") as mock_resolve,
+        patch("src.auto_coder.conflict_resolver._trigger_fallback_for_conflict_failure") as mock_fallback,
     ):
+        mock_client = MagicMock()
+        mock_gh_client_class.get_instance.return_value = mock_client
+        mock_client.get_pr_details.return_value = {
+            "number": 4242,
+            "head_branch": "dependabot/pip/requests-2.32.0",
+            "author": {"login": "dependabot[bot]"},
+        }
+
+        # Sequence: reset, clean, abort, fetch pr, checkout, fetch base, rev-parse, merge (fails), merge --abort
+        mock_cmd.run_command.side_effect = [
+            CommandResult(True, "", "", 0),  # reset
+            CommandResult(True, "", "", 0),  # clean
+            CommandResult(True, "", "", 0),  # merge --abort
+            CommandResult(True, "", "", 0),  # fetch pr
+            CommandResult(True, "", "", 0),  # checkout pr
+            CommandResult(True, "", "", 0),  # fetch origin main
+            CommandResult(True, "abc123\n", "", 0),  # rev-parse
+            CommandResult(False, "CONFLICT", "", 1),  # git merge fails
+            CommandResult(True, "", "", 0),  # merge --abort after skipping
+        ]
+
         pr_data = {
             "number": 4242,
             "title": "Bump requests from 2.31.0 to 2.32.0",
@@ -250,11 +273,20 @@ def test_check_mergeability_skips_llm_for_dependabot_pr():
             "baseRefName": "main",
         }
 
-        assert check_mergeability_with_llm(pr_data, "conflict in uv.lock", config) is True
+        ok = _perform_base_branch_merge_and_conflict_resolution(
+            pr_number=4242,
+            base_branch="main",
+            config=config,
+            repo_name="test/repo",
+            pr_data=pr_data,
+        )
 
-        mock_llm.assert_not_called()
-        mock_create_backend.assert_not_called()
-        mock_render_prompt.assert_not_called()
+        assert ok is False
+        mock_check_mergeability.assert_not_called()
+        mock_resolve.assert_not_called()
+        mock_fallback.assert_not_called()
+        # The conflicted merge must be aborted instead of resolved
+        assert mock_cmd.run_command.call_args_list[-1][0][0] == ["git", "merge", "--abort"]
 
 
 def test_check_mergeability_uses_llm_for_human_pr():
