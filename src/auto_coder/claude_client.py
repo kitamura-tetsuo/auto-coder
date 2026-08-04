@@ -2,11 +2,15 @@
 Claude CLI client for Auto-Coder.
 """
 
+import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
-from typing import Any, List, Optional
+import time
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
@@ -16,6 +20,82 @@ from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
+
+CLAUDE_CONFIG_FILENAME = ".claude.json"
+
+
+def get_claude_config_paths() -> Tuple[Path, Path]:
+    """Return the claude CLI configuration file path and its backup directory."""
+    config_dir_env = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config_dir_env:
+        config_dir = Path(config_dir_env)
+        return config_dir / CLAUDE_CONFIG_FILENAME, config_dir / "backups"
+    home = Path.home()
+    return home / CLAUDE_CONFIG_FILENAME, home / ".claude" / "backups"
+
+
+def _load_json_file(path: Path) -> Optional[dict]:
+    """Load a JSON object from path, returning None when it is missing or invalid."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def restore_claude_config_if_needed() -> bool:
+    """Restore the claude CLI configuration from its newest usable backup.
+
+    The claude CLI refuses to run when ~/.claude.json is missing or corrupt. It keeps
+    timestamped copies under ~/.claude/backups/, so recover from the newest backup that
+    still holds account data instead of letting every claude invocation fail.
+
+    Returns:
+        True if the configuration was restored, False otherwise.
+    """
+    config_path, backup_dir = get_claude_config_paths()
+
+    if _load_json_file(config_path) is not None:
+        return False
+
+    try:
+        backups = sorted(backup_dir.glob(f"{CLAUDE_CONFIG_FILENAME}.backup.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError as e:
+        logger.warning(f"Cannot list claude config backups in {backup_dir}: {e}")
+        return False
+
+    fallback: Optional[Path] = None
+    source: Optional[Path] = None
+    for backup in backups:
+        data = _load_json_file(backup)
+        if data is None:
+            continue
+        # A backup holding only "firstStartTime" is an empty config and restores nothing useful
+        if len(data) > 1:
+            source = backup
+            break
+        if fallback is None:
+            fallback = backup
+    source = source or fallback
+
+    if source is None:
+        logger.warning(f"Claude configuration at {config_path} is missing or invalid and no usable backup was found in {backup_dir}")
+        return False
+
+    try:
+        if config_path.exists():
+            corrupt_path = config_path.with_name(f"{config_path.name}.corrupt.{int(time.time())}")
+            shutil.move(str(config_path), str(corrupt_path))
+            logger.warning(f"Moved invalid claude configuration to {corrupt_path}")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(source), str(config_path))
+    except OSError as e:
+        logger.warning(f"Failed to restore claude configuration from {source}: {e}")
+        return False
+
+    logger.warning(f"Restored missing claude configuration {config_path} from backup {source}")
+    return True
 
 
 class ClaudeClient(LLMClientBase):
@@ -89,6 +169,10 @@ class ClaudeClient(LLMClientBase):
                 for error in required_errors:
                     logger.warning(error)
 
+        # The claude CLI aborts with "configuration file not found" when ~/.claude.json
+        # is missing or unreadable, which breaks every subsequent invocation.
+        restore_claude_config_if_needed()
+
         try:
             override = os.environ.get("AUTOCODER_CLAUDE_CLI")
             base_cmd = shlex.split(override) if override else ["claude"]
@@ -113,6 +197,34 @@ class ClaudeClient(LLMClientBase):
     def _escape_prompt(self, prompt: str) -> str:
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
+
+    @staticmethod
+    def _strip_print_only_options(options: Any) -> List[str]:
+        """Remove options that are only valid for non-interactive (--print) runs.
+
+        `--print` and `--output-format` cannot be used with `--cloud`, which always
+        starts an interactive cloud session.
+        """
+        stripped: List[str] = []
+        try:
+            index = 0
+            while index < len(options):
+                opt = str(options[index])
+                if opt in ("--print", "-p"):
+                    index += 1
+                    continue
+                if opt == "--output-format":
+                    # Skip the flag and its value
+                    index += 2
+                    continue
+                if opt.startswith("--output-format="):
+                    index += 1
+                    continue
+                stripped.append(options[index])
+                index += 1
+        except (TypeError, AttributeError):
+            return []
+        return stripped
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run claude CLI with the given prompt and show real-time output."""
@@ -158,6 +270,7 @@ class ClaudeClient(LLMClientBase):
             has_print = False
             has_model = False
             has_settings = False
+            has_cloud = False
             # Check for list, MagicMock, or other sequence types
             if options_to_use:
                 try:
@@ -165,10 +278,19 @@ class ClaudeClient(LLMClientBase):
                     has_print = any("--print" in str(opt) for opt in options_to_use)
                     has_model = any("--model" in str(opt) for opt in options_to_use)
                     has_settings = any("--settings" in str(opt) for opt in options_to_use)
-                    logger.info(f"has_print: {has_print}, has_model: {has_model}, has_settings: {has_settings}")
+                    has_cloud = any(str(opt) == "--cloud" or str(opt).startswith("--cloud=") for opt in options_to_use)
+                    logger.info(f"has_print: {has_print}, has_model: {has_model}, has_settings: {has_settings}, has_cloud: {has_cloud}")
                 except (TypeError, AttributeError):
                     # Not iterable, treat as empty
                     pass
+
+            # `--cloud` starts an interactive cloud session, which the CLI refuses to
+            # combine with --print ("Cloud sessions are interactive only"). --output-format
+            # only works together with --print, so drop both and never add --print below.
+            if has_cloud:
+                options_to_use = self._strip_print_only_options(options_to_use)
+                has_print = True
+                logger.info(f"--cloud detected; running interactively without --print: {options_to_use}")
 
             # Filter out --print, --model, and --settings from options to avoid duplication
             # Only filter if we plan to add them separately (i.e., if any is missing)

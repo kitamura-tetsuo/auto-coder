@@ -304,6 +304,14 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
   - Typical use: Anthropic Claude API
   - Automatic flags: `--print`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`
   - Custom options: Path to settings file, debug modes
+  - Cloud sessions: when `options` contain `--cloud` (or `--cloud=<description>`), the run is
+    interactive-only. `--print` is never added and any `--print` / `--output-format <format>`
+    entry is removed from the options, because the claude CLI rejects
+    `--cloud` combined with `--print` and `--output-format` only works with `--print`.
+    The prompt is passed as the trailing argument and becomes the cloud task description.
+  - Configuration recovery: before invoking the CLI, a missing or unparsable `~/.claude.json`
+    (or `$CLAUDE_CONFIG_DIR/.claude.json`) is restored from the newest usable backup in
+    `~/.claude/backups/`; an unparsable file is preserved as `.claude.json.corrupt.<timestamp>`.
 
 - **Gemini Backend** (`backend_type = "antigravity"`):
   ```toml
