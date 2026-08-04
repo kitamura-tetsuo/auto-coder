@@ -287,6 +287,11 @@ class ClaudeClient(LLMClientBase):
             # `--cloud` starts an interactive cloud session, which the CLI refuses to
             # combine with --print ("Cloud sessions are interactive only"). --output-format
             # only works together with --print, so drop both and never add --print below.
+            #
+            # The CLI additionally refuses `--cloud` when stdout is not a TTY
+            # ("--cloud requires an interactive terminal"), so such runs are executed
+            # through a pseudo terminal.
+            run_interactively = has_cloud
             if has_cloud:
                 options_to_use = self._strip_print_only_options(options_to_use)
                 has_print = True
@@ -409,6 +414,7 @@ class ClaudeClient(LLMClientBase):
                     env=env if len(env) > len(os.environ) else None,
                     dot_format=True,
                     idle_timeout=1800,
+                    use_pty=run_interactively,
                 )
                 logger.info("=" * 60)
                 stdout = (result.stdout or "").strip()

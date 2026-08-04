@@ -4,9 +4,11 @@ Utility classes for Auto-Coder automation engine.
 
 import os
 import queue
+import re
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import threading
@@ -20,6 +22,16 @@ from .security_utils import redact_string
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
+
+# CSI/OSC escape sequences emitted by interactive terminal UIs
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def strip_ansi_sequences(text: str) -> str:
+    """Remove ANSI escape sequences from terminal output."""
+    if not text:
+        return text
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 def get_target_container(config: Any) -> Optional[str]:
@@ -336,6 +348,54 @@ class CommandExecutor:
         thread.start()
         return thread
 
+    @staticmethod
+    def _set_pty_window_size(master_fd: int) -> None:
+        """Give the pseudo terminal a sane window size so TUIs render correctly."""
+        try:
+            import fcntl
+            import termios
+
+            size = shutil.get_terminal_size(fallback=(120, 40))
+            packed = struct.pack("HHHH", size.lines, size.columns, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, packed)
+        except Exception:  # pragma: no cover - platform dependent
+            pass
+
+    @staticmethod
+    def _spawn_pty_reader(master_fd: int, out_queue: "queue.Queue[Tuple[str, Optional[str]]]") -> threading.Thread:
+        """Spawn a background reader thread for a pseudo terminal master fd.
+
+        A pty merges stdout and stderr into a single stream, so everything is
+        reported as "stdout". ANSI escape sequences emitted by interactive CLIs
+        are stripped so the captured text stays usable for marker matching.
+        """
+
+        def _reader() -> None:
+            buffer = ""
+            try:
+                while True:
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError:
+                        # Linux raises EIO on the master fd once the child closes the pty
+                        break
+                    if not data:
+                        break
+                    buffer += data.decode("utf-8", errors="replace").replace("\r\n", "\n")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        out_queue.put(("stdout", strip_ansi_sequences(line) + "\n"))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error(f"Streaming reader failed for pty: {exc}")
+            finally:
+                if buffer:
+                    out_queue.put(("stdout", strip_ansi_sequences(buffer)))
+                out_queue.put(("stdout", None))
+
+        thread = threading.Thread(target=_reader, name="CommandStream-pty", daemon=True)
+        thread.start()
+        return thread
+
     @classmethod
     def _run_with_streaming(
         cls,
@@ -347,22 +407,53 @@ class CommandExecutor:
         dot_format: bool = False,
         idle_timeout: Optional[int] = None,
         log_output: bool = True,
+        use_pty: bool = False,
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger.
 
         on_stream: optional callback invoked for each chunk (stream_name, chunk).
         The callback may raise to abort the process early; the exception is propagated.
         log_output: if False, suppress logging of stdout/stderr chunks (default: True).
+        use_pty: run the command attached to a pseudo terminal so CLIs that require
+        an interactive terminal (e.g. `claude --cloud`) work. stdout and stderr are
+        merged into stdout because a pty exposes a single stream.
         """
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            cwd=cwd,
-            env=env,
-        )
+        process: "subprocess.Popen[Any]"
+        pty_master: Optional[int] = None
+        if use_pty and hasattr(os, "openpty"):
+            pty_master, pty_slave = os.openpty()
+            cls._set_pty_window_size(pty_master)
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=pty_slave,
+                    stdout=pty_slave,
+                    stderr=pty_slave,
+                    cwd=cwd,
+                    env=env,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+            except Exception:
+                os.close(pty_master)
+                os.close(pty_slave)
+                raise
+            finally:
+                # The child owns the slave end now; keeping it open here would hide EOF.
+                try:
+                    os.close(pty_slave)
+                except OSError:
+                    pass
+        else:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=cwd,
+                env=env,
+            )
 
         stdout_lines: List[str] = []
         stderr_lines: List[str] = []
@@ -371,12 +462,16 @@ class CommandExecutor:
         output_queue: "queue.Queue[Tuple[str, Optional[str]]]" = queue.Queue()
         readers: List[threading.Thread] = []
 
-        if process.stdout is not None:
+        if pty_master is not None:
             streams_active.add("stdout")
-            readers.append(cls._spawn_reader(process.stdout, "stdout", output_queue))
-        if process.stderr is not None:
-            streams_active.add("stderr")
-            readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
+            readers.append(cls._spawn_pty_reader(pty_master, output_queue))
+        else:
+            if process.stdout is not None:
+                streams_active.add("stdout")
+                readers.append(cls._spawn_reader(process.stdout, "stdout", output_queue))
+            if process.stderr is not None:
+                streams_active.add("stderr")
+                readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
 
         start = time.monotonic()
         last_output_time = time.monotonic()
@@ -513,6 +608,11 @@ class CommandExecutor:
                     reader.join(timeout=1)
                 except Exception:
                     pass
+            if pty_master is not None:
+                try:
+                    os.close(pty_master)
+                except OSError:
+                    pass
             # Avoid explicit close() on pipes to prevent rare blocking on some platforms
 
     @classmethod
@@ -527,8 +627,13 @@ class CommandExecutor:
         on_stream: Optional[Callable[[str, str], None]] = None,
         dot_format: bool = False,
         idle_timeout: Optional[int] = None,
+        use_pty: bool = False,
     ) -> CommandResult:
-        """Run a command with consistent error handling."""
+        """Run a command with consistent error handling.
+
+        use_pty: attach the command to a pseudo terminal, for CLIs that refuse to
+        run without an interactive terminal.
+        """
         if timeout is None:
             # Auto-detect timeout based on command type
             cmd_type = cmd[0] if cmd else "default"
@@ -570,6 +675,7 @@ class CommandExecutor:
                     dot_format,
                     idle_timeout=idle_timeout,
                     log_output=True,
+                    use_pty=use_pty,
                 )
             else:
                 # Use _run_with_streaming even when not streaming to logger,
@@ -583,6 +689,7 @@ class CommandExecutor:
                     dot_format,
                     idle_timeout=idle_timeout,
                     log_output=False,
+                    use_pty=use_pty,
                 )
 
             success = return_code == 0

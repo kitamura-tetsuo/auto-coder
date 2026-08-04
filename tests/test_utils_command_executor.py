@@ -119,3 +119,80 @@ def test_run_command_env_overrides(monkeypatch):
 
     assert result.stdout.strip() == "scoped"
     assert "FAKE_PROVIDER_TOKEN" not in os.environ
+
+
+def test_run_command_without_pty_has_no_tty():
+    """Without use_pty the child process sees pipes, not a terminal."""
+    script = [
+        sys.executable,
+        "-c",
+        "import sys; print(sys.stdout.isatty())",
+    ]
+
+    result = utils.CommandExecutor.run_command(script, stream_output=False)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "False"
+
+
+def test_run_command_with_pty_provides_interactive_terminal():
+    """use_pty must give the child process a real terminal on stdin/stdout/stderr."""
+    script = [
+        sys.executable,
+        "-c",
+        "import sys; print(sys.stdin.isatty(), sys.stdout.isatty(), sys.stderr.isatty())",
+    ]
+
+    result = utils.CommandExecutor.run_command(script, stream_output=False, use_pty=True)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "True True True"
+
+
+def test_run_command_with_pty_merges_stderr_into_stdout():
+    """A pty exposes a single stream, so stderr output is captured as stdout."""
+    script = [
+        sys.executable,
+        "-c",
+        "import sys; sys.stderr.write('boom\\n'); sys.stderr.flush()",
+    ]
+
+    result = utils.CommandExecutor.run_command(script, stream_output=False, use_pty=True)
+
+    assert result.returncode == 0
+    assert "boom" in result.stdout
+    assert result.stderr == ""
+
+
+def test_run_command_with_pty_reports_non_zero_exit():
+    """Exit codes must survive the pty path."""
+    script = [sys.executable, "-c", "raise SystemExit(3)"]
+
+    result = utils.CommandExecutor.run_command(script, stream_output=False, use_pty=True)
+
+    assert result.returncode == 3
+    assert result.success is False
+
+
+def test_run_command_with_pty_strips_ansi_sequences():
+    """Escape sequences from interactive UIs must not pollute captured output."""
+    script = [
+        sys.executable,
+        "-c",
+        r"print('\x1b[31mred\x1b[0m done')",
+    ]
+
+    result = utils.CommandExecutor.run_command(script, stream_output=False, use_pty=True)
+
+    assert result.stdout.strip() == "red done"
+
+
+def test_strip_ansi_sequences_removes_csi_and_osc():
+    text = "\x1b[2J\x1b[1;32mhello\x1b[0m\x1b]0;title\x07 world"
+
+    assert utils.strip_ansi_sequences(text) == "hello world"
+
+
+def test_strip_ansi_sequences_keeps_plain_text():
+    assert utils.strip_ansi_sequences("plain text") == "plain text"
+    assert utils.strip_ansi_sequences("") == ""

@@ -309,6 +309,10 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
     entry is removed from the options, because the claude CLI rejects
     `--cloud` combined with `--print` and `--output-format` only works with `--print`.
     The prompt is passed as the trailing argument and becomes the cloud task description.
+    Such runs are executed through a pseudo terminal (`CommandExecutor.run_command(..., use_pty=True)`),
+    because the claude CLI aborts with "--cloud requires an interactive terminal" when stdout is a pipe.
+    In pty mode stdout and stderr are merged into a single stream and ANSI escape sequences are stripped
+    from the captured output.
   - Configuration recovery: before invoking the CLI, a missing or unparsable `~/.claude.json`
     (or `$CLAUDE_CONFIG_DIR/.claude.json`) is restored from the newest usable backup in
     `~/.claude/backups/`; an unparsable file is preserved as `.claude.json.corrupt.<timestamp>`.
