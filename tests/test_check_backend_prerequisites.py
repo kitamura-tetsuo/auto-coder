@@ -27,7 +27,7 @@ class TestCheckBackendPrerequisites:
     def test_known_backend_gemini(self):
         """Test that known backend 'antigravity' triggers antigravity CLI check."""
         with patch("src.auto_coder.cli_helpers.check_gemini_cli_or_fail") as mock_check:
-            check_backend_prerequisites(["agy"])
+            check_backend_prerequisites(["antigravity"])
             assert mock_check.call_count == 1
 
     def test_known_backend_qwen(self):

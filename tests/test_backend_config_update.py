@@ -18,7 +18,7 @@ class TestBackendConfigUpdate:
 
     def test_backend_noedit_order_default_inference(self):
         """Test that noedit default backend is inferred from order[0]."""
-        config_data = {"backend": {"order": ["claude"]}, "backend_for_noedit": {"order": ["agy", "claude"]}, "backends": {"claude": {"enabled": True}, "antigravity": {"enabled": True}}}
+        config_data = {"backend": {"order": ["claude"]}, "backend_for_noedit": {"order": ["antigravity", "claude"]}, "backends": {"claude": {"enabled": True}, "antigravity": {"enabled": True}}}
 
         config = LLMBackendConfiguration.load_from_dict(config_data)
         assert config.backend_for_noedit_default == "antigravity"

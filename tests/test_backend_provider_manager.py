@@ -280,7 +280,7 @@ class TestBackendProviderManager:
     def test_provider_rotation_and_tracking(self):
         """Providers rotate in a circular manner and track last used provider."""
         manager = BackendProviderManager()
-        manager._provider_cache["agy"] = BackendProviderMetadata(
+        manager._provider_cache["antigravity"] = BackendProviderMetadata(
             backend_name="antigravity",
             providers=[
                 ProviderMetadata(name="gemini-direct", command="uvx"),

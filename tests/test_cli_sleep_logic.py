@@ -37,7 +37,6 @@ class StopLoop(Exception):
 def test_process_issues_sleep_logic(
     mock_check_prereqs,
     mock_msg_mgr,
-    mock_check_mcp,
     mock_llm_mgr,
     mock_build_backend,
     mock_ensure_test,
@@ -83,7 +82,7 @@ def test_process_issues_sleep_logic(
     # Mock config
     mock_config_instance = MagicMock()
     mock_config.return_value = mock_config_instance
-    mock_config_instance.get_active_backends.return_value = ["agy"]
+    mock_config_instance.get_active_backends.return_value = ["antigravity"]
     mock_config_instance.backend_order = []
     mock_config_instance.default_backend = "antigravity"
     mock_config_instance.get_backend_config.return_value = MagicMock(api_key="dummy")

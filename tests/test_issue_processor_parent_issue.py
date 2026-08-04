@@ -207,6 +207,30 @@ class TestParentIssueBranchingIntegration:
             assert "Processed" in result
 
 
+def _parent_branch_run_command(missing_branch: bool = True):
+    """Build a `cmd.run_command` side effect keyed on the git command itself.
+
+    Positional side-effect lists break whenever the implementation adds a git
+    call, so dispatch on the command instead.
+    """
+
+    def _side_effect(command, *_args, **_kwargs):
+        if command[:3] == ["git", "rev-parse", "--verify"]:
+            return MagicMock(returncode=1 if missing_branch else 0, success=not missing_branch, stdout="", stderr="")
+        if command[:2] == ["git", "rev-parse"]:
+            # HEAD and origin/<main> must resolve to the same hash so the
+            # post-creation divergence check passes.
+            return MagicMock(returncode=0, success=True, stdout="abc123\n", stderr="")
+        if command[:1] == ["test"]:
+            # Completion marker file does not exist yet.
+            return MagicMock(returncode=1, success=False, stdout="", stderr="")
+        if command[:3] == ["git", "status", "--porcelain"]:
+            return MagicMock(returncode=0, success=True, stdout="", stderr="")
+        return MagicMock(returncode=0, success=True, stdout="", stderr="")
+
+    return _side_effect
+
+
 class TestCreatePRForParentIssue:
     """Tests for _create_pr_for_parent_issue function."""
 
@@ -233,16 +257,7 @@ class TestCreatePRForParentIssue:
         github_client.token = "fake-token"  # Required for GhApi
 
         # Mock git commands - branch doesn't exist
-        mock_cmd.run_command.side_effect = [
-            MagicMock(returncode=1),  # Branch check (doesn't exist)
-            MagicMock(returncode=0, stdout=""),  # Create branch
-            MagicMock(returncode=0, stdout=""),  # Push branch
-            MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=1),  # Check if completion file exists (doesn't)
-            MagicMock(returncode=0),  # Write completion file
-            MagicMock(returncode=0, stdout=""),  # Git add
-            MagicMock(returncode=0, stdout=""),  # Git push
-        ]
+        mock_cmd.run_command.side_effect = _parent_branch_run_command()
 
         # Mock git_commit_with_retry
         mock_git_commit.return_value = MagicMock(success=True)
@@ -256,9 +271,8 @@ class TestCreatePRForParentIssue:
         # Should create branch
         assert mock_cmd.run_command.call_count >= 2
         # Check that branch was created
-        create_branch_call = mock_cmd.run_command.call_args_list[1]
-        assert "checkout" in str(create_branch_call)
-        assert "-b" in str(create_branch_call)
+        executed_commands = [call.args[0] for call in mock_cmd.run_command.call_args_list]
+        assert ["git", "checkout", "-b", f"issue-{issue_number}", config.MAIN_BRANCH] in executed_commands
 
         # Should create PR
         assert "Successfully created PR for parent issue" in result
@@ -450,16 +464,7 @@ class TestCreatePRForParentIssue:
         github_client.find_pr_by_head_branch.return_value = None
         github_client.token = "fake-token"  # Required for GhApi
 
-        mock_cmd.run_command.side_effect = [
-            MagicMock(returncode=1),  # Branch check (doesn't exist)
-            MagicMock(returncode=0, stdout=""),  # Create branch
-            MagicMock(returncode=0, stdout=""),  # Push branch
-            MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=1),  # Check if completion file exists (doesn't)
-            MagicMock(returncode=0),  # Write completion file
-            MagicMock(returncode=0, stdout=""),  # Git add
-            MagicMock(returncode=0, stdout=""),  # Git push
-        ]
+        mock_cmd.run_command.side_effect = _parent_branch_run_command()
 
         # Mock git_commit_with_retry
         mock_git_commit.return_value = MagicMock(success=True)
@@ -473,8 +478,8 @@ class TestCreatePRForParentIssue:
         expected_branch = "issue-150_attempt-2"
 
         # Branch creation should target attempt-specific branch
-        create_branch_call = mock_cmd.run_command.call_args_list[1][0][0]
-        assert expected_branch in create_branch_call
+        executed_commands = [call.args[0] for call in mock_cmd.run_command.call_args_list]
+        assert ["git", "checkout", "-b", expected_branch, config.MAIN_BRANCH] in executed_commands
 
         # Verify PR was created with attempt-specific head branch
         mock_api.pulls.create.assert_called_once()

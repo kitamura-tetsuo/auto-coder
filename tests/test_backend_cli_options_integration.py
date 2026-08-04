@@ -293,7 +293,7 @@ class TestBackendCLIOptions:
         assert "2048" in cmd[cmd.index("0.7") + 1 :]
 
         # Verify the command starts with expected elements
-        assert cmd[0] == "antigravity"
+        assert cmd[0] == "agy"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.gemini_client.shutil.which")
@@ -329,7 +329,7 @@ class TestBackendCLIOptions:
         cmd = mock_run_command.call_args[0][0]
 
         # Verify basic command structure
-        assert cmd[0] == "antigravity"
+        assert cmd[0] == "agy"
 
         # Verify no options flags are present
         assert "-o" not in cmd

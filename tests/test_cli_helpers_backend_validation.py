@@ -106,7 +106,7 @@ class TestCheckBackendPrerequisites:
                 mock_codex.reset_mock()
 
                 # Test gemini
-                check_backend_prerequisites(["agy"])
+                check_backend_prerequisites(["antigravity"])
                 assert mock_gemini.call_count == 1
 
                 # Test qwen

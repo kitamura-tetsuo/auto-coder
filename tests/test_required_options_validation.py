@@ -200,7 +200,7 @@ class TestConfigValidateCommand:
 
         config_file = tmp_path / "llm_config.toml"
         data = {
-            "backend": {"default": "antigravity", "order": ["agy", "qwen", "claude"]},
+            "backend": {"default": "antigravity", "order": ["antigravity", "qwen", "claude"]},
             "backends": {
                 "antigravity": {
                     "enabled": True,

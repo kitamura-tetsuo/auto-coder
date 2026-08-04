@@ -120,7 +120,7 @@ class TestGeminiClientMCP(unittest.TestCase):
 
             self.assertIsNotNone(add_call)
             cmd = add_call[0][0]
-            self.assertEqual(cmd[0], "antigravity")
+            self.assertEqual(cmd[0], "agy")
             self.assertEqual(cmd[1], "mcp")
             self.assertEqual(cmd[2], "add")
             self.assertEqual(cmd[3], "mcp-pdb")
@@ -440,7 +440,7 @@ class TestBackendManagerMCP(unittest.TestCase):
                 default_backend="antigravity",
                 default_client=mock_client,
                 factories={},
-                order=["agy"],
+                order=["antigravity"],
             )
 
             result = manager.check_mcp_server_configured("test-watcher")
@@ -459,7 +459,7 @@ class TestBackendManagerMCP(unittest.TestCase):
                 default_backend="antigravity",
                 default_client=mock_client,
                 factories={},
-                order=["agy"],
+                order=["antigravity"],
             )
 
             result = manager.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
@@ -500,7 +500,7 @@ class TestBackendManagerMCP(unittest.TestCase):
                     "qwen": factory_qwen,
                     "codex": factory_codex,
                 },
-                order=["agy", "qwen", "codex"],
+                order=["antigravity", "qwen", "codex"],
             )
 
             # Ensure MCP server is configured for all backends
@@ -533,7 +533,7 @@ class TestBackendManagerMCP(unittest.TestCase):
                 default_backend="antigravity",
                 default_client=mock_gemini,
                 factories={"qwen": factory_qwen},
-                order=["agy", "qwen"],
+                order=["antigravity", "qwen"],
             )
 
             # Ensure MCP server is configured
