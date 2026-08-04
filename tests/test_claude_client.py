@@ -824,6 +824,8 @@ class TestClaudeClient:
             "--cloud",
             "test prompt",
         ]
+        # `--cloud` is refused unless stdout is a terminal, so it must run under a pty
+        assert mock_cmd_exec.call_args.kwargs["use_pty"] is True
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
@@ -861,6 +863,41 @@ class TestClaudeClient:
         assert "--print" not in called_cmd
         assert "--cloud=task from auto-coder" in called_cmd
         assert called_cmd[-1] == "test prompt"
+        assert mock_cmd_exec.call_args.kwargs["use_pty"] is True
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_non_cloud_run_does_not_use_pty(self, mock_cmd_exec, mock_run, mock_get_config):
+        """Regular `--print` runs stay on pipes; only interactive runs need a pty."""
+        mock_run.return_value.returncode = 0
+
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "opus"
+        mock_backend.settings = None
+        options = ["--print", "--model", "opus"]
+        mock_backend.options = options
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+        mock_backend.replace_placeholders.return_value = {
+            "options": options,
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+        client._run_llm_cli("test prompt")
+
+        assert mock_cmd_exec.call_args.kwargs["use_pty"] is False
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
