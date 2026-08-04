@@ -902,6 +902,21 @@ backend_type = "jules"
 - Sessions are tracked in `~/.auto-coder/<repo>/cloud.csv` files
 - Jules automatically comments on issues with session information
 
+**Issue timeout fallback:**
+
+When a Jules session works on an issue for longer than `[jules].issue_pr_timeout_hours`
+(default: 12) without opening a pull request, Auto-Coder sends a `stop` message to the
+session and implements the issue with the `backend_with_high_score` backend instead:
+
+```toml
+# config.toml
+[jules]
+issue_pr_timeout_hours = 12
+```
+
+Sessions that already produced a PR, issues that already have a linked PR, and closed
+issues are never taken away from Jules.
+
 For more details about Jules mode architecture and migration from legacy Jules label logic, see the [Migration Guide: v2026.2.0](docs/MIGRATION_GUIDE_v2026.2.0.md).
 
 ### Retry Configuration

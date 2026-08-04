@@ -21,6 +21,10 @@ logger = get_logger(__name__)
 
 STATE_FILE = os.path.join(os.getcwd(), ".auto-coder", "jules_session_state.json")
 
+# Sentinel retry-state values (regular values are non-negative retry counts)
+SESSION_STATE_NOT_FOUND = -1  # Session returned 404 on the server
+SESSION_STATE_STOPPED = -2  # Session was stopped because it timed out without creating a PR
+
 
 def _load_state() -> Dict[str, int]:
     """Load Jules session state from file."""
@@ -41,6 +45,45 @@ def _save_state(state: Dict[str, int]) -> None:
             json.dump(state, f)
     except Exception as e:
         logger.warning(f"Failed to save Jules session state: {e}")
+
+
+def normalize_session_outputs(outputs: Any) -> Dict[str, Any]:
+    """Normalize the ``outputs`` field of a Jules session into a dict.
+
+    The API returns a mapping, but some responses deliver it as a list of
+    single-entry dicts or key/value pairs.
+    """
+    if isinstance(outputs, dict):
+        return outputs
+
+    if isinstance(outputs, list):
+        normalized: Dict[str, Any] = {}
+        for item in outputs:
+            if isinstance(item, dict):
+                normalized.update(item)
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                normalized[item[0]] = item[1]
+        return normalized
+
+    return {}
+
+
+def get_session_pull_request(session: Dict[str, Any]) -> Any:
+    """Return the pull request recorded in a Jules session's outputs, if any."""
+    outputs = normalize_session_outputs(session.get("outputs", {}))
+    return outputs.get("pullRequest") or outputs.get("pull_request")
+
+
+def is_session_stopped(session_id: str) -> bool:
+    """Return True if the session was stopped after failing to create a PR in time."""
+    return _load_state().get(session_id) == SESSION_STATE_STOPPED
+
+
+def mark_session_stopped(session_id: str) -> None:
+    """Persist that a session was stopped so it is never resumed again."""
+    state = _load_state()
+    state[session_id] = SESSION_STATE_STOPPED
+    _save_state(state)
 
 
 def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> None:
@@ -102,8 +145,13 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
 
             try:
                 # Skip sessions that are known to be not found (404) on the server
-                if retry_state.get(session_id) == -1:
+                if retry_state.get(session_id) == SESSION_STATE_NOT_FOUND:
                     logger.debug(f"Skipping session {session_id} as it was previously not found (404) on the server.")
+                    continue
+
+                # Skip sessions that were stopped because they timed out without creating a PR
+                if retry_state.get(session_id) == SESSION_STATE_STOPPED:
+                    logger.debug(f"Skipping session {session_id} as it was stopped after failing to create a PR in time.")
                     continue
 
                 # Check if session is expired
@@ -129,20 +177,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         logger.error(f"Failed to check creation time for session {session_id}: {e}")
 
                 state = session.get("state")
-                outputs = session.get("outputs", {})
-                if isinstance(outputs, list):
-                    try:
-                        new_outputs = {}
-                        for item in outputs:
-                            if isinstance(item, dict):
-                                new_outputs.update(item)
-                            elif isinstance(item, (list, tuple)) and len(item) == 2:
-                                new_outputs[item[0]] = item[1]
-                        outputs = new_outputs
-                    except Exception as e:
-                        logger.warning(f"Failed to convert list outputs to dict: {outputs} - {e}")
-                        outputs = {}
-
+                outputs = normalize_session_outputs(session.get("outputs", {}))
                 pull_request = outputs.get("pullRequest") or outputs.get("pull_request")
                 automation_mode = session.get("automationMode") or session.get("automation_mode")
                 if automation_mode is None:
@@ -546,21 +581,7 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                 if match_found:
                     # Check if the session is completed and merged/closed on GitHub
                     state = session.get("state")
-                    outputs = session.get("outputs", {})
-                    if isinstance(outputs, list):
-                        try:
-                            new_outputs = {}
-                            for item in outputs:
-                                if isinstance(item, dict):
-                                    new_outputs.update(item)
-                                elif isinstance(item, (list, tuple)) and len(item) == 2:
-                                    new_outputs[item[0]] = item[1]
-                            outputs = new_outputs
-                        except Exception as e:
-                            logger.warning(f"Failed to convert list outputs to dict: {e}")
-                            outputs = {}
-
-                    pull_request = outputs.get("pullRequest") or outputs.get("pull_request")
+                    pull_request = get_session_pull_request(session)
                     if state == "COMPLETED" and pull_request:
                         try:
                             github_client = GitHubClient.get_instance()

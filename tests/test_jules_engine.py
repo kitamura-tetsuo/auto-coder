@@ -3,9 +3,14 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from auto_coder.jules_engine import (
+    SESSION_STATE_STOPPED,
     check_and_restart_recurrent_jules_task_for_pr,
     check_and_resume_or_archive_sessions,
     check_and_start_recurrent_jules_tasks,
+    get_session_pull_request,
+    is_session_stopped,
+    mark_session_stopped,
+    normalize_session_outputs,
 )
 
 
@@ -701,3 +706,56 @@ This is a recurrent task prompt."""
         # Verify
         mock_github_client.get_pull_request.assert_called_once_with("owner/repo", 123)
         mock_jules_client.start_session.assert_called_once()
+
+
+class TestJulesStoppedSessions(unittest.TestCase):
+    """Tests for sessions stopped after failing to create a PR in time."""
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_stopped_session_is_not_resumed(self, mock_save_state, mock_load_state, mock_github_client_cls, mock_jules_client_cls):
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [{"name": "projects/p/locations/l/sessions/s9", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"}]
+        mock_load_state.return_value = {"s9": SESSION_STATE_STOPPED}
+
+        check_and_resume_or_archive_sessions()
+
+        mock_jules_client.send_message.assert_not_called()
+        mock_save_state.assert_not_called()
+
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_mark_and_check_stopped_state(self, mock_save_state, mock_load_state):
+        mock_load_state.return_value = {"other": 2}
+
+        mark_session_stopped("s9")
+        mock_save_state.assert_called_once_with({"other": 2, "s9": SESSION_STATE_STOPPED})
+
+        mock_load_state.return_value = {"s9": SESSION_STATE_STOPPED}
+        self.assertTrue(is_session_stopped("s9"))
+
+        mock_load_state.return_value = {"s9": 1}
+        self.assertFalse(is_session_stopped("s9"))
+
+
+class TestNormalizeSessionOutputs(unittest.TestCase):
+    """Tests for Jules session output normalization."""
+
+    def test_dict_outputs_pass_through(self):
+        self.assertEqual(normalize_session_outputs({"pullRequest": {"number": 1}}), {"pullRequest": {"number": 1}})
+
+    def test_list_of_dicts_is_merged(self):
+        self.assertEqual(normalize_session_outputs([{"a": 1}, {"b": 2}]), {"a": 1, "b": 2})
+
+    def test_list_of_pairs_is_merged(self):
+        self.assertEqual(normalize_session_outputs([("a", 1), ["b", 2]]), {"a": 1, "b": 2})
+
+    def test_unsupported_type_returns_empty_dict(self):
+        self.assertEqual(normalize_session_outputs("nonsense"), {})
+
+    def test_get_session_pull_request_supports_both_keys(self):
+        self.assertEqual(get_session_pull_request({"outputs": {"pullRequest": "url-1"}}), "url-1")
+        self.assertEqual(get_session_pull_request({"outputs": [{"pull_request": "url-2"}]}), "url-2")
+        self.assertIsNone(get_session_pull_request({"outputs": {}}))

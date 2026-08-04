@@ -383,6 +383,15 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
       - "The check runs before every '@auto-coder label present' skip (candidate collection, single-target processing, and process_pull_request); a stale PR normally still carries the label from an earlier run and would otherwise never be revisited."
       - "Closing also releases the issue: the @auto-coder label that the dead Jules session kept on the linked issue is removed, and the issue is processed again in the same run (queued as a candidate in the daemon, processed inline for single-target runs)."
       - "PRs that are already closed are ignored, so the attempt counter is never incremented twice for the same PR."
+    issue_pr_timeout:
+      - "When a Jules session has been working on an issue for more than [jules].issue_pr_timeout_hours without opening a PR, the session is sent a 'stop' message and the issue is implemented by the backend_with_high_score backend instead."
+      - "Default timeout: 12 hours. Configurable via [jules].issue_pr_timeout_hours in config.toml."
+      - "The session-to-issue mapping comes from cloud.csv; sessions tracked against a PR number are ignored by this rule."
+      - "Sessions whose outputs already contain a pullRequest, and issues that already have a linked PR on GitHub, are never stopped."
+      - "Closed issues are skipped, and a session that fails to accept the stop message keeps the issue."
+      - "The @auto-coder label the Jules run left on the issue is removed before the fallback implementation runs, otherwise the label gate would skip the issue."
+      - "Stopped sessions are recorded in .auto-coder/jules_session_state.json so they are neither resumed nor handed over twice."
+      - "The check runs once per producer/run loop iteration, right after the Jules session resume/archive pass."
     label_locking:
       - "Jules mode keeps the @auto-coder label on an issue for the lifetime of its session, so an aborted session would otherwise lock the issue permanently."
       - "With check_labels=False (--only and WIP-branch resume) an existing @auto-coder label no longer blocks processing; the label is left in place because the run does not own it."
@@ -485,6 +494,7 @@ Recent configuration schema changes that require migration:
     fallback:
       - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
       - "Jules PRs that still have failing CI more than [jules].pr_ci_timeout_hours (default 12) after PR creation are closed, and the attempt counter of the linked issue is incremented so the issue is retried from scratch."
+      - "Jules sessions that do not open a PR within [jules].issue_pr_timeout_hours (default 12) are stopped, and the issue is implemented by the backend_with_high_score backend instead."
       - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
       - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
       - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."

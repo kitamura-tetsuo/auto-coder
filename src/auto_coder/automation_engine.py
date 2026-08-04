@@ -65,6 +65,19 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Error checking/starting recurrent Jules tasks: {e}")
 
+    def handle_stale_jules_issue_sessions(self, repo_name: str) -> List[str]:
+        """Hand issues over to backend_with_high_score when Jules times out without a PR."""
+        from .issue_processor import handle_stale_jules_issue_sessions
+
+        try:
+            stale_result = handle_stale_jules_issue_sessions(repo_name, self.config, self.github)
+            for action in stale_result.actions:
+                logger.info(f"Stale Jules issue session: {action}")
+            return stale_result.actions
+        except Exception as e:
+            logger.error(f"Error handling stale Jules issue sessions: {e}")
+            return []
+
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
         if concurrency is None:
@@ -104,6 +117,9 @@ class AutomationEngine:
 
                 # Resume sessions
                 await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
+
+                # Take issues away from Jules sessions that timed out without creating a PR
+                await asyncio.to_thread(self.handle_stale_jules_issue_sessions, repo_name)
 
                 # Check and start recurrent Jules tasks
                 await self.check_and_start_recurrent_jules_tasks_async(repo_name)
@@ -1043,6 +1059,9 @@ class AutomationEngine:
 
                 # Check and resume failed Jules sessions
                 check_and_resume_or_archive_sessions()
+
+                # Take issues away from Jules sessions that timed out without creating a PR
+                self.handle_stale_jules_issue_sessions(repo_name)
 
                 # Check and start recurrent Jules tasks
                 check_and_start_recurrent_jules_tasks(repo_name)

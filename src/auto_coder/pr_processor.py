@@ -338,22 +338,10 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
                     target_session = None
 
                 if target_session:
-                    state = target_session.get("state")
-                    outputs = target_session.get("outputs", {})
-                    # Handle list outputs same as jules_engine
-                    if isinstance(outputs, list):
-                        try:
-                            new_outputs = {}
-                            for item in outputs:
-                                if isinstance(item, dict):
-                                    new_outputs.update(item)
-                                elif isinstance(item, (list, tuple)) and len(item) == 2:
-                                    new_outputs[item[0]] = item[1]
-                            outputs = new_outputs
-                        except Exception:
-                            outputs = {}
+                    from auto_coder.jules_engine import get_session_pull_request
 
-                    pull_request = outputs.get("pullRequest")
+                    state = target_session.get("state")
+                    pull_request = get_session_pull_request(target_session)
 
                     if state == "COMPLETED" and pull_request:
                         # Extract PR info
