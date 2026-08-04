@@ -190,6 +190,10 @@ def check_mergeability_with_llm(
 ) -> bool:
     """Check if merge can be performed without degrading code quality.
 
+    Dependency-bot PRs (Dependabot/Renovate/'[bot]') never consult the LLM:
+    their conflicts are mechanical dependency/lockfile updates, so they are
+    always treated as safe to merge.
+
     Args:
         pr_data: PR data dictionary
         conflict_info: Merge conflict information
@@ -198,6 +202,12 @@ def check_mergeability_with_llm(
     Returns:
         True if safe to merge, False if merge would degrade code quality
     """
+    from .pr_processor import _is_dependabot_pr
+
+    if _is_dependabot_pr(pr_data):
+        logger.info(f"Skipping LLM mergeability check for dependency-bot PR #{pr_data.get('number')}")
+        return True
+
     try:
         # Get commit log since branch creation
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
