@@ -626,3 +626,105 @@ class TestPRProcessorMerge:
             mock_api.pulls.merge.assert_any_call("owner", "repo", 125, merge_method="squash")
             # Verify fallback method was tried and succeeded
             mock_api.pulls.merge.assert_any_call("owner", "repo", 125, merge_method="merge")
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("src.auto_coder.pr_processor._get_allowed_merge_methods")
+    def test_merge_pr_skips_conflict_resolution_for_dependabot(self, mock_get_allowed_methods, mock_github_client_class, mock_get_ghapi_client):
+        """Merge conflicts of Dependabot PRs must not trigger conflict resolution."""
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _merge_pr
+
+        config = AutomationConfig()
+        config.MERGE_METHOD = "--squash"
+
+        mock_instance = MagicMock()
+        mock_instance.token = "fake-token"
+        mock_github_client_class.get_instance.return_value = mock_instance
+
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+
+        # Dependabot PR that cannot be merged because of conflicts
+        mock_api.pulls.get.return_value = {
+            "number": 126,
+            "user": {"login": "dependabot[bot]"},
+            "head": {"ref": "dependabot/pip/requests-2.32.0"},
+            "mergeable": False,
+        }
+        mock_api.pulls.merge.return_value = {"merged": False}
+        mock_get_allowed_methods.return_value = []
+
+        with (
+            patch("src.auto_coder.pr_processor._resolve_pr_merge_conflicts") as mock_resolve,
+            patch("src.auto_coder.pr_processor._close_linked_issues"),
+            patch("src.auto_coder.pr_processor._archive_jules_session"),
+        ):
+            result = _merge_pr("owner/repo", 126, {}, config)
+
+        assert result is False
+        mock_resolve.assert_not_called()
+
+
+class TestUpdateWithBaseBranchDependabot:
+    """Dependency-bot PRs must never have their merge conflicts resolved."""
+
+    @patch("src.auto_coder.pr_processor.cmd")
+    def test_update_with_base_branch_skips_dependabot_conflicts(self, mock_cmd):
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _update_with_base_branch
+        from src.auto_coder.utils import CommandResult
+
+        mock_cmd.run_command.side_effect = [
+            CommandResult(True, "", "", 0),  # git fetch origin
+            CommandResult(True, "3\n", "", 0),  # rev-list --count
+            CommandResult(False, "CONFLICT", "", 1),  # git merge
+            CommandResult(True, "", "", 0),  # git merge --abort
+        ]
+
+        pr_data = {
+            "number": 4242,
+            "base_branch": "main",
+            "title": "Bump requests from 2.31.0 to 2.32.0",
+            "body": "",
+            "author": {"login": "dependabot[bot]"},
+        }
+
+        with patch("src.auto_coder.conflict_resolver._perform_base_branch_merge_and_conflict_resolution") as mock_perform:
+            actions = _update_with_base_branch("owner/repo", pr_data, AutomationConfig())
+
+        mock_perform.assert_not_called()
+        assert any("Skipping conflict resolution" in action for action in actions)
+        assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
+        assert mock_cmd.run_command.call_args_list[-1][0][0] == ["git", "merge", "--abort"]
+
+
+class TestResolvePRMergeConflictsDependabot:
+    """_resolve_pr_merge_conflicts must bail out for dependency-bot PRs."""
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    @patch("src.auto_coder.pr_processor.GitHubClient")
+    @patch("src.auto_coder.pr_processor.cmd")
+    def test_resolve_pr_merge_conflicts_skips_dependabot(self, mock_cmd, mock_github_client_class, mock_get_ghapi_client):
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _resolve_pr_merge_conflicts
+        from src.auto_coder.utils import CommandResult
+
+        mock_instance = MagicMock()
+        mock_instance.token = "fake-token"
+        mock_github_client_class.get_instance.return_value = mock_instance
+
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_api.pulls.get.return_value = {
+            "number": 4242,
+            "user": {"login": "dependabot[bot]"},
+            "base": {"ref": "main"},
+        }
+
+        mock_cmd.run_command.return_value = CommandResult(True, "", "", 0)
+
+        with patch("src.auto_coder.pr_processor._checkout_pr_branch") as mock_checkout:
+            assert _resolve_pr_merge_conflicts("owner/repo", 4242, AutomationConfig()) is False
+
+        mock_checkout.assert_not_called()

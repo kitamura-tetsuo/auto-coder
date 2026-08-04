@@ -1684,6 +1684,14 @@ def _update_with_base_branch(
                 except Exception as e:
                     actions.append(f"Error requesting Jules to resolve conflict: {e}")
 
+            # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
+            # the bot recreates the PR against the updated base branch by itself.
+            if _is_dependabot_pr(pr_data):
+                actions.append(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
+                cmd.run_command(["git", "merge", "--abort"])
+                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                return actions
+
             # Use the common subroutine for conflict resolution
             from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution, scan_conflict_markers
 
@@ -2388,6 +2396,13 @@ def _merge_pr(
                 except Exception as e:
                     logger.error(f"Error requesting Jules to resolve conflict: {e}")
 
+            # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
+            # the bot recreates the PR against the updated base branch by itself.
+            if _is_dependabot_pr(pr_info):
+                logger.info(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
+                log_action(f"Skipped merge conflict resolution for dependency-bot PR #{pr_number}")
+                return False
+
             # Try to resolve merge conflicts
             if _resolve_pr_merge_conflicts(repo_name, pr_number, config):
                 # Poll for mergeability
@@ -2532,17 +2547,8 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
         if abort_result.success:
             logger.info("Aborted ongoing merge")
 
-        # Step 1: Checkout the PR branch
-        # Step 1: Checkout the PR branch
-        logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        # Use reusable _checkout_pr_branch which uses direct git commands
-        checkout_success = _checkout_pr_branch(repo_name, {"number": pr_number}, config)
-
-        if not checkout_success:
-            logger.error(f"Failed to checkout PR #{pr_number}")
-            return False
-
-        # Step 1.5: Get PR details to determine the target base branch
+        # Step 1: Get PR details to determine the target base branch and the author
+        pr_data = None
         try:
             from auto_coder.util.gh_cache import get_ghapi_client
 
@@ -2556,7 +2562,22 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             logger.warning(f"Failed to get PR #{pr_number} details via GhApi: {e}")
             base_branch = config.MAIN_BRANCH
 
-        # Step 2: Fetch the latest base branch
+        # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
+        # the bot recreates the PR against the updated base branch by itself.
+        if pr_data is not None and _is_dependabot_pr(pr_data):
+            logger.info(f"Skipping merge conflict resolution for dependency-bot PR #{pr_number}")
+            return False
+
+        # Step 2: Checkout the PR branch
+        logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
+        # Use reusable _checkout_pr_branch which uses direct git commands
+        checkout_success = _checkout_pr_branch(repo_name, {"number": pr_number}, config)
+
+        if not checkout_success:
+            logger.error(f"Failed to checkout PR #{pr_number}")
+            return False
+
+        # Step 3: Fetch the latest base branch
         logger.info(f"Fetching latest {base_branch} branch")
         fetch_result = cmd.run_command(["git", "fetch", "origin", base_branch])
 
@@ -2564,7 +2585,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             logger.error(f"Failed to fetch {base_branch} branch: {fetch_result.stderr}")
             return False
 
-        # Step 3: Attempt to merge base branch
+        # Step 4: Attempt to merge base branch
         logger.info(f"Merging refs/remotes/origin/{base_branch} into PR #{pr_number}")
         merge_result = cmd.run_command(["git", "merge", f"refs/remotes/origin/{base_branch}"])
 
