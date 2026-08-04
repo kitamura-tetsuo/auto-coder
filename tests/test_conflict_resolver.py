@@ -2,7 +2,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.conflict_resolver import _extract_session_id_from_pr_body, _perform_base_branch_merge_and_conflict_resolution
+from src.auto_coder.conflict_resolver import _extract_session_id_from_pr_body, _perform_base_branch_merge_and_conflict_resolution, check_mergeability_with_llm
 from src.auto_coder.utils import CommandResult
 
 
@@ -231,3 +231,56 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         assert kwargs["repo_name"] == "test/repo"
         assert kwargs["issue_data"]["number"] == 123
         assert kwargs["config"] == config
+
+
+def test_check_mergeability_skips_llm_for_dependabot_pr():
+    """Dependabot PRs must never consult the LLM for mergeability."""
+    config = AutomationConfig()
+
+    with (
+        patch("src.auto_coder.conflict_resolver.run_llm_noedit_prompt") as mock_llm,
+        patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager") as mock_create_backend,
+        patch("src.auto_coder.conflict_resolver.render_prompt") as mock_render_prompt,
+    ):
+        pr_data = {
+            "number": 4242,
+            "title": "Bump requests from 2.31.0 to 2.32.0",
+            "body": "",
+            "author": {"login": "dependabot[bot]"},
+            "baseRefName": "main",
+        }
+
+        assert check_mergeability_with_llm(pr_data, "conflict in uv.lock", config) is True
+
+        mock_llm.assert_not_called()
+        mock_create_backend.assert_not_called()
+        mock_render_prompt.assert_not_called()
+
+
+def test_check_mergeability_uses_llm_for_human_pr():
+    """Non-bot PRs still go through the LLM mergeability check."""
+    config = AutomationConfig()
+
+    with (
+        patch("src.auto_coder.conflict_resolver.run_llm_noedit_prompt") as mock_llm,
+        patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager") as mock_create_backend,
+        patch("src.auto_coder.conflict_resolver.render_prompt") as mock_render_prompt,
+        patch("src.auto_coder.conflict_resolver.get_commit_log") as mock_commit_log,
+        patch("src.auto_coder.conflict_resolver.GitHubClient"),
+    ):
+        mock_create_backend.return_value = None
+        mock_commit_log.return_value = "abc123 commit"
+        mock_render_prompt.return_value = "prompt"
+        mock_llm.return_value = "SAFE_TO_MERGE"
+
+        pr_data = {
+            "number": 4243,
+            "title": "Add feature",
+            "body": "",
+            "author": {"login": "some-human"},
+            "baseRefName": "main",
+        }
+
+        assert check_mergeability_with_llm(pr_data, "conflict in src/app.py", config) is True
+
+        mock_llm.assert_called_once()

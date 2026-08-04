@@ -577,3 +577,15 @@ Recent configuration schema changes that require migration:
       integration: "Lock check in cli.py before command execution"
       skip_conditions: "Temporary directories (paths containing 'tmp' or 'pytest')"
       storage_format: "JSON file with pid, hostname, and started_at fields"
+
+
+## Merge Conflict Handling
+
+  mergeability_check:
+    description: "Decides whether merging the base branch into a PR would degrade code quality before conflicts are resolved."
+    implementation: "check_mergeability_with_llm in src/auto_coder/conflict_resolver.py"
+    behavior:
+      - "For regular PRs the LLM is asked once and must answer SAFE_TO_MERGE or DEGRADING_MERGE; unclear or missing answers are treated as unsafe."
+      - "Dependency-bot PRs (Dependabot/Renovate/'[bot]' logins, detected via _is_dependabot_pr) skip the LLM entirely and are always treated as safe to merge."
+      - "Skipping the LLM for dependency-bot PRs avoids spending an LLM call on mechanical dependency/lockfile conflicts, which are resolved by the existing lockfile and package.json conflict handling."
+      - "Jules PRs (google-labs-jules[bot]) are not treated as dependency bots and still go through the LLM check."
