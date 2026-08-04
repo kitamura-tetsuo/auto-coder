@@ -217,15 +217,18 @@ class TestAutomationEngine:
         with (
             patch("src.auto_coder.automation_engine.check_for_updates_and_restart") as mock_updates,
             patch("src.auto_coder.automation_engine.check_and_resume_or_archive_sessions") as mock_resume,
+            patch("src.auto_coder.automation_engine.invalidate_jules_sessions_cache"),
             patch.object(engine, "_check_and_handle_closed_branch", return_value=True),
+            patch.object(engine, "handle_stale_jules_issue_sessions", return_value=[]),
             patch.object(engine, "check_and_start_recurrent_jules_tasks_async") as mock_recurrent,
         ):
 
-            # Make the mock raise a ValueError to break the infinite loop
-            mock_recurrent.side_effect = ValueError("Stop Loop")
+            # KeyboardInterrupt is not swallowed by the loop's `except Exception`,
+            # so it breaks out of the infinite producer loop.
+            mock_recurrent.side_effect = KeyboardInterrupt("Stop Loop")
 
             # Execute - run producer loop
-            with pytest.raises(ValueError, match="Stop Loop"):
+            with pytest.raises(KeyboardInterrupt):
                 await engine._producer_loop("owner/repo")
 
             # Assertions

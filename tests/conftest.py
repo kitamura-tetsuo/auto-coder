@@ -19,6 +19,7 @@ if str(_src_path) not in sys.path:
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
 from src.auto_coder.gemini_client import GeminiClient
+from src.auto_coder.jules_client import invalidate_jules_sessions_cache
 from src.auto_coder.llm_backend_config import reset_llm_config
 from src.auto_coder.util.gh_cache import GitHubClient
 
@@ -79,6 +80,14 @@ def _reset_llm_config_singleton():
     reset_llm_config()
     yield
     reset_llm_config()
+
+
+@pytest.fixture(autouse=True)
+def _reset_jules_sessions_cache():
+    """Reset the cached Jules session listing between tests to ensure isolation."""
+    invalidate_jules_sessions_cache()
+    yield
+    invalidate_jules_sessions_cache()
 
 
 @pytest.fixture(autouse=True)
