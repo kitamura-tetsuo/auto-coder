@@ -6,8 +6,10 @@ This client uses HTTP API instead of Jules CLI to communicate with Jules.
 """
 
 import json
+import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import requests  # type: ignore
@@ -19,6 +21,34 @@ from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class _SessionListCache:
+    """Process-wide cache holding the sessions fetched by ``list_sessions``.
+
+    Listing every Jules session requires walking the whole paginated collection,
+    which takes minutes once a repository accumulates a thousand sessions. The
+    automation loop needs that listing several times per iteration, so the raw
+    (unfiltered) result is cached here and reused until the loop explicitly
+    invalidates it via :func:`invalidate_jules_sessions_cache`.
+    """
+
+    sessions: Optional[List[Dict[str, Any]]] = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_session_list_cache = _SessionListCache()
+
+
+def invalidate_jules_sessions_cache() -> None:
+    """Drop the cached Jules session listing so the next call refetches it.
+
+    Call this once per automation loop iteration: every ``list_sessions`` call
+    within the same iteration then shares a single HTTP fetch.
+    """
+    with _session_list_cache.lock:
+        _session_list_cache.sessions = None
 
 
 class JulesClient(LLMClientBase):
@@ -125,6 +155,63 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to start Jules session: {e}")
             raise RuntimeError(f"Failed to start Jules session: {e}")
 
+    def _fetch_all_sessions(self, page_size: int) -> List[Dict[str, Any]]:
+        """Fetch every Jules session by walking the paginated collection."""
+        url = f"{self.base_url}/sessions"
+
+        # Note: The API does not support server-side filtering for 'state' or 'source'.
+        # We must fetch sessions and filter them client-side.
+        base_params = {
+            "pageSize": page_size,
+        }
+
+        all_sessions: List[Dict[str, Any]] = []
+        page_token = None
+
+        while True:
+            params = base_params.copy()
+            if page_token:
+                params["pageToken"] = page_token
+
+            logger.debug(f"🤖 GET {url} (pageToken={page_token if page_token else 'None'})")
+
+            response = self.session.get(url, params=params, timeout=self.timeout)
+
+            # Check if request was successful
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to list Jules sessions: {error_msg}")
+                raise RuntimeError(f"Failed to list Jules sessions: {error_msg}")
+
+            # Parse the response
+            try:
+                response_data = response.json()
+                sessions = response_data.get("sessions", [])
+                all_sessions.extend(sessions)
+
+                # Check for next page
+                page_token = response_data.get("nextPageToken")
+                if not page_token:
+                    break
+
+            except json.JSONDecodeError:
+                logger.error("Failed to parse Jules sessions response as JSON")
+                break
+
+        return all_sessions
+
+    def _get_all_sessions(self, page_size: int) -> List[Dict[str, Any]]:
+        """Return every Jules session, fetching them only once per loop iteration."""
+        with _session_list_cache.lock:
+            if _session_list_cache.sessions is not None:
+                logger.debug(f"Reusing cached Jules session listing ({len(_session_list_cache.sessions)} sessions)")
+                return _session_list_cache.sessions
+
+            logger.info(f"Listing Jules sessions (pageSize={page_size})")
+            all_sessions = self._fetch_all_sessions(page_size)
+            _session_list_cache.sessions = all_sessions
+            return all_sessions
+
     def list_sessions(self, repo_name: Optional[str] = None, page_size: int = 20) -> List[Dict[str, Any]]:
         """List recent Jules sessions, optionally filtered by repository.
 
@@ -136,49 +223,7 @@ class JulesClient(LLMClientBase):
             List of session dictionaries
         """
         try:
-            # Prepare the request
-            url = f"{self.base_url}/sessions"
-
-            # Note: The API does not support server-side filtering for 'state' or 'source'.
-            # We must fetch sessions and filter them client-side.
-            base_params = {
-                "pageSize": page_size,
-            }
-
-            logger.info(f"Listing Jules sessions (pageSize={page_size}, repo_name={repo_name})")
-
-            all_sessions = []
-            page_token = None
-
-            while True:
-                params = base_params.copy()
-                if page_token:
-                    params["pageToken"] = page_token
-
-                logger.debug(f"🤖 GET {url} (pageToken={page_token if page_token else 'None'})")
-
-                response = self.session.get(url, params=params, timeout=self.timeout)
-
-                # Check if request was successful
-                if response.status_code != 200:
-                    error_msg = f"HTTP {response.status_code}: {response.text}"
-                    logger.error(f"Failed to list Jules sessions: {error_msg}")
-                    raise RuntimeError(f"Failed to list Jules sessions: {error_msg}")
-
-                # Parse the response
-                try:
-                    response_data = response.json()
-                    sessions = response_data.get("sessions", [])
-                    all_sessions.extend(sessions)
-
-                    # Check for next page
-                    page_token = response_data.get("nextPageToken")
-                    if not page_token:
-                        break
-
-                except json.JSONDecodeError:
-                    logger.error("Failed to parse Jules sessions response as JSON")
-                    break
+            all_sessions = self._get_all_sessions(page_size)
 
             # Filter sessions client-side
             filtered_sessions = []

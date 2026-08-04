@@ -17,6 +17,7 @@ from .git_commit import git_push
 from .git_info import get_current_branch
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
+from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
 from .llm_backend_config import get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
@@ -114,6 +115,9 @@ class AutomationEngine:
             try:
                 # Check updates
                 await asyncio.to_thread(check_for_updates_and_restart)
+
+                # Fetch the Jules session listing at most once per loop iteration
+                invalidate_jules_sessions_cache()
 
                 # Resume sessions
                 await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
@@ -1056,6 +1060,9 @@ class AutomationEngine:
             while True:
                 # Check for updates and restart if necessary
                 check_for_updates_and_restart()
+
+                # Fetch the Jules session listing at most once per loop iteration
+                invalidate_jules_sessions_cache()
 
                 # Check and resume failed Jules sessions
                 check_and_resume_or_archive_sessions()
