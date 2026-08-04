@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.llm_backend_config import get_jules_wait_timeout_hours_from_config
+from src.auto_coder.llm_backend_config import get_jules_issue_pr_timeout_hours_from_config, get_jules_wait_timeout_hours_from_config
 
 
 class TestJulesTimeoutConfig:
@@ -68,3 +68,40 @@ class TestJulesTimeoutConfig:
         with patch("src.auto_coder.llm_backend_config.get_jules_wait_timeout_hours_from_config", return_value=8):
             config = AutomationConfig()
             assert config.JULES_WAIT_TIMEOUT_HOURS == 8
+
+
+class TestJulesIssuePRTimeoutConfig:
+    """Tests for the Jules issue-to-PR timeout configuration."""
+
+    def test_get_timeout_default(self):
+        """Default is 12 hours when no config exists."""
+        with patch("os.path.exists", return_value=False):
+            assert get_jules_issue_pr_timeout_hours_from_config() == 12
+
+    def test_get_timeout_from_file_explicit(self):
+        """Reads [jules].issue_pr_timeout_hours from an explicit config file."""
+        config_content = b"""
+        [jules]
+        issue_pr_timeout_hours = 6
+        """
+        with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as f:
+            f.write(config_content)
+            config_path = f.name
+
+        try:
+            assert get_jules_issue_pr_timeout_hours_from_config(config_path) == 6
+        finally:
+            if os.path.exists(config_path):
+                os.remove(config_path)
+
+    def test_automation_config_integration(self):
+        """AutomationConfig picks up the configured value."""
+        with patch("src.auto_coder.llm_backend_config.get_jules_issue_pr_timeout_hours_from_config", return_value=24):
+            config = AutomationConfig()
+            assert config.JULES_ISSUE_PR_TIMEOUT_HOURS == 24
+
+    def test_automation_config_default(self):
+        """AutomationConfig defaults to 12 hours."""
+        with patch("os.path.exists", return_value=False):
+            config = AutomationConfig()
+            assert config.JULES_ISSUE_PR_TIMEOUT_HOURS == 12

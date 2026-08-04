@@ -155,12 +155,14 @@ class AutomationConfig:
         # Load Jules wait timeout from config
         from .llm_backend_config import (
             get_github_action_log_max_length_from_config,
+            get_jules_issue_pr_timeout_hours_from_config,
             get_jules_pr_ci_timeout_hours_from_config,
             get_jules_wait_timeout_hours_from_config,
         )
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
         object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config())
+        object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config())
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config())
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
@@ -495,6 +497,12 @@ class AutomationConfig:
     # Configurable via [jules].pr_ci_timeout_hours in config.toml
     JULES_PR_CI_TIMEOUT_HOURS: int = 12
 
+    # Maximum time a Jules session may work on an issue without opening a PR (default: 12 hours)
+    # After this timeout the session is stopped and the issue is implemented by the
+    # backend_with_high_score backend instead.
+    # Configurable via [jules].issue_pr_timeout_hours in config.toml
+    JULES_ISSUE_PR_TIMEOUT_HOURS: int = 12
+
     # GitHub Action log max length (default: 50000)
     # Configurable via [github_action].max_log_length in config.toml
     GITHUB_ACTION_LOG_MAX_LENGTH: int = 50000
@@ -692,6 +700,20 @@ class StaleJulesPRResult:
     """
 
     closed: bool = False
+    actions: List[str] = field(default_factory=list)
+    issue_numbers: List[int] = field(default_factory=list)
+
+
+@dataclass
+class StaleJulesIssueResult:
+    """Result of the stale Jules issue-session check.
+
+    Attributes:
+        actions: Human-readable actions taken
+        issue_numbers: Issues that were taken away from Jules and implemented by the
+            backend_with_high_score backend
+    """
+
     actions: List[str] = field(default_factory=list)
     issue_numbers: List[int] = field(default_factory=list)
 

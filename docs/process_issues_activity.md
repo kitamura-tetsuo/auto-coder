@@ -39,6 +39,10 @@ else (no)
         while (True) is (active)
             :check_for_updates_and_restart;
             :check_and_resume_or_archive_sessions;
+            :handle_stale_jules_issue_sessions
+            (stop Jules sessions without a PR after
+            [jules].issue_pr_timeout_hours and implement
+            the issue with backend_with_high_score);
 
             partition "automation_engine.run" {
                 :Get candidates (_get_candidates);

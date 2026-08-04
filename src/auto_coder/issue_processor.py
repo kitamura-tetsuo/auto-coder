@@ -4,15 +4,17 @@ Issue processing functionality for Auto-Coder automation engine.
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, TypedDict, cast
+
+from dateutil import parser
 
 from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt
-from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
-from .backend_manager import get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
+from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult, StaleJulesIssueResult
+from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager
 from .git_branch import branch_context, extract_attempt_from_branch
@@ -20,6 +22,7 @@ from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .issue_context import get_linked_issues_context, validate_issue_references
 from .jules_client import JulesClient
+from .jules_engine import get_session_pull_request, is_session_stopped, mark_session_stopped
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_gh_logger, get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -353,8 +356,14 @@ def _take_issue_actions(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     github_client: GitHubClient,
+    backend_manager: Optional[BackendManager] = None,
 ) -> List[str]:
-    """Take actions on an issue using direct LLM CLI analysis and implementation."""
+    """Take actions on an issue using direct LLM CLI analysis and implementation.
+
+    Args:
+        backend_manager: Backend manager used for the implementation run.
+            Defaults to the current LLM backend manager.
+    """
     actions = []
     issue_number = issue_data["number"]
 
@@ -388,6 +397,7 @@ def _take_issue_actions(
                 issue_data,
                 config,
                 github_client,
+                backend_manager=backend_manager,
             )
             actions.extend(action_results)
 
@@ -571,6 +581,181 @@ def _process_issue_jules_mode(
     return actions
 
 
+def _extract_session_id(session: Dict[str, Any]) -> Optional[str]:
+    """Extract the session ID from a Jules session object."""
+    name = session.get("name")
+    if isinstance(name, str) and name:
+        return name.split("/")[-1]
+
+    session_id = session.get("id")
+    return session_id if isinstance(session_id, str) and session_id else None
+
+
+def _stop_jules_session_for_issue(
+    jules_client: JulesClient,
+    repo_name: str,
+    issue_number: int,
+    session_id: str,
+    timeout_hours: int,
+    github_client: GitHubClient,
+) -> bool:
+    """Tell a stale Jules session to stop and record it as stopped.
+
+    Returns:
+        True when the stop message was accepted by the Jules API.
+    """
+    try:
+        jules_client.send_message(session_id, "stop")
+    except Exception as e:
+        logger.error(f"Failed to send stop message to Jules session {session_id} for issue #{issue_number}: {e}")
+        return False
+
+    mark_session_stopped(session_id)
+    logger.info(f"Stopped Jules session {session_id} for issue #{issue_number} after {timeout_hours}h without a PR")
+
+    try:
+        github_client.add_comment_to_issue(
+            repo_name,
+            issue_number,
+            f"Auto-Coder: Jules did not open a PR within {timeout_hours} hours, so I stopped the Jules session `{session_id}` and will implement this issue with the backend_with_high_score backend instead.",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to comment on issue #{issue_number} about the stopped Jules session: {e}")
+
+    return True
+
+
+def handle_stale_jules_issue_sessions(
+    repo_name: str,
+    config: AutomationConfig,
+    github_client: GitHubClient,
+) -> StaleJulesIssueResult:
+    """Take issues away from Jules sessions that ran out of time without opening a PR.
+
+    A Jules session that has been working on an issue for longer than
+    ``config.JULES_ISSUE_PR_TIMEOUT_HOURS`` without producing a pull request is
+    considered stuck. Such a session is sent a ``stop`` message, the ``@auto-coder``
+    label the Jules run left on the issue is released, and the issue is implemented
+    by the ``backend_with_high_score`` backend instead.
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+
+    Returns:
+        StaleJulesIssueResult describing which issues were handled.
+    """
+    result = StaleJulesIssueResult()
+    timeout_hours = config.JULES_ISSUE_PR_TIMEOUT_HOURS
+
+    try:
+        jules_client = JulesClient()
+        sessions = jules_client.list_sessions(repo_name=repo_name)
+    except Exception as e:
+        logger.warning(f"Failed to list Jules sessions for stale issue check: {e}")
+        return result
+
+    cloud_manager = CloudManager(repo_name)
+    now = datetime.now(timezone.utc)
+    timeout = timedelta(hours=timeout_hours)
+
+    for session in sessions:
+        if not isinstance(session, dict):
+            logger.warning(f"Skipping invalid Jules session object (expected dict, got {type(session)})")
+            continue
+
+        session_id = _extract_session_id(session)
+        if not session_id:
+            continue
+
+        try:
+            if is_session_stopped(session_id):
+                continue
+
+            # A session that already produced a PR is doing its job
+            if get_session_pull_request(session):
+                continue
+
+            create_time_str = session.get("createTime")
+            if not create_time_str:
+                continue
+
+            try:
+                create_time = parser.parse(str(create_time_str))
+            except Exception as e:
+                logger.warning(f"Failed to parse createTime '{create_time_str}' for Jules session {session_id}: {e}")
+                continue
+
+            if create_time.tzinfo is None:
+                create_time = create_time.replace(tzinfo=timezone.utc)
+
+            if (now - create_time) <= timeout:
+                continue
+
+            issue_number = cloud_manager.get_issue_by_session(session_id)
+            if not issue_number:
+                continue
+
+            issue = github_client.get_issue(repo_name, issue_number)
+            if issue is None:
+                continue
+
+            issue_data = github_client.get_issue_details(issue)
+
+            # cloud.csv also tracks PR-bound sessions; only issues are handled here
+            is_pull_request = (issue.get("pull_request") if isinstance(issue, dict) else getattr(issue, "pull_request", None)) is not None
+            if is_pull_request:
+                continue
+
+            if issue_data.get("state") != "open":
+                continue
+
+            # Jules may have opened the PR without the session outputs reflecting it yet
+            if github_client.has_linked_pr(repo_name, issue_number):
+                continue
+
+            if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
+                continue
+
+            result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
+            get_trace_logger().log(
+                "Jules Timeout",
+                f"Stopped Jules session for issue #{issue_number}",
+                item_type="issue",
+                item_number=issue_number,
+                details={"session_id": session_id, "timeout_hours": timeout_hours},
+            )
+
+            # Release the @auto-coder label so the issue can be processed again
+            from .pr_processor import _release_issue_processing_label
+
+            if _release_issue_processing_label(github_client, repo_name, issue_number, config):
+                result.actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
+
+            from .cli_helpers import create_high_score_backend_manager
+
+            backend_manager = create_high_score_backend_manager()
+            if backend_manager is None:
+                logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
+
+            result.actions.extend(
+                _take_issue_actions(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_manager=backend_manager,
+                )
+            )
+            result.issue_numbers.append(issue_number)
+
+        except Exception as e:
+            logger.error(f"Failed to handle stale Jules session {session_id}: {e}")
+
+    return result
+
+
 def _create_pr_for_issue(
     repo_name: str,
     issue_data: Dict[str, Any],
@@ -751,8 +936,14 @@ def _apply_issue_actions_directly(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     github_client: GitHubClient,
+    backend_manager: Optional[BackendManager] = None,
 ) -> List[str]:
-    """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
+    """Ask LLM CLI to analyze an issue and take appropriate actions directly.
+
+    Args:
+        backend_manager: Backend manager used for the implementation run.
+            Defaults to the current LLM backend manager.
+    """
     issue_number = issue_data.get("number", "unknown")
     actions = []
 
@@ -949,7 +1140,7 @@ def _apply_issue_actions_directly(
                 get_trace_logger().log("Analysis Start", f"Starting analysis for issue #{issue_number}", item_type="issue", item_number=issue_number)
 
                 # Call LLM client
-                response = get_llm_backend_manager()._run_llm_cli(action_prompt)
+                response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
 
                 # Parse the response
                 if response and len(response.strip()) > 0:

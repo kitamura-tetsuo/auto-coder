@@ -812,6 +812,24 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
     )
 
 
+def get_jules_issue_pr_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+    """Get the maximum time Jules may work on an issue without opening a PR.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        Timeout in hours (default: 12)
+    """
+    return _get_config_value(
+        section="jules",
+        key="issue_pr_timeout_hours",
+        default=12,
+        config_path=config_path,
+        value_type=int,
+    )
+
+
 def get_jules_pr_ci_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
     """Get the maximum time a Jules PR may stay open without passing CI.
 
