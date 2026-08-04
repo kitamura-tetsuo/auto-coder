@@ -2,11 +2,13 @@
 Tests for Claude client functionality.
 """
 
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.claude_client import ClaudeClient
+from src.auto_coder.claude_client import ClaudeClient, restore_claude_config_if_needed
 
 
 class TestClaudeClient:
@@ -784,6 +786,85 @@ class TestClaudeClient:
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
     @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_cloud_option_drops_print_and_output_format(self, mock_cmd_exec, mock_run, mock_get_config):
+        """`--cloud` runs interactively, so --print and --output-format must be dropped."""
+        mock_run.return_value.returncode = 0
+
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "opus"
+        mock_backend.settings = None
+        cloud_options = ["--output-format", "stream-json", "--verbose", "--model", "opus", "--cloud"]
+        mock_backend.options = cloud_options
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+        mock_backend.replace_placeholders.return_value = {
+            "options": cloud_options,
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+        client._run_llm_cli("test prompt")
+
+        called_cmd = mock_cmd_exec.call_args[0][0]
+        assert called_cmd == [
+            "claude",
+            "--verbose",
+            "--model",
+            "opus",
+            "--cloud",
+            "test prompt",
+        ]
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_cloud_with_value_keeps_print_out_of_command(self, mock_cmd_exec, mock_run, mock_get_config):
+        """`--cloud=<description>` must also suppress the automatically added --print."""
+        mock_run.return_value.returncode = 0
+
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "opus"
+        mock_backend.settings = None
+        cloud_options = ["--print", "--cloud=task from auto-coder"]
+        mock_backend.options = cloud_options
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+        mock_backend.replace_placeholders.return_value = {
+            "options": cloud_options,
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+        client._run_llm_cli("test prompt")
+
+        called_cmd = mock_cmd_exec.call_args[0][0]
+        assert "--print" not in called_cmd
+        assert "--cloud=task from auto-coder" in called_cmd
+        assert called_cmd[-1] == "test prompt"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
     def test_command_execution_includes_all_arguments(self, mock_cmd_exec, mock_run, mock_get_config):
         """ClaudeClient should execute command with all configured arguments."""
         mock_run.return_value.returncode = 0
@@ -1072,3 +1153,59 @@ class TestClaudeClientSessionExtraction:
         output = "Session ID: not-a-uuid-format"
         client._extract_and_store_session_id(output)
         assert client.get_last_session_id() is None
+
+
+class TestClaudeConfigRestore:
+    """Test cases for restoring a missing claude CLI configuration file."""
+
+    @staticmethod
+    def _write_json(path, data):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_no_restore_when_config_is_valid(self, tmp_path, monkeypatch):
+        """A readable configuration must be left untouched."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        config_path = tmp_path / ".claude.json"
+        self._write_json(config_path, {"userID": "current"})
+        self._write_json(tmp_path / "backups" / ".claude.json.backup.1", {"userID": "old"})
+
+        assert restore_claude_config_if_needed() is False
+        assert json.loads(config_path.read_text(encoding="utf-8")) == {"userID": "current"}
+
+    def test_restores_newest_backup_with_account_data(self, tmp_path, monkeypatch):
+        """A missing configuration is restored from the newest non-empty backup."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        config_path = tmp_path / ".claude.json"
+        older = tmp_path / "backups" / ".claude.json.backup.1"
+        newer = tmp_path / "backups" / ".claude.json.backup.2"
+        empty = tmp_path / "backups" / ".claude.json.backup.3"
+        self._write_json(older, {"userID": "old", "oauthAccount": {"emailAddress": "old@example.com"}})
+        self._write_json(newer, {"userID": "new", "oauthAccount": {"emailAddress": "new@example.com"}})
+        self._write_json(empty, {"firstStartTime": "2026-08-04T04:10:43.814Z"})
+        os.utime(older, (1000, 1000))
+        os.utime(newer, (2000, 2000))
+        os.utime(empty, (3000, 3000))
+
+        assert restore_claude_config_if_needed() is True
+        assert json.loads(config_path.read_text(encoding="utf-8"))["userID"] == "new"
+
+    def test_corrupt_config_is_preserved_and_replaced(self, tmp_path, monkeypatch):
+        """An unparsable configuration is moved aside, not deleted."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        config_path = tmp_path / ".claude.json"
+        config_path.write_text("{ this is not json", encoding="utf-8")
+        self._write_json(tmp_path / "backups" / ".claude.json.backup.1", {"userID": "restored", "installMethod": "npm"})
+
+        assert restore_claude_config_if_needed() is True
+        assert json.loads(config_path.read_text(encoding="utf-8"))["userID"] == "restored"
+        corrupt_copies = list(tmp_path.glob(".claude.json.corrupt.*"))
+        assert len(corrupt_copies) == 1
+        assert corrupt_copies[0].read_text(encoding="utf-8") == "{ this is not json"
+
+    def test_returns_false_without_usable_backup(self, tmp_path, monkeypatch):
+        """Nothing is restored when no backup directory exists."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+        assert restore_claude_config_if_needed() is False
+        assert not (tmp_path / ".claude.json").exists()
