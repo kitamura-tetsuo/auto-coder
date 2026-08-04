@@ -12,16 +12,15 @@ class TestGitHubClientREST:
     def mock_github_token(self):
         return "test_token"
 
-    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
-    def test_get_open_prs_json_rest(self, mock_get_ghapi_client, mock_github_token):
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
+    def test_get_open_prs_json_rest(self, mock_get_caching_client, mock_github_token):
         """Test get_open_prs_json uses REST API correctly."""
         # Setup
-        mock_api = MagicMock()
-        mock_get_ghapi_client.return_value = mock_api
+        mock_client = MagicMock()
+        mock_get_caching_client.return_value = mock_client
 
         # Mock List PRs - return plain dicts as if from cache
         mock_pr_summary = {"number": 123}
-        mock_api.pulls.list.return_value = [mock_pr_summary]
 
         # Mock Get PR Details - return plain dict
         mock_pr_detail = {
@@ -48,7 +47,11 @@ class TestGitHubClientREST:
             "changed_files": 1,
         }
 
-        mock_api.pulls.get.return_value = mock_pr_detail
+        list_response = MagicMock()
+        list_response.json.return_value = [mock_pr_summary]
+        detail_response = MagicMock()
+        detail_response.json.return_value = mock_pr_detail
+        mock_client.request.side_effect = [list_response, detail_response]
 
         client = GitHubClient.get_instance(mock_github_token)
 
@@ -65,8 +68,11 @@ class TestGitHubClientREST:
         assert pr["comments_count"] == 2  # 1 + 1
         assert pr["commits_count"] == 5
 
-        mock_api.pulls.list.assert_called_once_with("owner", "repo", state="open", per_page=100)
-        mock_api.pulls.get.assert_called_once_with("owner", "repo", 123)
+        requested_urls = [call.args[1] for call in mock_client.request.call_args_list]
+        assert requested_urls == [
+            "https://api.github.com/repos/owner/repo/pulls?state=open&per_page=100",
+            "https://api.github.com/repos/owner/repo/pulls/123",
+        ]
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_open_issues_json_rest(self, mock_get_ghapi_client, mock_github_token):

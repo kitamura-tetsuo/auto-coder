@@ -217,7 +217,7 @@ def build_models_map() -> Dict[str, str]:
     models["codex"] = "codex"
     models["codex-mcp"] = "codex-mcp"
     # gemini - Check config, then default
-    models["agy"] = config.get_model_for_backend("antigravity") or "gemini-2.5-pro"
+    models["antigravity"] = config.get_model_for_backend("antigravity") or "gemini-2.5-pro"
     # qwen
     models["qwen"] = config.get_model_for_backend("qwen") or "qwen3-coder-plus"
     # auggie

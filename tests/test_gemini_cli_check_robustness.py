@@ -71,6 +71,6 @@ def test_gemini_client_init_failure_diagnostics():
     with patch("shutil.which", return_value="/bin/gemini"), patch("subprocess.run", return_value=mock_result):
         with pytest.raises(RuntimeError) as exc_info:
             GeminiClient()
-        assert "Antigravity CLI (gemini) found but version check failed" in str(exc_info.value)
+        assert "Antigravity CLI (agy) found but version check failed" in str(exc_info.value)
         assert "stdout: perm denied" in str(exc_info.value)
         assert "stderr: crit error" in str(exc_info.value)

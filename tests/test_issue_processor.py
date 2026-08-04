@@ -43,11 +43,18 @@ def test_parent_issue_branch_creation_uses_main_base():
 
     # CommandExecutor instance in issue_processor module
     with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
-        # Simulate: parent branch missing, work branch missing
-        mock_cmd.run_command.side_effect = [
-            _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse parent
-            _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work
-        ]
+        # Simulate: parent branch missing, work branch missing.
+        # Every other git command (fetch/reset/clean/checkout/pull) succeeds, and
+        # `git rev-parse` resolves HEAD and origin/main to the same hash so the
+        # divergence check inside the branch context passes.
+        def fake_run_command(command, *_args, **_kwargs):
+            if command[:3] == ["git", "rev-parse", "--verify"]:
+                return _cmd_result(success=False, stderr="not found", returncode=1)
+            if command[:2] == ["git", "rev-parse"]:
+                return _cmd_result(stdout="abc123\n")
+            return _cmd_result()
+
+        mock_cmd.run_command.side_effect = fake_run_command
 
         with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
             with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):

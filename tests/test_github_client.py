@@ -94,16 +94,18 @@ class TestGitHubClient:
         assert issue2 not in result
         mock_api.issues.list_for_repo.assert_called_once_with("test", "repo", state="open", sort="created", direction="asc", per_page=10)
 
-    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
-    def test_get_open_pull_requests_success(self, mock_get_client, mock_github_token):
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
+    def test_get_open_pull_requests_success(self, mock_get_caching, mock_github_token):
         """Test successful open pull requests retrieval."""
         # Setup
-        mock_api = Mock()
-        pr1 = AttrDict({"number": 1, "title": "PR 1"})
-        pr2 = AttrDict({"number": 2, "title": "PR 2"})
+        pr1 = {"number": 1, "title": "PR 1"}
+        pr2 = {"number": 2, "title": "PR 2"}
 
-        mock_api.pulls.list.return_value = [pr1, pr2]
-        mock_get_client.return_value = mock_api
+        mock_response = Mock()
+        mock_response.json.return_value = [pr1, pr2]
+        mock_client = Mock()
+        mock_client.request.return_value = mock_response
+        mock_get_caching.return_value = mock_client
 
         client = GitHubClient.get_instance(mock_github_token)
 
@@ -114,7 +116,10 @@ class TestGitHubClient:
         # Limit handled manually in python
         assert len(result) == 1
         assert result[0] == pr1
-        mock_api.pulls.list.assert_called_once_with("test", "repo", state="open", sort="created", direction="asc", per_page=1)
+        args, kwargs = mock_client.request.call_args
+        assert args[0] == "GET"
+        assert args[1] == "https://api.github.com/repos/test/repo/pulls?state=open&sort=created&direction=asc&per_page=1"
+        assert kwargs["headers"]["X-GitHub-Api-Version"] == "2022-11-28"
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_find_pr_by_head_branch_found(self, mock_get_client, mock_github_token):
