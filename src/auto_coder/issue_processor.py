@@ -12,7 +12,7 @@ from dateutil import parser
 from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
-from .attempt_manager import get_current_attempt
+from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult, StaleJulesIssueResult
 from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
@@ -357,12 +357,16 @@ def _take_issue_actions(
     config: AutomationConfig,
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
+    check_labels: Optional[bool] = None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation.
 
     Args:
         backend_manager: Backend manager used for the implementation run.
             Defaults to the current LLM backend manager.
+        check_labels: Whether an existing @auto-coder label blocks processing.
+            Defaults to ``config.CHECK_LABELS``. Pass False when this run already
+            owns the label and must keep it in place.
     """
     actions = []
     issue_number = issue_data["number"]
@@ -398,6 +402,7 @@ def _take_issue_actions(
                 config,
                 github_client,
                 backend_manager=backend_manager,
+                check_labels=check_labels,
             )
             actions.extend(action_results)
 
@@ -727,11 +732,14 @@ def handle_stale_jules_issue_sessions(
                 details={"session_id": session_id, "timeout_hours": timeout_hours},
             )
 
-            # Release the @auto-coder label so the issue can be processed again
-            from .pr_processor import _release_issue_processing_label
-
-            if _release_issue_processing_label(github_client, repo_name, issue_number, config):
-                result.actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
+            # The abandoned Jules run counts as a failed attempt, so the fallback starts
+            # from a fresh attempt branch instead of the one Jules left behind.
+            try:
+                new_attempt = increment_attempt(repo_name, issue_number)
+                result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+            except Exception as e:
+                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
 
             from .cli_helpers import create_high_score_backend_manager
 
@@ -739,6 +747,10 @@ def handle_stale_jules_issue_sessions(
             if backend_manager is None:
                 logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
 
+            # The @auto-coder label the Jules run left on the issue is kept so no other
+            # instance picks the issue up while the fallback is working on it. Passing
+            # check_labels=False makes the label gate let this run through instead of
+            # skipping the issue it already owns.
             result.actions.extend(
                 _take_issue_actions(
                     repo_name,
@@ -746,6 +758,7 @@ def handle_stale_jules_issue_sessions(
                     config,
                     github_client,
                     backend_manager=backend_manager,
+                    check_labels=False,
                 )
             )
             result.issue_numbers.append(issue_number)
@@ -937,12 +950,16 @@ def _apply_issue_actions_directly(
     config: AutomationConfig,
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
+    check_labels: Optional[bool] = None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly.
 
     Args:
         backend_manager: Backend manager used for the implementation run.
             Defaults to the current LLM backend manager.
+        check_labels: Whether an existing @auto-coder label blocks processing.
+            Defaults to ``config.CHECK_LABELS``. Pass False when this run already
+            owns the label and must keep it in place.
     """
     issue_number = issue_data.get("number", "unknown")
     actions = []
@@ -1089,7 +1106,7 @@ def _apply_issue_actions_directly(
             issue_number,
             item_type="issue",
             config=config,
-            check_labels=config.CHECK_LABELS,
+            check_labels=config.CHECK_LABELS if check_labels is None else check_labels,
             known_labels=issue_data.get("labels"),
         ) as should_process:
             if not should_process:
