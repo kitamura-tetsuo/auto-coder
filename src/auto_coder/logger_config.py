@@ -23,6 +23,15 @@ LLM_LOGGING_DISABLED
     Note: This only affects the main application logging. The LLM output logger
     has its own separate configuration via AUTO_CODER_LLM_OUTPUT_LOG_ENABLED.
 
+AUTO_CODER_LOG_FILE
+    Overrides the default application log file
+    (``~/.auto-coder/logs/auto-coder.log``) used when ``--log-file`` is not
+    given.
+
+AUTO_CODER_FILE_LOG_LEVEL
+    Log level of the file sink, independent of the console level.  Set it to
+    DEBUG to keep a detailed on-disk trace while the console stays at INFO.
+
 Examples
 --------
 
@@ -92,6 +101,24 @@ def format_path_for_log(file_path: str) -> str:
             return trimmed.as_posix()
 
     return str(resolved)
+
+
+def get_default_log_file() -> Path:
+    """Return the log file used when no ``--log-file`` is given.
+
+    Long running sessions must always leave an operation log behind, so the
+    application log defaults to ``~/.auto-coder/logs/auto-coder.log``.  The
+    directory can be redirected with ``AUTO_CODER_HEALTH_LOG_DIR`` so all
+    diagnostics files stay together.
+    """
+
+    configured = os.environ.get("AUTO_CODER_LOG_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    log_dir = os.environ.get("AUTO_CODER_HEALTH_LOG_DIR", "").strip()
+    base = Path(log_dir).expanduser() if log_dir else Path.home() / ".auto-coder" / "logs"
+    return base / "auto-coder.log"
 
 
 def _patch_record(record: dict) -> None:
@@ -185,6 +212,12 @@ def setup_logger(
             enqueue=use_enqueue,
         )
 
+    # Fall back to the default application log so that long runs always leave a
+    # file behind to diagnose unexpected terminations.  Tests keep using the
+    # console only unless they pass an explicit path.
+    if not log_file and not in_test:
+        log_file = str(get_default_log_file())
+
     # Add file handler if specified
     if log_file and not os.environ.get("LLM_LOGGING_DISABLED", "").strip().lower() in {
         "1",
@@ -218,12 +251,18 @@ def setup_logger(
         else:
             file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | " "{level: <8} | " "{name} - " "{message}"
 
+        # The file sink may be more verbose than the console: post-mortem
+        # analysis of a run that stopped hours later needs the detail.
+        file_level = os.environ.get("AUTO_CODER_FILE_LOG_LEVEL", "").strip().upper() or level
+        if file_level not in valid_levels:
+            file_level = level
+
         logger.add(
             log_file,
             format=file_format,
-            level=level,
+            level=file_level,
             rotation="10 MB",
-            retention="7 days",
+            retention="14 days",
             compression="zip",
             enqueue=use_enqueue,
         )

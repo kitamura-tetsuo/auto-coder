@@ -29,6 +29,7 @@ except ImportError:
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_config import config_group
 from .cli_commands_debug import debug
+from .cli_commands_health import health
 from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues, serve
 from .cli_commands_mcp import mcp_group
@@ -119,7 +120,7 @@ def main(ctx: click.Context, force: bool) -> None:
         invoked_cmd = ctx.invoked_subcommand if hasattr(ctx, "invoked_subcommand") else None
 
         # Skip lock check for read-only commands
-        read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb"]
+        read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb", "health"]
         is_unlock = invoked_cmd == "unlock" or "unlock" in sys.argv
 
         if not (invoked_cmd in read_only_commands or has_help_flag or is_unlock):
@@ -194,6 +195,7 @@ main.add_command(auth_status)
 main.add_command(migrate_branches)
 main.add_command(unlock)
 main.add_command(debug)
+main.add_command(health)
 
 
 if __name__ == "__main__":

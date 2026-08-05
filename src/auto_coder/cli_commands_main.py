@@ -12,6 +12,7 @@ from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, ensure_test_script_or_fail
 from .cli_ui import Spinner, create_terminal_link, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
+from .health_monitor import get_health_monitor, start_health_monitoring
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
@@ -123,6 +124,9 @@ def process_issues(
 
     # Setup progress footer logging (re-configures logger with footer sink)
     setup_progress_footer_logging()
+
+    # Record resource usage and crash diagnostics for this (long running) session
+    start_health_monitoring()
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
@@ -382,8 +386,17 @@ def process_issues(
 
     try:
         asyncio.run(run_all())
+        logger.warning("Automation returned without being interrupted; process-issues is exiting")
+        get_health_monitor().record_event("cli_exit", "asyncio.run returned", repo_name)
     except KeyboardInterrupt:
         logger.info("Stopped by user")
+        get_health_monitor().record_event("cli_exit", "KeyboardInterrupt", repo_name)
+    except BaseException as e:
+        logger.opt(exception=True).error(f"process-issues terminated by an unhandled error: {e}")
+        get_health_monitor().record_event("cli_exit", f"unhandled error: {type(e).__name__}: {e}", repo_name)
+        raise
+    finally:
+        get_health_monitor().stop(reason="cli_exit")
 
     # Close MCP session if present
     try:
@@ -581,6 +594,10 @@ def fix_to_pass_tests_command(
 
     setup_logger(log_level=effective_log_level, log_file=log_file)
 
+    # Record resource usage and crash diagnostics: fix-to-pass-tests also runs
+    # for a long time and can be stopped by the same causes as process-issues
+    start_health_monitoring()
+
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
 
@@ -760,6 +777,9 @@ def serve(
 
     setup_logger(log_level=effective_log_level, log_file=log_file)
     setup_progress_footer_logging()
+
+    # Record resource usage and crash diagnostics for this (long running) daemon
+    start_health_monitoring()
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)

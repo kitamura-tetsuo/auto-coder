@@ -15,6 +15,7 @@ from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
 from .git_info import get_current_branch
+from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -89,17 +90,34 @@ class AutomationEngine:
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
 
+        # Record resource usage and unhandled asyncio errors for the whole run
+        install_asyncio_diagnostics(asyncio.get_running_loop())
+        get_health_monitor().start()
+        heartbeat("engine:start", repo_name)
+
         # Start producer
-        producer_task = asyncio.create_task(self._producer_loop(repo_name))
+        producer_task = asyncio.create_task(self._producer_loop(repo_name), name="producer")
 
         # Start workers
-        workers = [asyncio.create_task(self._worker_loop(repo_name, i)) for i in range(concurrency)]
+        workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
 
         try:
             # Wait for all tasks (they run forever until cancelled)
             await asyncio.gather(producer_task, *workers)
+            # Reaching this point means every loop returned on its own, which
+            # is the silent-stop case we want explained in the log.
+            logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
+            get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
         except asyncio.CancelledError:
             logger.info("Automation engine stopped")
+            get_health_monitor().record_event("engine_stop", "cancelled", "")
+            raise
+        except BaseException as e:
+            logger.opt(exception=True).error(f"Automation engine stopped by an unhandled error: {e}")
+            get_health_monitor().record_event("engine_stop", f"unhandled error: {type(e).__name__}: {e}", "")
+            raise
+        finally:
+            get_health_monitor().log_snapshot(reason="engine_stop")
 
     async def _producer_loop(self, repo_name: str) -> None:
         """Producer loop that polls for candidates and adds them to the queue."""
@@ -109,10 +127,15 @@ class AutomationEngine:
         # Check closed branch once at start (as per original run method)
         if not await asyncio.to_thread(self._check_and_handle_closed_branch, repo_name):
             logger.info("Closed item handled on startup, exiting producer")
+            get_health_monitor().record_event("producer_exit", "closed item handled on startup", repo_name)
             return
 
+        iteration = 0
         while True:
             try:
+                iteration += 1
+                heartbeat("producer:check-updates", f"iteration {iteration}")
+
                 # Check updates
                 await asyncio.to_thread(check_for_updates_and_restart)
 
@@ -120,6 +143,7 @@ class AutomationEngine:
                 invalidate_jules_sessions_cache()
 
                 # Resume sessions
+                heartbeat("producer:jules-sessions", f"iteration {iteration}")
                 await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
 
                 # Take issues away from Jules sessions that timed out without creating a PR
@@ -131,6 +155,7 @@ class AutomationEngine:
                 # Pull latest changes for monitored repository
                 try:
                     logger.info("Pulling latest changes for monitored repository...")
+                    heartbeat("producer:git-pull", f"iteration {iteration}")
                     pull_res = await asyncio.to_thread(git_pull)
                     if not pull_res.success:
                         logger.warning(f"Failed to pull latest changes: {pull_res.stderr}")
@@ -138,6 +163,7 @@ class AutomationEngine:
                     logger.warning(f"Failed to pull monitored repository: {e}")
 
                 # Get candidates
+                heartbeat("producer:get-candidates", f"iteration {iteration}")
                 candidates = await asyncio.to_thread(self._get_candidates, repo_name)
 
                 if not candidates:
@@ -157,6 +183,7 @@ class AutomationEngine:
                         sleep_time = get_process_issues_sleep_time_from_config()
                         logger.info(f"No actionable candidates. Sleeping for {sleep_time} seconds...")
 
+                    heartbeat("producer:sleep-no-candidates", f"{sleep_time}s")
                     await asyncio.sleep(sleep_time)
                     continue
 
@@ -172,10 +199,16 @@ class AutomationEngine:
 
                 sleep_time = get_process_issues_sleep_time_from_config()
                 logger.info(f"Batch queued. Sleeping for {sleep_time} seconds...")
+                heartbeat("producer:sleep-after-batch", f"{sleep_time}s")
                 await asyncio.sleep(sleep_time)
 
+            except asyncio.CancelledError:
+                logger.info("Producer loop cancelled")
+                get_health_monitor().record_event("producer_exit", "cancelled", f"iteration {iteration}")
+                raise
             except Exception as e:
-                logger.error(f"Error in producer loop: {e}")
+                logger.opt(exception=True).error(f"Error in producer loop: {e}")
+                get_health_monitor().record_event("producer_error", f"{type(e).__name__}: {e}", f"iteration {iteration}")
                 await asyncio.sleep(60)  # Sleep on error
 
     async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
@@ -184,12 +217,14 @@ class AutomationEngine:
         get_trace_logger().log("System", f"Worker {worker_id} started")
 
         while True:
+            heartbeat(f"worker-{worker_id}:idle", f"queue={self.queue.qsize()}")
             candidate = await self.queue.get()
             item_number = candidate.data.get("number", "N/A")
 
             try:
                 self.active_workers[worker_id] = candidate
                 logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
+                heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
 
                 # Check if the item is already closed before processing
                 if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
@@ -214,8 +249,13 @@ class AutomationEngine:
                 # Maybe skip saving report per item for now, rely on logs.
                 # Or create a minimal report.
 
+            except asyncio.CancelledError:
+                logger.info(f"Worker {worker_id} cancelled")
+                get_health_monitor().record_event("worker_exit", f"worker {worker_id} cancelled", f"{candidate.type} #{item_number}")
+                raise
             except Exception as e:
-                logger.error(f"Worker {worker_id} error processing candidate: {e}")
+                logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
+                get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
             finally:
                 self.active_workers[worker_id] = None
                 self.queue.task_done()
@@ -1058,6 +1098,8 @@ class AutomationEngine:
             total_processed = 0
 
             while True:
+                heartbeat("run:check-updates", repo_name)
+
                 # Check for updates and restart if necessary
                 check_for_updates_and_restart()
 
@@ -1094,6 +1136,7 @@ class AutomationEngine:
                 for candidate in candidates:
                     try:
                         logger.info(f"Processing {candidate.type} #{candidate.data.get('number', 'N/A')}")
+                        heartbeat("run:processing", f"{candidate.type} #{candidate.data.get('number', 'N/A')}")
 
                         # Process the candidate
                         result = self._process_single_candidate(repo_name, candidate)

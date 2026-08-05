@@ -101,7 +101,7 @@
             "cwd": "/workspaces/outliner",
             "args": [
                 "process-issues",
-                "--disable-graphrag",
+                // "--disable-graphrag",
                 // "--only",
                 // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",

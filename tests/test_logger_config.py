@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from loguru import logger
 
-from src.auto_coder.logger_config import format_path_for_log, get_logger, setup_logger
+from src.auto_coder.logger_config import format_path_for_log, get_default_log_file, get_logger, setup_logger
 from src.auto_coder.utils import log_action
 
 
@@ -229,3 +229,67 @@ class TestLoggerConfig:
         # Should not have absolute paths or site-packages paths
         assert "/site-packages/" not in log_output
         assert "/workspaces/auto-coder/" not in log_output
+
+
+class TestDefaultLogFile:
+    """The application log must always be written, even without --log-file."""
+
+    def setup_method(self):
+        logger.remove()
+        logger.configure(patcher=None)
+
+    def teardown_method(self):
+        logger.remove()
+        logger.add(sys.stderr)
+        logger.configure(patcher=None)
+
+    def test_default_log_file_follows_health_log_dir(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AUTO_CODER_LOG_FILE", raising=False)
+        monkeypatch.setenv("AUTO_CODER_HEALTH_LOG_DIR", str(tmp_path / "diag"))
+
+        assert get_default_log_file() == tmp_path / "diag" / "auto-coder.log"
+
+    def test_default_log_file_env_override(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AUTO_CODER_LOG_FILE", str(tmp_path / "custom.log"))
+
+        assert get_default_log_file() == tmp_path / "custom.log"
+
+    def test_default_log_file_defaults_below_home(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AUTO_CODER_LOG_FILE", raising=False)
+        monkeypatch.delenv("AUTO_CODER_HEALTH_LOG_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert get_default_log_file() == tmp_path / ".auto-coder" / "logs" / "auto-coder.log"
+
+    def test_file_sink_level_can_be_more_verbose_than_console(self, monkeypatch, tmp_path):
+        log_file = tmp_path / "app.log"
+        monkeypatch.setenv("AUTO_CODER_FILE_LOG_LEVEL", "DEBUG")
+        buffer = StringIO()
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "INFO"
+
+            setup_logger(log_level="INFO", log_file=str(log_file), stream=buffer)
+
+            get_logger(__name__).debug("detailed trace entry")
+            logger.complete()
+
+        assert "detailed trace entry" in log_file.read_text(encoding="utf-8")
+        assert "detailed trace entry" not in buffer.getvalue()
+
+    def test_invalid_file_level_falls_back_to_console_level(self, monkeypatch, tmp_path):
+        log_file = tmp_path / "app.log"
+        monkeypatch.setenv("AUTO_CODER_FILE_LOG_LEVEL", "NOT_A_LEVEL")
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "INFO"
+
+            setup_logger(log_level="INFO", log_file=str(log_file), stream=StringIO())
+
+            get_logger(__name__).debug("debug entry")
+            get_logger(__name__).info("info entry")
+            logger.complete()
+
+        content = log_file.read_text(encoding="utf-8")
+        assert "info entry" in content
+        assert "debug entry" not in content

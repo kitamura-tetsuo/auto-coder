@@ -49,6 +49,33 @@ See [docs/client-features.yaml](docs/client-features.yaml) for complete technica
 - **Error Tracking**: Detailed error information for failed requests
 - **Easy Analysis**: Machine-readable format for parsing with `jq` or custom scripts
 
+### 🩺 Run Diagnostics (why a long run stopped)
+
+Long sessions always leave diagnostics behind in `~/.auto-coder/logs/`:
+
+| File | Contents |
+| --- | --- |
+| `auto-coder.log` | Application log, written even without `--log-file` (10 MB rotation, 14 days retention) |
+| `health-YYYY-MM-DD.jsonl` | One JSON record per minute: RSS/peak memory, system and cgroup memory, open file descriptors, threads, child processes, asyncio tasks, CPU time, plus events such as signals, stalls, restarts and exits |
+| `diagnostics-<pid>.log` | `faulthandler` output: native crashes and on-demand thread dumps |
+
+```bash
+# Summary of the last run: memory trend, peak resources and why it stopped
+auto-coder health
+
+# Dump the stacks of every thread of a running (possibly stuck) process
+kill -USR1 <pid>
+```
+
+Useful environment variables:
+
+- `AUTO_CODER_HEALTH_INTERVAL_SECONDS` (default `60`): snapshot interval
+- `AUTO_CODER_HEALTH_STALL_SECONDS` (default `3600`): report a stall and dump thread stacks when no progress is made
+- `AUTO_CODER_HEALTH_TRACEMALLOC=1`: log the top allocation sites with each snapshot to locate a memory leak
+- `AUTO_CODER_FILE_LOG_LEVEL=DEBUG`: keep a detailed on-disk trace while the console stays at `INFO`
+- `AUTO_CODER_LOG_FILE`, `AUTO_CODER_HEALTH_LOG_DIR`: change where the files are written
+- `AUTO_CODER_HEALTH_LOG_ENABLED=0`: disable health logging entirely
+
 ## Installation
 
 ### Prerequisites

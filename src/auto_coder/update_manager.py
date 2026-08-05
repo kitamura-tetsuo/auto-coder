@@ -217,6 +217,17 @@ def restart_with_startup_options(
 
     logger.info("Restarting process after auto-update: %s", " ".join(command))
 
+    # An auto-update restart replaces the process image, so record it: without
+    # this the log of a long run simply ends here with no explanation.
+    try:
+        from .health_monitor import get_health_monitor
+
+        monitor = get_health_monitor()
+        monitor.record_event("auto_update_restart", " ".join(command), f"pid={os.getpid()}")
+        monitor.log_snapshot(reason="auto_update_restart")
+    except Exception as e:  # pragma: no cover - diagnostics must never block the restart
+        logger.warning(f"Failed to record restart diagnostics: {e}")
+
     # Release the lock before restarting
     try:
         lock_manager = LockManager()
