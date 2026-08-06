@@ -12,8 +12,10 @@ For new code, prefer importing directly from the specific modules.
 
 # Re-export functions from git_branch.py (branch operations)
 from .git_branch import (
+    abort_in_progress_git_operations,
     branch_context,
     branch_exists,
+    discard_local_changes,
     extract_attempt_from_branch,
     extract_number_from_branch,
     get_all_branches,
@@ -22,6 +24,7 @@ from .git_branch import (
     git_commit_with_retry,
     git_pull,
     migrate_pr_branches,
+    reset_branch_to_remote,
     resolve_pull_conflicts,
     switch_to_branch,
     try_llm_commit_push,
@@ -62,8 +65,10 @@ __all__ = [
     "is_git_repository",
     "parse_github_repo_from_url",
     # From git_branch.py
+    "abort_in_progress_git_operations",
     "branch_context",
     "branch_exists",
+    "discard_local_changes",
     "extract_number_from_branch",
     "extract_attempt_from_branch",
     "get_all_branches",
@@ -72,6 +77,7 @@ __all__ = [
     "git_commit_with_retry",
     "git_pull",
     "migrate_pr_branches",
+    "reset_branch_to_remote",
     "resolve_pull_conflicts",
     "switch_to_branch",
     "try_llm_commit_push",

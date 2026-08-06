@@ -6,8 +6,10 @@ checking out, and validating branch names.
 """
 
 import re
+import time
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import run_llm_prompt
@@ -23,9 +25,11 @@ __all__ = [
     "CommandExecutor",
     "CommandResult",
     # Function names
+    "abort_in_progress_git_operations",
     "branch_context",
     "branch_exists",
     "detect_branch_name_conflict",
+    "discard_local_changes",
     "extract_number_from_branch",
     "extract_attempt_from_branch",
     "get_all_branches",
@@ -34,6 +38,7 @@ __all__ = [
     "git_commit_with_retry",
     "git_pull",
     "migrate_pr_branches",
+    "reset_branch_to_remote",
     "resolve_pull_conflicts",
     "switch_to_branch",
     "try_llm_commit_push",
@@ -42,6 +47,60 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
+
+# Pull failures caused by uncommitted local state that can be discarded and retried.
+_PULL_LOCAL_CHANGES_MARKERS: Tuple[str, ...] = (
+    "local changes to the following files would be overwritten",
+    "please commit your changes or stash them",
+    "untracked working tree files would be overwritten",
+    "would be overwritten by merge",
+    "would be overwritten by checkout",
+    "you have unstaged changes",
+    "cannot pull with rebase",
+    "not uptodate. cannot merge",
+    "needs merge",
+)
+
+# Pull failures caused by an unfinished git operation or a leftover lock file.
+_PULL_IN_PROGRESS_MARKERS: Tuple[str, ...] = (
+    "you have not concluded your merge",
+    "you have unmerged files",
+    "exiting because of unfinished merge",
+    "fix them up in the work tree",
+    "merge_head exists",
+    "cherry-pick is already in progress",
+    "rebase is already in progress",
+    "it seems that there is already a rebase",
+    "another git process seems to be running",
+    "index.lock",
+)
+
+# Pull failures caused by a transient network or remote-side problem.
+_PULL_TRANSIENT_MARKERS: Tuple[str, ...] = (
+    "could not resolve host",
+    "connection timed out",
+    "connection reset by peer",
+    "the remote end hung up unexpectedly",
+    "early eof",
+    "rpc failed",
+    "operation timed out",
+    "temporary failure in name resolution",
+    "ssh_exchange_identification",
+    "failed to connect",
+    "unable to access",
+)
+
+# Pull failures that require merging remote and local history.
+_PULL_CONFLICT_MARKERS: Tuple[str, ...] = (
+    "diverging branches",
+    "divergent branches",
+    "need to specify how to reconcile",
+    "not possible to fast-forward",
+    "conflict",
+)
+
+# Upper bound for the exponential backoff between pull retries (seconds).
+_PULL_MAX_BACKOFF_SECONDS = 5
 
 
 def _command_exists(command: str) -> bool:
@@ -581,8 +640,7 @@ def git_checkout_branch(
 
         if current_branch == "main":
             logger.info("Detected uncommitted changes on 'main' branch, discarding them")
-            cmd.run_command(["git", "reset", "--hard"], cwd=cwd)
-            cmd.run_command(["git", "clean", "-fd"], cwd=cwd)
+            discard_local_changes(cwd=cwd)
         else:
             logger.info("Detected uncommitted changes before checkout, committing them first")
             # Add all changes
@@ -835,24 +893,187 @@ def get_branches_by_pattern(pattern: str, cwd: Optional[str] = None, remote: boo
     return matching_branches
 
 
-def git_pull(
+def _matches_any(text: str, markers: Tuple[str, ...]) -> bool:
+    """Check whether any marker appears in the given (lowercased) text."""
+    return any(marker in text for marker in markers)
+
+
+def abort_in_progress_git_operations(cwd: Optional[str] = None) -> None:
+    """
+    Abort any in-progress merge/rebase/cherry-pick and remove a stale index lock.
+
+    Every step is best-effort: git fails when the corresponding operation is not in
+    progress, which is the normal case and not an error.
+
+    Args:
+        cwd: Optional working directory for the git commands
+    """
+    cmd = CommandExecutor()
+
+    for operation in ("merge", "rebase", "cherry-pick"):
+        result = cmd.run_command(["git", operation, "--abort"], cwd=cwd)
+        if result.success:
+            logger.info(f"Aborted in-progress git {operation}")
+
+    _remove_stale_index_lock(cwd=cwd)
+
+
+def _remove_stale_index_lock(cwd: Optional[str] = None) -> None:
+    """Remove a leftover .git/index.lock file that blocks every git write operation."""
+    cmd = CommandExecutor()
+    git_dir_result = cmd.run_command(["git", "rev-parse", "--git-dir"], cwd=cwd)
+    if not git_dir_result.success:
+        return
+
+    git_dir = Path(git_dir_result.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = Path(cwd or ".") / git_dir
+
+    lock_file = git_dir / "index.lock"
+    if not lock_file.exists():
+        return
+
+    try:
+        lock_file.unlink()
+        logger.warning(f"Removed stale git index lock: {lock_file}")
+    except OSError as e:
+        logger.warning(f"Failed to remove stale git index lock {lock_file}: {e}")
+
+
+def discard_local_changes(cwd: Optional[str] = None) -> CommandResult:
+    """
+    Discard all uncommitted local changes (tracked modifications and untracked files).
+
+    Ignored files are intentionally kept (no ``-x``) so build artifacts, virtualenvs
+    and local configuration survive.
+
+    Args:
+        cwd: Optional working directory for the git commands
+
+    Returns:
+        CommandResult describing whether the working tree could be cleaned
+    """
+    cmd = CommandExecutor()
+    logger.warning("Discarding local changes to unblock the pull")
+
+    reset_result = cmd.run_command(["git", "reset", "--hard", "HEAD"], cwd=cwd)
+    if not reset_result.success:
+        logger.warning(f"Failed to reset working tree: {reset_result.stderr}")
+
+    clean_result = cmd.run_command(["git", "clean", "-fd"], cwd=cwd)
+    if not clean_result.success:
+        logger.warning(f"Failed to clean untracked files: {clean_result.stderr}")
+
+    if reset_result.success and clean_result.success:
+        return CommandResult(
+            success=True,
+            stdout="Discarded local changes",
+            stderr="",
+            returncode=0,
+        )
+
+    return CommandResult(
+        success=False,
+        stdout="",
+        stderr=f"reset: {reset_result.stderr}\nclean: {clean_result.stderr}",
+        returncode=1,
+    )
+
+
+def reset_branch_to_remote(
     remote: str = "origin",
     branch: Optional[str] = None,
     cwd: Optional[str] = None,
 ) -> CommandResult:
     """
-    Perform git pull with comprehensive error handling and conflict resolution.
+    Force the current branch onto the remote branch, discarding all local state.
+
+    This is the last-resort recovery when a pull cannot be completed. Unpushed local
+    commits are protected: if any exist the reset is refused so work is never lost.
+
+    Args:
+        remote: Remote name (default: 'origin')
+        branch: Branch name to reset onto. If None, uses the current branch
+        cwd: Optional working directory for the git commands
+
+    Returns:
+        CommandResult with the result of the reset operation
+    """
+    cmd = CommandExecutor()
+
+    target_branch = branch or get_current_branch(cwd=cwd)
+    if not target_branch:
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr="Cannot reset to remote: current branch is unknown",
+            returncode=1,
+        )
+
+    if check_unpushed_commits(cwd=cwd, remote=remote):
+        logger.warning(f"Skipping hard reset onto {remote}/{target_branch}: branch has unpushed commits")
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr=f"Refusing to reset '{target_branch}' onto {remote}/{target_branch}: unpushed commits would be lost",
+            returncode=1,
+        )
+
+    logger.warning(f"Falling back to a hard reset onto {remote}/{target_branch}")
+
+    fetch_result = cmd.run_command(["git", "fetch", remote, target_branch], cwd=cwd)
+    if not fetch_result.success:
+        logger.error(f"Failed to fetch {remote}/{target_branch}: {fetch_result.stderr}")
+        return fetch_result
+
+    abort_in_progress_git_operations(cwd=cwd)
+
+    reset_result = cmd.run_command(["git", "reset", "--hard", "FETCH_HEAD"], cwd=cwd)
+    if not reset_result.success:
+        logger.error(f"Failed to reset onto {remote}/{target_branch}: {reset_result.stderr}")
+        return reset_result
+
+    clean_result = cmd.run_command(["git", "clean", "-fd"], cwd=cwd)
+    if not clean_result.success:
+        logger.warning(f"Failed to clean untracked files after reset: {clean_result.stderr}")
+
+    logger.info(f"Hard reset '{target_branch}' onto {remote}/{target_branch}")
+    return CommandResult(
+        success=True,
+        stdout=f"Hard reset onto {remote}/{target_branch}",
+        stderr="",
+        returncode=0,
+    )
+
+
+def git_pull(
+    remote: str = "origin",
+    branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+    discard_local: bool = True,
+    max_attempts: int = 3,
+) -> CommandResult:
+    """
+    Perform git pull with comprehensive error handling and recovery.
 
     This function centralizes git pull operations and handles various scenarios:
     - Standard pull operations
-    - Merge conflicts
-    - Diverging branches
+    - Local changes blocking the merge (discarded when ``discard_local`` is True)
+    - Leftover merge/rebase/cherry-pick state and stale index locks
+    - Transient network/remote failures (retried with a short backoff)
+    - Merge conflicts and diverging branches
     - No tracking information (new branches)
+
+    When every retry fails and ``discard_local`` is True, the branch is hard-reset onto
+    the remote branch as a last resort. That fallback is skipped when the branch has
+    unpushed commits, so committed work is never discarded.
 
     Args:
         remote: Remote name (default: 'origin')
         branch: Optional branch name. If None, uses current branch
         cwd: Optional working directory for the git command
+        discard_local: If True, uncommitted local changes may be discarded to complete the pull
+        max_attempts: Maximum number of pull attempts before falling back
 
     Returns:
         CommandResult with the result of the pull operation
@@ -873,67 +1094,92 @@ def git_pull(
             )
         target_branch = branch_result.stdout.strip()
 
-    logger.info(f"Pulling latest changes from {remote}/{target_branch}...")
-    pull_result = cmd.run_command(["git", "pull", remote, target_branch], cwd=cwd)
+    last_result: Optional[CommandResult] = None
 
-    if pull_result.success:
-        logger.info(f"Successfully pulled latest changes from {remote}/{target_branch}")
-        return pull_result
+    for attempt in range(1, max(1, max_attempts) + 1):
+        logger.info(f"Pulling latest changes from {remote}/{target_branch} (attempt {attempt}/{max_attempts})...")
+        pull_result = cmd.run_command(["git", "pull", remote, target_branch], cwd=cwd)
 
-    # Handle various error cases
-    error_msg = pull_result.stderr.lower()
+        if pull_result.success:
+            logger.info(f"Successfully pulled latest changes from {remote}/{target_branch}")
+            return pull_result
 
-    # Check if it's a "no tracking information" error (new branch)
-    if "no tracking information" in error_msg or "fatal: no such ref was fetched" in error_msg:
-        logger.warning(f"No remote tracking information for branch '{target_branch}', skipping pull")
-        # This is not a critical error for new branches
-        return CommandResult(
-            success=True,  # Treat as success for new branches
-            stdout=f"No remote tracking information for branch '{target_branch}'",
-            stderr=pull_result.stderr,
-            returncode=0,
-        )
+        last_result = pull_result
+        error_msg = f"{pull_result.stderr}\n{pull_result.stdout}".lower()
 
-    # Check if it's a "diverging branches" error
-    if "diverging branches" in error_msg or "not possible to fast-forward" in error_msg:
-        logger.info(f"Detected diverging branches for branch '{target_branch}', attempting to resolve...")
-
-        # Try to resolve pull conflicts using our conflict resolution function
-        conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
-
-        if conflict_result.success:
-            logger.info(f"Successfully resolved pull conflicts for branch '{target_branch}'")
+        # Check if it's a "no tracking information" error (new branch)
+        if "no tracking information" in error_msg or "fatal: no such ref was fetched" in error_msg:
+            logger.warning(f"No remote tracking information for branch '{target_branch}', skipping pull")
+            # This is not a critical error for new branches
             return CommandResult(
-                success=True,
-                stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
-                stderr=conflict_result.stderr,
+                success=True,  # Treat as success for new branches
+                stdout=f"No remote tracking information for branch '{target_branch}'",
+                stderr=pull_result.stderr,
                 returncode=0,
             )
-        else:
+
+        # Leftover merge/rebase/cherry-pick state or a stale index lock blocks the pull
+        if _matches_any(error_msg, _PULL_IN_PROGRESS_MARKERS):
+            logger.warning(f"Detected unfinished git operation blocking the pull: {pull_result.stderr.strip()}")
+            abort_in_progress_git_operations(cwd=cwd)
+            if discard_local:
+                discard_local_changes(cwd=cwd)
+            continue
+
+        # Local modifications would be overwritten by the merge
+        if _matches_any(error_msg, _PULL_LOCAL_CHANGES_MARKERS):
+            if not discard_local:
+                logger.error(f"Local changes block the pull and discarding is disabled: {pull_result.stderr.strip()}")
+                return pull_result
+            logger.warning(f"Local changes block the pull from {remote}/{target_branch}, discarding them")
+            discard_local_changes(cwd=cwd)
+            continue
+
+        # Transient network/remote failures: retry as-is with a short backoff
+        if _matches_any(error_msg, _PULL_TRANSIENT_MARKERS):
+            if attempt >= max_attempts:
+                logger.error(f"Pull kept failing with a transient error: {pull_result.stderr.strip()}")
+                return pull_result
+            backoff = min(2 ** (attempt - 1), _PULL_MAX_BACKOFF_SECONDS)
+            logger.warning(f"Transient error while pulling, retrying in {backoff}s: {pull_result.stderr.strip()}")
+            time.sleep(backoff)
+            continue
+
+        # Diverging branches or merge conflicts: delegate to the conflict resolver
+        if _matches_any(error_msg, _PULL_CONFLICT_MARKERS):
+            logger.info(f"Detected diverging branches or conflicts for '{target_branch}', attempting to resolve...")
+            conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+
+            if conflict_result.success:
+                logger.info(f"Successfully resolved pull conflicts for branch '{target_branch}'")
+                return CommandResult(
+                    success=True,
+                    stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
+                    stderr=conflict_result.stderr,
+                    returncode=0,
+                )
+
             logger.warning(f"Failed to resolve pull conflicts for branch '{target_branch}': {conflict_result.stderr}")
-            # Return the conflict resolution result
-            return conflict_result
+            last_result = conflict_result
+            if not discard_local:
+                return conflict_result
+            break
 
-    # Check for merge conflicts during pull
-    if "conflict" in error_msg or "merge conflict" in error_msg:
-        logger.info(f"Detected merge conflicts during pull, attempting to resolve...")
-        conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+        # Unknown error: no targeted remediation available
+        logger.warning(f"Pull failed with an unhandled error: {pull_result.stderr.strip()}")
+        break
 
-        if conflict_result.success:
-            logger.info(f"Successfully resolved pull conflicts")
-            return CommandResult(
-                success=True,
-                stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
-                stderr=conflict_result.stderr,
-                returncode=0,
-            )
-        else:
-            logger.warning(f"Failed to resolve pull conflicts: {conflict_result.stderr}")
-            return conflict_result
+    # Last resort: force the branch onto the remote state
+    if discard_local:
+        fallback_result = reset_branch_to_remote(remote=remote, branch=target_branch, cwd=cwd)
+        if fallback_result.success:
+            logger.info(f"Recovered from pull failure by resetting onto {remote}/{target_branch}")
+            return fallback_result
+        logger.error(f"Hard reset fallback failed: {fallback_result.stderr}")
 
-    # Other errors
-    logger.error(f"Failed to pull latest changes: {pull_result.stderr}")
-    return pull_result
+    assert last_result is not None
+    logger.error(f"Failed to pull latest changes: {last_result.stderr}")
+    return last_result
 
 
 def resolve_pull_conflicts(cwd: Optional[str] = None, merge_method: str = "merge") -> CommandResult:

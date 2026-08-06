@@ -1375,7 +1375,7 @@ class TestGitCheckoutBranch:
             assert calls[1][0][0] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
 
             # 3. Reset hard
-            assert calls[2][0][0] == ["git", "reset", "--hard"]
+            assert calls[2][0][0] == ["git", "reset", "--hard", "HEAD"]
 
             # 4. Clean
             assert calls[3][0][0] == ["git", "clean", "-fd"]
