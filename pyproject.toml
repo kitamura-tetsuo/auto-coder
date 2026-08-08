@@ -44,7 +44,7 @@ dependencies = [
     # GhApi.__init__ still calls -- see gh_cache.py's get_ghapi_client() comment.
     "fastcore>=1.7.2,<2.0.0",
     "aider-chat>=0.1.0",
-    "rapidfuzz>=3.0.0",
+    "rapidfuzz>=3.14.5",
     "PyGithub>=2.0.0",
     "fastapi>=0.128.0",
     "uvicorn>=0.38.0",
