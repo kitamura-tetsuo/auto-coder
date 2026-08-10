@@ -14,11 +14,15 @@ import pytest
 from auto_coder.attempt_manager import (
     ATTEMPT_COMMENT_PREFIX,
     AttemptInfo,
+    build_pr_attempt_trigger,
+    extract_attempt_number,
+    extract_attempt_trigger,
     extract_attempts_from_comments,
     filter_attempts_by_status,
     format_attempt_comment,
     get_current_attempt,
     get_latest_attempt,
+    get_latest_attempt_trigger,
     group_attempts_by_status,
     increment_attempt,
     parse_attempt_from_comment,
@@ -981,3 +985,159 @@ class TestExtractAttemptFromBranch:
         """Test new underscore format."""
         branch_name = "issue-123_attempt-1"
         assert extract_attempt_from_branch(branch_name) == 1
+
+
+class TestAttemptTriggerDeduplication:
+    """Attempt increments are deduplicated per trigger.
+
+    A PR that keeps failing on the same commit must not bump the attempt counter
+    on every automation cycle.
+    """
+
+    def test_build_pr_attempt_trigger_includes_head_sha(self):
+        assert build_pr_attempt_trigger(4809, "0123456789abcdef0123") == "pr-4809-0123456789ab"
+
+    def test_build_pr_attempt_trigger_without_head_sha(self):
+        assert build_pr_attempt_trigger(4809) == "pr-4809"
+        assert build_pr_attempt_trigger(4809, "") == "pr-4809"
+
+    def test_build_pr_attempt_trigger_has_no_whitespace(self):
+        """The trigger is stored inline in a comment, so it must stay a single token."""
+        assert re.search(r"\s", build_pr_attempt_trigger(4809, "abcdef123456")) is None
+
+    def test_extract_attempt_trigger_from_comment(self):
+        body = f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456"
+        assert extract_attempt_trigger(body) == "pr-4809-abcdef123456"
+
+    def test_extract_attempt_trigger_missing(self):
+        assert extract_attempt_trigger(f"{ATTEMPT_COMMENT_PREFIX}29") is None
+        assert extract_attempt_trigger("") is None
+
+    def test_attempt_number_still_parsed_when_trigger_present(self):
+        """The trigger suffix must not break attempt number parsing."""
+        body = f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456"
+        assert extract_attempt_number(body) == 29
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_get_latest_attempt_trigger_returns_last_attempt_marker(self, mock_github_client):
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = [
+            {"body": f"{ATTEMPT_COMMENT_PREFIX}28 | trigger=pr-4809-oldsha000000"},
+            {"body": f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456"},
+            {"body": "Regular comment posted afterwards"},
+        ]
+        mock_github_client.get_instance.return_value = mock_client
+
+        assert get_latest_attempt_trigger("owner/repo", 4787) == "pr-4809-abcdef123456"
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_get_latest_attempt_trigger_without_attempt_comments(self, mock_github_client):
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = [{"body": "Regular comment"}]
+        mock_github_client.get_instance.return_value = mock_client
+
+        assert get_latest_attempt_trigger("owner/repo", 4787) is None
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_increment_attempt_records_trigger_in_comment(self, mock_github_client):
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = [{"body": f"{ATTEMPT_COMMENT_PREFIX}28"}]
+        mock_client.get_issue.return_value = {"state": "open"}
+        mock_client.get_all_sub_issues.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 4787, trigger="pr-4809-abcdef123456")
+
+        assert result == 29
+        mock_client.add_comment_to_issue.assert_called_once_with(
+            "owner/repo",
+            4787,
+            f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456",
+        )
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_increment_attempt_skips_repeated_trigger(self, mock_github_client):
+        """The same failing PR state must not create a second attempt comment."""
+        comments = [{"body": f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456"}]
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = comments
+        mock_client.get_issue.return_value = {"state": "open"}
+        mock_client.get_all_sub_issues.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 4787, trigger="pr-4809-abcdef123456")
+
+        assert result == 29
+        mock_client.add_comment_to_issue.assert_not_called()
+        mock_client.get_all_sub_issues.assert_not_called()
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_increment_attempt_proceeds_for_new_trigger(self, mock_github_client):
+        """A new PR commit is a different trigger and must increment the attempt."""
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = [{"body": f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456"}]
+        mock_client.get_issue.return_value = {"state": "open"}
+        mock_client.get_all_sub_issues.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 4787, trigger="pr-4809-fedcba654321")
+
+        assert result == 30
+        mock_client.add_comment_to_issue.assert_called_once_with(
+            "owner/repo",
+            4787,
+            f"{ATTEMPT_COMMENT_PREFIX}30 | trigger=pr-4809-fedcba654321",
+        )
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_increment_attempt_without_trigger_is_not_deduplicated(self, mock_github_client):
+        """Callers that do not pass a trigger keep the previous unconditional behaviour."""
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = [{"body": f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456"}]
+        mock_client.get_issue.return_value = {"state": "open"}
+        mock_client.get_all_sub_issues.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 4787)
+
+        assert result == 30
+        mock_client.add_comment_to_issue.assert_called_once_with("owner/repo", 4787, f"{ATTEMPT_COMMENT_PREFIX}30")
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_increment_attempt_repeated_cycles_post_single_comment(self, mock_github_client):
+        """Five identical failure cycles produce exactly one attempt comment."""
+        posted: list = []
+
+        mock_client = Mock()
+        mock_client.get_issue_comments.side_effect = lambda repo, num: [{"body": body} for body in posted]
+        mock_client.add_comment_to_issue.side_effect = lambda repo, num, body: posted.append(body)
+        mock_client.get_issue.return_value = {"state": "open"}
+        mock_client.get_all_sub_issues.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
+
+        posted.append(f"{ATTEMPT_COMMENT_PREFIX}28")
+
+        results = [increment_attempt("owner/repo", 4787, trigger="pr-4809-abcdef123456") for _ in range(5)]
+
+        assert results == [29, 29, 29, 29, 29]
+        assert posted == [
+            f"{ATTEMPT_COMMENT_PREFIX}28",
+            f"{ATTEMPT_COMMENT_PREFIX}29 | trigger=pr-4809-abcdef123456",
+        ]
+
+    @patch("auto_coder.util.gh_cache.GitHubClient")
+    def test_increment_attempt_propagates_trigger_to_sub_issues(self, mock_github_client):
+        mock_client = Mock()
+        mock_client.get_issue_comments.return_value = []
+        mock_client.get_issue.return_value = {"state": "open"}
+        mock_client.get_all_sub_issues.side_effect = lambda repo, num: [456] if num == 123 else []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 123, trigger="pr-77-aaaaaaaaaaaa")
+
+        assert result == 1
+        parent_call, sub_call = mock_client.add_comment_to_issue.call_args_list
+        assert parent_call[0][1] == 123
+        assert parent_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}1 | trigger=pr-77-aaaaaaaaaaaa"
+        assert sub_call[0][1] == 456
+        assert sub_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}1 | trigger=pr-77-aaaaaaaaaaaa"
