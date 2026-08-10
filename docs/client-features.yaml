@@ -536,6 +536,12 @@ Recent configuration schema changes that require migration:
     tracking:
       - "Attempts are recorded as standardized comments 'Auto-Coder Attempt: <N>' with an optional detail suffix."
       - "get_current_attempt reads the latest attempt number from those comments (legacy timestamped comments stay compatible)."
+      - "Comments are read with full pagination (100 per page), so attempt numbers stay correct on issues with more than one page of comments."
+    deduplication:
+      - "PR-driven increments carry a trigger marker 'trigger=pr-<number>-<head sha (12 chars)>' in the attempt comment."
+      - "increment_attempt skips the increment when the latest attempt comment already records the same trigger, so a PR that keeps failing on the same commit bumps the counter only once."
+      - "New commits on the PR produce a new trigger and therefore a new attempt; sub-issue propagation inherits the parent trigger."
+      - "Callers that pass no trigger (e.g. Jules timeout handling, which runs once per closed PR) keep incrementing unconditionally."
     branching:
       - "Work branches follow issue-<number> for the first pass and issue-<number>/attempt-<N> for subsequent passes; parent branches cascade to sub-issues."
       - "When the local branch is behind the recorded attempt, Auto-Coder switches or recreates the correct attempt branch before continuing work."
@@ -544,7 +550,7 @@ Recent configuration schema changes that require migration:
       - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
       - "Jules PRs that still have failing CI more than [jules].pr_ci_timeout_hours (default 12) after PR creation are closed, and the attempt counter of the linked issue is incremented so the issue is retried from scratch."
       - "Jules sessions that do not open a PR within [jules].issue_pr_timeout_hours (default 12) are stopped, the attempt counter of the issue is incremented, and the issue is implemented by the backend_with_high_score backend instead."
-      - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
+      - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge, deduplicated by the PR head commit."
       - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
       - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."
     propagation:

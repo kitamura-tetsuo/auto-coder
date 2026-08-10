@@ -18,6 +18,9 @@ from ..logger_config import get_logger
 
 logger = get_logger(__name__)
 
+# Safety bound for paginated comment listings (100 comments per page).
+COMMENTS_MAX_PAGES = 50
+
 _local_storage = threading.local()
 
 
@@ -741,6 +744,7 @@ class GitHubClient:
             "url": get(pr, "html_url"),
             "author": get(user, "login") if user else None,
             "head_branch": get(head, "ref"),
+            "head_sha": get(head, "sha"),
             "base_branch": get(base, "ref"),
             "mergeable": get(pr, "mergeable"),
             "draft": get(pr, "draft"),
@@ -1267,23 +1271,39 @@ class GitHubClient:
         return self.get_issue_comments(repo_name, pr_number)
 
     def get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
-        """Get all comments for an issue (or PR conversation)."""
+        """Get all comments for an issue (or PR conversation).
+
+        Every page is fetched: the REST API returns at most `per_page` comments per
+        request, so a single call would silently truncate long conversations and make
+        callers (e.g. attempt tracking) read a stale state.
+        """
         try:
             owner, repo = repo_name.split("/")
             api = get_ghapi_client(self.token)
 
-            # api.issues.list_comments(owner, repo, issue_number)
-            comments = api.issues.list_comments(owner, repo, issue_number)
-
+            per_page = 100
             result = []
-            for comment in comments:
-                user = comment.get("user")
-                created_at = comment.get("created_at")
-                # GhApi returns strings for dates, pass through
-                if hasattr(created_at, "isoformat"):
-                    created_at = created_at.isoformat()
+            page = 1
+            while page <= COMMENTS_MAX_PAGES:
+                comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
+                if not comments:
+                    break
 
-                result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
+                for comment in comments:
+                    user = comment.get("user")
+                    created_at = comment.get("created_at")
+                    # GhApi returns strings for dates, pass through
+                    if hasattr(created_at, "isoformat"):
+                        created_at = created_at.isoformat()
+
+                    result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
+
+                if len(comments) < per_page:
+                    break
+                page += 1
+            else:
+                logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
+
             return result
         except Exception as e:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")

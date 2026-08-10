@@ -2,7 +2,13 @@ import json
 from unittest.mock import MagicMock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.conflict_resolver import _extract_session_id_from_pr_body, _perform_base_branch_merge_and_conflict_resolution, check_mergeability_with_llm
+from src.auto_coder.conflict_resolver import (
+    _extract_session_id_from_pr_body,
+    _perform_base_branch_merge_and_conflict_resolution,
+    _trigger_fallback_for_conflict_failure,
+    check_mergeability_with_llm,
+    resolve_merge_conflicts_with_llm,
+)
 from src.auto_coder.utils import CommandResult
 
 
@@ -316,3 +322,74 @@ def test_check_mergeability_uses_llm_for_human_pr():
         assert check_mergeability_with_llm(pr_data, "conflict in src/app.py", config) is True
 
         mock_llm.assert_called_once()
+
+
+def test_trigger_fallback_keys_attempt_on_pr_head_commit():
+    """The attempt increment carries a trigger derived from the PR head commit.
+
+    Without it, a PR whose conflict resolution keeps failing bumps the attempt
+    counter of its linked issue on every automation cycle.
+    """
+    with (
+        patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
+        patch("src.auto_coder.conflict_resolver.GitHubClient") as mock_gh_client_class,
+        patch("src.auto_coder.conflict_resolver.increment_attempt") as mock_increment,
+    ):
+        mock_cmd.run_command.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
+
+        mock_client = MagicMock()
+        mock_gh_client_class.get_instance.return_value = mock_client
+        mock_client.get_pr_details.return_value = {
+            "number": 4809,
+            "body": "close #4787",
+            "head_sha": "abcdef1234567890abcdef",
+        }
+        mock_client.get_issue.return_value = {"number": 4787, "state": "open"}
+
+        _trigger_fallback_for_conflict_failure("owner/repo", 4809, "Failed to commit conflict resolution")
+
+        mock_increment.assert_called_once_with("owner/repo", 4787, trigger="pr-4809-abcdef123456")
+
+
+def test_trigger_fallback_without_head_sha_falls_back_to_pr_number():
+    with (
+        patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
+        patch("src.auto_coder.conflict_resolver.GitHubClient") as mock_gh_client_class,
+        patch("src.auto_coder.conflict_resolver.increment_attempt") as mock_increment,
+    ):
+        mock_cmd.run_command.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
+
+        mock_client = MagicMock()
+        mock_gh_client_class.get_instance.return_value = mock_client
+        mock_client.get_pr_details.return_value = {"number": 4809, "body": "close #4787"}
+        mock_client.get_issue.return_value = {"number": 4787, "state": "open"}
+
+        _trigger_fallback_for_conflict_failure("owner/repo", 4809, "Failed to commit conflict resolution")
+
+        mock_increment.assert_called_once_with("owner/repo", 4787, trigger="pr-4809")
+
+
+def test_resolve_merge_conflicts_commit_message_uses_pr_number():
+    """The commit message must contain the PR number, not the whole PR payload."""
+    config = AutomationConfig()
+    pr_data = {"number": 4809, "title": "fix: something", "body": "close #4787", "base_branch": "main"}
+
+    with (
+        patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
+        patch("src.auto_coder.conflict_resolver.GitHubClient"),
+        patch("src.auto_coder.conflict_resolver.get_commit_log", return_value="log"),
+        patch("src.auto_coder.conflict_resolver.create_high_score_backend_manager", return_value=None),
+        patch("src.auto_coder.conflict_resolver.run_llm_prompt", return_value="resolved"),
+        patch("src.auto_coder.conflict_resolver.scan_conflict_markers", return_value=[]),
+        patch("src.auto_coder.conflict_resolver.git_commit_with_retry") as mock_commit,
+        patch("src.auto_coder.conflict_resolver.git_push") as mock_push,
+    ):
+        mock_cmd.run_command.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
+        mock_commit.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
+        mock_push.return_value = CommandResult(True, stdout="", stderr="", returncode=0)
+
+        actions = resolve_merge_conflicts_with_llm(pr_data, "conflict info", config, "owner/repo")
+
+        mock_commit.assert_called_once_with("Resolve merge conflicts for PR #4809")
+        assert "Committed resolved merge for PR #4809" in actions
+        assert "Pushed resolved merge for PR #4809" in actions

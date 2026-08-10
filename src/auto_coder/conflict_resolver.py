@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
 
-from .attempt_manager import increment_attempt
+from .attempt_manager import build_pr_attempt_trigger, increment_attempt
 from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
@@ -96,10 +96,12 @@ def _trigger_fallback_for_conflict_failure(
         cmd.run_command(["git", "merge", "--abort"])
 
         # Get PR body to extract linked issues
+        head_sha = ""
         if repo_name:
             client = GitHubClient.get_instance()
             pr_data = client.get_pr_details(client.get_pull_request(repo_name, pr_number))
             pr_body = pr_data.get("body", "")
+            head_sha = pr_data.get("head_sha") or ""
         else:
             pr_body = ""
 
@@ -120,6 +122,10 @@ def _trigger_fallback_for_conflict_failure(
 
         client = GitHubClient.get_instance()
 
+        # Identify this failure by the PR state it was observed on, so that a PR that
+        # keeps failing without receiving new commits only bumps the attempt once.
+        trigger = build_pr_attempt_trigger(pr_number, head_sha)
+
         for issue_number in related_issues:
             try:
                 # Check if the issue is closed and reopen it
@@ -131,7 +137,7 @@ def _trigger_fallback_for_conflict_failure(
                     client.reopen_issue(repo_name, issue_number, reopen_comment)
 
                 logger.info(f"Incrementing attempt for issue #{issue_number} due to PR #{pr_number} conflict resolution failure: {failure_reason}")
-                increment_attempt(repo_name, issue_number)
+                increment_attempt(repo_name, issue_number, trigger=trigger)
             except Exception as e:
                 logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
                 # Continue with other issues even if one fails
@@ -277,6 +283,8 @@ def resolve_merge_conflicts_with_llm(
     actions: List[str] = []
 
     try:
+        pr_number = pr_data.get("number", 0)
+
         # Get commit log since branch creation
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
         commit_log = get_commit_log(base_branch=base_branch)
@@ -294,7 +302,7 @@ def resolve_merge_conflicts_with_llm(
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
-            pr_number=pr_data.get("number", "unknown"),
+            pr_number=pr_number,
             pr_title=pr_data.get("title", "Unknown"),
             pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
@@ -303,11 +311,11 @@ def resolve_merge_conflicts_with_llm(
         )
         logger.debug(
             "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",
-            pr_data.get("number", "unknown"),
+            pr_number,
             prompt[:160].replace("\n", " "),
         )
 
-        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data}")
+        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_number}")
 
         # Call LLM to resolve conflicts
         high_score_backend_manager = create_high_score_backend_manager()
@@ -332,31 +340,31 @@ def resolve_merge_conflicts_with_llm(
             if flagged:
                 actions.append(f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing")
                 # Trigger fallback due to unresolved conflict markers
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "LLM left unresolved conflict markers")
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "LLM left unresolved conflict markers")
                 return actions
 
             # Commit via helper and push
-            commit_res = git_commit_with_retry(f"Resolve merge conflicts for PR #{pr_data}")
+            commit_res = git_commit_with_retry(f"Resolve merge conflicts for PR #{pr_number}")
             if commit_res.success:
-                actions.append(f"Committed resolved merge for PR #{pr_data}")
+                actions.append(f"Committed resolved merge for PR #{pr_number}")
             else:
                 actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
                 # Trigger fallback due to commit failure
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "Failed to commit conflict resolution")
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "Failed to commit conflict resolution")
                 return actions
 
             push_res = git_push()
             if push_res.success:
-                actions.append(f"Pushed resolved merge for PR #{pr_data}")
+                actions.append(f"Pushed resolved merge for PR #{pr_number}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
                 actions.append(f"Failed to push resolved merge: {push_res.stderr}")
                 # Trigger fallback due to push failure
-                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "Failed to push conflict resolution")
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "Failed to push conflict resolution")
         else:
             actions.append("LLM did not provide a clear response for merge conflict resolution")
             # Trigger fallback due to no LLM response
-            _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "LLM provided no response for conflict resolution")
+            _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "LLM provided no response for conflict resolution")
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts with LLM: {e}")

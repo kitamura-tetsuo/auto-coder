@@ -22,7 +22,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
-from .attempt_manager import get_current_attempt, increment_attempt
+from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult, StaleJulesPRResult
 from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
@@ -862,11 +862,15 @@ def _trigger_fallback_for_pr_failure(
             logger.debug(f"No linked issues found in PR #{pr_data['number']} body")
             return
 
+        # Identify this failure by the PR state it was observed on, so that a PR that
+        # keeps failing without receiving new commits only bumps the attempt once.
+        trigger = build_pr_attempt_trigger(pr_data["number"], pr_data.get("head_sha") or (pr_data.get("head") or {}).get("sha"))
+
         # Increment attempt for each linked issue
         for issue_number in linked_issues:
             try:
                 logger.info(f"Incrementing attempt for issue #{issue_number} due to PR #{pr_data['number']} failure: {failure_reason}")
-                increment_attempt(repo_name, issue_number)
+                increment_attempt(repo_name, issue_number, trigger=trigger)
             except Exception as e:
                 logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
                 # Continue with other issues even if one fails

@@ -31,6 +31,11 @@ ATTEMPT_COMMENT_PATTERN = re.compile(
 _ATTEMPT_NUMBER_PREFIX_PATTERN = re.compile(rf"{re.escape(ATTEMPT_COMMENT_PREFIX)}\s*(\d+)(?:\s*$|\s*\|)", re.IGNORECASE)
 _ATTEMPT_NUMBER_DETAILS_PATTERN = re.compile(r"attempt\s*#?\s*(\d+)", re.IGNORECASE)
 
+ATTEMPT_TRIGGER_PREFIX = "trigger="
+"""Detail marker identifying what caused an attempt, used to avoid repeated increments."""
+
+_ATTEMPT_TRIGGER_PATTERN = re.compile(rf"{re.escape(ATTEMPT_TRIGGER_PREFIX)}(\S+)")
+
 
 @dataclass
 class AttemptInfo:
@@ -137,6 +142,22 @@ def extract_attempt_number(comment_body: str) -> Optional[int]:
         except ValueError:
             return None
     return None
+
+
+def extract_attempt_trigger(comment_body: str) -> Optional[str]:
+    """Extract the trigger marker from an attempt comment body.
+
+    Args:
+        comment_body: The body of the GitHub comment
+
+    Returns:
+        The trigger identifier, or None when the comment carries no marker
+    """
+    if not comment_body:
+        return None
+
+    match = _ATTEMPT_TRIGGER_PATTERN.search(comment_body)
+    return match.group(1) if match else None
 
 
 def parse_attempt_from_comment(comment_body: str, created_at: Optional[Union[str, datetime]] = None) -> Optional[AttemptInfo]:
@@ -305,26 +326,91 @@ def get_current_attempt(repo_name: str, issue_number: int) -> int:
         return 0
 
 
-def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optional[int] = None) -> int:
+def build_pr_attempt_trigger(pr_number: int, head_sha: Optional[str] = None) -> str:
+    """Build the trigger identifier for an attempt caused by a PR failure.
+
+    The identifier includes the PR head commit so that a PR failing repeatedly on
+    the same commit is recognised as the same trigger, while new commits on the PR
+    produce a new trigger and therefore a new attempt.
+
+    Args:
+        pr_number: PR number that failed
+        head_sha: Optional head commit SHA of the PR
+
+    Returns:
+        Trigger identifier string (no whitespace)
+    """
+    sha_suffix = f"-{head_sha[:12]}" if head_sha else ""
+    return f"pr-{pr_number}{sha_suffix}"
+
+
+def get_latest_attempt_trigger(repo_name: str, issue_number: int) -> Optional[str]:
+    """Get the trigger marker of the most recent attempt comment on an issue.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        issue_number: Issue number to inspect
+
+    Returns:
+        The trigger identifier of the latest attempt comment, or None when the
+        issue has no attempt comment or the latest one carries no marker
+    """
+    from .util.gh_cache import GitHubClient
+
+    try:
+        client = GitHubClient.get_instance()
+        comments = client.get_issue_comments(repo_name, issue_number)
+
+        # Comments come back in chronological order; the last attempt comment wins.
+        for comment in reversed(list(comments)):
+            body = comment.get("body", "") or ""
+            if extract_attempt_number(body) is None:
+                continue
+            return extract_attempt_trigger(body)
+
+        return None
+
+    except Exception as e:
+        logger.error(f"Failed to get latest attempt trigger for issue #{issue_number}: {e}")
+        return None
+
+
+def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optional[int] = None, trigger: Optional[str] = None) -> int:
     """Increment the attempt count for an issue.
 
     Gets the current attempt count, increments by 1, and posts a new comment
     with the new attempt number. If the issue has sub-issues, propagates the
     attempt increment to all sub-issues and reopens any closed sub-issues.
 
+    When ``trigger`` is given, the increment is skipped if the latest attempt
+    comment was already recorded for the same trigger. Without this guard a
+    repeatedly failing PR bumps the counter on every automation cycle even
+    though nothing changed since the previous failure.
+
     Args:
         repo_name: Repository name in format 'owner/repo'
         issue_number: Issue number to increment attempt for
         attempt_number: Optional specific attempt number to use instead of auto-incrementing
+        trigger: Optional identifier of what caused this increment, used for deduplication
 
     Returns:
-        The new attempt number after incrementing
+        The new attempt number after incrementing (the unchanged current attempt
+        when the increment was skipped as a duplicate)
     """
     from .util.gh_cache import GitHubClient
 
     try:
         # Get current attempt
         current_attempt = get_current_attempt(repo_name, issue_number)
+
+        # Skip repeated increments coming from an unchanged trigger.
+        # Propagated sub-issue increments pass an explicit attempt_number and are
+        # already guarded by the parent, so they are never deduplicated here.
+        if trigger and attempt_number is None and current_attempt > 0:
+            latest_trigger = get_latest_attempt_trigger(repo_name, issue_number)
+            if latest_trigger == trigger:
+                logger.info(f"Skipping attempt increment for issue #{issue_number}: attempt {current_attempt} was already recorded for trigger '{trigger}'")
+                return current_attempt
 
         # Use provided attempt_number if available, otherwise increment
         if attempt_number is not None:
@@ -333,7 +419,7 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
             new_attempt = current_attempt + 1
 
         # Create comment with new attempt number
-        comment_body = format_attempt_comment(new_attempt)
+        comment_body = format_attempt_comment(new_attempt, details=f"{ATTEMPT_TRIGGER_PREFIX}{trigger}" if trigger else None)
 
         # Add comment to the issue
         client = GitHubClient.get_instance()
@@ -358,7 +444,7 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
                         client.reopen_issue(repo_name, sub_issue_number, reopen_comment)
 
                     # Increment attempt for the sub-issue
-                    increment_attempt(repo_name, sub_issue_number, attempt_number=new_attempt)
+                    increment_attempt(repo_name, sub_issue_number, attempt_number=new_attempt, trigger=trigger)
 
                 except Exception as e:
                     logger.error(f"Failed to propagate attempt to sub-issue #{sub_issue_number}: {e}")
