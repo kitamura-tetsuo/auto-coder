@@ -1368,13 +1368,18 @@ def _handle_pr_merge(
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
             return actions
 
-        # Step 5: Process PR in Jules mode if it's not a Jules PR
+        # Step 5: Skip to process PR if it is dependabot PR
+        if _is_dependabot_pr(pr_data):
+            actions.append(f"PR #{pr_number} is a dependabot PR, skipping fixes")
+            return actions
+
+        # Step 6: Process PR in normal mode if it's not a Jules PR
         if not _is_jules_pr(pr_data):
             jules_mode_actions = _process_pr_jules_mode(repo_name, pr_data, config, github_client)
             actions.extend(jules_mode_actions)
             return actions
 
-        # Step 6: Checkout PR branch for non-Jules PRs
+        # Step 7: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
 
         # Prepare branch (ensure fetched)
@@ -1386,7 +1391,7 @@ def _handle_pr_merge(
         with BranchManager(pr_branch_name) as manager:
             actions.append(f"Checked out PR #{pr_number} branch")
 
-            # Step 7: Optionally update with latest base branch commits (configurable)
+            # Step 8: Optionally update with latest base branch commits (configurable)
             if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
                 actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
                 get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
@@ -1405,7 +1410,7 @@ def _handle_pr_merge(
                 update_actions = _update_with_base_branch(repo_name, pr_data, config)
                 actions.extend(update_actions)
 
-                # Step 8: Check for special cases from base branch update
+                # Step 9: Check for special cases from base branch update
 
                 # Check if LLM determined merge would degrade code quality
                 if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
@@ -1429,7 +1434,7 @@ def _handle_pr_merge(
                     get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
                     return actions
 
-                # Step 9: If no main branch updates were needed, the test failures are due to PR content
+                # Step 10: If no main branch updates were needed, the test failures are due to PR content
                 # Get GitHub Actions error logs and ask Gemini to fix
                 if any("up to date with" in action for action in update_actions):
                     actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
