@@ -126,9 +126,8 @@ class AutomationEngine:
 
         # Check closed branch once at start (as per original run method)
         if not await asyncio.to_thread(self._check_and_handle_closed_branch, repo_name):
-            logger.info("Closed item handled on startup, exiting producer")
-            get_health_monitor().record_event("producer_exit", "closed item handled on startup", repo_name)
-            return
+            logger.info("Closed item handled on startup, continuing to producer loop")
+            get_health_monitor().record_event("producer_startup", "closed item handled on startup", repo_name)
 
         iteration = 0
         while True:
