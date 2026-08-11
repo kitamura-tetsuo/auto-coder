@@ -299,6 +299,27 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         return []
 
 
+def _auto_approve_waiting_deployments(repo_name: str, run_id: int) -> None:
+    """Automatically approve pending deployments for a workflow run."""
+    try:
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+
+        logger.info(f"Checking for pending deployments for run {run_id}")
+        pending = api.actions.get_pending_deployments_for_run(owner, repo, run_id)
+        if not pending:
+            return
+
+        env_ids = [env["environment"]["id"] for env in pending]
+        if env_ids:
+            logger.info(f"Approving deployments for environment IDs: {env_ids}")
+            api.actions.review_pending_deployments_for_run(owner, repo, run_id, environment_ids=env_ids, state="approved", comment="Auto-approved by Auto-Coder")
+            logger.info(f"Successfully approved deployments for run {run_id}.")
+    except Exception as e:
+        logger.warning(f"Failed to auto-approve deployment for run {run_id}: {e}")
+
+
 @progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
     """Check GitHub Actions status for a PR.
@@ -419,6 +440,15 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 checks.append({"name": name, "state": "completed", "conclusion": "failure"})
                 failed_checks.append({"name": name, "conclusion": "failure", "details_url": url})
             elif status in ["in_progress", "queued", "pending", "waiting"]:
+                if status == "waiting" and url and "/actions/runs/" in url:
+                    try:
+                        import re
+
+                        match = re.search(r"/actions/runs/(\d+)", url)
+                        if match:
+                            _auto_approve_waiting_deployments(repo_name, int(match.group(1)))
+                    except Exception as e:
+                        logger.warning(f"Error during auto-approve: {e}")
                 has_in_progress = True
                 all_passed = False
                 checks.append({"name": name, "state": "pending", "conclusion": "pending"})
@@ -677,7 +707,15 @@ def _check_github_actions_status_from_history(
         logger.info(f"Found {len(latest_commit_runs)} runs matching latest commit {latest_commit_sha[:8]}")
 
         # 5. Determine overall status and count potential checks (without detailed checks)
-        has_in_progress = any((run.get("status") or "").lower() in ["in_progress", "queued", "pending"] for run in latest_commit_runs)
+        has_in_progress = False
+        for run in latest_commit_runs:
+            status = (run.get("status") or "").lower()
+            if status in ["in_progress", "queued", "pending", "waiting"]:
+                has_in_progress = True
+                if status == "waiting":
+                    rid = run.get("id")
+                    if rid:
+                        _auto_approve_waiting_deployments(repo_name, int(rid))
 
         any_failed = any((run.get("conclusion") or "").lower() in ["failure", "failed", "error"] for run in latest_commit_runs)
 
@@ -1828,6 +1866,10 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
                 elif status in ["in_progress", "queued", "pending", "waiting"]:
                     has_in_progress = True
                     all_passed = False
+                    if status == "waiting":
+                        rid = run.get("id") or run.get("databaseId")
+                        if rid:
+                            _auto_approve_waiting_deployments(repo_name, int(rid))
 
             run_ids = list(set(run_ids))
 
