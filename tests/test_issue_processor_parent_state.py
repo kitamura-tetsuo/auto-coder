@@ -93,7 +93,7 @@ def test_apply_issue_actions_directly_open_parent(mock_cmd_executor_class, mock_
                 found_parent_check = True
                 break
 
-    assert found_parent_check, "Should have checked for parent branch issue-101"
+    assert not found_parent_check, "Should NOT have checked for parent branch issue-101"
 
 
 @patch("auto_coder.issue_processor.cmd")
@@ -158,7 +158,7 @@ def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_cl
                 found_parent_check = True
                 break
 
-    assert found_parent_check, "Should have checked for parent branch issue-102 after reopening"
+    assert not found_parent_check, "Should NOT have checked for parent branch issue-102 after reopening"
 
 
 @patch("auto_coder.issue_processor.cmd")
@@ -169,7 +169,7 @@ def test_apply_issue_actions_directly_closed_parent_reopens(mock_cmd_executor_cl
 @patch("auto_coder.issue_processor.get_commit_log")
 @patch("auto_coder.issue_processor.get_llm_backend_manager")
 @patch("auto_coder.git_info.CommandExecutor")
-def test_apply_issue_actions_directly_failed_reopen_still_checks_parent_branch(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_get_commit_log, mock_get_current_branch, mock_label_manager, mock_branch_manager, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
+def test_apply_issue_actions_directly_failed_reopen_no_parent_branch_check(mock_cmd_executor_class, mock_get_llm_backend_manager, mock_get_commit_log, mock_get_current_branch, mock_label_manager, mock_branch_manager, mock_get_current_attempt, mock_cmd, mock_github_client, mock_config):
     # Setup
     repo_name = "owner/repo"
     issue_data = {"number": 126, "title": "Test Issue Closed Parent Failed Reopen", "body": "Body", "labels": []}
@@ -226,4 +226,4 @@ def test_apply_issue_actions_directly_failed_reopen_still_checks_parent_branch(m
                 found_parent_check = True
                 break
 
-    assert found_parent_check, "Should have checked for parent branch issue-103 even when reopening failed"
+    assert not found_parent_check, "Should NOT have checked for parent branch issue-103 even when reopening failed"

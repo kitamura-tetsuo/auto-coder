@@ -482,58 +482,6 @@ def _process_issue_jules_mode(
             # Call hook to ensure parent issue is open
             ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
 
-            # If parent issue exists, use parent issue branch as base for Jules session
-            # Check if parent issue has attempts and use the appropriate parent branch
-            parent_attempt = get_current_attempt(repo_name, parent_issue_number)
-            if parent_attempt > 0:
-                parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
-            else:
-                parent_branch = f"issue-{parent_issue_number}"
-
-            logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base for Jules session")
-
-            # Check if parent issue branch exists
-            check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
-            if check_parent_branch.returncode == 0:
-                base_branch = parent_branch
-            else:
-                # Check if branch exists on remote
-                check_remote = cmd.run_command(["git", "ls-remote", "--exit-code", "--heads", "origin", parent_branch])
-
-                if check_remote.returncode == 0:
-                    # Exists on remote but not locally
-                    logger.info(f"Parent branch {parent_branch} exists on remote but not locally. Using it as base.")
-                    base_branch = parent_branch
-                else:
-                    # Doesn't exist on remote either - create and push it
-                    logger.info(f"Parent branch {parent_branch} does not exist locally or on remote. Creating it from {config.MAIN_BRANCH}...")
-
-                    # Fetch to ensure we have the latest
-                    cmd.run_command(["git", "fetch", "origin", config.MAIN_BRANCH])
-
-                    # Create branch locally (without checkout)
-                    create_result = cmd.run_command(["git", "branch", parent_branch, config.MAIN_BRANCH])
-                    if not create_result.success:
-                        logger.error(f"Failed to create parent branch {parent_branch}: {create_result.stderr}")
-                        # Still try to use it as base, though it will likely fail later if it doesn't exist
-                        base_branch = parent_branch
-                    else:
-                        local_hash = cmd.run_command(["git", "rev-parse", parent_branch]).stdout.strip()
-                        remote_hash = cmd.run_command(["git", "rev-parse", f"origin/{config.MAIN_BRANCH}"]).stdout.strip()
-                        if local_hash != remote_hash:
-                            error_msg = f"Branch {parent_branch} diverged from origin/{config.MAIN_BRANCH} after creation."
-                            logger.error(error_msg)
-                            raise RuntimeError(error_msg)
-
-                        # Push to remote
-                        push_result = cmd.run_command(["git", "push", "-u", "origin", parent_branch])
-                        if not push_result.success:
-                            logger.warning(f"Failed to push parent branch {parent_branch}: {push_result.stderr}")
-                        else:
-                            logger.info(f"Successfully created and pushed parent branch {parent_branch}")
-
-                        base_branch = parent_branch
-
         # Start Jules session
         session_title = f"{issue_title} (#{issue_number})"
         session_id = jules_client.start_session(action_prompt, repo_name, base_branch, title=session_title)
@@ -962,7 +910,7 @@ def _apply_issue_actions_directly(
             owns the label and must keep it in place.
     """
     issue_number = issue_data.get("number", "unknown")
-    actions = []
+    actions: List[str] = []
 
     try:
         # Set progress item at the start
@@ -1019,50 +967,6 @@ def _apply_issue_actions_directly(
                 parent_issue_number = parent_issue_details["number"]
                 # Call hook to ensure parent issue is open
                 ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
-
-                # If parent issue exists, use parent issue branch as base
-                # Check if parent issue has attempts and use the appropriate parent branch
-                parent_attempt = get_current_attempt(repo_name, parent_issue_number)
-                if parent_attempt > 0:
-                    parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
-                else:
-                    parent_branch = f"issue-{parent_issue_number}"
-                logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
-
-                # Check if parent issue branch exists
-                check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
-
-                if check_parent_branch.returncode == 0:
-                    # Use parent issue branch if it exists
-                    base_branch = parent_branch
-                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
-                    logger.info(f"Parent branch {parent_branch} exists, using it as base")
-                else:
-                    # Create parent issue branch if it doesn't exist
-                    logger.info(f"Parent branch {parent_branch} does not exist, creating it")
-
-                    # The parent issue HAS sub-issues (since the current issue is its sub-issue)
-                    logger.info(f"Parent issue #{parent_issue_number} has sub-issues. Discarding local changes and pulling {config.MAIN_BRANCH} before creating branch.")
-                    cmd.run_command(["git", "fetch", "origin", config.MAIN_BRANCH])
-                    cmd.run_command(["git", "reset", "--hard", "HEAD"])
-                    cmd.run_command(["git", "clean", "-fd"])
-                    cmd.run_command(["git", "checkout", config.MAIN_BRANCH])
-                    cmd.run_command(["git", "pull", "origin", config.MAIN_BRANCH])
-
-                    # Create parent issue branch from the configured main branch (automatically pushed to remote)
-                    with BranchManager(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
-                        local_hash = cmd.run_command(["git", "rev-parse", "HEAD"]).stdout.strip()
-                        remote_hash = cmd.run_command(["git", "rev-parse", f"origin/{config.MAIN_BRANCH}"]).stdout.strip()
-                        if local_hash != remote_hash:
-                            error_msg = f"Branch {parent_branch} diverged from origin/{config.MAIN_BRANCH} after creation."
-                            logger.error(error_msg)
-                            raise RuntimeError(error_msg)
-
-                        actions.append(f"Created and published parent branch: {parent_branch}")
-                        logger.info(f"Successfully created and published parent branch: {parent_branch}")
-
-                    base_branch = parent_branch
-                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
 
             # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])
