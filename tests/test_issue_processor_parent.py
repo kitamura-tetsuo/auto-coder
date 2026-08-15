@@ -1,22 +1,16 @@
 """Tests for parent issue processing functionality - simplified test cases."""
 
-from unittest.mock import MagicMock, Mock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_processor import _create_pr_for_parent_issue, _take_issue_actions
+from src.auto_coder.issue_processor import _take_issue_actions
 
 
 class TestParentIssueProcessing:
-    """Test cases for parent issue processing as specified in issue #960."""
+    """Test cases for parent issue processing."""
 
-    def test_issue_with_open_sub_issues_skipped(self):
-        """Test that an issue with open sub-issues is skipped (existing behavior).
-
-        An issue should NOT be processed as a parent issue if it has open sub-issues.
-        This verifies the existing behavior where parent processing is deferred.
-        """
+    def test_issue_with_open_sub_issues_handled(self):
+        """Test that an issue with open sub-issues is processed via _apply_issue_actions_directly."""
         repo_name = "owner/repo"
         issue_number = 100
         issue_data = {
@@ -38,18 +32,14 @@ class TestParentIssueProcessing:
 
             result = _take_issue_actions(repo_name, issue_data, config, github_client)
 
-            # Should call _apply_issue_actions_directly, NOT _process_parent_issue
-            # This verifies the existing behavior is maintained
             mock_apply_actions.assert_called_once()
             assert "Processed issue with open sub-issues" in result
 
-    def test_issue_with_closed_sub_issues_triggers_parent_processing(self):
-        """Test that an issue with closed sub-issues and no parent triggers parent processing.
+    def test_issue_with_closed_sub_issues_triggers_direct_processing(self):
+        """Test that a parent issue with all sub-issues closed triggers _apply_issue_actions_directly.
 
-        An issue should be detected as a parent issue when:
-        1. It has sub-issues
-        2. It has no parent itself
-        3. All sub-issues are closed
+        Sub-issues are merged directly into main. When processing the parent issue,
+        it should be analyzed and verified via _apply_issue_actions_directly.
         """
         repo_name = "owner/repo"
         issue_number = 200
@@ -67,71 +57,27 @@ class TestParentIssueProcessing:
         github_client.get_parent_issue_details.return_value = None
         github_client.get_open_sub_issues.return_value = []  # All closed
 
-        with patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr:
-            mock_create_pr.return_value = "Successfully created PR for parent issue"
+        with patch("src.auto_coder.issue_processor._apply_issue_actions_directly") as mock_apply_actions:
+            mock_apply_actions.return_value = ["Processed parent issue verification"]
 
             result = _take_issue_actions(repo_name, issue_data, config, github_client)
 
-            # Should call _create_pr_for_parent_issue directly
-            mock_create_pr.assert_called_once()
-            assert "Successfully created PR for parent issue" in result
-
-    @patch("src.auto_coder.issue_processor.cmd")
-    @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_pr_creation_on_success_verification(self, mock_gh_logger, mock_cmd):
-        """Test that PR is successfully created when verification succeeds.
-
-        This test verifies the PR creation flow specifically when all conditions are met:
-        1. Parent issue is detected
-        2. All sub-issues are closed
-        3. backend_for_noedit verification passes
-        4. PR is created to document the completion
-        """
-        repo_name = "owner/repo"
-        issue_number = 500
-        issue_data = {
-            "number": issue_number,
-            "title": "Complete Feature Implementation",
-            "body": "Parent issue for feature with multiple sub-tasks",
-        }
-        config = AutomationConfig()
-        summary = "All sub-issues completed successfully"
-        reasoning = "Both sub-issues merged, all requirements verified"
-
-        # Mock GitHub client - needs to return issue 500 as closing issue
-        github_client = MagicMock()
-        github_client.get_pr_closing_issues.return_value = [500]  # PR is linked to issue 500
-        github_client.find_pr_by_head_branch.return_value = None  # No existing PR for this branch
-        github_client.token = "fake-token"  # Required for GhApi
-
-        # Mock git commands - branch exists (no changes to commit)
-        mock_cmd.run_command.side_effect = [
-            MagicMock(returncode=0, stdout=""),  # Branch check (exists)
-            MagicMock(returncode=0, stdout=""),  # Switch to branch
-            MagicMock(returncode=0, stdout=""),  # Git status (no changes)
-            MagicMock(returncode=0),  # Test if completion file exists (doesn't)
-        ]
-
-        # Mock get_ghapi_client for PR creation
-        mock_api = MagicMock()
-        mock_api.pulls.create.return_value = {"number": 500, "html_url": f"https://github.com/{repo_name}/pull/{issue_number}"}
-        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
-            result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
-
-        # Verify PR was created successfully
-        assert "Successfully created PR for parent issue" in result
-        assert str(issue_number) in result
-        assert "Complete parent issue #500: Complete Feature Implementation" in result
-
-        # Verify the PR linkage check was called
-        github_client.get_pr_closing_issues.assert_called_once()
+            mock_apply_actions.assert_called_once_with(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+                backend_manager=None,
+                check_labels=None,
+            )
+            assert "Processed parent issue verification" in result
 
 
 class TestParentIssueEdgeCases:
     """Additional edge case tests for parent issue processing."""
 
     def test_issue_with_no_sub_issues_not_processed_as_parent(self):
-        """Test that an issue with no sub-issues is not processed as parent."""
+        """Test that an issue with no sub-issues is processed as regular issue."""
         repo_name = "owner/repo"
         issue_number = 600
         issue_data = {
@@ -153,7 +99,6 @@ class TestParentIssueEdgeCases:
 
             result = _take_issue_actions(repo_name, issue_data, config, github_client)
 
-            # Should be processed as regular issue, not parent
             mock_apply_actions.assert_called_once()
             assert "Processed regular issue" in result
 
@@ -180,6 +125,5 @@ class TestParentIssueEdgeCases:
 
             result = _take_issue_actions(repo_name, issue_data, config, github_client)
 
-            # Should be processed as regular issue, not parent
             mock_apply_actions.assert_called_once()
             assert "Processed child issue" in result

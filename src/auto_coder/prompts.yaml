@@ -505,6 +505,17 @@ issue:
     - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
 
     $endif
+    $if(has_sub_issues)
+    PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+    This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+    $sub_issues_summary
+
+    PARENT ISSUE INSTRUCTIONS:
+    - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+    - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+    - Ensure all tests pass.
+
+    $endif
     Issue Labels: $issue_labels
     Issue State: $issue_state
     Created by: $issue_author
@@ -580,6 +591,17 @@ issue:
     - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
 
     $endif
+    $if(has_sub_issues)
+    PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+    This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+    $sub_issues_summary
+
+    PARENT ISSUE INSTRUCTIONS:
+    - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+    - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+    - Ensure all tests pass.
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
@@ -633,6 +655,17 @@ issue:
     - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
     - Changes should align with parent goals but only implement the specific requirements of this sub-issue
     - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
+    $if(has_sub_issues)
+    PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+    This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+    $sub_issues_summary
+
+    PARENT ISSUE INSTRUCTIONS:
+    - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+    - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+    - Ensure all tests pass.
 
     $endif
     Commit History Since Branch Creation:
@@ -705,6 +738,17 @@ issue:
     - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
     - Changes should align with parent goals but only implement the specific requirements of this sub-issue
     - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
+    $if(has_sub_issues)
+    PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+    This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+    $sub_issues_summary
+
+    PARENT ISSUE INSTRUCTIONS:
+    - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+    - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+    - Ensure all tests pass.
 
     $endif
     Commit History Since Branch Creation:
@@ -782,6 +826,17 @@ issue:
     - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
 
     $endif
+    $if(has_sub_issues)
+    PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+    This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+    $sub_issues_summary
+
+    PARENT ISSUE INSTRUCTIONS:
+    - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+    - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+    - Ensure all tests pass.
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
@@ -856,6 +911,17 @@ issue:
     - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
     - Changes should align with parent goals but only implement the specific requirements of this sub-issue
     - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
+    $if(has_sub_issues)
+    PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+    This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+    $sub_issues_summary
+
+    PARENT ISSUE INSTRUCTIONS:
+    - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+    - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+    - Ensure all tests pass.
 
     $endif
     Commit History Since Branch Creation:
@@ -1231,6 +1297,17 @@ jules:
       - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
       - Changes should align with parent goals but only implement the specific requirements of this sub-issue
       - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+      $endif
+      $if(has_sub_issues)
+      PARENT ISSUE CONTEXT (SUB-ISSUES MERGED TO $main_branch):
+      This issue is a parent issue with the following sub-issues that were directly merged into $main_branch:
+      $sub_issues_summary
+
+      PARENT ISSUE INSTRUCTIONS:
+      - Verify that the codebase on $main_branch satisfies what the group of sub-issues was intended to implement (run tests and inspect the implementation).
+      - If this main issue has any additional implementation requirements or content not covered by the sub-issues, implement them.
+      - Ensure all tests pass.
 
       $endif
       Issue Labels: $issue_labels

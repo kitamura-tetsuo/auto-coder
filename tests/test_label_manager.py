@@ -1139,7 +1139,6 @@ class TestLabelManagerProcessorIntegration:
 
         # Mock all the dependencies to prevent hanging
         with (
-            patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr,
             patch("src.auto_coder.issue_processor.cmd.run_command") as mock_run_command,
             patch("src.auto_coder.issue_processor.get_current_attempt") as mock_get_attempt,
             patch("src.auto_coder.issue_processor.get_current_branch") as mock_get_branch,
@@ -1152,7 +1151,6 @@ class TestLabelManagerProcessorIntegration:
             patch("src.auto_coder.issue_processor.ProgressStage") as mock_stage,
         ):
 
-            mock_create_pr.return_value = "Successfully created PR"
             mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
             mock_get_attempt.return_value = 0
             mock_get_branch.return_value = "main"
@@ -1201,7 +1199,6 @@ class TestLabelManagerProcessorIntegration:
         config.llm.run_code.return_value = "Failed to create PR"
 
         with (
-            patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr,
             patch("src.auto_coder.issue_processor.cmd.run_command") as mock_run_command,
             patch("src.auto_coder.issue_processor.get_current_attempt") as mock_get_attempt,
             patch("src.auto_coder.issue_processor.get_current_branch") as mock_get_branch,
@@ -1217,7 +1214,6 @@ class TestLabelManagerProcessorIntegration:
             # Mock get_parent_issue_details on the github_client
             mock_github_client.get_parent_issue_details.return_value = None
 
-            mock_create_pr.return_value = "Failed to create PR"
             mock_run_command.return_value = CommandResult(success=True, stdout="main", stderr="", returncode=0)
             mock_get_attempt.return_value = 0
             mock_get_branch.return_value = "main"
