@@ -128,3 +128,20 @@ class TestClaudeRoutineClient:
             assert client.add_mcp_server_config("test", "cmd", []) is False
 
             client.close()
+
+    def test_fire_routine_raises_usage_limit_error(self, mock_backend_config):
+        """Test fire_routine raises AutoCoderUsageLimitError when usage limit is low."""
+        from auto_coder.exceptions import AutoCoderUsageLimitError
+
+        with patch("auto_coder.claude_routine_client.get_llm_config", return_value=mock_backend_config):
+            client = ClaudeRoutineClient("claude-opus-routine")
+
+            with patch(
+                "auto_coder.claude_routine_client.check_claude_usage_or_raise",
+                side_effect=AutoCoderUsageLimitError("5-hour limit remaining 15.0% <= threshold 20.0%"),
+            ) as mock_check:
+                with pytest.raises(AutoCoderUsageLimitError) as exc_info:
+                    client.fire_routine("Test prompt")
+
+                assert "5-hour limit remaining 15.0%" in str(exc_info.value)
+                mock_check.assert_called_once_with(token="test-routine-token", backend_name="claude-opus-routine")

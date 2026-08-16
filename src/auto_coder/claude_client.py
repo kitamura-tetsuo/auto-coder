@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from .claude_usage_checker import check_claude_usage_or_raise
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
@@ -116,13 +117,14 @@ class ClaudeClient(LLMClientBase):
 
         # If backend_name is provided, get config from that backend
         if backend_name:
+            self.backend_name = backend_name
             self.config_backend = config.get_backend_config(backend_name)
             self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
-            self.api_key = self.config_backend and self.config_backend.api_key
-            self.base_url = self.config_backend and self.config_backend.base_url
-            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
-            self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
-            self.claude_code_oauth_token = self.config_backend and self.config_backend.claude_code_oauth_token
+            self.api_key = self.config_backend.api_key if self.config_backend else None
+            self.base_url = self.config_backend.base_url if self.config_backend else None
+            self.openai_api_key = self.config_backend.openai_api_key if self.config_backend else None
+            self.openai_base_url = self.config_backend.openai_base_url if self.config_backend else None
+            self.claude_code_oauth_token: Optional[str] = self.config_backend.claude_code_oauth_token if self.config_backend else None
             if self.config_backend:
                 self.settings = self.config_backend.settings
             else:
@@ -135,13 +137,14 @@ class ClaudeClient(LLMClientBase):
             self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         else:
             # Fall back to default claude config
+            self.backend_name = "claude"
             self.config_backend = config.get_backend_config("claude")
             self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
-            self.api_key = self.config_backend and self.config_backend.api_key
-            self.base_url = self.config_backend and self.config_backend.base_url
-            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
-            self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
-            self.claude_code_oauth_token = self.config_backend and self.config_backend.claude_code_oauth_token
+            self.api_key = self.config_backend.api_key if self.config_backend else None
+            self.base_url = self.config_backend.base_url if self.config_backend else None
+            self.openai_api_key = self.config_backend.openai_api_key if self.config_backend else None
+            self.openai_base_url = self.config_backend.openai_base_url if self.config_backend else None
+            self.claude_code_oauth_token = self.config_backend.claude_code_oauth_token if self.config_backend else None
             if self.config_backend:
                 self.settings = self.config_backend.settings
             else:
@@ -228,6 +231,10 @@ class ClaudeClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run claude CLI with the given prompt and show real-time output."""
+        check_claude_usage_or_raise(
+            token=self.claude_code_oauth_token,
+            backend_name=getattr(self, "backend_name", "claude"),
+        )
         try:
             escaped_prompt = self._escape_prompt(prompt)
 

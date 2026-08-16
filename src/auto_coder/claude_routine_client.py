@@ -14,6 +14,7 @@ import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
+from .claude_usage_checker import check_claude_usage_or_raise
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
@@ -92,6 +93,8 @@ class ClaudeRoutineClient(LLMClientBase):
         Returns:
             Tuple of (session_id, session_url)
         """
+        check_claude_usage_or_raise(token=self.token, backend_name=self.backend_name)
+
         if not self.url:
             raise ValueError(f"No URL configured for Claude Routine backend '{self.backend_name}'. " "Please configure 'url' in llm_config.toml.")
 

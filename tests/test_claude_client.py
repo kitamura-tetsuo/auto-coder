@@ -1191,6 +1191,36 @@ class TestClaudeClientSessionExtraction:
         client._extract_and_store_session_id(output)
         assert client.get_last_session_id() is None
 
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_run_llm_cli_raises_usage_limit_error(self, mock_run, mock_get_config):
+        """Test that _run_llm_cli raises AutoCoderUsageLimitError when usage limit pre-check fails."""
+        from auto_coder.exceptions import AutoCoderUsageLimitError
+
+        mock_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "opus"
+        mock_backend.claude_code_oauth_token = "tok-123"
+        mock_backend.options = []
+        mock_backend.options_for_noedit = []
+        mock_backend.usage_markers = []
+        mock_backend.validate_required_options.return_value = []
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient(backend_name="claude-opus")
+
+        with patch(
+            "src.auto_coder.claude_client.check_claude_usage_or_raise",
+            side_effect=AutoCoderUsageLimitError("5-hour limit remaining 12.0% <= threshold 20.0%"),
+        ) as mock_check:
+            with pytest.raises(AutoCoderUsageLimitError) as exc_info:
+                client._run_llm_cli("Test prompt")
+
+            assert "5-hour limit remaining 12.0%" in str(exc_info.value)
+            mock_check.assert_called_once_with(token="tok-123", backend_name="claude-opus")
+
 
 class TestClaudeConfigRestore:
     """Test cases for restoring a missing claude CLI configuration file."""

@@ -70,9 +70,10 @@ class TestHighScoreCloudBackendConfig:
 class TestDifficultIssueHandling:
     """Test handling and routing of issues with the 'difficult' label."""
 
+    @patch("auto_coder.issue_processor.get_commit_log", return_value="feat: initial commit")
     @patch("auto_coder.claude_routine_client.ClaudeRoutineClient")
     @patch("auto_coder.issue_processor.CloudManager")
-    def test_process_issue_claude_routine_mode(self, mock_cloud_mgr_cls, mock_routine_client_cls):
+    def test_process_issue_claude_routine_mode(self, mock_cloud_mgr_cls, mock_routine_client_cls, mock_get_commit_log):
         """Test _process_issue_claude_routine_mode fires routine and records session."""
         mock_routine_client = MagicMock()
         mock_routine_client.fire_routine.return_value = ("session_999", "https://claude.ai/code/session_999")

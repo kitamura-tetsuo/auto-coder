@@ -107,6 +107,19 @@ The system supports extensive backend configuration options. Key fields include:
     - Subsequent pull requests opened by Claude routines are tracked and linked to the issue.
   - Configuration file: "~/.auto-coder/llm_config.toml"
 
+- **Claude / Claude-Routine Usage Quota Pre-Check & Failover**:
+  - Purpose: Automatically checks remaining rate limit and usage allowances before calling Claude or Claude-Routine backends.
+  - Trigger & Thresholds:
+    - 5-hour rolling session limit has **<= 20% remaining** (utilization >= 80%), OR
+    - 7-day weekly limit has **<= 5% remaining** (utilization >= 95%)
+  - Behavior:
+    - Queries `https://api.anthropic.com/api/oauth/usage` before invoking the LLM CLI or firing a routine.
+    - If remaining quota is at or below the threshold, raises `AutoCoderUsageLimitError` with the reset timestamp.
+    - Seamlessly triggers standard `BackendManager` rotation to the next backend in the configured order or defers until reset.
+    - Automatically discovers OAuth tokens from backend configuration (`claude_code_oauth_token`, `claude_code_routine_token`), environment variables, or `~/.claude/.credentials.json`.
+    - Handles token refreshing on HTTP 401 using stored refresh tokens.
+  - Supported Backends: `backend_type = "claude"`, `backend_type = "claude-routine"`
+
 - **`options` field**: CLI options for code editing operations
   - Purpose: Pass additional command-line arguments to backend CLIs when performing code editing operations
   - Type: List[str]
