@@ -1785,6 +1785,14 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         logger.debug(f"Found session ID pattern 3 (Jules Session URL): {session_id}")
         return session_id
 
+    # Pattern 3a: Look for Claude Routine session URLs (e.g., https://claude.ai/code/session_01HJKLMNOPQRSTUVWXYZ)
+    claude_session_url_pattern = r"claude\.ai/code/([a-zA-Z0-9-_]+)"
+    match = re.search(claude_session_url_pattern, pr_body)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 3a (Claude Session URL): {session_id}")
+        return session_id
+
     # Pattern 3b: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
     # This pattern matches the full URL and extracts it as the session ID
     github_url_pattern = r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+"
@@ -1960,22 +1968,22 @@ def _update_jules_pr_body(
 
 
 def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
-    """Check if a PR is created by Jules (google-labs-jules).
+    """Check if a PR is created by Jules (google-labs-jules) or cloud coding routine.
 
     Args:
         pr_data: PR data dictionary
 
     Returns:
-        True if the PR is created by Jules, False otherwise
+        True if the PR is created by Jules or cloud routine, False otherwise
     """
     # Check author first
     pr_author = get_pr_author_login(pr_data) or ""
-    if pr_author.startswith("google-labs-jules"):
+    if pr_author.startswith("google-labs-jules") or pr_author.startswith("claude"):
         return True
 
     # Fallback: Check if PR body contains a valid session ID
     # This handles cases where the PR was created by a different user (e.g. manual creation)
-    # but is still associated with a Jules session
+    # but is still associated with a Jules or Claude session
     pr_body = pr_data.get("body", "") or ""
     if _extract_session_id_from_pr_body(pr_body):
         return True

@@ -275,6 +275,8 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_claude_cli_or_fail()
         elif backend_name == "aider":
             check_aider_cli_or_fail()
+        elif backend_name in ("jules", "claude-routine"):
+            pass  # Cloud/API based, no local CLI binary needed
         else:
             # Check if it's a custom backend with backend_type
             backend_config = config.get_backend_config(backend_name)
@@ -282,7 +284,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
                 # Recursively check the backend_type
                 check_backend_prerequisites([backend_config.backend_type])
             else:
-                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude) " f"or configure backend_type in llm_config.toml")
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
@@ -388,8 +390,14 @@ def build_backend_manager(
             use_noedit_options=use_noedit_options,
         )
 
+    def _create_claude_routine_client(backend_name: str, use_noedit_options: bool = False) -> Any:
+        """Create a ClaudeRoutineClient."""
+        from .claude_routine_client import ClaudeRoutineClient
+
+        return ClaudeRoutineClient(backend_name=backend_name)
+
     # Mapping of backend types to factory functions
-    backend_type_factories = {
+    backend_type_factories: Dict[str, Callable[..., Any]] = {
         "qwen": _create_qwen_client,
         "antigravity": _create_gemini_client,
         "claude": _create_claude_client,
@@ -397,13 +405,14 @@ def build_backend_manager(
         "codex": _create_codex_client,
         "codex-mcp": _create_codex_mcp_client,
         "aider": _create_aider_client,
+        "claude-routine": _create_claude_routine_client,
     }
 
     # Build factory dictionary with support for aliases
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "claude", "aider"]:
+        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "claude", "aider", "claude-routine"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
@@ -419,6 +428,8 @@ def build_backend_manager(
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_client, backend_name))
             elif backend_name == "aider":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_aider_client, backend_name))
+            elif backend_name == "claude-routine":
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_routine_client, backend_name))
         else:
             backend_config = config.get_backend_config(backend_name)
             if backend_config:
@@ -734,4 +745,54 @@ def create_high_score_backend_manager() -> Optional[BackendManager]:
 
         logger = get_logger(__name__)
         logger.error(f"Failed to create backend manager for high score backend: {e}")
+        return None
+
+
+def create_high_score_cloud_backend_manager() -> Optional[BackendManager]:
+    """Create a BackendManager for the backend_with_high_score_cloud configuration.
+
+    Returns:
+        BackendManager instance if backend_with_high_score_cloud is configured, None otherwise.
+    """
+    config = get_llm_config()
+
+    # Check for order first
+    high_score_cloud_order = config.backend_with_high_score_cloud_order
+    high_score_cloud_config = config.get_backend_with_high_score_cloud()
+
+    if not high_score_cloud_order and not high_score_cloud_config:
+        return None
+
+    # If order is present, use it
+    if high_score_cloud_order:
+        selected_backends = high_score_cloud_order
+        primary_backend = high_score_cloud_order[0]
+
+        # Build models map for these backends
+        models = {}
+        for backend_name in selected_backends:
+            models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+
+    else:
+        # Fallback to single backend config
+        assert high_score_cloud_config is not None
+        backend_name = high_score_cloud_config.name
+        selected_backends = [backend_name]
+        primary_backend = backend_name
+
+        # Determine model: use configured model or fallback to name
+        model = high_score_cloud_config.model or backend_name
+        models = {backend_name: model}
+
+    try:
+        return build_backend_manager(
+            selected_backends=selected_backends,
+            primary_backend=primary_backend,
+            models=models,
+        )
+    except Exception as e:
+        from .logger_config import get_logger
+
+        logger = get_logger(__name__)
+        logger.error(f"Failed to create backend manager for high score cloud backend: {e}")
         return None

@@ -972,11 +972,34 @@ class AutomationEngine:
                     except Exception as e:
                         logger.warning(f"Failed to check for sub-issues for #{item_number}: {e}")
 
+                    # Check if issue has difficult label
+                    is_difficult = False
+                    if candidate.data:
+                        raw_labels = candidate.data.get("labels", [])
+                        for label in raw_labels:
+                            lname = label.get("name", "") if isinstance(label, dict) else str(label)
+                            if lname.strip().lower() == "difficult":
+                                is_difficult = True
+                                break
+
                     if has_sub_issues:
                         logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing to ensure branch merging.")
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode (Parent Issue)", item_type="issue", item_number=item_number, details={"mode": "parent_local"})
                         # Force local processing for parent issues
                         result.actions = self._take_issue_actions(repo_name, candidate.data)
+                    elif is_difficult:
+                        # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
+                        logger.info(f"Issue #{item_number} has 'difficult' label. Delegating to backend_with_high_score_cloud.")
+                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to High Score Cloud Backend (difficult label)", item_type="issue", item_number=item_number, details={"mode": "high_score_cloud"})
+                        from .issue_processor import _process_issue_high_score_cloud
+
+                        result.actions = _process_issue_high_score_cloud(
+                            repo_name,
+                            candidate.data,
+                            config,
+                            self.github,
+                            label_context=should_process,
+                        )
                     elif jules_mode:
                         # Use Jules mode for issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Jules Mode", item_type="issue", item_number=item_number, details={"mode": "jules"})

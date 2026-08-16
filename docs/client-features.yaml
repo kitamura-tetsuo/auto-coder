@@ -87,6 +87,26 @@ The system supports extensive backend configuration options. Key fields include:
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Only used when automatic fallback is desired
 
+- **backend_with_high_score_cloud**: Cloud backend configuration with high score (e.g., for difficult issues)
+  - Purpose: Automatically delegates difficult issues to high-scoring cloud coding agents (like Claude Routine or Jules)
+  - Trigger: When an issue has the `difficult` label, the system skips Jules mode and delegates directly to `backend_with_high_score_cloud`
+  - Configuration section: `[backend_with_high_score_cloud]` in the TOML config file
+  - Example:
+    ```toml
+    [backend_with_high_score_cloud]
+    order = ["claude-opus-routine"]
+
+    [backends.claude-opus-routine]
+    backend_type = "claude-routine"
+    url = "https://api.anthropic.com/v1/claude_code/routines/trig_01WSZRQzV8M7sWXAoTGQf2sn/fire"
+    claude_code_routine_token = "sk-ant-oat01-..."
+    ```
+  - Behavior:
+    - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.
+    - Saves the returned session ID in `cloud.csv`, comments on the issue with the session link, and retains the `@auto-coder` label.
+    - Subsequent pull requests opened by Claude routines are tracked and linked to the issue.
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+
 - **`options` field**: CLI options for code editing operations
   - Purpose: Pass additional command-line arguments to backend CLIs when performing code editing operations
   - Type: List[str]

@@ -79,6 +79,9 @@ class BackendConfig:
     openrouter_base_url: Optional[str] = None
     # For Claude Code CLI authentication
     claude_code_oauth_token: Optional[str] = None
+    # For Claude Routine authentication and URL
+    claude_code_routine_token: Optional[str] = None
+    url: Optional[str] = None
     # For custom configurations
     extra_args: Dict[str, str] = field(default_factory=dict)
     # List of provider names available for this backend
@@ -195,6 +198,9 @@ class LLMBackendConfiguration:
     # Fallback backend configuration for failed PRs
     backend_with_high_score: Optional[BackendConfig] = None
     backend_with_high_score_order: List[str] = field(default_factory=list)
+    # Cloud backend configuration with high score (e.g., for difficult issues)
+    backend_with_high_score_cloud: Optional[BackendConfig] = None
+    backend_with_high_score_cloud_order: List[str] = field(default_factory=list)
     # Environment variable overrides
     env_prefix: str = "AUTO_CODER_"
     # Configuration file path - relative to user's home directory
@@ -290,6 +296,8 @@ class LLMBackendConfiguration:
                 openrouter_api_key=config_data.get("openrouter_api_key"),
                 openrouter_base_url=config_data.get("openrouter_base_url"),
                 claude_code_oauth_token=config_data.get("claude_code_oauth_token"),
+                claude_code_routine_token=config_data.get("claude_code_routine_token"),
+                url=config_data.get("url"),
                 extra_args=config_data.get("extra_args", {}),
                 providers=config_data.get("providers", []),
                 usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
@@ -320,7 +328,25 @@ class LLMBackendConfiguration:
         def is_potential_backend_config(d: dict) -> bool:
             # Heuristic: if it has specific backend keys, it's likely a config
             # We check for keys that are commonly used in backend definitions
-            common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "openrouter_api_key", "openrouter_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_noedit", "options_for_resume"}
+            common_keys = {
+                "backend_type",
+                "model",
+                "api_key",
+                "base_url",
+                "url",
+                "claude_code_routine_token",
+                "openai_api_key",
+                "openai_base_url",
+                "openrouter_api_key",
+                "openrouter_base_url",
+                "providers",
+                "model_provider",
+                "always_switch_after_execution",
+                "settings",
+                "options",
+                "options_for_noedit",
+                "options_for_resume",
+            }
             # Also check if 'enabled' is present, but it's very common so we combine it
             # with the fact that we are looking for backends.
             # If a dict has 'enabled' and is in the top-level (or nested from top-level),
@@ -350,7 +376,7 @@ class LLMBackendConfiguration:
                 find_backends_recursive(value, full_key)
 
         # Exclude reserved top-level keys from recursion
-        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score"}
+        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score", "backend_with_high_score_cloud"}
 
         # Create a dict of potential top-level backends to recurse
         potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
@@ -425,6 +451,16 @@ class LLMBackendConfiguration:
             fallback_name = backend_with_high_score_data.get("name", "backend_with_high_score")
             backend_with_high_score = parse_backend_config(fallback_name, backend_with_high_score_data)
 
+        # Parse backend_with_high_score_cloud section
+        backend_with_high_score_cloud_data = data.get("backend_with_high_score_cloud", {})
+        backend_with_high_score_cloud = None
+        backend_with_high_score_cloud_order = []
+
+        if backend_with_high_score_cloud_data:
+            backend_with_high_score_cloud_order = backend_with_high_score_cloud_data.get("order", [])
+            fallback_name = backend_with_high_score_cloud_data.get("name", "backend_with_high_score_cloud")
+            backend_with_high_score_cloud = parse_backend_config(fallback_name, backend_with_high_score_cloud_data)
+
         config = cls(
             backend_order=backend_order,
             default_backend=default_backend,
@@ -433,6 +469,8 @@ class LLMBackendConfiguration:
             backend_for_noedit_default=backend_for_noedit_default,
             backend_with_high_score=backend_with_high_score,
             backend_with_high_score_order=backend_with_high_score_order,
+            backend_with_high_score_cloud=backend_with_high_score_cloud,
+            backend_with_high_score_cloud_order=backend_with_high_score_cloud_order,
             config_file_path=config_path or "~/.auto-coder/llm_config.toml",
         )
 
@@ -463,6 +501,8 @@ class LLMBackendConfiguration:
                 "openrouter_api_key": config.openrouter_api_key,
                 "openrouter_base_url": config.openrouter_base_url,
                 "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -498,6 +538,8 @@ class LLMBackendConfiguration:
                 "openrouter_api_key": config.openrouter_api_key,
                 "openrouter_base_url": config.openrouter_base_url,
                 "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -515,11 +557,54 @@ class LLMBackendConfiguration:
             }
             backend_with_high_score_data = {k: v for k, v in raw_config.items() if v is not None}
 
+        # Prepare backend_with_high_score_cloud data
+        backend_with_high_score_cloud_data = {}
+        if self.backend_with_high_score_cloud:
+            config = self.backend_with_high_score_cloud
+            raw_config = {
+                "name": config.name,
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
+                "extra_args": config.extra_args,
+                "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "options_for_noedit": config.options_for_noedit,
+                "options_for_resume": config.options_for_resume,
+                "backend_type": config.backend_type,
+                "model_provider": config.model_provider,
+                "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
+                "usage_markers": config.usage_markers,
+                "options_explicitly_set": config.options_explicitly_set,
+                "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
+            }
+            backend_with_high_score_cloud_data = {k: v for k, v in raw_config.items() if v is not None}
+        elif self.backend_with_high_score_cloud_order:
+            backend_with_high_score_cloud_data = {"order": self.backend_with_high_score_cloud_order}
+
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend}, "backends": backend_data}
 
         # Add backend_with_high_score section if configured
         if backend_with_high_score_data:
             data["backend_with_high_score"] = backend_with_high_score_data
+
+        # Add backend_with_high_score_cloud section if configured
+        if backend_with_high_score_cloud_data:
+            data["backend_with_high_score_cloud"] = backend_with_high_score_cloud_data
 
         # Write TOML file
         # Use os.open to ensure file is created with 600 permissions
@@ -557,6 +642,8 @@ class LLMBackendConfiguration:
             return config
         if self.backend_with_high_score and self.backend_with_high_score.name == backend_name:
             return self.backend_with_high_score
+        if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name == backend_name:
+            return self.backend_with_high_score_cloud
         return None
 
     def get_active_backends(self) -> List[str]:
@@ -625,6 +712,22 @@ class LLMBackendConfiguration:
         """
         if self.backend_with_high_score and self.backend_with_high_score.model:
             return self.backend_with_high_score.model
+        return None
+
+    def get_backend_with_high_score_cloud(self) -> Optional[BackendConfig]:
+        """Get the cloud backend configuration with high score.
+
+        Returns the backend_with_high_score_cloud configuration if configured, None otherwise.
+        """
+        return self.backend_with_high_score_cloud
+
+    def get_model_for_backend_with_high_score_cloud(self) -> Optional[str]:
+        """Get the model for the high-scoring cloud backend.
+
+        Returns the model name if configured, None otherwise.
+        """
+        if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.model:
+            return self.backend_with_high_score_cloud.model
         return None
 
     def get_model_for_backend(self, backend_name: str) -> Optional[str]:

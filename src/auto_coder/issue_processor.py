@@ -325,6 +325,186 @@ def _process_issue_jules_mode(
     return actions
 
 
+def _process_issue_claude_routine_mode(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+    backend_name: Optional[str] = None,
+    label_context: Optional[LabelManagerContext] = None,
+) -> List[str]:
+    """Process an issue using Claude Routine for cloud-based AI routine execution.
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+        backend_name: Name of the claude-routine backend configuration
+        label_context: Optional LabelManagerContext to keep label on success
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    issue_number = issue_data["number"]
+    issue_title = issue_data.get("title", "Unknown")
+    issue_body = issue_data.get("body", "")
+
+    try:
+        from .claude_routine_client import ClaudeRoutineClient
+
+        routine_client = ClaudeRoutineClient(backend_name=backend_name)
+
+        issue_labels_list = []
+        for label in issue_data.get("labels", []):
+            if isinstance(label, dict):
+                issue_labels_list.append(label.get("name", ""))
+            elif isinstance(label, str):
+                issue_labels_list.append(label)
+
+        action_prompt = render_prompt(
+            "issue.action",
+            repo_name=repo_name,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            issue_body=issue_body,
+            issue_labels=", ".join(issue_labels_list),
+            issue_state=issue_data.get("state", "open"),
+            issue_author=issue_data.get("user", {}).get("login", "unknown"),
+            commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
+            is_jules=True,
+        )
+
+        logger.info(f"Starting Claude Routine session for issue #{issue_number}")
+
+        base_branch = config.MAIN_BRANCH
+        parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
+        if parent_issue_details:
+            ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
+
+        session_title = f"{issue_title} (#{issue_number})"
+        session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+
+        cloud_manager = CloudManager(repo_name)
+        success = cloud_manager.add_session(issue_number, session_id)
+
+        if not success:
+            logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
+            actions.append(f"Warning: Could not save session ID for issue #{issue_number}")
+        else:
+            logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
+
+        try:
+            comment_body = f"I started a Claude Routine session to work on this issue. Session ID: {session_id}"
+            if session_url:
+                comment_body += f"\n\n{session_url}"
+            github_client.add_comment_to_issue(repo_name, issue_number, comment_body)
+            actions.append(f"Commented on issue #{issue_number} with Claude Routine session ID")
+            logger.info(f"Added comment with session ID to issue #{issue_number}")
+
+            try:
+                github_client.add_labels(repo_name, issue_number, ["@auto-coder"])
+                logger.info(f"Added @auto-coder label to issue #{issue_number}")
+            except Exception as e:
+                logger.warning(f"Failed to add @auto-coder label to issue #{issue_number}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Failed to add comment to issue #{issue_number}: {e}")
+            actions.append(f"Warning: Could not comment on issue #{issue_number}")
+
+        actions.append(f"Started Claude Routine session '{session_id}' for issue #{issue_number}")
+        logger.info(f"Claude Routine session started successfully for issue #{issue_number}")
+
+        get_trace_logger().log(
+            "Claude Routine Session",
+            f"Started Claude Routine session for issue #{issue_number}",
+            item_type="issue",
+            item_number=issue_number,
+            details={"session_id": session_id, "session_url": session_url},
+        )
+
+        if label_context:
+            label_context.keep_label()
+            logger.info(f"Keeping @auto-coder label for issue #{issue_number} (Claude Routine session started)")
+
+    except Exception as e:
+        logger.error(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
+        actions.append(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
+
+    return actions
+
+
+def _process_issue_high_score_cloud(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+    label_context: Optional[LabelManagerContext] = None,
+) -> List[str]:
+    """Process an issue using the backend_with_high_score_cloud configuration.
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+        label_context: Optional LabelManagerContext
+
+    Returns:
+        List of action strings describing what was done
+    """
+    from .llm_backend_config import get_llm_config
+
+    llm_config = get_llm_config()
+    high_score_cloud_order = llm_config.backend_with_high_score_cloud_order
+    high_score_cloud_config = llm_config.get_backend_with_high_score_cloud()
+
+    backend_name = None
+    if high_score_cloud_order:
+        backend_name = high_score_cloud_order[0]
+    elif high_score_cloud_config:
+        backend_name = high_score_cloud_config.name
+
+    backend_type = None
+    if backend_name:
+        b_cfg = llm_config.get_backend_config(backend_name)
+        backend_type = (b_cfg and b_cfg.backend_type) or backend_name
+
+    if backend_type == "claude-routine":
+        return _process_issue_claude_routine_mode(
+            repo_name,
+            issue_data,
+            config,
+            github_client,
+            backend_name=backend_name,
+            label_context=label_context,
+        )
+    elif backend_type == "jules":
+        return _process_issue_jules_mode(
+            repo_name,
+            issue_data,
+            config,
+            github_client,
+            label_context=label_context,
+        )
+    else:
+        from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
+
+        backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
+        if backend_manager is None:
+            logger.warning("backend_with_high_score_cloud is not configured; using the default backend")
+
+        return _take_issue_actions(
+            repo_name,
+            issue_data,
+            config,
+            github_client,
+            backend_manager=backend_manager,
+            check_labels=False,
+        )
+
+
 def _extract_session_id(session: Dict[str, Any]) -> Optional[str]:
     """Extract the session ID from a Jules session object."""
     name = session.get("name")
