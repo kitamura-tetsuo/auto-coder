@@ -68,7 +68,7 @@ dev = [
     "pre-commit>=4.3.0",
     "pytest>=9.0.0",
     "pytest-timeout>=2.1.0",
-    "types-toml>=0.10.8.20240310",
+    "types-toml>=0.10.8.20260518",
 ]
 
 [tool.setuptools.packages.find]
@@ -244,6 +244,6 @@ dev = [
     "mypy>=1.0.0",
     "pytest>=9.0.0",
     "pytest-timeout>=2.1.0",
-    "types-toml>=0.10.8.20240310",
+    "types-toml>=0.10.8.20260518",
     "httpx>=0.28.1",
 ]
