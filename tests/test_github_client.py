@@ -185,6 +185,7 @@ class TestGitHubClient:
             "updated_at": "2024-01-01T00:00:00Z",
             "url": "https://github.com/test/repo/issues/123",
             "author": "author",
+            "author_id": None,
             "comments_count": 5,
         }
         assert result == expected
@@ -231,6 +232,7 @@ class TestGitHubClient:
             "updated_at": "2024-01-01T00:00:00Z",
             "url": "https://github.com/test/repo/pull/456",
             "author": "author",
+            "author_id": None,
             "head_branch": "feature-branch",
             "head_sha": "abcdef1234567890",
             "base_branch": "main",

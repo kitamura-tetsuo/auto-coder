@@ -477,6 +477,11 @@ class AutomationEngine:
                     logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
                     continue
 
+                # Check PR author allowlist before any processing
+                if not self._is_pr_author_allowed(pr_data):
+                    logger.debug(f"Skipping PR #{pr_number} - author not in PR allowlist")
+                    continue
+
                 # Check if Jules PR is a draft and mark as ready if so
                 # This must be done BEFORE checking GitHub Actions status, as some actions only run on ready PRs
                 if _is_jules_pr(pr_data) and pr_data.get("draft"):
@@ -730,6 +735,16 @@ class AutomationEngine:
                 open_pr_numbers = {pr.get("number") for pr in pr_data_list if isinstance(pr.get("number"), int)}
 
                 for issue_data in all_issues:
+                    number = issue_data.get("number")
+                    if not isinstance(number, int):
+                        logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                        continue
+
+                    # Check Issue author allowlist before any processing
+                    if not self._is_issue_author_allowed(issue_data):
+                        logger.debug(f"Skipping Issue #{number} - author not in Issue allowlist")
+                        continue
+
                     labels = issue_data.get("labels", []) or []
 
                     # Filter out issues created within the last 10 minutes
@@ -752,11 +767,6 @@ class AutomationEngine:
                             continue
 
                     # Skip if has sub-issues or linked PR
-                    number = issue_data.get("number")
-                    if not isinstance(number, int):
-                        logger.warning(f"Issue data missing or invalid number: {issue_data}")
-                        continue
-
                     # Already queued by the stale-Jules-PR path above
                     if number in requeued_issue_numbers:
                         continue
@@ -863,6 +873,26 @@ class AutomationEngine:
             # Clear the sub-issue cache when candidate acquisition is finished
             self.github.clear_sub_issue_cache()
 
+    def _is_issue_author_allowed(self, issue_data: Optional[Dict[str, Any]]) -> bool:
+        """Check if the author of the issue is present in the issue allowlist."""
+        from .automation_config import get_author_id, is_author_allowlisted
+
+        allowlist = getattr(self.config, "ISSUE_ALLOWLIST", None)
+        if allowlist is None:
+            allowlist = getattr(self.config, "issue_allowlist", None)
+        author_id = get_author_id(issue_data)
+        return is_author_allowlisted(author_id, allowlist)
+
+    def _is_pr_author_allowed(self, pr_data: Optional[Dict[str, Any]]) -> bool:
+        """Check if the author of the PR is present in the PR allowlist."""
+        from .automation_config import get_author_id, is_author_allowlisted
+
+        allowlist = getattr(self.config, "PR_ALLOWLIST", None)
+        if allowlist is None:
+            allowlist = getattr(self.config, "pr_allowlist", None)
+        author_id = get_author_id(pr_data)
+        return is_author_allowlisted(author_id, allowlist)
+
     def _has_open_sub_issues(self, repo_name: str, candidate: Candidate) -> bool:
         """Fail-safe helper to check if target issue has unresolved sub-issues.
         - candidate is expected to be an element from _get_candidates (type: issue)
@@ -922,6 +952,14 @@ class AutomationEngine:
             # Ensure item_number is not None
             if item_number is None:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
+
+            # Check author allowlists before any processing or API actions
+            if item_type == "pr" and not self._is_pr_author_allowed(candidate.data):
+                logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
+                return result
+            elif item_type == "issue" and not self._is_issue_author_allowed(candidate.data):
+                logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
+                return result
 
             # Close Jules PRs that could not get CI green within the configured timeout.
             # Checked before the label gate below, which would otherwise skip the PR for as
@@ -1257,9 +1295,6 @@ class AutomationEngine:
                 # Create a Candidate from the single item
                 candidate = self._create_candidate_from_single(repo_name, target_type, number)
                 if not candidate:
-                    msg = f"Failed to create candidate for {target_type} #{number}"
-                    logger.error(msg)
-                    result.errors.append(msg)
                     return {
                         "repository": result.repository,
                         "timestamp": result.timestamp,
@@ -1276,12 +1311,12 @@ class AutomationEngine:
                     jules_mode,
                 )
 
-                # Only add to processed list if there was no error
+                # Only add to processed list if there was no error and processing succeeded
                 if processing_result.error:
                     # Add error to errors list instead of processed list
                     error_msg = f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {processing_result.error}"
                     result.errors.append(error_msg)
-                else:
+                elif processing_result.success:
                     # Convert to the format expected by process_single
                     if candidate.type == "issue":
                         processed_item = {
@@ -2001,6 +2036,9 @@ class AutomationEngine:
                 if not pr_data or not pr_data.get("number"):
                     logger.error(f"PR #{number} not found in {repo_name}")
                     return None
+                if not self._is_pr_author_allowed(pr_data):
+                    logger.info(f"Skipping PR #{number} - author not in PR allowlist")
+                    return None
                 branch_name = pr_data.get("head_branch")
                 pr_body = pr_data.get("body", "")
                 related_issues = []
@@ -2020,6 +2058,11 @@ class AutomationEngine:
                 # issue = repo.get_issue(number)
                 issue = self.github.get_issue(repo_name, number)
                 issue_data = self.github.get_issue_details(issue)
+                if not issue_data or not issue_data.get("number"):
+                    return None
+                if not self._is_issue_author_allowed(issue_data):
+                    logger.info(f"Skipping issue #{number} - author not in issue allowlist")
+                    return None
 
                 return Candidate(
                     type="issue",

@@ -11,6 +11,62 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def get_author_id(data: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Extract numeric GitHub user ID of author from issue or PR data."""
+    if not data or not isinstance(data, dict):
+        return None
+
+    # 1. Direct author_id or user_id field
+    if "author_id" in data and data["author_id"] is not None:
+        try:
+            return int(data["author_id"])
+        except (ValueError, TypeError):
+            pass
+    if "user_id" in data and data["user_id"] is not None:
+        try:
+            return int(data["user_id"])
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Nested user dict/object
+    user = data.get("user")
+    if user:
+        if isinstance(user, dict):
+            uid = user.get("id")
+            if uid is not None:
+                try:
+                    return int(uid)
+                except (ValueError, TypeError):
+                    pass
+        else:
+            uid = getattr(user, "id", None)
+            if uid is not None:
+                try:
+                    return int(uid)
+                except (ValueError, TypeError):
+                    pass
+
+    return None
+
+
+def is_author_allowlisted(author_id: Optional[int], allowlist: Optional[List[int]]) -> bool:
+    """Check if author ID is allowed.
+
+    If allowlist is None, no restriction is enforced (returns True).
+    If allowlist is a list (even empty), author_id must be present in the allowlist.
+    """
+    if allowlist is None:
+        return True
+    if author_id is None:
+        return False
+    try:
+        author_id_int = int(author_id)
+        allowlist_set = {int(x) for x in allowlist if x is not None}
+        return author_id_int in allowlist_set
+    except (ValueError, TypeError):
+        return False
+
+
 @dataclass
 class AutomationConfig:
     """Configuration constants for automation engine."""
@@ -121,6 +177,8 @@ class AutomationConfig:
         custom_label_mappings: Optional[Dict[str, str]] = None,
         custom_priorities: Optional[List[str]] = None,
         replace_mappings: bool = False,
+        issue_allowlist: Optional[List[int]] = None,
+        pr_allowlist: Optional[List[int]] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -130,6 +188,8 @@ class AutomationConfig:
             custom_priorities: Optional custom label priorities
             replace_mappings: If True, custom_label_mappings will replace defaults entirely.
                 If False (default), custom_label_mappings will merge with defaults.
+            issue_allowlist: Optional custom issue author allowlist (numeric user IDs)
+            pr_allowlist: Optional custom PR author allowlist (numeric user IDs)
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -155,15 +215,26 @@ class AutomationConfig:
         # Load Jules wait timeout from config
         from .llm_backend_config import (
             get_github_action_log_max_length_from_config,
+            get_issue_allowlist_from_config,
             get_jules_issue_pr_timeout_hours_from_config,
             get_jules_pr_ci_timeout_hours_from_config,
             get_jules_wait_timeout_hours_from_config,
+            get_pr_allowlist_from_config,
         )
 
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
         object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config())
         object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config())
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config())
+
+        # Load GitHub author allowlists (numeric user IDs)
+        configured_issue_allowlist = issue_allowlist if issue_allowlist is not None else get_issue_allowlist_from_config()
+        configured_pr_allowlist = pr_allowlist if pr_allowlist is not None else get_pr_allowlist_from_config()
+
+        object.__setattr__(self, "ISSUE_ALLOWLIST", configured_issue_allowlist)
+        object.__setattr__(self, "PR_ALLOWLIST", configured_pr_allowlist)
+        object.__setattr__(self, "issue_allowlist", configured_issue_allowlist)
+        object.__setattr__(self, "pr_allowlist", configured_pr_allowlist)
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
@@ -418,6 +489,35 @@ class AutomationConfig:
             object.__setattr__(self, "JULES_ONLY_MODE", jules_only.lower() in ("true", "1", "yes"))
             logger.info(f"Jules Only Mode set to {self.JULES_ONLY_MODE} from environment")
 
+        # GitHub author allowlist overrides from environment variable
+        issue_allowlist_env = os.environ.get("AUTO_CODER_ISSUE_ALLOWLIST")
+        if issue_allowlist_env is not None:
+            try:
+                if issue_allowlist_env.strip().startswith("["):
+                    parsed = json.loads(issue_allowlist_env)
+                else:
+                    parsed = [x.strip() for x in issue_allowlist_env.split(",") if x.strip()]
+                parsed_ints = [int(x) for x in parsed]
+                object.__setattr__(self, "ISSUE_ALLOWLIST", parsed_ints)
+                object.__setattr__(self, "issue_allowlist", parsed_ints)
+                logger.info(f"Loaded {len(parsed_ints)} issue allowlist IDs from environment")
+            except Exception as e:
+                logger.error(f"Failed to parse AUTO_CODER_ISSUE_ALLOWLIST: {e}")
+
+        pr_allowlist_env = os.environ.get("AUTO_CODER_PR_ALLOWLIST")
+        if pr_allowlist_env is not None:
+            try:
+                if pr_allowlist_env.strip().startswith("["):
+                    parsed = json.loads(pr_allowlist_env)
+                else:
+                    parsed = [x.strip() for x in pr_allowlist_env.split(",") if x.strip()]
+                parsed_ints = [int(x) for x in parsed]
+                object.__setattr__(self, "PR_ALLOWLIST", parsed_ints)
+                object.__setattr__(self, "pr_allowlist", parsed_ints)
+                logger.info(f"Loaded {len(parsed_ints)} PR allowlist IDs from environment")
+            except Exception as e:
+                logger.error(f"Failed to parse AUTO_CODER_PR_ALLOWLIST: {e}")
+
     def _merge_label_mappings(self, new_mappings: Dict[str, str]) -> None:
         """Merge new label mappings with existing ones.
 
@@ -566,6 +666,13 @@ class AutomationConfig:
 
     # Maximum number of semantic labels to copy from issue to PR
     PR_LABEL_MAX_COUNT: int = 3
+
+    # GitHub author allowlists (numeric user IDs)
+    # Configurable via [github].issue_allowlist and [github].pr_allowlist in config.toml
+    ISSUE_ALLOWLIST: Optional[List[int]] = None
+    PR_ALLOWLIST: Optional[List[int]] = None
+    issue_allowlist: Optional[List[int]] = None
+    pr_allowlist: Optional[List[int]] = None
 
     # Maximum concurrent tasks (workers)
     MAX_CONCURRENT_TASKS: int = 1

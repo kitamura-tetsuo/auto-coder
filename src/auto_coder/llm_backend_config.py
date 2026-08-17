@@ -1039,3 +1039,55 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
         config_path=config_path,
         value_type=bool,
     )
+
+
+def get_issue_allowlist_from_config(config_path: Optional[str] = None) -> Optional[List[int]]:
+    """Get the issue author allowlist from config.toml [github].issue_allowlist.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        List of allowed GitHub user IDs (ints) or None if not configured.
+    """
+    raw_list = _get_config_value(
+        section="github",
+        key="issue_allowlist",
+        default=None,
+        config_path=config_path,
+    )
+    if raw_list is None:
+        return None
+    result: List[int] = []
+    for item in raw_list:
+        try:
+            result.append(int(item))
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
+def get_pr_allowlist_from_config(config_path: Optional[str] = None) -> Optional[List[int]]:
+    """Get the pull request author allowlist from config.toml [github].pr_allowlist.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        List of allowed GitHub user IDs (ints) or None if not configured.
+    """
+    raw_list = _get_config_value(
+        section="github",
+        key="pr_allowlist",
+        default=None,
+        config_path=config_path,
+    )
+    if raw_list is None:
+        return None
+    result: List[int] = []
+    for item in raw_list:
+        try:
+            result.append(int(item))
+        except (ValueError, TypeError):
+            pass
+    return result

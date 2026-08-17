@@ -510,6 +510,7 @@ class GitHubClient:
                     "head": {"ref": d.get("head", {}).get("ref"), "sha": d.get("head", {}).get("sha")},
                     "base_branch": d.get("base", {}).get("ref"),
                     "author": d.get("user", {}).get("login") if d.get("user") else None,
+                    "author_id": d.get("user", {}).get("id") if d.get("user") else None,
                     "assignees": [a.get("login") for a in d.get("assignees", [])],
                     "labels": [lbl.get("name") for lbl in d.get("labels", [])],
                     "comments_count": d.get("comments", 0) + d.get("review_comments", 0),
@@ -622,7 +623,8 @@ class GitHubClient:
                     "created_at": i["created_at"],
                     "updated_at": i["updated_at"],
                     "url": i["html_url"],
-                    "author": i["user"]["login"] if i["user"] else None,
+                    "author": i["user"]["login"] if i.get("user") else None,
+                    "author_id": i["user"].get("id") if i.get("user") else None,
                     "comments_count": i["comments"],
                     # Extended fields populated via REST
                     "linked_prs": linked_prs_ids,
@@ -703,6 +705,7 @@ class GitHubClient:
             "updated_at": updated_at,
             "url": get(issue, "html_url"),
             "author": get(user, "login") if user else None,
+            "author_id": get(user, "id") if user else None,
             "comments_count": get(issue, "comments"),
         }
 
@@ -743,6 +746,7 @@ class GitHubClient:
             "updated_at": updated_at,
             "url": get(pr, "html_url"),
             "author": get(user, "login") if user else None,
+            "author_id": get(user, "id") if user else None,
             "head_branch": get(head, "ref"),
             "head_sha": get(head, "sha"),
             "base_branch": get(base, "ref"),
