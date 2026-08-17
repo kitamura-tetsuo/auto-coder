@@ -231,3 +231,48 @@ class TestDifficultIssueHandling:
         mock_high_score_cloud.assert_not_called()
         assert result.success is True
         assert result.actions == ["Jules action"]
+
+    @patch("auto_coder.automation_engine.LabelManager")
+    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    @patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager")
+    def test_automation_engine_routes_parent_issue_with_sub_issues_to_high_score_cloud(self, mock_create_high_score_cloud, mock_take_actions, mock_label_manager):
+        """Test that parent issue with sub-issues routes to local processing with backend_with_high_score_cloud."""
+        mock_take_actions.return_value = ["Parent issue processed"]
+        mock_ctx = MagicMock()
+        mock_ctx.__bool__.return_value = True
+        mock_label_manager.return_value.__enter__.return_value = mock_ctx
+
+        mock_backend_mgr = MagicMock()
+        mock_create_high_score_cloud.return_value = mock_backend_mgr
+
+        mock_github = MagicMock()
+        mock_github.get_all_sub_issues.return_value = [201, 202]
+
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github, config)
+
+        candidate = Candidate(
+            type="issue",
+            priority=100,
+            data={
+                "number": 200,
+                "title": "Parent Issue",
+                "labels": [],
+            },
+        )
+
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            candidate,
+            config,
+            jules_mode=True,
+        )
+
+        mock_create_high_score_cloud.assert_called_once()
+        mock_take_actions.assert_called_once_with(
+            "owner/repo",
+            candidate.data,
+            backend_manager=mock_backend_mgr,
+        )
+        assert result.success is True
+        assert result.actions == ["Parent issue processed"]

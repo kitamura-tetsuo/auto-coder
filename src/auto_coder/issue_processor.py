@@ -185,6 +185,10 @@ def _take_issue_actions(
         if is_parent_issue:
             logger.info(f"Issue #{issue_number} detected as parent issue with all sub-issues closed")
             get_trace_logger().log("Issue Type", f"Issue #{issue_number} is a parent issue", item_type="issue", item_number=issue_number, details={"is_parent": True})
+            if backend_manager is None:
+                from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
+
+                backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
 
         # Ask LLM CLI to analyze the issue and take appropriate actions
         action_results = _apply_issue_actions_directly(
@@ -1047,6 +1051,11 @@ def _apply_issue_actions_directly(
                 get_trace_logger().log("Analysis Start", f"Starting analysis for issue #{issue_number}", item_type="issue", item_number=issue_number)
 
                 # Call LLM client
+                if backend_manager is None and has_sub_issues:
+                    from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
+
+                    backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
+
                 response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
 
                 # Parse the response

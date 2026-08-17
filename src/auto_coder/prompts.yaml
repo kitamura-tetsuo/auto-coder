@@ -546,6 +546,7 @@ issue:
     - Create or modify files as needed
     - Ensure the implementation follows best practices
     - Prefer the smart, reasonable and logically beautiful change that resolves issues.
+    - Create pull request and link it to the issue.
     - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
 

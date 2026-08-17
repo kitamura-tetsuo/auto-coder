@@ -594,3 +594,82 @@ class TestParentIssueContextInjection:
         assert "Bug Fix:" in result
         assert "Parent: Parent bug context" in result
         assert "Fix bug" in result
+
+
+class TestParentIssueHighScoreCloudBackend:
+    """Tests for parent issues using backend_with_high_score_cloud."""
+
+    @patch("src.auto_coder.cli_helpers.create_high_score_cloud_backend_manager")
+    @patch("src.auto_coder.issue_processor._apply_issue_actions_directly")
+    def test_take_issue_actions_uses_high_score_cloud_for_parent_issue(self, mock_apply_actions, mock_create_high_score_cloud):
+        """Test _take_issue_actions uses create_high_score_cloud_backend_manager for parent issues."""
+        mock_backend_mgr = MagicMock()
+        mock_create_high_score_cloud.return_value = mock_backend_mgr
+        mock_apply_actions.return_value = ["Applied actions"]
+
+        repo_name = "owner/repo"
+        issue_data = {"number": 100, "title": "Parent Issue"}
+        config = AutomationConfig()
+
+        github_client = MagicMock()
+        github_client.get_all_sub_issues.return_value = [101, 102]
+        github_client.get_parent_issue_details.return_value = None
+        github_client.get_open_sub_issues.return_value = []
+
+        result = _take_issue_actions(repo_name, issue_data, config, github_client)
+
+        mock_create_high_score_cloud.assert_called_once()
+        mock_apply_actions.assert_called_once_with(
+            repo_name,
+            issue_data,
+            config,
+            github_client,
+            backend_manager=mock_backend_mgr,
+            check_labels=None,
+        )
+        assert result == ["Applied actions"]
+
+    @patch("src.auto_coder.issue_processor.BranchManager")
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
+    @patch("src.auto_coder.issue_processor.get_current_branch", return_value="main")
+    @patch("src.auto_coder.issue_processor.cmd")
+    @patch("src.auto_coder.cli_helpers.create_high_score_cloud_backend_manager")
+    def test_apply_issue_actions_directly_uses_high_score_cloud_when_sub_issues_present(self, mock_create_high_score_cloud, mock_cmd, mock_get_branch, mock_get_attempt, mock_branch_mgr):
+        """Test _apply_issue_actions_directly resolves high score cloud backend manager for sub-issues."""
+        mock_backend_mgr = MagicMock()
+        mock_backend_mgr._run_llm_cli.return_value = "Verified sub-issues and updated code"
+        mock_create_high_score_cloud.return_value = mock_backend_mgr
+
+        repo_name = "owner/repo"
+        issue_data = {
+            "number": 100,
+            "title": "Parent Issue",
+            "body": "Parent issue requirements",
+            "labels": [],
+            "state": "open",
+            "author": "user1",
+        }
+        config = AutomationConfig()
+
+        github_client = MagicMock()
+        github_client.get_parent_issue_details.return_value = None
+        github_client.get_parent_issue_body.return_value = None
+        github_client.get_all_sub_issues.return_value = [101, 102]
+        github_client.get_issue.return_value = {"number": 101, "title": "Sub Issue", "state": "closed"}
+
+        with (
+            patch("src.auto_coder.issue_processor.get_commit_log", return_value="Initial commit"),
+            patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"),
+            patch("src.auto_coder.issue_processor._create_pr_for_issue", return_value="Created PR"),
+            patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr,
+            patch("src.auto_coder.issue_processor.ProgressStage"),
+            patch("src.auto_coder.issue_processor.render_prompt", return_value="Prompt content"),
+        ):
+            mock_label_mgr.return_value.__enter__.return_value = True
+            mock_label_mgr.return_value.__exit__.return_value = None
+
+            result = _apply_issue_actions_directly(repo_name, issue_data, config, github_client)
+
+            mock_create_high_score_cloud.assert_called_once()
+            mock_backend_mgr._run_llm_cli.assert_called_once_with("Prompt content")
+            assert any("LLM CLI analyzed and took action" in a for a in result)

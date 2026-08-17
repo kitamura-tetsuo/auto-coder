@@ -983,10 +983,13 @@ class AutomationEngine:
                                 break
 
                     if has_sub_issues:
-                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing to ensure branch merging.")
-                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode (Parent Issue)", item_type="issue", item_number=item_number, details={"mode": "parent_local"})
-                        # Force local processing for parent issues
-                        result.actions = self._take_issue_actions(repo_name, candidate.data)
+                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing with backend_with_high_score_cloud to ensure branch merging.")
+                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode (Parent Issue)", item_type="issue", item_number=item_number, details={"mode": "parent_local", "backend": "backend_with_high_score_cloud"})
+                        from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
+
+                        backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
+                        # Force local processing for parent issues using backend_with_high_score_cloud
+                        result.actions = self._take_issue_actions(repo_name, candidate.data, backend_manager=backend_manager)
                     elif is_difficult:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
                         logger.info(f"Issue #{item_number} has 'difficult' label. Delegating to backend_with_high_score_cloud.")
@@ -1503,7 +1506,12 @@ class AutomationEngine:
         """Get PR diff for analysis."""
         return _pr_get_diff(repo_name, pr_number, self.config)
 
-    def _take_issue_actions(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
+    def _take_issue_actions(
+        self,
+        repo_name: str,
+        issue_data: Dict[str, Any],
+        backend_manager: Optional[Any] = None,
+    ) -> List[str]:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
         from .issue_processor import _take_issue_actions as _take_issue_actions_func
 
@@ -1512,6 +1520,7 @@ class AutomationEngine:
             issue_data,
             self.config,
             self.github,
+            backend_manager=backend_manager,
         )
 
     def _apply_issue_actions_directly(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
