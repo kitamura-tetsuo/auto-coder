@@ -23,7 +23,7 @@ from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
-from .automation_config import AutomationConfig, ProcessedPRResult, StaleJulesPRResult
+from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, StaleJulesPRResult
 from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
@@ -173,6 +173,15 @@ def process_pull_request(
         )
 
         pr_number = pr_data["number"]
+
+        # Close PRs with zero effective diff before any further processing.
+        # This runs before the @auto-coder label check so empty PRs left from earlier
+        # runs are closed and their source issues retried immediately.
+        empty_pr_result = _close_empty_pr(github_client, repo_name, pr_data, config)
+        if empty_pr_result.closed:
+            processed_pr.actions_taken = empty_pr_result.actions
+            processed_pr.priority = "close"
+            return processed_pr
 
         # Close Jules PRs that could not get CI green within the configured timeout.
         # This runs before the @auto-coder label check on purpose: a stale Jules PR
@@ -426,6 +435,189 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
     except Exception as e:
         logger.error(f"Error checking if PR #{pr_data.get('number')} should be skipped: {e}")
         return False
+
+
+def _is_empty_pr(
+    pr_data: Dict[str, Any],
+    repo_name: Optional[str] = None,
+    github_client: Optional[Any] = None,
+) -> bool:
+    """Check if a pull request has no effective diff against its base branch.
+
+    Do not use commit count as the emptiness check, as an empty PR may still contain commits.
+
+    Args:
+        pr_data: Pull request data dictionary
+        repo_name: Optional repository name for fetching diff if changed_files not in pr_data
+        github_client: Optional GitHub client for fetching diff if changed_files not in pr_data
+
+    Returns:
+        True if the PR has zero effective diff, False otherwise
+    """
+    changed_files = pr_data.get("changed_files")
+    if changed_files is not None and isinstance(changed_files, int):
+        return changed_files == 0
+
+    additions = pr_data.get("additions")
+    deletions = pr_data.get("deletions")
+    if isinstance(additions, int) and isinstance(deletions, int):
+        if additions > 0 or deletions > 0:
+            return False
+        if additions == 0 and deletions == 0:
+            return True
+
+    if repo_name and github_client:
+        pr_number = pr_data.get("number")
+        if pr_number is not None:
+            try:
+                diff = github_client.get_pr_diff(repo_name, pr_number)
+                if isinstance(diff, str):
+                    return len(diff.strip()) == 0
+            except Exception as e:
+                logger.debug(f"Failed to fetch PR diff for empty check on #{pr_number}: {e}")
+
+    return False
+
+
+def _resolve_pr_issue_numbers(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Any,
+) -> List[int]:
+    """Resolve associated source issue numbers for a PR using body, session ID, branch, or title.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        github_client: GitHub client instance
+
+    Returns:
+        List of unique issue numbers associated with the PR
+    """
+    body = pr_data.get("body", "") or ""
+    issue_numbers = extract_linked_issues_from_pr_body(body)
+    if issue_numbers:
+        return issue_numbers
+
+    # Try resolving via session ID, branch name, or title
+    resolved_issue = _resolve_jules_pr_issue_number(repo_name, pr_data, github_client)
+    if resolved_issue:
+        return [resolved_issue]
+
+    # Additional generic fallback: check branch name for patterns like "issue-123" or "fix-123"
+    branch_name = ""
+    if isinstance(pr_data.get("head"), dict):
+        branch_name = pr_data.get("head", {}).get("ref", "")
+    if not branch_name:
+        branch_name = pr_data.get("head_branch", "") or ""
+    if branch_name:
+        match = re.search(r"\b(?:issue|fix)[-_](\d+)\b", branch_name, re.IGNORECASE)
+        if match:
+            return [int(match.group(1))]
+
+    # Additional generic fallback: check PR title
+    pr_title = pr_data.get("title", "") or ""
+    if pr_title:
+        match = re.search(r"(?:issue|fix|close|resolve)s?\s*#(\d+)", pr_title, re.IGNORECASE)
+        if match:
+            return [int(match.group(1))]
+
+    return []
+
+
+def _close_empty_pr(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+) -> EmptyPRResult:
+    """Close a PR that has no effective diff against the base branch and requeue its source issue.
+
+    When an empty PR is detected:
+    1. Skip normal review/merge/LLM processing for that PR.
+    2. Close the empty PR on GitHub.
+    3. Resolve the source issue(s) using existing PR-to-Issue association logic.
+    4. Reopen the source issue(s) if closed.
+    5. Increment the source issue's attempt counter.
+    6. Remove the @auto-coder label so the issue can be processed again.
+
+    Args:
+        github_client: GitHub client instance
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        config: Automation configuration
+
+    Returns:
+        EmptyPRResult; ``closed`` is True if the PR was closed due to having no diff.
+    """
+    result = EmptyPRResult()
+    pr_number = pr_data.get("number")
+    if pr_number is None:
+        return result
+    pr_number = int(pr_number)
+
+    try:
+        if pr_data.get("state") == "closed":
+            logger.debug(f"PR #{pr_number} is already closed, skipping empty PR check")
+            return result
+
+        if not _is_empty_pr(pr_data, repo_name=repo_name, github_client=github_client):
+            return result
+
+        logger.info(f"PR #{pr_number} has zero effective diff against base branch. Closing it.")
+
+        # Resolve the issue(s) that this PR was created for
+        issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+
+        close_comment = f"Auto-Coder: Closing PR #{pr_number} because it has no effective diff against the base branch. " "The linked issue(s) will be retried with an incremented attempt count."
+        client = github_client or GitHubClient.get_instance()
+        client.close_pr(repo_name, pr_number, close_comment)
+        result.closed = True
+        result.actions.append(f"Closed empty PR #{pr_number} (zero effective diff)")
+        get_trace_logger().log(
+            "Empty PR",
+            f"Closed empty PR #{pr_number}",
+            item_type="pr",
+            item_number=pr_number,
+            details={"linked_issues": issue_numbers},
+        )
+
+        if not issue_numbers:
+            logger.warning(f"No linked issue found for closed empty PR #{pr_number}, cannot increment attempt")
+            result.actions.append(f"No linked issue found for empty PR #{pr_number} to increment attempt")
+            return result
+
+        for issue_number in issue_numbers:
+            # Reopen the source issue if it was closed
+            try:
+                issue_obj = client.get_issue(repo_name, issue_number)
+                if issue_obj:
+                    state = issue_obj.get("state") if isinstance(issue_obj, dict) else getattr(issue_obj, "state", None)
+                    if state == "closed":
+                        logger.info(f"Reopening closed issue #{issue_number} due to empty PR #{pr_number}")
+                        reopen_comment = f"Auto-Coder: Reopening issue #{issue_number} because PR #{pr_number} had no effective diff."
+                        client.reopen_issue(repo_name, issue_number, reopen_comment)
+                        result.actions.append(f"Reopened closed issue #{issue_number}")
+            except Exception as e:
+                logger.error(f"Failed to check/reopen issue #{issue_number}: {e}")
+
+            try:
+                new_attempt = increment_attempt(repo_name, issue_number)
+                result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+            except Exception as e:
+                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+
+            # Release the @auto-coder label so the issue can be picked up for the next attempt
+            if _release_issue_processing_label(github_client, repo_name, issue_number, config):
+                result.actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
+
+            result.issue_numbers.append(issue_number)
+
+    except Exception as e:
+        logger.error(f"Error handling empty PR #{pr_number}: {e}")
+
+    return result
 
 
 def _close_stale_jules_pr(

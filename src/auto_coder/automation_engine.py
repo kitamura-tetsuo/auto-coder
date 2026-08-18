@@ -439,7 +439,7 @@ class AutomationEngine:
         - Creation time ascending (oldest first)
         """
         from .issue_context import extract_linked_issues_from_pr_body
-        from .pr_processor import _close_stale_jules_pr, _is_dependabot_pr, _is_jules_pr
+        from .pr_processor import _close_empty_pr, _close_stale_jules_pr, _is_dependabot_pr, _is_jules_pr
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
@@ -523,6 +523,24 @@ class AutomationEngine:
                             logger.warning(f"Could not mark Jules PR #{pr_number} as ready: missing node_id after fetch attempt")
                     except Exception as e:
                         logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {e}")
+
+                # Close PRs that have zero effective diff.
+                # Runs before label and stale checks so empty PRs are cleaned up and retried immediately.
+                empty_pr_result = _close_empty_pr(self.github, repo_name, pr_data, self.config)
+                if empty_pr_result.closed:
+                    for action in empty_pr_result.actions:
+                        logger.info(f"PR #{pr_number}: {action}")
+                    # Queue the unlocked issue(s) right away so the new attempt starts in
+                    # this cycle instead of waiting for the next poll.
+                    for issue_number in empty_pr_result.issue_numbers:
+                        issue_candidate = self._create_candidate_from_single(repo_name, "issue", issue_number)
+                        if issue_candidate:
+                            issue_candidate.priority = 3
+                            candidates.append(issue_candidate)
+                            requeued_issue_numbers.add(issue_number)
+                            candidates_count += 1
+                            logger.info(f"Queued issue #{issue_number} for a new attempt after closing empty PR #{pr_number}")
+                    continue
 
                 # Close Jules PRs that could not get CI green within the configured timeout.
                 # This runs before the label and "waiting for Jules" skips below, because a
@@ -961,11 +979,20 @@ class AutomationEngine:
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
 
-            # Close Jules PRs that could not get CI green within the configured timeout.
-            # Checked before the label gate below, which would otherwise skip the PR for as
-            # long as the @auto-coder label from an earlier run stays attached.
+            # Close empty PRs or stale Jules PRs before the label gate below.
             if item_type == "pr":
-                from .pr_processor import _close_stale_jules_pr
+                from .pr_processor import _close_empty_pr, _close_stale_jules_pr
+
+                empty_pr_result = _close_empty_pr(self.github, repo_name, candidate.data, config)
+                if empty_pr_result.closed:
+                    for action in empty_pr_result.actions:
+                        logger.info(f"PR #{item_number}: {action}")
+                    result.actions = list(empty_pr_result.actions)
+                    # Start the new attempt on the unlocked issue(s) right away
+                    for issue_number in empty_pr_result.issue_numbers:
+                        result.actions.extend(self._process_unlocked_issue(repo_name, issue_number, config, jules_mode))
+                    result.success = True
+                    return result
 
                 stale_jules_result = _close_stale_jules_pr(self.github, repo_name, candidate.data, config)
                 if stale_jules_result.closed:

@@ -411,6 +411,19 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
   - Automatic flags: Minimal - Jules manages sessions internally
   - Custom options: Usually minimal due to session-based nature
 
+#### Empty PR Handling
+
+  empty_pr_handling:
+    description: "Detection and requeueing of pull requests with zero effective diff against the base branch."
+    zero_diff_detection:
+      - "When a PR has zero changed files (or additions and deletions are zero / diff is empty), it is treated as a failed processing attempt even if the branch contains commits."
+      - "The empty PR is closed automatically with an explanatory comment."
+      - "The associated source issue is resolved from the PR body, session ID, branch name, or title."
+      - "If the source issue was closed as a side effect of the PR relationship, it is reopened before reprocessing."
+      - "The source issue's attempt counter is incremented, and its @auto-coder label is removed."
+      - "The issue is requeued through the normal issue-processing path so the next attempt-based routing/fallback model takes over."
+      - "Non-empty PR behavior remains unchanged."
+
 #### Jules PR Handling
 
   jules_pr_handling:

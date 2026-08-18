@@ -812,6 +812,21 @@ class StaleJulesPRResult:
 
 
 @dataclass
+class EmptyPRResult:
+    """Result of the empty PR check.
+
+    Attributes:
+        closed: True when the PR was closed because it had no effective diff
+        actions: Human-readable actions taken
+        issue_numbers: Issues that were unlocked and need to be re-processed
+    """
+
+    closed: bool = False
+    actions: List[str] = field(default_factory=list)
+    issue_numbers: List[int] = field(default_factory=list)
+
+
+@dataclass
 class StaleJulesIssueResult:
     """Result of the stale Jules issue-session check.
 
