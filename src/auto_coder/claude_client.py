@@ -201,34 +201,6 @@ class ClaudeClient(LLMClientBase):
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
 
-    @staticmethod
-    def _strip_print_only_options(options: Any) -> List[str]:
-        """Remove options that are only valid for non-interactive (--print) runs.
-
-        `--print` and `--output-format` cannot be used with `--cloud`, which always
-        starts an interactive cloud session.
-        """
-        stripped: List[str] = []
-        try:
-            index = 0
-            while index < len(options):
-                opt = str(options[index])
-                if opt in ("--print", "-p"):
-                    index += 1
-                    continue
-                if opt == "--output-format":
-                    # Skip the flag and its value
-                    index += 2
-                    continue
-                if opt.startswith("--output-format="):
-                    index += 1
-                    continue
-                stripped.append(options[index])
-                index += 1
-        except (TypeError, AttributeError):
-            return []
-        return stripped
-
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run claude CLI with the given prompt and show real-time output."""
         check_claude_usage_or_raise(
@@ -277,7 +249,6 @@ class ClaudeClient(LLMClientBase):
             has_print = False
             has_model = False
             has_settings = False
-            has_cloud = False
             # Check for list, MagicMock, or other sequence types
             if options_to_use:
                 try:
@@ -285,24 +256,10 @@ class ClaudeClient(LLMClientBase):
                     has_print = any("--print" in str(opt) for opt in options_to_use)
                     has_model = any("--model" in str(opt) for opt in options_to_use)
                     has_settings = any("--settings" in str(opt) for opt in options_to_use)
-                    has_cloud = any(str(opt) == "--cloud" or str(opt).startswith("--cloud=") for opt in options_to_use)
-                    logger.info(f"has_print: {has_print}, has_model: {has_model}, has_settings: {has_settings}, has_cloud: {has_cloud}")
+                    logger.info(f"has_print: {has_print}, has_model: {has_model}, has_settings: {has_settings}")
                 except (TypeError, AttributeError):
                     # Not iterable, treat as empty
                     pass
-
-            # `--cloud` starts an interactive cloud session, which the CLI refuses to
-            # combine with --print ("Cloud sessions are interactive only"). --output-format
-            # only works together with --print, so drop both and never add --print below.
-            #
-            # The CLI additionally refuses `--cloud` when stdout is not a TTY
-            # ("--cloud requires an interactive terminal"), so such runs are executed
-            # through a pseudo terminal.
-            run_interactively = has_cloud
-            if has_cloud:
-                options_to_use = self._strip_print_only_options(options_to_use)
-                has_print = True
-                logger.info(f"--cloud detected; running interactively without --print: {options_to_use}")
 
             # Filter out --print, --model, and --settings from options to avoid duplication
             # Only filter if we plan to add them separately (i.e., if any is missing)
@@ -421,7 +378,6 @@ class ClaudeClient(LLMClientBase):
                     env=env if len(env) > len(os.environ) else None,
                     dot_format=True,
                     idle_timeout=1800,
-                    use_pty=run_interactively,
                 )
                 logger.info("=" * 60)
                 stdout = (result.stdout or "").strip()

@@ -10,14 +10,16 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import requests  # type: ignore
+from dateutil import parser
 from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
+from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
 from .llm_backend_config import get_llm_config
-from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -51,7 +53,7 @@ def invalidate_jules_sessions_cache() -> None:
         _session_list_cache.sessions = None
 
 
-class JulesClient(LLMClientBase):
+class JulesClient(CloudTaskClientBase):
     """Jules HTTP API client that manages session-based AI interactions."""
 
     def __init__(self, backend_name: Optional[str] = None) -> None:
@@ -541,3 +543,198 @@ class JulesClient(LLMClientBase):
         # Jules doesn't support MCP servers
         logger.debug(f"Jules does not support MCP server configuration. Cannot add '{server_name}'")
         return False
+
+    def start_task(
+        self,
+        prompt: str,
+        repo_name: str = "",
+        base_branch: str = "",
+        title: Optional[str] = None,
+    ) -> str:
+        """Start a new Jules task.
+
+        Args:
+            prompt: The prompt to send
+            repo_name: Repository name
+            base_branch: Base branch name
+            title: Optional title
+
+        Returns:
+            Session ID for the started task
+        """
+        return self.start_session(
+            prompt=prompt,
+            repo_name=repo_name or "unknown/repo",
+            base_branch=base_branch or "main",
+            title=title,
+        )
+
+    def _to_cloud_task(self, session: Dict[str, Any]) -> CloudTask:
+        """Convert a Jules session dict to a normalized CloudTask."""
+        session_id = session.get("name", "").split("/")[-1] if session.get("name") else session.get("id", "")
+        raw_state = session.get("state")
+
+        # Determine normalized state
+        if raw_state == "IN_PROGRESS":
+            state = CloudTaskState.RUNNING
+        elif raw_state in ("AWAITING_PLAN_APPROVAL", "AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS") or (isinstance(raw_state, str) and raw_state.startswith("AWAITING_")):
+            state = CloudTaskState.PAUSED
+        elif raw_state == "COMPLETED":
+            state = CloudTaskState.COMPLETED
+        elif raw_state == "FAILED":
+            state = CloudTaskState.FAILED
+        elif raw_state == "QUEUED":
+            state = CloudTaskState.QUEUED
+        else:
+            state = CloudTaskState.UNKNOWN
+
+        outputs = session.get("outputs", {})
+        if isinstance(outputs, list):
+            norm_outputs: Dict[str, Any] = {}
+            for item in outputs:
+                if isinstance(item, dict):
+                    norm_outputs.update(item)
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    norm_outputs[item[0]] = item[1]
+            outputs = norm_outputs
+        elif not isinstance(outputs, dict):
+            outputs = {}
+
+        pr = outputs.get("pullRequest") or outputs.get("pull_request")
+        err = outputs.get("error")
+
+        created_at = None
+        create_time_str = session.get("createTime")
+        if create_time_str:
+            try:
+                created_at = parser.parse(str(create_time_str))
+            except Exception:
+                pass
+
+        updated_at = None
+        update_time_str = session.get("updateTime")
+        if update_time_str:
+            try:
+                updated_at = parser.parse(str(update_time_str))
+            except Exception:
+                pass
+
+        return CloudTask(
+            task_id=session_id,
+            state=state,
+            raw_state=raw_state,
+            title=session.get("title"),
+            pull_request=pr,
+            prompt=session.get("prompt"),
+            created_at=created_at,
+            updated_at=updated_at,
+            url=f"https://jules.google.com/session/{session_id}" if session_id else None,
+            error=str(err) if err else None,
+            raw_data=session,
+        )
+
+    def get_task(self, task_id: str) -> Optional[CloudTask]:
+        """Retrieve normalized CloudTask for a Jules session."""
+        try:
+            session = self.get_session(task_id)
+            if not session:
+                return None
+            return self._to_cloud_task(session)
+        except Exception as e:
+            logger.warning(f"Failed to get Jules task {task_id}: {e}")
+            return None
+
+    def list_tasks(self, repo_name: Optional[str] = None) -> List[CloudTask]:
+        """List active or recent Jules sessions as normalized CloudTasks."""
+        try:
+            sessions = self.list_sessions(repo_name=repo_name)
+            return [self._to_cloud_task(s) for s in sessions if isinstance(s, dict)]
+        except Exception as e:
+            logger.warning(f"Failed to list Jules tasks: {e}")
+            return []
+
+    def continue_if_paused(self, task_id: str, message: Optional[str] = None) -> bool:
+        """Resume a Jules session if it is currently paused or stopped in a continuable state.
+
+        Handles:
+        - AWAITING_PLAN_APPROVAL: approves plan
+        - AWAITING_USER_FEEDBACK / AWAITING_COMMENT(S) / AWAITING_*: sends continuation message ('ok' or custom message)
+        - FAILED / timed-out IN_PROGRESS: sends continuation message ('ok')
+        - COMPLETED without PR: sends continuation message ('ok' or force PR)
+
+        Returns:
+            True if session was paused and resumed, False otherwise.
+        """
+        try:
+            session = self.get_session(task_id)
+            if not session:
+                return False
+
+            raw_state = session.get("state")
+            outputs = session.get("outputs", {})
+            if isinstance(outputs, list):
+                norm_outputs: Dict[str, Any] = {}
+                for item in outputs:
+                    if isinstance(item, dict):
+                        norm_outputs.update(item)
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
+                        norm_outputs[item[0]] = item[1]
+                outputs = norm_outputs
+            elif not isinstance(outputs, dict):
+                outputs = {}
+
+            pull_request = outputs.get("pullRequest") or outputs.get("pull_request")
+
+            # Check if timed out while IN_PROGRESS
+            is_timeout = False
+            if raw_state == "IN_PROGRESS":
+                update_time_str = session.get("updateTime")
+                if update_time_str:
+                    try:
+                        update_time = parser.parse(str(update_time_str))
+                        if update_time.tzinfo is None:
+                            update_time = update_time.replace(tzinfo=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        if (now - update_time) > timedelta(minutes=5):
+                            is_timeout = True
+                    except Exception:
+                        pass
+
+            if raw_state == "AWAITING_PLAN_APPROVAL":
+                logger.info(f"Jules task {task_id} is awaiting plan approval; approving plan")
+                return self.approve_plan(task_id)
+
+            if raw_state in ("AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS") or (isinstance(raw_state, str) and raw_state.startswith("AWAITING_")):
+                send_msg = message or "ok"
+                logger.info(f"Jules task {task_id} is {raw_state}; sending continuation message: {send_msg}")
+                self.send_message(task_id, send_msg)
+                return True
+
+            if raw_state == "FAILED" or is_timeout:
+                send_msg = message or "ok"
+                logger.info(f"Jules task {task_id} is {raw_state} (timeout={is_timeout}); sending continuation message: {send_msg}")
+                self.send_message(task_id, send_msg)
+                return True
+
+            if raw_state == "COMPLETED" and not pull_request:
+                send_msg = message or "ok"
+                logger.info(f"Jules task {task_id} is COMPLETED without PR; sending continuation message: {send_msg}")
+                self.send_message(task_id, send_msg)
+                return True
+
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to check/continue Jules task {task_id}: {e}")
+            return False
+
+    def stop_task(self, task_id: str) -> bool:
+        """Stop or cancel a Jules task by sending a stop message and ending the session."""
+        try:
+            try:
+                self.send_message(task_id, "stop")
+            except Exception:
+                pass
+            return self.end_session(task_id)
+        except Exception as e:
+            logger.warning(f"Failed to stop Jules task {task_id}: {e}")
+            return False

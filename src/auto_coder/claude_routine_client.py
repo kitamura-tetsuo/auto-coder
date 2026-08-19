@@ -7,7 +7,9 @@ Reference: https://code.claude.com/docs/en/routines
 """
 
 import json
+import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests  # type: ignore
@@ -15,14 +17,40 @@ from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
 from .claude_usage_checker import check_claude_usage_or_raise
+from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
 from .llm_backend_config import get_llm_config
-from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
+STATE_FILE = os.path.join(os.getcwd(), ".auto-coder", "claude_routine_state.json")
 
-class ClaudeRoutineClient(LLMClientBase):
+
+def _load_claude_routine_state(state_file: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """Load Claude Routine session state from file."""
+    path = state_file or STATE_FILE
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load Claude Routine state: {e}")
+    return {}
+
+
+def _save_claude_routine_state(state: Dict[str, Dict[str, Any]], state_file: Optional[str] = None) -> None:
+    """Save Claude Routine session state to file."""
+    path = state_file or STATE_FILE
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save Claude Routine state: {e}")
+
+
+class ClaudeRoutineClient(CloudTaskClientBase):
     """Claude Routine HTTP API client for asynchronous cloud routine execution."""
 
     def __init__(self, backend_name: Optional[str] = None) -> None:
@@ -124,10 +152,17 @@ class ClaudeRoutineClient(LLMClientBase):
                 session_id = f"session_{int(time.time())}"
                 logger.warning(f"Could not extract session ID from response, using generated ID: {session_id}")
 
-            if not session_url and session_id:
-                session_url = f"https://claude.ai/code/{session_id}"
-
             self.active_sessions[session_id] = prompt
+            state = _load_claude_routine_state()
+            state[session_id] = {
+                "created_at": time.time(),
+                "last_continued_at": 0.0,
+                "continue_count": 0,
+                "prompt": prompt,
+                "pull_request": None,
+            }
+            _save_claude_routine_state(state)
+
             logger.info(f"Successfully fired Claude Routine: session_id={session_id}, session_url={session_url}")
             return session_id, session_url
 
@@ -178,3 +213,224 @@ class ClaudeRoutineClient(LLMClientBase):
     def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration."""
         return False
+
+    def start_task(
+        self,
+        prompt: str,
+        repo_name: str = "",
+        base_branch: str = "",
+        title: Optional[str] = None,
+    ) -> str:
+        """Start a new Claude Routine task.
+
+        Args:
+            prompt: The task prompt
+            repo_name: Repository name (optional)
+            base_branch: Base branch name (optional)
+            title: Optional title
+
+        Returns:
+            Session ID string
+        """
+        session_id, _ = self.fire_routine(prompt, repo_name=repo_name, base_branch=base_branch, title=title)
+        return session_id
+
+    def _get_session_url(self, session_id: str) -> str:
+        """Construct the session URL or API endpoint for a session ID."""
+        if self.url and "/routines/" in self.url:
+            base_api = self.url.split("/routines/")[0]
+            return f"{base_api}/sessions/{session_id}"
+        return f"https://api.anthropic.com/v1/claude_code/sessions/{session_id}"
+
+    def get_task(self, task_id: str) -> Optional[CloudTask]:
+        """Get the current normalized task state for a Claude Routine session."""
+        state = _load_claude_routine_state()
+        session_info = state.get(task_id, {})
+        pr = session_info.get("pull_request")
+        created_at_ts = session_info.get("created_at")
+        created_at_dt = datetime.fromtimestamp(created_at_ts, tz=timezone.utc) if created_at_ts else None
+
+        session_api_url = self._get_session_url(task_id)
+        try:
+            response = self.session.get(session_api_url, timeout=self.timeout)
+            if response.status_code == 200:
+                data = response.json()
+                raw_state = (data.get("status") or data.get("state") or "").lower()
+
+                pr = pr or data.get("pull_request") or data.get("pullRequest") or data.get("pr_url")
+
+                if raw_state in ("completed", "finished", "success") or pr:
+                    task_state = CloudTaskState.COMPLETED
+                elif raw_state in ("failed", "error", "cancelled"):
+                    task_state = CloudTaskState.FAILED
+                elif raw_state in ("paused", "waiting_for_input", "idle", "stopped", "awaiting_user_input"):
+                    task_state = CloudTaskState.PAUSED
+                elif raw_state in ("running", "in_progress", "active"):
+                    # Absence of PR serves as substitute pause indicator
+                    task_state = CloudTaskState.PAUSED if not pr else CloudTaskState.RUNNING
+                elif raw_state in ("queued", "pending"):
+                    task_state = CloudTaskState.QUEUED
+                else:
+                    task_state = CloudTaskState.PAUSED if not pr else CloudTaskState.UNKNOWN
+
+                return CloudTask(
+                    task_id=task_id,
+                    state=task_state,
+                    raw_state=raw_state,
+                    title=data.get("title"),
+                    pull_request=pr,
+                    prompt=data.get("prompt") or session_info.get("prompt") or self.active_sessions.get(task_id),
+                    created_at=created_at_dt,
+                    url=data.get("url") or f"https://claude.ai/code/{task_id}",
+                    error=data.get("error"),
+                    raw_data=data,
+                )
+        except Exception as e:
+            logger.debug(f"Could not fetch Claude routine task details via API for {task_id}: {e}")
+
+        # Fallback to local tracking: Absence of created PR indicates paused state
+        if task_id in self.active_sessions or session_info:
+            task_state = CloudTaskState.COMPLETED if pr else CloudTaskState.PAUSED
+            return CloudTask(
+                task_id=task_id,
+                state=task_state,
+                pull_request=pr,
+                created_at=created_at_dt,
+                prompt=session_info.get("prompt") or self.active_sessions.get(task_id),
+                url=f"https://claude.ai/code/{task_id}",
+            )
+
+        return None
+
+    def continue_if_paused(self, task_id: str, message: str = "continue") -> bool:
+        """Resume an existing Claude routine session if no PR has been created.
+
+        Criteria:
+        - Absence of a created PR for the session serves as the substitute indication of paused state.
+        - Continues every 1 hour up to 5 hours from session start (up to 5 continuation attempts).
+        - Sends continuation message using `claude -p --cloud <task_id> <message>`.
+
+        Args:
+            task_id: The Claude session ID to resume.
+            message: Message to send (default: "continue").
+
+        Returns:
+            True if continuation message was sent, False otherwise.
+        """
+        state = _load_claude_routine_state()
+        session_info = state.get(task_id, {})
+        now = time.time()
+
+        # Check if PR is already created
+        task = self.get_task(task_id)
+        pr = (task and task.pull_request) or session_info.get("pull_request")
+        if pr:
+            logger.debug(f"Claude Routine session {task_id} already has a PR ({pr}); skipping continuation")
+            return False
+
+        created_at = session_info.get("created_at")
+        if created_at is None:
+            # If not tracked yet, initialize tracking starting now
+            created_at = now
+            session_info["created_at"] = created_at
+            session_info["last_continued_at"] = 0.0
+            session_info["continue_count"] = 0
+            session_info["prompt"] = self.active_sessions.get(task_id, "")
+            state[task_id] = session_info
+            _save_claude_routine_state(state)
+
+        elapsed_since_start = now - created_at
+
+        # Session start to 5 hours limit
+        if elapsed_since_start > 5 * 3600:
+            logger.info(f"Claude Routine session {task_id} exceeded 5-hour window without PR; no more continuation")
+            return False
+
+        continue_count = session_info.get("continue_count", 0)
+        if continue_count >= 5:
+            logger.info(f"Claude Routine session {task_id} reached maximum continuation attempts (5)")
+            return False
+
+        last_continued_at = session_info.get("last_continued_at", 0.0)
+
+        # Check if 1 hour has elapsed since start (for 1st attempt) or since last continuation
+        time_since_last = (now - last_continued_at) if last_continued_at > 0 else elapsed_since_start
+        if time_since_last < 3600:
+            logger.debug(f"Claude Routine session {task_id} not yet due for continuation " f"(elapsed since last: {time_since_last / 60:.1f}m < 60m, attempts: {continue_count})")
+            return False
+
+        # Send continue message via `claude -p --cloud <session_id> <message>`
+        cmd = ["claude", "-p", f"--cloud={task_id}", message]
+        env = os.environ.copy()
+        if self.token:
+            env["CLAUDE_CODE_ROUTINE_TOKEN"] = self.token
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.token
+
+        logger.info(f"Sending '{message}' to Claude Routine session {task_id} via claude CLI (attempt {continue_count + 1}/5)")
+        try:
+            result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
+            if result.returncode == 0:
+                session_info["continue_count"] = continue_count + 1
+                session_info["last_continued_at"] = now
+                state[task_id] = session_info
+                _save_claude_routine_state(state)
+                logger.info(f"Successfully sent '{message}' to Claude Routine session {task_id}")
+                return True
+            else:
+                logger.warning(f"Failed to send continuation to Claude Routine session {task_id} (code {result.returncode}): {result.stderr or result.stdout}")
+                return False
+        except Exception as e:
+            logger.warning(f"Error sending continuation to Claude Routine session {task_id}: {e}")
+            return False
+
+    def list_tasks(self, repo_name: Optional[str] = None) -> List[CloudTask]:
+        """List active or recent Claude Routine sessions."""
+        tasks: List[CloudTask] = []
+        if self.url and "/routines/" in self.url:
+            base_api = self.url.split("/routines/")[0]
+            sessions_url = f"{base_api}/sessions"
+            try:
+                response = self.session.get(sessions_url, timeout=self.timeout)
+                if response.status_code == 200:
+                    data = response.json()
+                    sessions_list = data.get("sessions", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                    for s in sessions_list:
+                        if isinstance(s, dict):
+                            s_id = s.get("id") or s.get("session_id") or s.get("claude_code_session_id")
+                            if s_id:
+                                task = self.get_task(s_id)
+                                if task:
+                                    tasks.append(task)
+                    if tasks:
+                        return tasks
+            except Exception as e:
+                logger.debug(f"Could not list Claude sessions from API: {e}")
+
+        # Return tracked active sessions as fallback
+        for session_id, prompt in self.active_sessions.items():
+            tasks.append(
+                CloudTask(
+                    task_id=session_id,
+                    prompt=prompt,
+                    state=CloudTaskState.UNKNOWN,
+                    url=f"https://claude.ai/code/{session_id}",
+                )
+            )
+        return tasks
+
+    def stop_task(self, task_id: str) -> bool:
+        """Stop or cancel a Claude Routine session."""
+        session_url = self._get_session_url(task_id)
+        stopped = False
+        try:
+            response = self.session.post(f"{session_url}/cancel", json={}, timeout=self.timeout)
+            if response.status_code in (200, 204):
+                stopped = True
+        except Exception:
+            pass
+
+        if task_id in self.active_sessions:
+            del self.active_sessions[task_id]
+            stopped = True
+
+        return stopped

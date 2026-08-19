@@ -275,7 +275,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_claude_cli_or_fail()
         elif backend_name == "aider":
             check_aider_cli_or_fail()
-        elif backend_name in ("jules", "claude-routine"):
+        elif backend_name in ("jules", "claude-routine", "codex-cloud"):
             pass  # Cloud/API based, no local CLI binary needed
         else:
             # Check if it's a custom backend with backend_type
@@ -284,7 +284,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
                 # Recursively check the backend_type
                 check_backend_prerequisites([backend_config.backend_type])
             else:
-                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine) " f"or configure backend_type in llm_config.toml")
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine, codex-cloud) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
@@ -396,6 +396,12 @@ def build_backend_manager(
 
         return ClaudeRoutineClient(backend_name=backend_name)
 
+    def _create_codex_cloud_client(backend_name: str, use_noedit_options: bool = False) -> Any:
+        """Create a CodexCloudClient."""
+        from .codex_cloud_client import CodexCloudClient
+
+        return CodexCloudClient(backend_name=backend_name)
+
     # Mapping of backend types to factory functions
     backend_type_factories: Dict[str, Callable[..., Any]] = {
         "qwen": _create_qwen_client,
@@ -406,13 +412,14 @@ def build_backend_manager(
         "codex-mcp": _create_codex_mcp_client,
         "aider": _create_aider_client,
         "claude-routine": _create_claude_routine_client,
+        "codex-cloud": _create_codex_cloud_client,
     }
 
     # Build factory dictionary with support for aliases
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "claude", "aider", "claude-routine"]:
+        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "claude", "aider", "claude-routine", "codex-cloud"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
@@ -430,6 +437,8 @@ def build_backend_manager(
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_aider_client, backend_name))
             elif backend_name == "claude-routine":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_routine_client, backend_name))
+            elif backend_name == "codex-cloud":
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_cloud_client, backend_name))
         else:
             backend_config = config.get_backend_config(backend_name)
             if backend_config:
