@@ -623,6 +623,39 @@ class TestIsJulesPr:
         }
         assert _is_jules_pr(pr_data) is False
 
+    def test_is_jules_pr_claude_author_false(self):
+        """Test that Claude authors are not identified as Jules PRs."""
+        assert _is_jules_pr({"number": 123, "user": {"login": "claude"}}) is False
+        assert _is_jules_pr({"number": 123, "user": {"login": "claude[bot]"}}) is False
+        assert _is_jules_pr({"number": 123, "user": {"login": "claude-code"}}) is False
+
+    def test_is_jules_pr_claude_session_url_false(self):
+        """Test that Claude session URLs in body are not identified as Jules PRs."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": "human-dev"},
+            "body": "Fixed by Claude\nhttps://claude.ai/code/session_01HJKLMNOPQRSTUVWXYZ",
+        }
+        assert _is_jules_pr(pr_data) is False
+
+    def test_is_jules_pr_jules_session_url_true(self):
+        """Test that Jules session URLs in body are identified as Jules PRs."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": "human-dev"},
+            "body": "Fixes bug\nhttps://jules.google.com/session/901463134778726610",
+        }
+        assert _is_jules_pr(pr_data) is True
+
+    def test_is_jules_pr_github_pr_url_only_false(self):
+        """Test that a plain GitHub PR link in body is not identified as a Jules PR."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": "human-dev"},
+            "body": "Related to https://github.com/owner/repo/pull/456",
+        }
+        assert _is_jules_pr(pr_data) is False
+
 
 class TestSendJulesErrorFeedback:
     """Test cases for _send_jules_error_feedback function."""

@@ -114,6 +114,42 @@ class TestCloseStaleJulesPR:
         mock_increment.assert_not_called()
 
     @patch("src.auto_coder.pr_processor.increment_attempt")
+    def test_ignores_claude_pr(self, mock_increment):
+        """Claude PRs must not be closed by Jules staleness check, and attempt must not be incremented."""
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=48)
+        pr_data["user"] = {"login": "claude[bot]"}
+        pr_data["body"] = "Fixes issue\nclose #4636"
+        checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+
+        assert result.closed is False
+        assert result.actions == []
+        github_client.close_pr.assert_not_called()
+        mock_increment.assert_not_called()
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
+    def test_ignores_claude_routine_session_pr(self, mock_increment):
+        """PRs with Claude routine session links must not be closed by Jules staleness check."""
+        github_client = Mock()
+        config = AutomationConfig()
+        config.JULES_PR_CI_TIMEOUT_HOURS = 12
+        pr_data = _jules_pr_data(hours_old=48)
+        pr_data["user"] = {"login": "human-dev"}
+        pr_data["body"] = "Session URL: https://claude.ai/code/session_01HJKLMNOPQRSTUVWXYZ\nclose #4636"
+        checks = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
+
+        result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
+
+        assert result.closed is False
+        assert result.actions == []
+        github_client.close_pr.assert_not_called()
+        mock_increment.assert_not_called()
+
+    @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_ignores_already_closed_pr(self, mock_increment):
         """A PR closed by an earlier run must not be closed (and counted) twice."""
         github_client = Mock()

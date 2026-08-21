@@ -2160,25 +2160,43 @@ def _update_jules_pr_body(
 
 
 def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
-    """Check if a PR is created by Jules (google-labs-jules) or cloud coding routine.
+    """Check if a PR is created by Jules (google-labs-jules).
 
     Args:
         pr_data: PR data dictionary
 
     Returns:
-        True if the PR is created by Jules or cloud routine, False otherwise
+        True if the PR is created by Jules, False otherwise
     """
     # Check author first
     pr_author = get_pr_author_login(pr_data) or ""
-    if pr_author.startswith("google-labs-jules") or pr_author.startswith("claude"):
+    if pr_author.startswith("claude"):
+        return False
+    if pr_author.startswith("google-labs-jules"):
         return True
 
-    # Fallback: Check if PR body contains a valid session ID
-    # This handles cases where the PR was created by a different user (e.g. manual creation)
-    # but is still associated with a Jules or Claude session
+    # Fallback: Check if PR body contains a valid Jules session reference
     pr_body = pr_data.get("body", "") or ""
-    if _extract_session_id_from_pr_body(pr_body):
+    if not pr_body:
+        return False
+
+    # Explicit Claude indicators should never be treated as Jules
+    if "claude.ai/code/" in pr_body or re.search(r"\bClaude session\b", pr_body, re.IGNORECASE):
+        return False
+
+    # Jules URL indicators
+    if re.search(r"jules\.google\.com/(?:session|task)/", pr_body) or re.search(r"\bJules session\b", pr_body, re.IGNORECASE):
         return True
+
+    # Check for Session ID format without Claude or generic GitHub URL
+    session_id = _extract_session_id_from_pr_body(pr_body)
+    if session_id:
+        if "claude.ai" in session_id or "github.com" in session_id:
+            return False
+        # Only treat as Jules session if "Session ID:" or "Session:" is explicitly in body
+        session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
+        if re.search(session_pattern, pr_body, re.IGNORECASE):
+            return True
 
     return False
 
