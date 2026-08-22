@@ -649,6 +649,11 @@ def _close_stale_jules_pr(
     pr_number = int(pr_data["number"])
 
     try:
+        from .llm_backend_config import is_jules_mode_enabled
+
+        if not is_jules_mode_enabled():
+            return result
+
         if not _is_jules_pr(pr_data):
             return result
 
