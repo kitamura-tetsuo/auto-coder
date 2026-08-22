@@ -153,6 +153,46 @@ class TestDifficultIssueHandling:
                 label_context=None,
             )
 
+    @patch("auto_coder.issue_processor._process_issue_jules_mode")
+    @patch("auto_coder.issue_processor._process_issue_claude_routine_mode")
+    def test_process_issue_high_score_cloud_failover_on_usage_limit(self, mock_routine_mode, mock_jules_mode):
+        """Test that _process_issue_high_score_cloud falls over to next backend when usage limit reached."""
+        from auto_coder.exceptions import AutoCoderUsageLimitError
+
+        mock_routine_mode.side_effect = AutoCoderUsageLimitError("5-hour limit reached")
+        mock_jules_mode.return_value = ["Jules session started"]
+
+        config = AutomationConfig()
+        issue_data = {"number": 55, "labels": ["difficult"]}
+        mock_github = MagicMock()
+
+        llm_config = LLMBackendConfiguration(
+            backend_with_high_score_cloud_order=["claude-opus-routine", "jules"],
+            backends={
+                "claude-opus-routine": BackendConfig(
+                    name="claude-opus-routine",
+                    backend_type="claude-routine",
+                    url="https://api.anthropic.com/fire",
+                ),
+                "jules": BackendConfig(
+                    name="jules",
+                    backend_type="jules",
+                ),
+            },
+        )
+
+        with patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config):
+            actions = _process_issue_high_score_cloud(
+                "owner/repo",
+                issue_data,
+                config,
+                mock_github,
+            )
+
+            assert actions == ["Jules session started"]
+            mock_routine_mode.assert_called_once()
+            mock_jules_mode.assert_called_once()
+
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.issue_processor._process_issue_jules_mode")

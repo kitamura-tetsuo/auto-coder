@@ -17,6 +17,7 @@ from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessRe
 from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager
+from .exceptions import AutoCoderUsageLimitError
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
@@ -432,6 +433,8 @@ def _process_issue_claude_routine_mode(
             label_context.keep_label()
             logger.info(f"Keeping @auto-coder label for issue #{issue_number} (Claude Routine session started)")
 
+    except AutoCoderUsageLimitError:
+        raise
     except Exception as e:
         logger.error(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
         actions.append(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
@@ -446,7 +449,7 @@ def _process_issue_high_score_cloud(
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
 ) -> List[str]:
-    """Process an issue using the backend_with_high_score_cloud configuration.
+    """Process an issue using the backend_with_high_score_cloud configuration with failover support.
 
     Args:
         repo_name: Repository name (e.g., 'owner/repo')
@@ -464,49 +467,55 @@ def _process_issue_high_score_cloud(
     high_score_cloud_order = llm_config.backend_with_high_score_cloud_order
     high_score_cloud_config = llm_config.get_backend_with_high_score_cloud()
 
-    backend_name = None
+    candidates: List[str] = []
     if high_score_cloud_order:
-        backend_name = high_score_cloud_order[0]
+        candidates = list(high_score_cloud_order)
     elif high_score_cloud_config:
-        backend_name = high_score_cloud_config.name
+        candidates = [high_score_cloud_config.name]
 
-    backend_type = None
-    if backend_name:
+    for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
         backend_type = (b_cfg and b_cfg.backend_type) or backend_name
 
-    if backend_type == "claude-routine":
-        return _process_issue_claude_routine_mode(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-            backend_name=backend_name,
-            label_context=label_context,
-        )
-    elif backend_type == "jules":
-        return _process_issue_jules_mode(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-            label_context=label_context,
-        )
-    else:
-        from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
+        try:
+            if backend_type == "claude-routine":
+                return _process_issue_claude_routine_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_name=backend_name,
+                    label_context=label_context,
+                )
+            elif backend_type == "jules":
+                return _process_issue_jules_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    label_context=label_context,
+                )
+        except AutoCoderUsageLimitError as e:
+            logger.warning(f"Cloud backend '{backend_name}' hit usage limit: {e}. Trying next backend.")
+            continue
+        except Exception as e:
+            logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
+            continue
 
-        backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
-        if backend_manager is None:
-            logger.warning("backend_with_high_score_cloud is not configured; using the default backend")
+    from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
 
-        return _take_issue_actions(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-            backend_manager=backend_manager,
-            check_labels=False,
-        )
+    backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
+    if backend_manager is None:
+        logger.warning("backend_with_high_score_cloud is not configured; using the default backend")
+
+    return _take_issue_actions(
+        repo_name,
+        issue_data,
+        config,
+        github_client,
+        backend_manager=backend_manager,
+        check_labels=False,
+    )
 
 
 def _extract_session_id(session: Dict[str, Any]) -> Optional[str]:

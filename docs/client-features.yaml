@@ -111,13 +111,16 @@ The system supports extensive backend configuration options. Key fields include:
   - Purpose: Automatically checks remaining rate limit and usage allowances before calling Claude or Claude-Routine backends.
   - Trigger & Thresholds:
     - 5-hour rolling session limit has **<= 20% remaining** (utilization >= 80%), OR
-    - 7-day weekly limit has **<= 5% remaining** (utilization >= 95%)
+    - 7-day weekly limit (including model-specific limits like `seven_day_sonnet`, `seven_day_opus`, `seven_day_oauth_apps`) has **<= 5% remaining** (utilization >= 95%), OR
+    - Extra usage is disabled due to `out_of_credits`, `org_spend_cap_reached`, `org_level_disabled_until`, or `org_level_disabled`, OR
+    - API returns `HTTP 429` (Rate limit exceeded)
   - Behavior:
     - Queries `https://api.anthropic.com/api/oauth/usage` before invoking the LLM CLI or firing a routine.
-    - If remaining quota is at or below the threshold, raises `AutoCoderUsageLimitError` with the reset timestamp.
-    - Seamlessly triggers standard `BackendManager` rotation to the next backend in the configured order or defers until reset.
-    - Automatically discovers OAuth tokens from backend configuration (`claude_code_oauth_token`, `claude_code_routine_token`), environment variables, or `~/.claude/.credentials.json`.
-    - Handles token refreshing on HTTP 401 using stored refresh tokens.
+    - If remaining quota is at or below the threshold or rate limits are reached, raises `AutoCoderUsageLimitError` with the reset timestamp and reason.
+    - Seamlessly triggers standard `BackendManager` rotation to the next backend in the configured order (including failover in `backend_with_high_score_cloud_order`) or defers until reset.
+    - Automatically discovers OAuth tokens from backend configuration (`claude_code_oauth_token`, `claude_code_routine_token`), environment variables, or credentials file (`~/.claude/.credentials.json`).
+    - Proactively checks `expiresAt` timestamp and exchanges refresh tokens via JSON payload with `client_id` to prevent authorization failures.
+    - Accurately captures HTTP 429 rate limits from token refresh and usage endpoints to avoid runaway task spawning.
   - Supported Backends: `backend_type = "claude"`, `backend_type = "claude-routine"`
 
 - **`options` field**: CLI options for code editing operations

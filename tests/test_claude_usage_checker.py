@@ -170,7 +170,7 @@ class TestClaudeUsageChecker:
         ):
             result = fetch_claude_usage_data("old-token")
             assert result == {"five_hour": {"utilization": 10.0}}
-            mock_refresh.assert_called_once_with("refresh-tok")
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=None)
 
     def test_refresh_claude_access_token_success(self):
         """Test refresh_claude_access_token parses response and updates credentials file."""
@@ -179,10 +179,116 @@ class TestClaudeUsageChecker:
             {
                 "access_token": "new-acc-token",
                 "refresh_token": "new-ref-token",
+                "expires_in": 3600,
             }
         ).encode("utf-8")
 
-        with patch("urllib.request.urlopen", return_value=mock_token_resp), patch("auto_coder.claude_usage_checker._update_credentials_file") as mock_update:
-            token = refresh_claude_access_token("my-refresh-token")
+        with patch("urllib.request.urlopen", return_value=mock_token_resp) as mock_urlopen, patch("auto_coder.claude_usage_checker._update_credentials_file") as mock_update:
+            token = refresh_claude_access_token("my-refresh-token", scopes=["user:profile", "user:inference"])
             assert token == "new-acc-token"
-            mock_update.assert_called_once_with("new-acc-token", "new-ref-token")
+            mock_update.assert_called_once()
+            req = mock_urlopen.call_args[0][0]
+            assert req.headers["Content-type"] == "application/json"
+            body = json.loads(req.data.decode("utf-8"))
+            assert body["grant_type"] == "refresh_token"
+            assert body["refresh_token"] == "my-refresh-token"
+            assert body["client_id"] == "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+            assert body["scope"] == "user:profile user:inference"
+
+    def test_refresh_claude_access_token_handles_429(self):
+        """Test that refresh_claude_access_token handles HTTP 429 gracefully."""
+        http_429 = urllib.error.HTTPError("url", 429, "Too Many Requests", {}, None)  # type: ignore
+        with patch("urllib.request.urlopen", side_effect=http_429):
+            token = refresh_claude_access_token("my-refresh-token")
+            assert token is None
+
+    def test_resolve_token_proactive_refresh_when_expired(self):
+        """Test resolve_claude_oauth_token proactively refreshes when expiresAt is in past."""
+        expired_ms = (1000.0) * 1000  # in the past
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": "expired-tok",
+                "refreshToken": "refresh-tok",
+                "expiresAt": expired_ms,
+                "scopes": ["user:profile"],
+            }
+        }
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=creds),
+            patch("auto_coder.claude_usage_checker.refresh_claude_access_token", return_value="proactive-refreshed-tok") as mock_refresh,
+        ):
+            token = resolve_claude_oauth_token(None)
+            assert token == "proactive-refreshed-tok"
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+
+    def test_fetch_claude_usage_data_handles_429(self):
+        """Test fetch_claude_usage_data returns rate limit error structure on HTTP 429."""
+        http_429 = urllib.error.HTTPError("url", 429, "Too Many Requests", {}, None)  # type: ignore
+        with (
+            patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"),
+            patch("urllib.request.urlopen", side_effect=http_429),
+        ):
+            res = fetch_claude_usage_data("test-token")
+            assert res is not None
+            assert res.get("is_rate_limited") is True
+            assert res.get("http_status") == 429
+            assert res.get("error", {}).get("type") == "rate_limit_error"
+
+    def test_check_claude_usage_http_429_insufficient(self):
+        """Test check_claude_usage marks quota insufficient on HTTP 429 rate limit."""
+        mock_data = {
+            "is_rate_limited": True,
+            "http_status": 429,
+            "error": {"type": "rate_limit_error", "message": "Rate limit reached (HTTP 429)"},
+        }
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_data):
+            quota = check_claude_usage(token="test-token", use_cache=False)
+            assert quota.is_quota_insufficient is True
+            assert "Claude rate limit error" in quota.reason
+
+    def test_check_claude_usage_extra_usage_out_of_credits(self):
+        """Test check_claude_usage detects extra_usage out_of_credits disabled_reason."""
+        mock_data = {
+            "five_hour": {"utilization": 10.0},
+            "seven_day": {"utilization": 20.0},
+            "extra_usage": {
+                "is_enabled": False,
+                "disabled_reason": "out_of_credits",
+            },
+        }
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_data):
+            quota = check_claude_usage(token="test-token", use_cache=False)
+            assert quota.is_quota_insufficient is True
+            assert "Extra usage disabled: out_of_credits" in quota.reason
+
+    def test_check_claude_usage_sonnet_window_insufficient(self):
+        """Test check_claude_usage detects 7-day sonnet limit exhaustion."""
+        mock_data = {
+            "five_hour": {"utilization": 10.0},
+            "seven_day": {"utilization": 20.0},
+            "seven_day_sonnet": {"utilization": 98.0, "resets_at": "2026-08-25T10:00:00Z"},
+        }
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_data):
+            quota = check_claude_usage(token="test-token", use_cache=False)
+            assert quota.is_quota_insufficient is True
+            assert "7-day Sonnet limit remaining 2.0%" in quota.reason
+
+    def test_check_claude_usage_weekly_model_limits_array(self):
+        """Test check_claude_usage parses limits array with weekly_scoped models."""
+        mock_data = {
+            "five_hour": {"utilization": 10.0},
+            "seven_day": {"utilization": 20.0},
+            "limits": [
+                {
+                    "kind": "weekly_scoped",
+                    "scope": {"model": {"display_name": "Claude 3.7 Sonnet"}},
+                    "percent": 97.0,
+                    "resets_at": "2026-08-26T00:00:00Z",
+                }
+            ],
+        }
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_data):
+            quota = check_claude_usage(token="test-token", use_cache=False)
+            assert quota.is_quota_insufficient is True
+            assert "Weekly Claude 3.7 Sonnet limit remaining 3.0%" in quota.reason

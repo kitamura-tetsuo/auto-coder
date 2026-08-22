@@ -366,7 +366,16 @@ class ClaudeClient(LLMClientBase):
                 usage_markers = self.usage_markers
             else:
                 # Default hardcoded usage markers
-                usage_markers = ['{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets"]
+                usage_markers = [
+                    '{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",',
+                    "5-hour limit reached · resets",
+                    '{"type":"assistant","error":"rate_limit"}',
+                    '{"type":"error","error":{"type":"rate_limit_error"',
+                    "rate_limit_error",
+                    "5-hour limit reached",
+                    "out of usage credits",
+                    "usage credit cap is reached",
+                ]
 
             def run_cli(command: list[str]) -> tuple[Any, str, str, bool]:
                 display_cmd = " ".join(command)

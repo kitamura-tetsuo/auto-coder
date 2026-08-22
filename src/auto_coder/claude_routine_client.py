@@ -16,10 +16,12 @@ import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
-from .claude_usage_checker import check_claude_usage_or_raise
+from .claude_usage_checker import check_claude_usage, check_claude_usage_or_raise
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
+from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -137,6 +139,8 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             if response.status_code not in [200, 201, 202]:
                 error_msg = f"HTTP {response.status_code}: {response.text}"
                 logger.error(f"Failed to fire Claude Routine: {error_msg}")
+                if response.status_code == 429 or has_usage_marker_match(response.text, self.options) or "rate_limit" in response.text.lower():
+                    raise AutoCoderUsageLimitError(f"Claude Routine rate limit exceeded: {error_msg}")
                 raise RuntimeError(f"Failed to fire Claude Routine: {error_msg}")
 
             try:
@@ -166,6 +170,8 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             logger.info(f"Successfully fired Claude Routine: session_id={session_id}, session_url={session_url}")
             return session_id, session_url
 
+        except AutoCoderUsageLimitError:
+            raise
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fire Claude Routine: {e}")
             raise RuntimeError(f"Failed to fire Claude Routine: {e}")
@@ -357,6 +363,12 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         time_since_last = (now - last_continued_at) if last_continued_at > 0 else elapsed_since_start
         if time_since_last < 3600:
             logger.debug(f"Claude Routine session {task_id} not yet due for continuation " f"(elapsed since last: {time_since_last / 60:.1f}m < 60m, attempts: {continue_count})")
+            return False
+
+        # Check Claude usage before sending continuation
+        quota = check_claude_usage(token=self.token)
+        if quota.is_quota_insufficient:
+            logger.warning(f"Claude usage limit reached before continuation for session {task_id}: {quota.reason}")
             return False
 
         # Send continue message via `claude -p --cloud <session_id> <message>`

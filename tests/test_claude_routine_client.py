@@ -145,3 +145,32 @@ class TestClaudeRoutineClient:
 
                 assert "5-hour limit remaining 15.0%" in str(exc_info.value)
                 mock_check.assert_called_once_with(token="test-routine-token", backend_name="claude-opus-routine")
+
+    def test_fire_routine_raises_usage_limit_on_http_429(self, mock_backend_config):
+        """Test fire_routine raises AutoCoderUsageLimitError when HTTP response is 429."""
+        from auto_coder.exceptions import AutoCoderUsageLimitError
+
+        with patch("auto_coder.claude_routine_client.get_llm_config", return_value=mock_backend_config):
+            client = ClaudeRoutineClient("claude-opus-routine")
+
+            mock_response = MagicMock()
+            mock_response.status_code = 429
+            mock_response.text = '{"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}'
+
+            with patch.object(client.session, "post", return_value=mock_response):
+                with pytest.raises(AutoCoderUsageLimitError) as exc_info:
+                    client.fire_routine("Test prompt")
+
+                assert "rate limit exceeded" in str(exc_info.value).lower()
+
+    def test_continue_if_paused_skips_when_usage_insufficient(self, mock_backend_config):
+        """Test continue_if_paused returns False when quota is insufficient."""
+        from auto_coder.claude_usage_checker import ClaudeUsageQuota
+
+        with patch("auto_coder.claude_routine_client.get_llm_config", return_value=mock_backend_config):
+            client = ClaudeRoutineClient("claude-opus-routine")
+
+            insufficient_quota = ClaudeUsageQuota(is_quota_insufficient=True, reason="5-hour limit remaining 10.0%")
+            with patch("auto_coder.claude_routine_client.check_claude_usage", return_value=insufficient_quota):
+                res = client.continue_if_paused("session_123")
+                assert res is False
