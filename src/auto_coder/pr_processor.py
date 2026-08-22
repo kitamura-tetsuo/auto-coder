@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
+from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
@@ -155,6 +155,43 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
                 lm.remove_label()
         except Exception:
             pass
+
+
+def has_unresolved_review_threads(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+) -> bool:
+    """Check if a pull request has unresolved review threads.
+
+    Args:
+        github_client: GitHub client instance or None
+        repo_name: Repository name (owner/repo)
+        pr_number: Pull request number
+
+    Returns:
+        True if at least one review thread is unresolved, False otherwise.
+    """
+    try:
+        client = github_client or GitHubClient.get_instance()
+        if hasattr(client, "has_unresolved_review_threads"):
+            res = client.has_unresolved_review_threads(repo_name, pr_number)
+            if isinstance(res, bool):
+                return res
+            if isinstance(res, (list, tuple)):
+                return any(not getattr(t, "is_resolved", False) for t in res)
+            if res is True:
+                return True
+            return False
+        elif hasattr(client, "get_pr_review_threads"):
+            threads = client.get_pr_review_threads(repo_name, pr_number)
+            if isinstance(threads, (list, tuple)):
+                return any(not getattr(t, "is_resolved", False) for t in threads)
+            return False
+        return False
+    except Exception as e:
+        logger.error(f"Error checking unresolved review threads for PR #{pr_number}: {e}")
+        return False
 
 
 def process_pull_request(
@@ -961,6 +998,11 @@ def _process_pr_for_merge(
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to 'disable-auto-merge' label")
             return processed_pr
 
+        # Check for unresolved review threads
+        if has_unresolved_review_threads(github_client, repo_name, pr_data["number"]):
+            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
+            return processed_pr
+
         merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
@@ -1025,7 +1067,7 @@ def _take_pr_actions(
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
             actions.append(f"PR #{pr_number} was merged.")
-        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
+        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions) or any("Skipping merge" in action for action in merge_actions):
             actions.append(f"PR #{pr_number} processing deferred.")
 
     except Exception as e:
@@ -1473,6 +1515,11 @@ def _handle_pr_merge(
             labels = pr_data.get("labels", [])
             if any((isinstance(label, dict) and label.get("name") == "disable-auto-merge") or (isinstance(label, str) and label == "disable-auto-merge") for label in labels):
                 actions.append(f"Skipping merge for PR #{pr_number} due to 'disable-auto-merge' label")
+                return actions
+
+            # Check for unresolved review threads
+            if has_unresolved_review_threads(github_client, repo_name, pr_number):
+                actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
 
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
@@ -2549,7 +2596,13 @@ def _merge_pr(
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
 
-        token = GitHubClient.get_instance().token
+        client = github_client or GitHubClient.get_instance()
+        if has_unresolved_review_threads(client, repo_name, pr_number):
+            logger.info(f"PR #{pr_number} has unresolved review threads. Skipping merge.")
+            log_action(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
+            return False
+
+        token = client.token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
 

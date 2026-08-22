@@ -775,3 +775,21 @@ Recent configuration schema changes that require migration:
       - "CodexCloudClient manages asynchronous Codex Cloud task execution via 'codex cloud exec --env <ENV_ID> [--branch <BRANCH>] PROMPT', 'codex cloud list --json', 'codex cloud status <TASK_ID>', 'codex cloud diff <TASK_ID>', and 'codex cloud apply <TASK_ID>'. continue_if_paused returns False as follow-up messaging is currently unsupported in Codex Cloud CLI."
       - "ClaudeClient and CodexClient remain focused on local/non-cloud execution only."
       - "The orchestration layer interacts with cloud providers uniformly through CloudTaskClientBase without embedding provider-specific state names."
+
+## PR Review Thread Merge Gate
+
+  unresolved_review_threads_gate:
+    description: "Block PR auto-merge while unresolved review threads exist."
+    implementation: |
+      ReviewThread, get_pr_review_threads, has_unresolved_review_threads in src/auto_coder/util/gh_cache.py,
+      has_unresolved_review_threads, _process_pr_for_merge, _handle_pr_merge, _merge_pr in src/auto_coder/pr_processor.py
+    behavior:
+      - "Before performing an automatic merge, retrieves the PR review threads from GitHub GraphQL API (PullRequestReviewThread.isResolved)."
+      - "If any review thread is unresolved (isResolved == False):"
+        - "The PR is not merged and remains open."
+        - "Linked issue attempt counters are not incremented."
+        - "The condition is treated as deferred processing rather than an execution failure."
+        - "Future runs re-check the review threads and merge once all threads are resolved."
+      - "Resolved review threads (isResolved == True) and normal PR conversation comments do not block merge."
+      - "Applies generically to all PRs handled by Auto-Coder."
+

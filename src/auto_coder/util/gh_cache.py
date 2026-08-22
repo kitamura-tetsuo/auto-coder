@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import types
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -18,6 +19,14 @@ from hishel.httpx import SyncCacheClient
 from ..logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ReviewThread:
+    id: str = ""
+    is_resolved: bool = False
+    is_outdated: bool = False
+
 
 # Safety bound for paginated comment listings (100 comments per page).
 COMMENTS_MAX_PAGES = 50
@@ -955,6 +964,95 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
             return []
+
+    def get_pr_review_threads(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
+        """Get review threads for a pull request via GraphQL.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            pr_number: Pull request number
+
+        Returns:
+            List of ReviewThread dataclass instances.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+            query = """
+            query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100, after: $cursor) {
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
+                    nodes {
+                      id
+                      isResolved
+                      isOutdated
+                    }
+                  }
+                }
+              }
+            }
+            """
+
+            threads: List[ReviewThread] = []
+            cursor: Optional[str] = None
+
+            while True:
+                variables: Dict[str, Any] = {"owner": owner, "name": repo, "number": pr_number, "cursor": cursor}
+                response = self.graphql_query(query, variables)
+
+                if not response or "data" not in response:
+                    break
+
+                pr_data = response.get("data", {}).get("repository", {}).get("pullRequest")
+                if not pr_data:
+                    break
+
+                review_threads_data = pr_data.get("reviewThreads")
+                if not review_threads_data:
+                    break
+
+                nodes = review_threads_data.get("nodes") or []
+                for node in nodes:
+                    if node:
+                        threads.append(
+                            ReviewThread(
+                                id=node.get("id", ""),
+                                is_resolved=bool(node.get("isResolved", False)),
+                                is_outdated=bool(node.get("isOutdated", False)),
+                            )
+                        )
+
+                page_info = review_threads_data.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
+                if not cursor:
+                    break
+
+            return threads
+
+        except Exception as e:
+            logger.error(f"Failed to get review threads for PR #{pr_number}: {e}")
+            return []
+
+    def has_unresolved_review_threads(self, repo_name: str, pr_number: int) -> bool:
+        """Check if a pull request has any unresolved review threads.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            pr_number: Pull request number
+
+        Returns:
+            True if at least one review thread is unresolved, False otherwise.
+        """
+        threads = self.get_pr_review_threads(repo_name, pr_number)
+        if not threads:
+            return False
+        return any(not thread.is_resolved for thread in threads)
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
         """Check if an issue has a linked pull request.
