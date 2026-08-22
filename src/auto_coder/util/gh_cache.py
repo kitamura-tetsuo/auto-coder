@@ -1,6 +1,7 @@
 import functools
 import json
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -56,6 +57,27 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
         return wrapper
 
     return decorator
+
+
+def parse_parent_issue_number(body: Optional[str]) -> Optional[int]:
+    """Parse 'Parent-Issue: #<number>' from issue body text.
+
+    Args:
+        body: Issue body markdown/text
+
+    Returns:
+        Optional[int]: The parsed parent issue number if found, or None.
+    """
+    if not body or not isinstance(body, str):
+        return None
+
+    match = re.search(r"(?i)\bparent[-_ ]issue:\s*#?(\d+)\b", body)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
 
 
 import inspect
@@ -335,6 +357,13 @@ class GitHubClient:
         """Clear the sub-issue cache."""
         self._sub_issue_cache.clear()
 
+    def clear_open_issues_cache(self) -> None:
+        """Clear the open issues memory cache."""
+        with self._open_issues_cache_lock:
+            self._open_issues_cache = None
+            self._open_issues_cache_repo = None
+            self._open_issues_cache_time = None
+
     def get_repository(self, repo_name: str) -> Any:
         """Get repository object by name (owner/repo).
 
@@ -613,6 +642,17 @@ class GitHubClient:
                         # Fallback if parsing fails? Or just leave as None?
                         # Original logic would try to fetch. Let's stick to parsing or None to avoid N+1.
 
+                # If no native parent found, check body for Parent-Issue fallback metadata
+                if parent_issue_id is None:
+                    body_text = i.get("body") or ""
+                    fallback_parent_id = parse_parent_issue_number(body_text)
+                    if fallback_parent_id is not None:
+                        try:
+                            self.add_sub_issue(repo_name, fallback_parent_id, nb, sub_issue_id=i.get("id"))
+                        except Exception as e:
+                            logger.warning(f"Failed to promote fallback sub-issue #{nb} to parent #{fallback_parent_id}: {e}")
+                        parent_issue_id = fallback_parent_id
+
                 issue_data: Dict[str, Any] = {
                     "number": nb,
                     "title": i["title"],
@@ -640,6 +680,18 @@ class GitHubClient:
 
                 if len(all_issues) >= limit:
                     break
+
+            # Synchronize parent <-> sub-issue relationships for all open issues
+            issue_by_number = {item["number"]: item for item in all_issues if isinstance(item.get("number"), int)}
+            for item in all_issues:
+                p_num = item.get("parent_issue_number")
+                if p_num is not None and p_num in issue_by_number:
+                    parent_item = issue_by_number[p_num]
+                    curr_open_sub_issues = list(parent_item.get("open_sub_issue_numbers") or [])
+                    if item["number"] not in curr_open_sub_issues:
+                        updated_sub_issues = sorted(list(set(curr_open_sub_issues + [item["number"]])))
+                        parent_item["open_sub_issue_numbers"] = updated_sub_issues
+                        parent_item["has_open_sub_issues"] = bool(updated_sub_issues)
 
             logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via REST (cached) with extended details")
 
@@ -1080,6 +1132,33 @@ class GitHubClient:
                 # Log but continue to fallback
                 logger.warning(f"Dedicated parent endpoint failed: {e}")
 
+            # Fallback: check Parent-Issue metadata in the issue body
+            try:
+                issue_obj = self.get_issue(repo_name, issue_number)
+                if issue_obj:
+                    body = getattr(issue_obj, "body", None) or (issue_obj.get("body") if isinstance(issue_obj, dict) else "") or ""
+                    fallback_parent_number = parse_parent_issue_number(body)
+                    if fallback_parent_number is not None:
+                        # Attempt conversion to native sub-issue
+                        sub_issue_id = getattr(issue_obj, "id", None) or (issue_obj.get("id") if isinstance(issue_obj, dict) else None)
+                        self.add_sub_issue(repo_name, fallback_parent_number, issue_number, sub_issue_id=sub_issue_id)
+
+                        # Retrieve parent issue details
+                        parent_obj = self.get_issue(repo_name, fallback_parent_number)
+                        if parent_obj:
+                            parent_data = dict(parent_obj) if hasattr(parent_obj, "__iter__") and not isinstance(parent_obj, (str, bytes)) and isinstance(parent_obj, dict) else {}
+                            if not parent_data:
+                                parent_data = {
+                                    "number": getattr(parent_obj, "number", fallback_parent_number),
+                                    "title": getattr(parent_obj, "title", ""),
+                                    "state": getattr(parent_obj, "state", ""),
+                                    "body": getattr(parent_obj, "body", "") or "",
+                                }
+                            logger.info(f"Issue #{issue_number} has fallback parent issue #{fallback_parent_number}")
+                            return parent_data
+            except Exception as e:
+                logger.warning(f"Fallback parent issue check failed for #{issue_number}: {e}")
+
         except Exception as e:
             # 404 is common for issues without parents if the endpoint returns 404.
             if "404" in str(e):
@@ -1408,6 +1487,17 @@ class GitHubClient:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
             open_sub_issues = [i["number"] for i in sub_issues_data if i.get("state") == "open"]
 
+            # Merge fallback sub-issues from memory cache if present
+            with self._open_issues_cache_lock:
+                if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name:
+                    for cached_issue in self._open_issues_cache:
+                        if cached_issue.get("parent_issue_number") == issue_number and cached_issue.get("state") == "open":
+                            c_num = cached_issue.get("number")
+                            if isinstance(c_num, int) and c_num not in open_sub_issues:
+                                open_sub_issues.append(c_num)
+
+            open_sub_issues.sort()
+
             # Update cache for open sub-issues (compatibility)
             cache_key = (repo_name, issue_number)
             self._sub_issue_cache[cache_key] = open_sub_issues
@@ -1421,10 +1511,82 @@ class GitHubClient:
         """Get all sub-issues (open and closed) using GitHub REST API."""
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            return [i["number"] for i in sub_issues_data]
+            all_sub = [i["number"] for i in sub_issues_data]
+            with self._open_issues_cache_lock:
+                if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name:
+                    for cached_issue in self._open_issues_cache:
+                        if cached_issue.get("parent_issue_number") == issue_number:
+                            c_num = cached_issue.get("number")
+                            if isinstance(c_num, int) and c_num not in all_sub:
+                                all_sub.append(c_num)
+            all_sub.sort()
+            return all_sub
         except Exception as e:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
+
+    def add_sub_issue(
+        self,
+        repo_name: str,
+        parent_issue_number: int,
+        sub_issue_number: int,
+        sub_issue_id: Optional[int] = None,
+    ) -> bool:
+        """Register an issue as a native GitHub sub-issue of the parent issue.
+
+        Args:
+            repo_name: Repository name ('owner/repo')
+            parent_issue_number: Issue number of the parent issue
+            sub_issue_number: Issue number of the sub-issue to link
+            sub_issue_id: Optional database ID of the sub-issue (if already known)
+
+        Returns:
+            bool: True if successfully registered or already registered, False otherwise.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            # Check if already a native sub-issue (idempotency)
+            existing_sub_issues = self.get_all_sub_issues(repo_name, parent_issue_number)
+            if sub_issue_number in existing_sub_issues:
+                logger.debug(f"Issue #{sub_issue_number} is already a sub-issue of #{parent_issue_number}")
+                return True
+
+            if sub_issue_id is None:
+                sub_issue = self.get_issue(repo_name, sub_issue_number)
+                if not sub_issue:
+                    logger.warning(f"Could not find issue #{sub_issue_number} to link as sub-issue")
+                    return False
+                sub_issue_id = getattr(sub_issue, "id", None) or (sub_issue.get("id") if isinstance(sub_issue, dict) else None)
+                if not sub_issue_id:
+                    logger.warning(f"Issue #{sub_issue_number} missing database ID for sub-issue linking")
+                    return False
+
+            client = get_caching_client()
+            url = f"https://api.github.com/repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues"
+            headers = {
+                "Authorization": f"bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            payload = {"sub_issue_id": int(sub_issue_id)}
+
+            response = client.post(url, headers=headers, json=payload)
+            if response.status_code in (200, 201):
+                logger.info(f"Successfully linked issue #{sub_issue_number} as sub-issue of #{parent_issue_number}")
+                self.clear_sub_issue_cache()
+                return True
+
+            if response.status_code in (409, 422) and "already" in response.text.lower():
+                logger.info(f"Issue #{sub_issue_number} is already linked to parent #{parent_issue_number}")
+                self.clear_sub_issue_cache()
+                return True
+
+            logger.warning(f"Failed to add issue #{sub_issue_number} as sub-issue of #{parent_issue_number}: " f"status={response.status_code}, response={response.text}")
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to add issue #{sub_issue_number} as sub-issue of #{parent_issue_number}: {e}")
+            return False
 
     def _fetch_sub_issues_data(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Fetch raw sub-issues data from REST API."""

@@ -923,8 +923,16 @@ class AutomationEngine:
             issue_number = candidate.issue_number or issue_data.get("number")
             if not issue_number:
                 return False
+            if issue_data.get("has_open_sub_issues"):
+                return True
             sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
-            return bool(sub_issues)
+            if sub_issues:
+                return True
+            if self.open_issues_snapshot:
+                fallback_children = [other["number"] for other in self.open_issues_snapshot if isinstance(other.get("number"), int) and other.get("parent_issue_number") == issue_number]
+                if fallback_children:
+                    return True
+            return False
         except Exception as e:
             logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
             return False

@@ -742,6 +742,21 @@ Recent configuration schema changes that require migration:
       - "When an allowlist is explicitly set to an empty list `[]`, all authors are denied."
       - "Supports environment variable overrides via `AUTO_CODER_ISSUE_ALLOWLIST` and `AUTO_CODER_PR_ALLOWLIST` (JSON array or comma-separated integers)."
 
+## Parent-Issue Metadata Fallback for Sub-issues
+
+  parent_issue_metadata_fallback:
+    description: "Declarative fallback in issue bodies (Parent-Issue: #<number>) for sub-issue relationships when native sub-issues cannot be created."
+    implementation: |
+      parse_parent_issue_number, add_sub_issue, get_parent_issue_details, get_open_issues_json in src/auto_coder/util/gh_cache.py,
+      sibling exclusion and _has_open_sub_issues in src/auto_coder/automation_engine.py
+    behavior:
+      - "Parses `Parent-Issue: #<number>` case-insensitively from issue bodies."
+      - "Attempts to promote/register the issue as a native GitHub sub-issue using the GitHub REST API (POST /repos/{owner}/{repo}/issues/{parent_number}/sub_issues) when possible."
+      - "Promotion is idempotent and safely skips already-linked sub-issues."
+      - "If native sub-issue promotion fails or is unsupported in the agent environment, retains the metadata as a fallback parent relationship."
+      - "Exclusion logic treats native sub-issues and fallback Parent-Issue metadata identically to prevent concurrent implementation of sibling sub-issues."
+      - "Parent issues are blocked from running while any of their sub-issues (native or metadata-fallback) remain open."
+
 ## Cloud Task Execution Abstraction
 
   cloud_task_abstraction:
@@ -760,6 +775,3 @@ Recent configuration schema changes that require migration:
       - "CodexCloudClient manages asynchronous Codex Cloud task execution via 'codex cloud exec --env <ENV_ID> [--branch <BRANCH>] PROMPT', 'codex cloud list --json', 'codex cloud status <TASK_ID>', 'codex cloud diff <TASK_ID>', and 'codex cloud apply <TASK_ID>'. continue_if_paused returns False as follow-up messaging is currently unsupported in Codex Cloud CLI."
       - "ClaudeClient and CodexClient remain focused on local/non-cloud execution only."
       - "The orchestration layer interacts with cloud providers uniformly through CloudTaskClientBase without embedding provider-specific state names."
-
-
-
