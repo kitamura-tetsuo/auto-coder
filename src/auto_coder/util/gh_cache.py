@@ -616,31 +616,20 @@ class GitHubClient:
             # per_page=limit. Note: GitHub treats PRs as Issues, so we must filter them out.
             issues_summary = api.issues.list_for_repo(owner, repo, state="open", per_page=limit)
 
-            all_issues: List[Dict[str, Any]] = []
+            # Filter out Pull Requests (which are returned in issues list by REST API)
+            raw_open_issues = [issue for issue in issues_summary if "pull_request" not in issue]
 
-            for issue in issues_summary:
-                # Filter out Pull Requests (which are returned in issues list by REST API)
-                if "pull_request" in issue:
+            # Pass 1: Scan all open issues immediately for Parent-Issue relationships
+            # This ensures parents with lower issue numbers (e.g. #10) know about their
+            # sub-issues (e.g. #20, #30) before individual issue details are constructed.
+            issue_parent_map: Dict[int, int] = {}
+            parent_to_open_children: Dict[int, List[int]] = {}
+
+            for i in raw_open_issues:
+                nb = i.get("number")
+                if not isinstance(nb, int):
                     continue
 
-                # Safe access (dict expected)
-                i = issue
-                nb = i["number"]
-
-                # Fetch extended details via REST (N+1 calls, but cached via ETag)
-                # linked_prs via timeline
-                linked_prs_ids = self.get_linked_prs(repo_name, nb)
-
-                # open_sub_issue_numbers via sub_issues endpoint
-                # Optimization: Check sub_issues_summary from issue object first
-                sub_issues_summary = i.get("sub_issues_summary")
-                if sub_issues_summary and sub_issues_summary.get("total", 0) == 0:
-                    open_sub_issues_ids = []
-                else:
-                    open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
-
-                # parent_issue via parent_issue_url
-                # Optimization: Extract from URL if available
                 parent_issue_id = None
                 parent_issue_url = i.get("parent_issue_url")
                 if parent_issue_url:
@@ -648,8 +637,6 @@ class GitHubClient:
                         parent_issue_id = int(parent_issue_url.split("/")[-1])
                     except (ValueError, IndexError):
                         logger.warning(f"Failed to parse parent issue ID from URL: {parent_issue_url}")
-                        # Fallback if parsing fails? Or just leave as None?
-                        # Original logic would try to fetch. Let's stick to parsing or None to avoid N+1.
 
                 # If no native parent found, check body for Parent-Issue fallback metadata
                 if parent_issue_id is None:
@@ -661,6 +648,37 @@ class GitHubClient:
                         except Exception as e:
                             logger.warning(f"Failed to promote fallback sub-issue #{nb} to parent #{fallback_parent_id}: {e}")
                         parent_issue_id = fallback_parent_id
+
+                if parent_issue_id is not None:
+                    issue_parent_map[nb] = parent_issue_id
+                    if parent_issue_id not in parent_to_open_children:
+                        parent_to_open_children[parent_issue_id] = []
+                    if nb not in parent_to_open_children[parent_issue_id]:
+                        parent_to_open_children[parent_issue_id].append(nb)
+
+            all_issues: List[Dict[str, Any]] = []
+
+            # Pass 2: Construct extended issue data with pre-scanned parent/sub-issue information
+            for i in raw_open_issues:
+                nb = i["number"]
+
+                # Fetch extended details via REST (N+1 calls, but cached via ETag)
+                # linked_prs via timeline
+                linked_prs_ids = self.get_linked_prs(repo_name, nb)
+
+                # open_sub_issue_numbers via sub_issues endpoint + pre-scanned fallback sub-issues
+                sub_issues_summary = i.get("sub_issues_summary")
+                known_open_children = parent_to_open_children.get(nb, [])
+                if sub_issues_summary and sub_issues_summary.get("total", 0) == 0 and not known_open_children:
+                    open_sub_issues_ids = []
+                else:
+                    open_sub_issues_ids = self.get_open_sub_issues(repo_name, nb)
+
+                # Merge pre-scanned children into open_sub_issues_ids
+                if known_open_children:
+                    open_sub_issues_ids = sorted(list(set(open_sub_issues_ids + known_open_children)))
+
+                parent_issue_id = issue_parent_map.get(nb)
 
                 issue_data: Dict[str, Any] = {
                     "number": nb,

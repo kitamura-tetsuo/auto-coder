@@ -747,9 +747,8 @@ Recent configuration schema changes that require migration:
     behavior:
       - "Parses `Parent-Issue: #<number>` case-insensitively from issue bodies."
       - "Attempts to promote/register the issue as a native GitHub sub-issue using the GitHub REST API (POST /repos/{owner}/{repo}/issues/{parent_number}/sub_issues) when possible."
-      - "Promotion is idempotent and safely skips already-linked sub-issues."
       - "If native sub-issue promotion fails or is unsupported in the agent environment, retains the metadata as a fallback parent relationship."
-      - "Exclusion logic treats native sub-issues and fallback Parent-Issue metadata identically to prevent concurrent implementation of sibling sub-issues."
+      - "Scans all open issues upfront at the beginning of issue retrieval/processing to detect Parent-Issue relationships before constructing issue candidates, ensuring correct processing order even when a parent issue has a lower number than its sub-issues."
       - "Parent issues are blocked from running while any of their sub-issues (native or metadata-fallback) remain open."
 
 ## Cloud Task Execution Abstraction

@@ -367,3 +367,152 @@ class TestGetOpenIssuesJsonFallback:
 
         # Check that add_sub_issue was attempted
         mock_add_sub_issue.assert_called_once()
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    @patch.object(GitHubClient, "add_sub_issue")
+    @patch.object(GitHubClient, "get_linked_prs", return_value=[])
+    def test_younger_parent_issue_prescanned_before_construction(self, mock_linked_prs, mock_add_sub_issue, mock_get_ghapi, mock_github_token):
+        """When parent issue #10 appears first in open issues list, pre-scanning ensures it knows about children #20 and #30."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        raw_issues = [
+            {
+                "number": 10,
+                "title": "Parent Feature #10",
+                "body": "Parent epic description",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "html_url": "http://github.com/owner/repo/issues/10",
+                "user": {"login": "dev", "id": 1},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            },
+            {
+                "number": 20,
+                "title": "Sub Issue 1",
+                "body": "Step 1\n\nParent-Issue: #10",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z",
+                "html_url": "http://github.com/owner/repo/issues/20",
+                "user": {"login": "dev", "id": 1},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            },
+            {
+                "number": 30,
+                "title": "Sub Issue 2",
+                "body": "Step 2\n\nParent-Issue: #10",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2024-01-03T00:00:00Z",
+                "updated_at": "2024-01-03T00:00:00Z",
+                "html_url": "http://github.com/owner/repo/issues/30",
+                "user": {"login": "dev", "id": 1},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            },
+        ]
+        mock_api.issues.list_for_repo.return_value = raw_issues
+
+        client = GitHubClient.get_instance("test-token")
+        client.clear_open_issues_cache()
+
+        results = client.get_open_issues_json("owner/repo")
+
+        parent_item = next(r for r in results if r["number"] == 10)
+        assert parent_item["has_open_sub_issues"] is True
+        assert sorted(parent_item["open_sub_issue_numbers"]) == [20, 30]
+
+        child_20 = next(r for r in results if r["number"] == 20)
+        assert child_20["parent_issue_number"] == 10
+
+        child_30 = next(r for r in results if r["number"] == 30)
+        assert child_30["parent_issue_number"] == 10
+
+    @patch("src.auto_coder.automation_engine.LabelManager")
+    @patch.object(AutomationEngine, "_is_issue_author_allowed", return_value=True)
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    @patch.object(GitHubClient, "add_sub_issue")
+    @patch.object(GitHubClient, "get_linked_prs", return_value=[])
+    def test_younger_parent_issue_candidate_order(self, mock_linked_prs, mock_add_sub_issue, mock_get_ghapi, mock_author_allowed, mock_label_manager, mock_github_token):
+        """When younger issue #10 is parent of #20 and #30, #20 is processed first, skipping #10 and #30."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        raw_issues = [
+            {
+                "number": 10,
+                "title": "Parent Feature #10",
+                "body": "Parent epic description",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "html_url": "http://github.com/owner/repo/issues/10",
+                "user": {"login": "dev", "id": 1},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            },
+            {
+                "number": 20,
+                "title": "Sub Issue 1",
+                "body": "Step 1\n\nParent-Issue: #10",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2024-01-02T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z",
+                "html_url": "http://github.com/owner/repo/issues/20",
+                "user": {"login": "dev", "id": 1},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            },
+            {
+                "number": 30,
+                "title": "Sub Issue 2",
+                "body": "Step 2\n\nParent-Issue: #10",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2024-01-03T00:00:00Z",
+                "updated_at": "2024-01-03T00:00:00Z",
+                "html_url": "http://github.com/owner/repo/issues/30",
+                "user": {"login": "dev", "id": 1},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0, "completed": 0, "percent_completed": 0},
+            },
+        ]
+        mock_api.issues.list_for_repo.return_value = raw_issues
+
+        client = GitHubClient.get_instance("test-token")
+        client.clear_open_issues_cache()
+
+        config = AutomationConfig()
+        config.CHECK_LABELS = False
+        engine = AutomationEngine(client, config=config)
+
+        mock_lm = MagicMock()
+        mock_lm.__enter__.return_value = True
+        mock_label_manager.return_value = mock_lm
+
+        with patch.object(client, "get_open_prs_json", return_value=[]):
+            candidates = engine._get_candidates("owner/repo")
+
+        issue_candidates = [c for c in candidates if c.type == "issue"]
+        candidate_numbers = [c.issue_number for c in issue_candidates]
+
+        # Parent #10 must NOT be selected because it has open sub-issues
+        assert 10 not in candidate_numbers
+        # Child #30 must NOT be selected because elder sibling #20 is open
+        assert 30 not in candidate_numbers
+        # Elder child #20 MUST be the candidate
+        assert candidate_numbers == [20]
