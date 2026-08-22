@@ -68,11 +68,14 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
     return decorator
 
 
-def parse_parent_issue_number(body: Optional[str]) -> Optional[int]:
+def parse_parent_issue_number(body: Optional[str], current_issue_number: Optional[int] = None) -> Optional[int]:
     """Parse 'Parent-Issue: #<number>' from issue body text.
 
     Args:
         body: Issue body markdown/text
+        current_issue_number: Optional issue number of the current issue being parsed.
+            If specified and matches the parsed parent number, it is ignored (an issue
+            cannot be its own parent).
 
     Returns:
         Optional[int]: The parsed parent issue number if found, or None.
@@ -83,7 +86,10 @@ def parse_parent_issue_number(body: Optional[str]) -> Optional[int]:
     match = re.search(r"(?i)\bparent[-_ ]issue:\s*#?(\d+)\b", body)
     if match:
         try:
-            return int(match.group(1))
+            parent_num = int(match.group(1))
+            if current_issue_number is not None and parent_num == current_issue_number:
+                return None
+            return parent_num
         except ValueError:
             return None
     return None
@@ -634,22 +640,24 @@ class GitHubClient:
                 parent_issue_url = i.get("parent_issue_url")
                 if parent_issue_url:
                     try:
-                        parent_issue_id = int(parent_issue_url.split("/")[-1])
+                        parsed_id = int(parent_issue_url.split("/")[-1])
+                        if parsed_id != nb:
+                            parent_issue_id = parsed_id
                     except (ValueError, IndexError):
                         logger.warning(f"Failed to parse parent issue ID from URL: {parent_issue_url}")
 
                 # If no native parent found, check body for Parent-Issue fallback metadata
                 if parent_issue_id is None:
                     body_text = i.get("body") or ""
-                    fallback_parent_id = parse_parent_issue_number(body_text)
-                    if fallback_parent_id is not None:
+                    fallback_parent_id = parse_parent_issue_number(body_text, current_issue_number=nb)
+                    if fallback_parent_id is not None and fallback_parent_id != nb:
                         try:
                             self.add_sub_issue(repo_name, fallback_parent_id, nb, sub_issue_id=i.get("id"))
                         except Exception as e:
                             logger.warning(f"Failed to promote fallback sub-issue #{nb} to parent #{fallback_parent_id}: {e}")
                         parent_issue_id = fallback_parent_id
 
-                if parent_issue_id is not None:
+                if parent_issue_id is not None and parent_issue_id != nb:
                     issue_parent_map[nb] = parent_issue_id
                     if parent_issue_id not in parent_to_open_children:
                         parent_to_open_children[parent_issue_id] = []
@@ -677,6 +685,9 @@ class GitHubClient:
                 # Merge pre-scanned children into open_sub_issues_ids
                 if known_open_children:
                     open_sub_issues_ids = sorted(list(set(open_sub_issues_ids + known_open_children)))
+
+                # Ensure open_sub_issues_ids never contains the issue itself
+                open_sub_issues_ids = [sub_id for sub_id in open_sub_issues_ids if sub_id != nb]
 
                 parent_issue_id = issue_parent_map.get(nb)
 
@@ -712,11 +723,12 @@ class GitHubClient:
             issue_by_number = {item["number"]: item for item in all_issues if isinstance(item.get("number"), int)}
             for item in all_issues:
                 p_num = item.get("parent_issue_number")
-                if p_num is not None and p_num in issue_by_number:
+                if p_num is not None and p_num in issue_by_number and p_num != item["number"]:
                     parent_item = issue_by_number[p_num]
                     curr_open_sub_issues = list(parent_item.get("open_sub_issue_numbers") or [])
-                    if item["number"] not in curr_open_sub_issues:
+                    if item["number"] not in curr_open_sub_issues and item["number"] != p_num:
                         updated_sub_issues = sorted(list(set(curr_open_sub_issues + [item["number"]])))
+                        updated_sub_issues = [s for s in updated_sub_issues if s != p_num]
                         parent_item["open_sub_issue_numbers"] = updated_sub_issues
                         parent_item["has_open_sub_issues"] = bool(updated_sub_issues)
 
@@ -1253,8 +1265,8 @@ class GitHubClient:
                 issue_obj = self.get_issue(repo_name, issue_number)
                 if issue_obj:
                     body = getattr(issue_obj, "body", None) or (issue_obj.get("body") if isinstance(issue_obj, dict) else "") or ""
-                    fallback_parent_number = parse_parent_issue_number(body)
-                    if fallback_parent_number is not None:
+                    fallback_parent_number = parse_parent_issue_number(body, current_issue_number=issue_number)
+                    if fallback_parent_number is not None and fallback_parent_number != issue_number:
                         # Attempt conversion to native sub-issue
                         sub_issue_id = getattr(issue_obj, "id", None) or (issue_obj.get("id") if isinstance(issue_obj, dict) else None)
                         self.add_sub_issue(repo_name, fallback_parent_number, issue_number, sub_issue_id=sub_issue_id)
@@ -1601,7 +1613,7 @@ class GitHubClient:
 
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            open_sub_issues = [i["number"] for i in sub_issues_data if i.get("state") == "open"]
+            open_sub_issues = [i["number"] for i in sub_issues_data if i.get("state") == "open" and i.get("number") != issue_number]
 
             # Merge fallback sub-issues from memory cache if present
             with self._open_issues_cache_lock:
@@ -1609,7 +1621,7 @@ class GitHubClient:
                     for cached_issue in self._open_issues_cache:
                         if cached_issue.get("parent_issue_number") == issue_number and cached_issue.get("state") == "open":
                             c_num = cached_issue.get("number")
-                            if isinstance(c_num, int) and c_num not in open_sub_issues:
+                            if isinstance(c_num, int) and c_num not in open_sub_issues and c_num != issue_number:
                                 open_sub_issues.append(c_num)
 
             open_sub_issues.sort()
@@ -1627,13 +1639,13 @@ class GitHubClient:
         """Get all sub-issues (open and closed) using GitHub REST API."""
         try:
             sub_issues_data = self._fetch_sub_issues_data(repo_name, issue_number)
-            all_sub = [i["number"] for i in sub_issues_data]
+            all_sub = [i["number"] for i in sub_issues_data if i.get("number") != issue_number]
             with self._open_issues_cache_lock:
                 if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name:
                     for cached_issue in self._open_issues_cache:
                         if cached_issue.get("parent_issue_number") == issue_number:
                             c_num = cached_issue.get("number")
-                            if isinstance(c_num, int) and c_num not in all_sub:
+                            if isinstance(c_num, int) and c_num not in all_sub and c_num != issue_number:
                                 all_sub.append(c_num)
             all_sub.sort()
             return all_sub

@@ -826,8 +826,8 @@ class AutomationEngine:
                                 logger.warning(f"Failed to check parent sub-issues for #{number}: {e}")
                                 open_sub_issues = []
 
-                        # Filter to only sibling sub-issues (exclude current issue)
-                        elder_siblings = [s for s in open_sub_issues if s < number]
+                        # Filter to only sibling sub-issues (exclude current issue and parent issue)
+                        elder_siblings = [s for s in open_sub_issues if s < number and s != parent_issue_number and s != number]
                         if elder_siblings:
                             logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                             continue
@@ -929,7 +929,7 @@ class AutomationEngine:
             if sub_issues:
                 return True
             if self.open_issues_snapshot:
-                fallback_children = [other["number"] for other in self.open_issues_snapshot if isinstance(other.get("number"), int) and other.get("parent_issue_number") == issue_number]
+                fallback_children = [other["number"] for other in self.open_issues_snapshot if isinstance(other.get("number"), int) and other.get("parent_issue_number") == issue_number and other.get("number") != issue_number]
                 if fallback_children:
                     return True
             return False

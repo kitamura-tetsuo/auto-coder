@@ -177,3 +177,38 @@ class TestGitHubClientSubIssues:
             result = client.get_open_sub_issues("owner/repo", 1)
             # Should return empty list on 404
             assert result == []
+
+    def test_parse_parent_issue_number_self_reference(self):
+        """Test that parse_parent_issue_number ignores self-referencing parent issue number."""
+        from src.auto_coder.util.gh_cache import parse_parent_issue_number
+
+        body = "Implement these in order. Each child issue declares Parent-Issue: #5031."
+        # If parsing for issue 5031, it should ignore 5031
+        assert parse_parent_issue_number(body, current_issue_number=5031) is None
+        # If parsing for issue 5032, it should return 5031
+        assert parse_parent_issue_number(body, current_issue_number=5032) == 5031
+
+    def test_add_sub_issue_self_reference(self):
+        """Test that add_sub_issue rejects adding an issue as a sub-issue of itself."""
+        client = GitHubClient.get_instance("test_token")
+        result = client.add_sub_issue("owner/repo", 5031, 5031)
+        assert result is False
+
+    def test_get_open_sub_issues_filters_self(self):
+        """Test that get_open_sub_issues filters out the issue itself if returned in response."""
+        sub_issues_data = [
+            {"number": 100, "title": "Self", "state": "open"},
+            {"number": 200, "title": "Child", "state": "open"},
+        ]
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = sub_issues_data
+        mock_response.raise_for_status = Mock()
+
+        mock_caching_client = Mock()
+        mock_caching_client.get.return_value = mock_response
+
+        with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
+            client = GitHubClient.get_instance("test_token")
+            result = client.get_open_sub_issues("owner/repo", 100)
+            assert result == [200]

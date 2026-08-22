@@ -144,3 +144,62 @@ class TestAutomationEngineCandidates:
 
         # Verify candidate was created
         assert len(candidates) == 1
+
+    def test_get_candidates_sub_issues_with_self_referencing_parent(self, mock_github_client):
+        """Test that sub-issue #5032 is chosen when parent #5031 has self-mentioning body."""
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, config=config)
+        repo_name = "owner/repo"
+
+        mock_github_client.get_open_prs_json.return_value = []
+        mock_github_client.get_open_issues_json.return_value = [
+            {
+                "number": 5031,
+                "title": "Parent Issue",
+                "body": "Each child issue declares Parent-Issue: #5031",
+                "state": "open",
+                "labels": ["difficult"],
+                "created_at": "2023-01-01T00:00:00Z",
+                "author": "owner",
+                "has_open_sub_issues": True,
+                "open_sub_issue_numbers": [5032, 5033],
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 5032,
+                "title": "First Child Issue",
+                "body": "Parent-Issue: #5031",
+                "state": "open",
+                "labels": ["difficult"],
+                "created_at": "2023-01-01T00:01:00Z",
+                "author": "owner",
+                "has_open_sub_issues": False,
+                "open_sub_issue_numbers": [],
+                "parent_issue_number": 5031,
+                "linked_pr_numbers": [],
+            },
+            {
+                "number": 5033,
+                "title": "Second Child Issue",
+                "body": "Parent-Issue: #5031",
+                "state": "open",
+                "labels": ["difficult"],
+                "created_at": "2023-01-01T00:02:00Z",
+                "author": "owner",
+                "has_open_sub_issues": False,
+                "open_sub_issue_numbers": [],
+                "parent_issue_number": 5031,
+                "linked_pr_numbers": [],
+            },
+        ]
+
+        with patch("auto_coder.automation_engine.LabelManager") as mock_label_manager:
+            mock_label_manager.return_value.__enter__.return_value = True
+            candidates = engine._get_candidates(repo_name)
+
+        # 5031 has open sub issues -> skipped
+        # 5032 has parent 5031, elder siblings [] -> chosen
+        # 5033 has parent 5031, elder siblings [5032] -> skipped
+        assert len(candidates) == 1
+        assert candidates[0].data["number"] == 5032
