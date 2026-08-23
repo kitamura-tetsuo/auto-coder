@@ -22,8 +22,8 @@ def extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
         return []
 
     # GitHub's supported keywords for linking issues
-    # Added "Related issue(s)" as requested
-    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|related issue|related issues)"
+    # Added "Related issue(s)", "Relates to", "Related to"
+    keywords = r"(?:close|closes|closed|closing|fix|fixes|fixed|resolve|resolves|resolved|resolving|related issue|related issues|relates to|related to|relate to)"
 
     # Pattern to match: keyword #123 or keyword owner/repo#123
     # We allow an optional colon after the keyword (e.g. "Related issue: #123")

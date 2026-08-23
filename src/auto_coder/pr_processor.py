@@ -2320,7 +2320,7 @@ def _link_jules_pr_to_issue(
     pr_data: Dict[str, Any],
     github_client: Any,
 ) -> bool:
-    """Process a Jules PR to detect session ID and update PR body.
+    """Process a Jules, Claude Code, or session PR to detect session ID and update PR body.
 
     Args:
         repo_name: Repository name (owner/repo)
@@ -2335,12 +2335,16 @@ def _link_jules_pr_to_issue(
         pr_body = pr_data.get("body", "") or ""
         pr_author = pr_data.get("user", {}).get("login", "")
 
-        # Check if this is a Jules PR using the robust detection logic
-        if not _is_jules_pr(pr_data):
-            logger.debug(f"PR #{pr_number} author is not google-labs-jules ({pr_author}) and no session ID found, skipping Jules processing")
-            return True  # Not an error, just not a Jules PR
+        is_jules = _is_jules_pr(pr_data)
+        is_claude = "claude" in pr_author.lower() or "claude.ai/code/" in pr_body or bool(re.search(r"\bClaude session\b", pr_body, re.IGNORECASE))
+        has_session = bool(re.search(r"claude\.ai/code/|jules\.google\.com/(?:session|task)/|\bsession_[a-zA-Z0-9-_]+\b", pr_body, re.IGNORECASE))
 
-        logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
+        # If not a Jules PR, has no session indicator, and is not a Claude PR, skip
+        if not is_jules and not is_claude and not has_session:
+            logger.debug(f"PR #{pr_number} has no session ID or cloud author, skipping session issue linking")
+            return True  # Not an error, just not a session PR
+
+        logger.info(f"Processing session PR #{pr_number} by {pr_author}")
 
         # Check for special Jules PRs that don't need issue linking
         pr_title = pr_data.get("title", "")
@@ -2352,23 +2356,27 @@ def _link_jules_pr_to_issue(
         issue_number = _resolve_jules_pr_issue_number(repo_name, pr_data, github_client)
 
         if not issue_number:
-            logger.warning(f"No issue found for Jules PR #{pr_number} (checked session, branch, and title)")
+            logger.warning(f"No issue found for session PR #{pr_number} (checked session, branch, and title)")
             return False
 
-        logger.info(f"Found issue #{issue_number} for Jules PR #{pr_number}")
+        logger.info(f"Found issue #{issue_number} for session PR #{pr_number}")
 
         # Step 4: Update PR body to include close #<issue_number> and link to issue
         success = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         if success:
-            logger.info(f"Successfully processed Jules PR #{pr_number}, updated body to reference issue #{issue_number}")
+            logger.info(f"Successfully processed PR #{pr_number}, updated body to reference issue #{issue_number}")
+            # Update local pr_data body so downstream logic in the same run has the updated body
+            if f"close #{issue_number}" not in pr_body.lower() and f"closes #{issue_number}" not in pr_body.lower():
+                separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
+                pr_data["body"] = f"{pr_body}{separator}close #{issue_number}\n\nRelated issue: https://github.com/{repo_name}/issues/{issue_number}"
         else:
-            logger.error(f"Failed to update Jules PR #{pr_number} body")
+            logger.error(f"Failed to update PR #{pr_number} body")
 
         return success
 
     except Exception as e:
-        logger.error(f"Error processing Jules PR {pr_data.get('number', 'unknown')}: {e}")
+        logger.error(f"Error processing session PR {pr_data.get('number', 'unknown')}: {e}")
         return False
 
 
@@ -2376,30 +2384,39 @@ def _link_jules_pr_to_issue(
 _process_jules_pr = _link_jules_pr_to_issue
 
 
-def _close_linked_issues(repo_name: str, pr_number: int) -> None:
+def _close_linked_issues(repo_name: str, pr_number: int, github_client: Optional[Any] = None) -> None:
     """Close issues linked in the PR body after successful merge.
 
     Args:
         repo_name: Repository name (owner/repo)
         pr_number: PR number that was merged
+        github_client: Optional GitHubClient instance
     """
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
 
-        token = GitHubClient.get_instance().token
+        client = github_client or GitHubClient.get_instance()
+        token = getattr(client, "token", None) or GitHubClient.get_instance().token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
 
         # Get PR body
         try:
             pr_info = api.pulls.get(owner, repo, pr_number)
-            pr_body = pr_info.get("body", "")
+            pr_body = pr_info.get("body", "") or ""
         except Exception as e:
             logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking: {e}")
             return
 
         # Extract linked issues
         linked_issues = extract_linked_issues_from_pr_body(pr_body)
+
+        if not linked_issues:
+            # Fallback: resolve from session ID (Jules, Claude Code, etc.), branch name, or title
+            resolved_issue = _resolve_jules_pr_issue_number(repo_name, pr_info, client)
+            if resolved_issue:
+                logger.info(f"Resolved issue #{resolved_issue} from session/branch/title for merged PR #{pr_number}")
+                linked_issues = [resolved_issue]
 
         if not linked_issues:
             logger.debug(f"No linked issues found in PR #{pr_number} body")
