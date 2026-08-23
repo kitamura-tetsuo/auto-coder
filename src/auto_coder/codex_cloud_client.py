@@ -11,6 +11,8 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
+from .codex_usage_checker import codex_cloud_quota_allows_task
+from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
 from .utils import CommandExecutor
@@ -118,6 +120,9 @@ class CodexCloudClient(CloudTaskClientBase):
             The created Task ID.
         """
         logger.info(f"Starting Codex Cloud task (title={title or 'N/A'}, branch={base_branch or 'N/A'})")
+
+        if not codex_cloud_quota_allows_task():
+            raise AutoCoderUsageLimitError("Codex weekly quota is unavailable or below the required threshold")
 
         cmd = ["codex", "cloud", "exec"]
 

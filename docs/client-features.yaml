@@ -109,6 +109,7 @@ The system supports extensive backend configuration options. Key fields include:
     ```
   - Behavior:
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
+    - Before creating a Codex Cloud task, weekly usage is fetched with ChatGPT OAuth credentials from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). The task starts only when the remaining percentage is at least `(days_until_reset + 1) * 5`; missing credentials, authentication errors, and malformed responses safely route to the next backend. OpenAI API keys are never used for this request.
     - When `model` is configured, it is forwarded to Codex Cloud as a CLI configuration override.
     - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
     - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.

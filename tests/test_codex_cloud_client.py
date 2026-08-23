@@ -15,6 +15,15 @@ class TestCodexCloudClient:
     """Test suite for CodexCloudClient."""
 
     @pytest.fixture
+    def allow_cloud_task(self):
+        with patch("auto_coder.codex_cloud_client.codex_cloud_quota_allows_task", return_value=True):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _allow_cloud_task(self, allow_cloud_task):
+        yield
+
+    @pytest.fixture
     def mock_backend_config(self):
         """Create mock configuration for codex-cloud."""
         config = LLMBackendConfiguration()
@@ -98,6 +107,17 @@ class TestCodexCloudClient:
             with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
                 with pytest.raises(RuntimeError, match="environment not found"):
                     client.start_task("Implement the issue")
+
+    def test_start_task_skips_cli_when_weekly_quota_disallows_it(self, mock_backend_config):
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client.codex_cloud_quota_allows_task", return_value=False),
+            patch("auto_coder.codex_cloud_client.CommandExecutor.run_command") as mock_run,
+        ):
+            client = CodexCloudClient("codex-cloud")
+            with pytest.raises(RuntimeError, match="weekly quota"):
+                client.start_task("Implement the issue")
+            mock_run.assert_not_called()
 
     def test_list_tasks(self, mock_backend_config):
         """Test listing tasks with codex cloud list --json."""
