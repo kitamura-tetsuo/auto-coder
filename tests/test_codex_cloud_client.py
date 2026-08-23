@@ -21,6 +21,7 @@ class TestCodexCloudClient:
         cloud_config = BackendConfig(
             name="codex-cloud",
             backend_type="codex-cloud",
+            model="gpt-5.6-terra",
             api_key="test-codex-key",
             environment_id="env_12345",
             attempts=2,
@@ -34,6 +35,7 @@ class TestCodexCloudClient:
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
             client = CodexCloudClient("codex-cloud")
             assert client.backend_name == "codex-cloud"
+            assert client.model_name == "gpt-5.6-terra"
             assert client.api_key == "test-codex-key"
             assert client.environment_id == "env_12345"
             assert client.attempts == 2
@@ -69,6 +71,8 @@ class TestCodexCloudClient:
                     "exec",
                     "--env",
                     "env_12345",
+                    "--config",
+                    'model="gpt-5.6-terra"',
                     "--attempts",
                     "2",
                     "--branch",

@@ -98,6 +98,7 @@ The system supports extensive backend configuration options. Key fields include:
 
     [backends.codex-cloud]
     backend_type = "codex-cloud"
+    model = "gpt-5.6-terra"
     environment_id = "<Codex Cloud environment ID>"
     attempts = 1
 
@@ -108,6 +109,7 @@ The system supports extensive backend configuration options. Key fields include:
     ```
   - Behavior:
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
+    - When `model` is configured, it is forwarded to Codex Cloud as a CLI configuration override.
     - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
     - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.
     - Saves the returned session ID in `cloud.csv`, comments on the issue with the session link, and retains the `@auto-coder` label.

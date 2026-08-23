@@ -34,7 +34,7 @@ class CodexCloudClient(CloudTaskClientBase):
 
         config = get_llm_config()
         self.config_backend = config.get_backend_config(self.backend_name)
-        self.model_name = (self.config_backend and self.config_backend.model) or "codex"
+        self.model_name = self.config_backend and self.config_backend.model
         self.options = (self.config_backend and self.config_backend.options) or []
         self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         self.api_key = self.config_backend and self.config_backend.api_key
@@ -124,6 +124,9 @@ class CodexCloudClient(CloudTaskClientBase):
         if not self.environment_id:
             raise ValueError(f"No environment_id configured for Codex Cloud backend '{self.backend_name}'. " "Set environment_id in llm_config.toml or CODEX_CLOUD_ENV_ID.")
         cmd.extend(["--env", self.environment_id])
+
+        if self.model_name:
+            cmd.extend(["--config", f'model="{self.model_name}"'])
 
         if self.attempts != 1:
             cmd.extend(["--attempts", str(self.attempts)])
