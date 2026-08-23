@@ -128,6 +128,7 @@ The system supports extensive backend configuration options. Key fields include:
     - Automatically discovers OAuth tokens from backend configuration (`claude_code_oauth_token`, `claude_code_routine_token`), environment variables, or credentials file (`~/.claude/.credentials.json`).
     - Proactively checks `expiresAt` timestamp and exchanges refresh tokens via JSON payload with `client_id` to prevent authorization failures.
     - Accurately captures HTTP 429 rate limits from token refresh and usage endpoints to avoid runaway task spawning.
+    - Handles account-wide weekly limit entries whose API scope has no model, while preserving threshold detection and reset timestamps.
   - Default: `[]` (empty list)
   - Usage: Applied when the LLM is invoked for analyzing issues, generating code, fixing bugs, and other file-modifying operations
   - Example:

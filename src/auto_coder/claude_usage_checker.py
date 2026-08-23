@@ -414,7 +414,11 @@ def check_claude_usage(
                 if percent is not None:
                     rem = max(0.0, 100.0 - float(percent))
                     if rem <= seven_day_threshold_pct:
-                        model_name = item.get("scope", {}).get("model", {}).get("display_name") or item.get("kind", "weekly")
+                        scope = item.get("scope")
+                        scope_dict = scope if isinstance(scope, dict) else {}
+                        model = scope_dict.get("model")
+                        model_dict = model if isinstance(model, dict) else {}
+                        model_name = model_dict.get("display_name") or item.get("kind", "weekly")
                         is_insufficient = True
                         reasons.append(f"Weekly {model_name} limit remaining {rem:.1f}% " f"<= threshold {seven_day_threshold_pct:.1f}% (resets at {item.get('resets_at') or 'N/A'})")
 

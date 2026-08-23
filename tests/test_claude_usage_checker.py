@@ -292,3 +292,25 @@ class TestClaudeUsageChecker:
             quota = check_claude_usage(token="test-token", use_cache=False)
             assert quota.is_quota_insufficient is True
             assert "Weekly Claude 3.7 Sonnet limit remaining 3.0%" in quota.reason
+
+    def test_check_claude_usage_weekly_limit_with_null_model(self):
+        """Test unscoped weekly limits with a null model are detected."""
+        mock_data = {
+            "five_hour": {"utilization": 2.0},
+            "seven_day": {"utilization": 100.0},
+            "limits": [
+                {
+                    "kind": "weekly_all",
+                    "scope": {"model": None},
+                    "percent": 100.0,
+                    "resets_at": "2026-08-25T21:00:00Z",
+                }
+            ],
+        }
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_data):
+            quota = check_claude_usage(token="test-token", use_cache=False)
+
+        assert quota.is_quota_insufficient is True
+        assert quota.seven_day.remaining_percent == 0.0
+        assert "Weekly weekly_all limit remaining 0.0%" in quota.reason
+        assert "2026-08-25T21:00:00Z" in quota.reason
