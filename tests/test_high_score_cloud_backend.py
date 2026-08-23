@@ -143,15 +143,46 @@ class TestDifficultIssueHandling:
                 mock_github,
             )
 
-            assert actions == ["Fired routine"]
-            mock_routine_mode.assert_called_once_with(
-                "owner/repo",
-                issue_data,
-                config,
-                mock_github,
-                backend_name="claude-opus-routine",
-                label_context=None,
-            )
+        assert actions == ["Fired routine"]
+        mock_routine_mode.assert_called_once_with(
+            "owner/repo",
+            issue_data,
+            config,
+            mock_github,
+            backend_name="claude-opus-routine",
+            label_context=None,
+        )
+
+    @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
+    def test_process_issue_high_score_cloud_delegates_to_codex_cloud(self, mock_codex_cloud_mode):
+        """Codex Cloud uses the asynchronous task path instead of local LLM execution."""
+        mock_codex_cloud_mode.return_value = ["Started task"]
+        config = AutomationConfig()
+        issue_data = {"number": 56, "labels": ["difficult"]}
+        mock_github = MagicMock()
+        llm_config = LLMBackendConfiguration(
+            backend_with_high_score_cloud_order=["codex-cloud"],
+            backends={
+                "codex-cloud": BackendConfig(
+                    name="codex-cloud",
+                    backend_type="codex-cloud",
+                    environment_id="env_12345",
+                )
+            },
+        )
+
+        with patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config):
+            actions = _process_issue_high_score_cloud("owner/repo", issue_data, config, mock_github)
+
+        assert actions == ["Started task"]
+        mock_codex_cloud_mode.assert_called_once_with(
+            "owner/repo",
+            issue_data,
+            config,
+            mock_github,
+            backend_name="codex-cloud",
+            label_context=None,
+        )
 
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
     @patch("auto_coder.issue_processor._process_issue_claude_routine_mode")

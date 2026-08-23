@@ -82,6 +82,9 @@ class BackendConfig:
     # For Claude Routine authentication and URL
     claude_code_routine_token: Optional[str] = None
     url: Optional[str] = None
+    # Codex Cloud environment and best-of-N task settings
+    environment_id: Optional[str] = None
+    attempts: int = 1
     # For custom configurations
     extra_args: Dict[str, str] = field(default_factory=dict)
     # List of provider names available for this backend
@@ -298,6 +301,8 @@ class LLMBackendConfiguration:
                 claude_code_oauth_token=config_data.get("claude_code_oauth_token"),
                 claude_code_routine_token=config_data.get("claude_code_routine_token"),
                 url=config_data.get("url"),
+                environment_id=config_data.get("environment_id") or config_data.get("env_id"),
+                attempts=config_data.get("attempts", 1),
                 extra_args=config_data.get("extra_args", {}),
                 providers=config_data.get("providers", []),
                 usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
@@ -503,6 +508,8 @@ class LLMBackendConfiguration:
                 "claude_code_oauth_token": config.claude_code_oauth_token,
                 "claude_code_routine_token": config.claude_code_routine_token,
                 "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -540,6 +547,8 @@ class LLMBackendConfiguration:
                 "claude_code_oauth_token": config.claude_code_oauth_token,
                 "claude_code_routine_token": config.claude_code_routine_token,
                 "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -577,6 +586,8 @@ class LLMBackendConfiguration:
                 "claude_code_oauth_token": config.claude_code_oauth_token,
                 "claude_code_routine_token": config.claude_code_routine_token,
                 "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,

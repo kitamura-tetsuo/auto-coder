@@ -22,6 +22,8 @@ class TestCodexCloudClient:
             name="codex-cloud",
             backend_type="codex-cloud",
             api_key="test-codex-key",
+            environment_id="env_12345",
+            attempts=2,
             options=["--dangerously-bypass-approvals-and-sandbox"],
         )
         config.backends["codex-cloud"] = cloud_config
@@ -33,6 +35,8 @@ class TestCodexCloudClient:
             client = CodexCloudClient("codex-cloud")
             assert client.backend_name == "codex-cloud"
             assert client.api_key == "test-codex-key"
+            assert client.environment_id == "env_12345"
+            assert client.attempts == 2
             assert client.options == ["--dangerously-bypass-approvals-and-sandbox"]
 
     def test_start_task(self, mock_backend_config):
@@ -65,11 +69,31 @@ class TestCodexCloudClient:
                     "exec",
                     "--env",
                     "env_12345",
+                    "--attempts",
+                    "2",
                     "--branch",
                     "main",
                     "--dangerously-bypass-approvals-and-sandbox",
                     "Implement GitHub issue #123",
                 ]
+
+    def test_start_task_requires_environment_id(self, mock_backend_config):
+        """Codex Cloud submissions must identify their configured environment."""
+        mock_backend_config.backends["codex-cloud"].environment_id = None
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            client.environment_id = None
+            with pytest.raises(ValueError, match="environment_id"):
+                client.start_task("Implement the issue")
+
+    def test_start_task_rejects_failed_submission(self, mock_backend_config):
+        """A CLI failure must not be represented by a fabricated task ID."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            result = MagicMock(returncode=1, stdout="", stderr="environment not found")
+            with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
+                with pytest.raises(RuntimeError, match="environment not found"):
+                    client.start_task("Implement the issue")
 
     def test_list_tasks(self, mock_backend_config):
         """Test listing tasks with codex cloud list --json."""

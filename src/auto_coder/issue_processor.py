@@ -442,6 +442,62 @@ def _process_issue_claude_routine_mode(
     return actions
 
 
+def _process_issue_codex_cloud_mode(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+    backend_name: str,
+    label_context: Optional[LabelManagerContext] = None,
+) -> List[str]:
+    """Submit an issue to Codex Cloud and persist its task identifier."""
+    from .codex_cloud_client import CodexCloudClient
+
+    issue_number = issue_data["number"]
+    issue_title = issue_data.get("title", "Unknown")
+    issue_labels = [label.get("name", "") if isinstance(label, dict) else str(label) for label in issue_data.get("labels", [])]
+    prompt = render_prompt(
+        "issue.action",
+        repo_name=repo_name,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_data.get("body", ""),
+        issue_labels=", ".join(issue_labels),
+        issue_state=issue_data.get("state", "open"),
+        issue_author=issue_data.get("user", {}).get("login", "unknown"),
+        commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
+        is_jules=True,
+    )
+
+    client = CodexCloudClient(backend_name=backend_name)
+    task_id = client.start_task(
+        prompt,
+        repo_name=repo_name,
+        base_branch=config.MAIN_BRANCH,
+        title=f"{issue_title} (#{issue_number})",
+    )
+    CloudManager(repo_name).add_session(issue_number, task_id)
+
+    task_url = client.task_urls.get(task_id)
+    comment = f"I started a Codex Cloud task to work on this issue. Task ID: {task_id}"
+    if task_url:
+        comment += f"\n\n{task_url}"
+    github_client.add_comment_to_issue(repo_name, issue_number, comment)
+    github_client.add_labels(repo_name, issue_number, ["@auto-coder"])
+
+    if label_context:
+        label_context.keep_label()
+
+    get_trace_logger().log(
+        "Codex Cloud Task",
+        f"Started Codex Cloud task for issue #{issue_number}",
+        item_type="issue",
+        item_number=issue_number,
+        details={"task_id": task_id, "task_url": task_url},
+    )
+    return [f"Started Codex Cloud task '{task_id}' for issue #{issue_number}"]
+
+
 def _process_issue_high_score_cloud(
     repo_name: str,
     issue_data: Dict[str, Any],
@@ -480,6 +536,15 @@ def _process_issue_high_score_cloud(
         try:
             if backend_type == "claude-routine":
                 return _process_issue_claude_routine_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_name=backend_name,
+                    label_context=label_context,
+                )
+            elif backend_type == "codex-cloud":
+                return _process_issue_codex_cloud_mode(
                     repo_name,
                     issue_data,
                     config,

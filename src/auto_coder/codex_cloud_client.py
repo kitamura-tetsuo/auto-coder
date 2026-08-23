@@ -8,7 +8,6 @@ Reference: https://github.com/openai/codex
 import json
 import os
 import re
-import time
 from typing import Any, Dict, List, Optional
 
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
@@ -43,7 +42,8 @@ class CodexCloudClient(CloudTaskClientBase):
         self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
 
         # Optional environment ID for Codex Cloud executions
-        self.environment_id: Optional[str] = (self.config_backend and (getattr(self.config_backend, "environment_id", None) or getattr(self.config_backend, "env_id", None))) or os.environ.get("CODEX_CLOUD_ENV_ID") or os.environ.get("CODEX_ENVIRONMENT_ID")
+        self.environment_id: Optional[str] = (self.config_backend and self.config_backend.environment_id) or os.environ.get("CODEX_CLOUD_ENV_ID") or os.environ.get("CODEX_ENVIRONMENT_ID")
+        self.attempts = (self.config_backend and self.config_backend.attempts) or 1
 
     def _extract_task_id(self, output: str) -> Optional[str]:
         """Extract a task ID or task URL from Codex Cloud CLI output.
@@ -121,8 +121,12 @@ class CodexCloudClient(CloudTaskClientBase):
 
         cmd = ["codex", "cloud", "exec"]
 
-        if self.environment_id:
-            cmd.extend(["--env", self.environment_id])
+        if not self.environment_id:
+            raise ValueError(f"No environment_id configured for Codex Cloud backend '{self.backend_name}'. " "Set environment_id in llm_config.toml or CODEX_CLOUD_ENV_ID.")
+        cmd.extend(["--env", self.environment_id])
+
+        if self.attempts != 1:
+            cmd.extend(["--attempts", str(self.attempts)])
 
         if base_branch:
             cmd.extend(["--branch", base_branch])
@@ -142,12 +146,14 @@ class CodexCloudClient(CloudTaskClientBase):
         result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
         output = (result.stdout or result.stderr or "").strip()
 
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to start Codex Cloud task: {output or 'unknown CLI error'}")
+
         task_id = self._extract_task_id(output)
         task_url = self._extract_task_url(output)
 
         if not task_id:
-            task_id = f"task_{int(time.time())}"
-            logger.warning(f"Could not extract task ID from Codex Cloud output, generated fallback: {task_id}")
+            raise RuntimeError(f"Codex Cloud did not return a task ID: {output or 'empty output'}")
 
         if task_url:
             self.task_urls[task_id] = task_url

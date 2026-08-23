@@ -1,23 +1,11 @@
 {
 	"folders": [
 		{
-			"name": "auto-coder",
 			"path": ".."
 		},
 		{
-			"name": ".auto-coder",
-			"path": "../../../.auto-coder"
-		},
-		{
-			"name": "workspace",
-			"path": "../../../../../workspace"
-		},
-		{
-			"name": "auto-coder-test",
-			"path": "../../auto-coder-test"
+			"path": "../../../home/node/.auto-coder"
 		}
 	],
-	"settings": {
-		"window.title": "auto-coder${separator}${activeEditorShort}${separator}${remoteName}/src"
-	}
+	"settings": {}
 }

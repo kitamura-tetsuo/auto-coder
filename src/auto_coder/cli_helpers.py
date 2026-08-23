@@ -275,7 +275,9 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_claude_cli_or_fail()
         elif backend_name == "aider":
             check_aider_cli_or_fail()
-        elif backend_name in ("jules", "claude-routine", "codex-cloud"):
+        elif backend_name == "codex-cloud":
+            check_codex_cli_or_fail()
+        elif backend_name in ("jules", "claude-routine"):
             pass  # Cloud/API based, no local CLI binary needed
         else:
             # Check if it's a custom backend with backend_type

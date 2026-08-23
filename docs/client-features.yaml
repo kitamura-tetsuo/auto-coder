@@ -94,7 +94,12 @@ The system supports extensive backend configuration options. Key fields include:
   - Example:
     ```toml
     [backend_with_high_score_cloud]
-    order = ["claude-opus-routine"]
+    order = ["codex-cloud", "claude-opus-routine"]
+
+    [backends.codex-cloud]
+    backend_type = "codex-cloud"
+    environment_id = "<Codex Cloud environment ID>"
+    attempts = 1
 
     [backends.claude-opus-routine]
     backend_type = "claude-routine"
@@ -102,6 +107,8 @@ The system supports extensive backend configuration options. Key fields include:
     claude_code_routine_token = "sk-ant-oat01-..."
     ```
   - Behavior:
+    - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
+    - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
     - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.
     - Saves the returned session ID in `cloud.csv`, comments on the issue with the session link, and retains the `@auto-coder` label.
     - Subsequent pull requests opened by Claude routines are tracked and linked to the issue.
@@ -786,4 +793,3 @@ Recent configuration schema changes that require migration:
         - "Future runs re-check the review threads and merge once all threads are resolved."
       - "Resolved review threads (isResolved == True) and normal PR conversation comments do not block merge."
       - "Applies generically to all PRs handled by Auto-Coder."
-
