@@ -208,6 +208,21 @@
             }
         },
         {
+            "name": "Check usage-amount",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/workspace",
+            "args": [
+                "usage-amount"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
             "name": "Debug Tests",
             "type": "debugpy",
             "request": "launch",
