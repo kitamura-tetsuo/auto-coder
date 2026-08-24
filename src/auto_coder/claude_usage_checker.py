@@ -253,58 +253,6 @@ def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) 
             data = json.loads(content)
             return data if isinstance(data, dict) else None
 
-    def _try_fallback_or_refresh(initial_error_code: int) -> Optional[dict]:
-        # If an explicit token was used and failed (e.g. 403 scope error for routine tokens or 401),
-        # try the fallback OAuth token from credentials file or environment which may have user:profile scope.
-        if token:
-            fallback_token = resolve_claude_oauth_token(None)
-            if fallback_token and fallback_token != resolved_token:
-                logger.debug(f"Claude usage fetch with explicit token returned HTTP {initial_error_code}; " "attempting fallback to standard OAuth credentials")
-                try:
-                    return _make_request(fallback_token)
-                except urllib.error.HTTPError as fb_http_err:
-                    if fb_http_err.code == 429:
-                        return {
-                            "is_rate_limited": True,
-                            "http_status": 429,
-                            "error": {
-                                "type": "rate_limit_error",
-                                "message": f"Rate limit reached on fallback token (HTTP 429): {fb_http_err.reason}",
-                            },
-                        }
-                    logger.debug(f"Fallback OAuth token request returned HTTP {fb_http_err.code}: {fb_http_err}")
-                except Exception as fb_err:
-                    logger.debug(f"Fallback OAuth token request failed: {fb_err}")
-
-        # Attempt token refresh from credentials file if refreshToken exists
-        creds = _read_credentials_file()
-        rtoken = None
-        scopes = None
-        if creds:
-            oauth_info = creds.get("claudeAiOauth")
-            if isinstance(oauth_info, dict):
-                rtoken = oauth_info.get("refreshToken")
-                scopes = oauth_info.get("scopes")
-        if rtoken and isinstance(rtoken, str):
-            refreshed_token = refresh_claude_access_token(rtoken, scopes=scopes)
-            if refreshed_token:
-                try:
-                    return _make_request(refreshed_token)
-                except urllib.error.HTTPError as retry_http_err:
-                    if retry_http_err.code == 429:
-                        return {
-                            "is_rate_limited": True,
-                            "http_status": 429,
-                            "error": {
-                                "type": "rate_limit_error",
-                                "message": f"Rate limit reached on refresh retry (HTTP 429): {retry_http_err.reason}",
-                            },
-                        }
-                    logger.debug(f"Retry after token refresh failed with HTTP {retry_http_err.code}: {retry_http_err}")
-                except Exception as retry_err:
-                    logger.debug(f"Retry after token refresh failed: {retry_err}")
-        return None
-
     try:
         return _make_request(resolved_token)
     except urllib.error.HTTPError as e:
@@ -318,12 +266,36 @@ def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) 
                     "message": f"Rate limit reached (HTTP 429): {e.reason}",
                 },
             }
-        elif e.code in (401, 403):
-            logger.debug(f"Claude OAuth usage endpoint HTTP {e.code}: attempting fallback/refresh")
-            fallback_res = _try_fallback_or_refresh(e.code)
-            if fallback_res is not None:
-                return fallback_res
-            logger.debug(f"Claude OAuth usage endpoint HTTP {e.code}: {e}")
+        elif e.code == 401:
+            # Token expired: attempt refresh if refreshToken exists
+            logger.debug("Claude OAuth accessToken expired (HTTP 401); attempting refresh")
+            creds = _read_credentials_file()
+            rtoken = None
+            scopes = None
+            if creds:
+                oauth_info = creds.get("claudeAiOauth")
+                if isinstance(oauth_info, dict):
+                    rtoken = oauth_info.get("refreshToken")
+                    scopes = oauth_info.get("scopes")
+            if rtoken and isinstance(rtoken, str):
+                refreshed_token = refresh_claude_access_token(rtoken, scopes=scopes)
+                if refreshed_token:
+                    try:
+                        return _make_request(refreshed_token)
+                    except urllib.error.HTTPError as retry_http_err:
+                        if retry_http_err.code == 429:
+                            return {
+                                "is_rate_limited": True,
+                                "http_status": 429,
+                                "error": {
+                                    "type": "rate_limit_error",
+                                    "message": f"Rate limit reached on refresh retry (HTTP 429): {retry_http_err.reason}",
+                                },
+                            }
+                        logger.debug(f"Retry after token refresh failed with HTTP {retry_http_err.code}: {retry_http_err}")
+                    except Exception as retry_err:
+                        logger.debug(f"Retry after token refresh failed: {retry_err}")
+            logger.debug(f"Claude OAuth usage endpoint HTTP 401: {e}")
         else:
             logger.debug(f"Claude OAuth usage endpoint HTTP {e.code}: {e}")
     except Exception as e:
