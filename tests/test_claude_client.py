@@ -1103,7 +1103,7 @@ class TestClaudeClientSessionExtraction:
                 client._run_llm_cli("Test prompt")
 
             assert "5-hour limit remaining 12.0%" in str(exc_info.value)
-            mock_check.assert_called_once_with(token="tok-123", backend_name="claude-opus")
+            mock_check.assert_called_once_with(token="tok-123", backend_name="claude-opus", allow_unknown=True)
 
 
 class TestClaudeConfigRestore:

@@ -4,12 +4,14 @@ Claude OAuth usage checker for Auto-Coder.
 Checks usage and rate limit status from Anthropic OAuth usage API
 (https://api.anthropic.com/api/oauth/usage) before calling Claude or Claude-Routine backends.
 If remaining quota is too low (5-hour window remaining <= 20% or 7-day window remaining <= 5%),
-or if rate limit errors (HTTP 429) or extra usage restrictions occur,
+or if rate limit errors (HTTP 429), extra usage restrictions occur, or usage data cannot be retrieved,
 it raises AutoCoderUsageLimitError to defer LLM invocations and route to next backend.
 """
 
 import json
 import os
+import shlex
+import subprocess
 import threading
 import time
 import urllib.error
@@ -145,12 +147,55 @@ def _update_credentials_file(
         logger.warning(f"Failed to update credentials file at {path}: {e}")
 
 
+def refresh_claude_token_via_cli(timeout: float = 15.0) -> Optional[str]:
+    """Run `claude auth status` once to trigger Claude CLI's internal token refresh mechanism.
+
+    Returns:
+        The refreshed accessToken from .credentials.json if valid and unexpired, else None.
+    """
+    cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
+    base_cmd = shlex.split(cmd_override) if cmd_override else ["claude"]
+    cmd = base_cmd + ["auth", "status", "--json"]
+    try:
+        logger.debug(f"Attempting Claude OAuth token refresh via CLI: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            creds = _read_credentials_file()
+            if creds:
+                oauth_info = creds.get("claudeAiOauth")
+                if isinstance(oauth_info, dict):
+                    token = oauth_info.get("accessToken")
+                    expires_at = oauth_info.get("expiresAt")
+                    now_ms = time.time() * 1000
+                    if token and isinstance(token, str):
+                        if not expires_at or (isinstance(expires_at, (int, float)) and now_ms < (expires_at - 60000)):
+                            logger.info("Successfully refreshed Claude OAuth token via Claude CLI")
+                            return token.strip()
+        else:
+            logger.debug(f"Claude CLI auth status returned code {result.returncode}: {result.stderr or result.stdout}")
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(f"Failed to run Claude CLI for token refresh: {e}")
+    return None
+
+
 def refresh_claude_access_token(
     refresh_token: str,
     scopes: Optional[Union[List[str], str]] = None,
     client_id: Optional[str] = None,
+    try_cli_first: bool = True,
 ) -> Optional[str]:
-    """Exchange refreshToken for a new accessToken using JSON payload with client_id."""
+    """Exchange refreshToken for a new accessToken using Claude CLI or direct HTTP request."""
+    if try_cli_first:
+        cli_token = refresh_claude_token_via_cli()
+        if cli_token:
+            return cli_token
+
     resolved_client_id = client_id or os.environ.get("CLAUDE_CODE_OAUTH_CLIENT_ID") or DEFAULT_CLIENT_ID
 
     scope_str = " ".join(DEFAULT_SCOPES)
@@ -224,6 +269,9 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
                     refreshed = refresh_claude_access_token(refresh_token, scopes=scopes)
                     if refreshed:
                         return refreshed
+                    if now_ms >= expires_at:
+                        logger.warning("Claude OAuth token is expired and refresh failed")
+                        return None
 
             if token and isinstance(token, str):
                 return token.strip()
@@ -361,8 +409,12 @@ def check_claude_usage(
 
     raw_data = fetch_claude_usage_data(token=token)
     if not raw_data:
-        # If API is unreachable or token cannot check usage, default to normal execution
-        quota = ClaudeUsageQuota(cached_at=now)
+        # If API is unreachable or token cannot check usage, mark quota as insufficient
+        quota = ClaudeUsageQuota(
+            is_quota_insufficient=True,
+            reason="Claude usage data could not be retrieved",
+            cached_at=now,
+        )
         with _cache_lock:
             _cached_quota = quota
         return quota
@@ -495,6 +547,7 @@ def check_claude_usage_or_raise(
     five_hour_threshold_pct: float = 20.0,
     seven_day_threshold_pct: float = 5.0,
     use_cache: bool = True,
+    allow_unknown: bool = False,
 ) -> None:
     """Check Claude usage limits and raise AutoCoderUsageLimitError if threshold exceeded.
 
@@ -504,9 +557,10 @@ def check_claude_usage_or_raise(
         five_hour_threshold_pct: Threshold for 5-hour limit (default: 20.0%).
         seven_day_threshold_pct: Threshold for 7-day limit (default: 5.0%).
         use_cache: Whether to use cached usage within TTL.
+        allow_unknown: Whether to allow execution if usage data cannot be retrieved (default: False).
 
     Raises:
-        AutoCoderUsageLimitError: When quota is insufficient or rate limits are reached.
+        AutoCoderUsageLimitError: When quota is insufficient or usage data cannot be retrieved.
     """
     quota = check_claude_usage(
         token=token,
@@ -516,6 +570,8 @@ def check_claude_usage_or_raise(
     )
 
     if quota.is_quota_insufficient:
+        if allow_unknown and quota.reason == "Claude usage data could not be retrieved":
+            return
         message = f"Claude usage threshold reached for backend '{backend_name}': {quota.reason}"
         logger.warning(message)
         raise AutoCoderUsageLimitError(message)

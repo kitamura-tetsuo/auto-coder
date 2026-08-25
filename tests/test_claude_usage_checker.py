@@ -3,6 +3,7 @@ Unit tests for Claude OAuth usage checker.
 """
 
 import json
+import subprocess
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from auto_coder.claude_usage_checker import (
     clear_claude_usage_cache,
     fetch_claude_usage_data,
     refresh_claude_access_token,
+    refresh_claude_token_via_cli,
     resolve_claude_oauth_token,
 )
 from auto_coder.exceptions import AutoCoderUsageLimitError
@@ -111,11 +113,20 @@ class TestClaudeUsageChecker:
             # Should not raise
             check_claude_usage_or_raise(token="test-token", backend_name="claude-opus")
 
-    def test_check_claude_usage_or_raise_when_fetch_returns_none(self):
-        """Test check_claude_usage_or_raise does not block when API fetch fails."""
+    def test_check_claude_usage_when_fetch_returns_none_marks_insufficient(self):
+        """Test check_claude_usage marks quota insufficient when usage data cannot be retrieved."""
         with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=None):
-            # Should not raise (graceful fallback)
-            check_claude_usage_or_raise(token="test-token", backend_name="claude-opus")
+            quota = check_claude_usage(token="test-token", use_cache=False)
+            assert quota.is_quota_insufficient is True
+            assert "Claude usage data could not be retrieved" in quota.reason
+
+    def test_check_claude_usage_or_raise_when_fetch_returns_none(self):
+        """Test check_claude_usage_or_raise raises AutoCoderUsageLimitError when API fetch fails."""
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=None):
+            with pytest.raises(AutoCoderUsageLimitError) as exc_info:
+                check_claude_usage_or_raise(token="test-token", backend_name="claude-opus")
+            assert "Claude usage threshold reached for backend 'claude-opus'" in str(exc_info.value)
+            assert "Claude usage data could not be retrieved" in str(exc_info.value)
 
     def test_resolve_token_priority(self):
         """Test token resolution order: explicit token > env var > credentials file."""
@@ -172,8 +183,57 @@ class TestClaudeUsageChecker:
             assert result == {"five_hour": {"utilization": 10.0}}
             mock_refresh.assert_called_once_with("refresh-tok", scopes=None)
 
+    def test_refresh_claude_token_via_cli_success(self):
+        """Test refresh_claude_token_via_cli successfully runs claude auth status and returns updated token."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = '{"loggedIn": true}'
+
+        future_ms = (10000.0) * 1000  # unexpired
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": "cli-refreshed-token",
+                "expiresAt": future_ms,
+            }
+        }
+        with (
+            patch("subprocess.run", return_value=mock_proc) as mock_run,
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=creds),
+            patch("time.time", return_value=1000.0),
+        ):
+            token = refresh_claude_token_via_cli()
+            assert token == "cli-refreshed-token"
+            mock_run.assert_called_once_with(
+                ["claude", "auth", "status", "--json"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15.0,
+            )
+
+    def test_refresh_claude_token_via_cli_failure(self):
+        """Test refresh_claude_token_via_cli returns None when claude auth status fails."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stderr = "Not logged in"
+
+        with patch("subprocess.run", return_value=mock_proc):
+            token = refresh_claude_token_via_cli()
+            assert token is None
+
+    def test_refresh_claude_access_token_tries_cli_first(self):
+        """Test refresh_claude_access_token uses CLI-refreshed token if available without HTTP request."""
+        with (
+            patch("auto_coder.claude_usage_checker.refresh_claude_token_via_cli", return_value="cli-token") as mock_cli,
+            patch("urllib.request.urlopen") as mock_urlopen,
+        ):
+            token = refresh_claude_access_token("my-refresh-token")
+            assert token == "cli-token"
+            mock_cli.assert_called_once()
+            mock_urlopen.assert_not_called()
+
     def test_refresh_claude_access_token_success(self):
-        """Test refresh_claude_access_token parses response and updates credentials file."""
+        """Test refresh_claude_access_token parses response and updates credentials file when CLI fallback is needed."""
         mock_token_resp = MagicMock()
         mock_token_resp.__enter__.return_value.read.return_value = json.dumps(
             {
@@ -183,7 +243,11 @@ class TestClaudeUsageChecker:
             }
         ).encode("utf-8")
 
-        with patch("urllib.request.urlopen", return_value=mock_token_resp) as mock_urlopen, patch("auto_coder.claude_usage_checker._update_credentials_file") as mock_update:
+        with (
+            patch("auto_coder.claude_usage_checker.refresh_claude_token_via_cli", return_value=None),
+            patch("urllib.request.urlopen", return_value=mock_token_resp) as mock_urlopen,
+            patch("auto_coder.claude_usage_checker._update_credentials_file") as mock_update,
+        ):
             token = refresh_claude_access_token("my-refresh-token", scopes=["user:profile", "user:inference"])
             assert token == "new-acc-token"
             mock_update.assert_called_once()
@@ -196,9 +260,12 @@ class TestClaudeUsageChecker:
             assert body["scope"] == "user:profile user:inference"
 
     def test_refresh_claude_access_token_handles_429(self):
-        """Test that refresh_claude_access_token handles HTTP 429 gracefully."""
+        """Test that refresh_claude_access_token handles HTTP 429 gracefully when CLI fails."""
         http_429 = urllib.error.HTTPError("url", 429, "Too Many Requests", {}, None)  # type: ignore
-        with patch("urllib.request.urlopen", side_effect=http_429):
+        with (
+            patch("auto_coder.claude_usage_checker.refresh_claude_token_via_cli", return_value=None),
+            patch("urllib.request.urlopen", side_effect=http_429),
+        ):
             token = refresh_claude_access_token("my-refresh-token")
             assert token is None
 
@@ -220,6 +287,26 @@ class TestClaudeUsageChecker:
         ):
             token = resolve_claude_oauth_token(None)
             assert token == "proactive-refreshed-tok"
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+
+    def test_resolve_token_proactive_refresh_failure_returns_none_when_expired(self):
+        """Test resolve_claude_oauth_token returns None when expired and proactive refresh fails."""
+        expired_ms = (1000.0) * 1000  # in the past
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": "expired-tok",
+                "refreshToken": "refresh-tok",
+                "expiresAt": expired_ms,
+                "scopes": ["user:profile"],
+            }
+        }
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=creds),
+            patch("auto_coder.claude_usage_checker.refresh_claude_access_token", return_value=None) as mock_refresh,
+        ):
+            token = resolve_claude_oauth_token(None)
+            assert token is None
             mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
 
     def test_fetch_claude_usage_data_handles_429(self):

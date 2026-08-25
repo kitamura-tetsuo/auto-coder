@@ -206,6 +206,7 @@ class ClaudeClient(LLMClientBase):
         check_claude_usage_or_raise(
             token=self.claude_code_oauth_token,
             backend_name=getattr(self, "backend_name", "claude"),
+            allow_unknown=True,
         )
         try:
             escaped_prompt = self._escape_prompt(prompt)

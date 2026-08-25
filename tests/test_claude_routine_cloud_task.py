@@ -116,7 +116,11 @@ class TestClaudeRoutineCloudTask:
                 mock_result.returncode = 0
                 mock_result.stdout = "Message sent"
 
-                with patch("auto_coder.claude_routine_client.CommandExecutor.run_command", return_value=mock_result) as mock_run:
+                sufficient_quota = MagicMock(is_quota_insufficient=False)
+                with (
+                    patch("auto_coder.claude_routine_client.check_claude_usage", return_value=sufficient_quota),
+                    patch("auto_coder.claude_routine_client.CommandExecutor.run_command", return_value=mock_result) as mock_run,
+                ):
                     resumed = client.continue_if_paused("session_due")
                     assert resumed is True
 

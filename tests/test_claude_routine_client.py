@@ -52,7 +52,10 @@ class TestClaudeRoutineClient:
                 "claude_code_session_url": "https://claude.ai/code/session_01HJKLMNOPQRSTUVWXYZ",
             }
 
-            with patch.object(client.session, "post", return_value=mock_response) as mock_post:
+            with (
+                patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+                patch.object(client.session, "post", return_value=mock_response) as mock_post,
+            ):
                 session_id, session_url = client.fire_routine(
                     "Test prompt",
                     repo_name="owner/repo",
@@ -78,7 +81,10 @@ class TestClaudeRoutineClient:
             mock_response.status_code = 401
             mock_response.text = "Unauthorized"
 
-            with patch.object(client.session, "post", return_value=mock_response):
+            with (
+                patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+                patch.object(client.session, "post", return_value=mock_response),
+            ):
                 with pytest.raises(RuntimeError) as exc_info:
                     client.fire_routine("Test prompt")
 
@@ -95,7 +101,10 @@ class TestClaudeRoutineClient:
 
         with patch("auto_coder.claude_routine_client.get_llm_config", return_value=config):
             client = ClaudeRoutineClient("empty-routine")
-            with pytest.raises(ValueError) as exc_info:
+            with (
+                patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+                pytest.raises(ValueError) as exc_info,
+            ):
                 client.fire_routine("Test prompt")
             assert "No URL configured" in str(exc_info.value)
 
@@ -112,7 +121,10 @@ class TestClaudeRoutineClient:
                 "claude_code_session_url": "https://claude.ai/code/session_456",
             }
 
-            with patch.object(client.session, "post", return_value=mock_response):
+            with (
+                patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+                patch.object(client.session, "post", return_value=mock_response),
+            ):
                 sess_id = client.start_session("Fix bug", "owner/repo", "main")
                 assert sess_id == "session_456"
 
@@ -128,6 +140,23 @@ class TestClaudeRoutineClient:
             assert client.add_mcp_server_config("test", "cmd", []) is False
 
             client.close()
+
+    def test_fire_routine_raises_when_usage_cannot_be_retrieved(self, mock_backend_config):
+        """Test fire_routine raises AutoCoderUsageLimitError when usage data cannot be retrieved."""
+        from auto_coder.exceptions import AutoCoderUsageLimitError
+
+        with patch("auto_coder.claude_routine_client.get_llm_config", return_value=mock_backend_config):
+            client = ClaudeRoutineClient("claude-opus-routine")
+
+            with (
+                patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=None),
+                patch.object(client.session, "post") as mock_post,
+            ):
+                with pytest.raises(AutoCoderUsageLimitError) as exc_info:
+                    client.fire_routine("Test prompt")
+
+                assert "Claude usage data could not be retrieved" in str(exc_info.value)
+                mock_post.assert_not_called()
 
     def test_fire_routine_raises_usage_limit_error(self, mock_backend_config):
         """Test fire_routine raises AutoCoderUsageLimitError when usage limit is low."""
@@ -157,7 +186,10 @@ class TestClaudeRoutineClient:
             mock_response.status_code = 429
             mock_response.text = '{"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}'
 
-            with patch.object(client.session, "post", return_value=mock_response):
+            with (
+                patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+                patch.object(client.session, "post", return_value=mock_response),
+            ):
                 with pytest.raises(AutoCoderUsageLimitError) as exc_info:
                     client.fire_routine("Test prompt")
 
@@ -174,3 +206,16 @@ class TestClaudeRoutineClient:
             with patch("auto_coder.claude_routine_client.check_claude_usage", return_value=insufficient_quota):
                 res = client.continue_if_paused("session_123")
                 assert res is False
+
+    def test_continue_if_paused_skips_when_usage_cannot_be_retrieved(self, mock_backend_config):
+        """Test continue_if_paused returns False when usage cannot be retrieved."""
+        with patch("auto_coder.claude_routine_client.get_llm_config", return_value=mock_backend_config):
+            client = ClaudeRoutineClient("claude-opus-routine")
+
+            with (
+                patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=None),
+                patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as mock_run,
+            ):
+                res = client.continue_if_paused("session_123")
+                assert res is False
+                mock_run.assert_not_called()
