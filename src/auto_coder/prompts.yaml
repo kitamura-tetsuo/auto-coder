@@ -550,6 +550,14 @@ issue:
     - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
 
+      After creating the pull request:
+      1. Wait for all CI checks, including all E2E test jobs, to complete.
+      2. Inspect the results of every CI check.
+      3. If any check fails, retrieve and inspect the failure logs, identify the cause, fix the issue on the same PR branch, push the changes, and wait for CI to run again.
+      4. Repeat this process until all CI checks pass.
+      5. Review all PR comments and review comments.
+      6. If a comment identifies a valid issue, address it, push the necessary changes, verify CI again, and resolve the corresponding review thread when appropriate.
+
     For duplicate/invalid issues:
     - Close the issue
     - Add a polite comment explaining why it was closed
