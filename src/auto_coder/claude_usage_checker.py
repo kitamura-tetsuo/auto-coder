@@ -81,11 +81,16 @@ _cache_lock = threading.Lock()
 _cached_quota: Optional[ClaudeUsageQuota] = None
 
 
+_last_refresh_failed_at: float = 0.0
+DEFAULT_REFRESH_COOLDOWN_SECONDS: float = 60.0
+
+
 def clear_claude_usage_cache() -> None:
-    """Clear in-memory cached quota state."""
-    global _cached_quota
+    """Clear in-memory cached quota state and refresh cooldown."""
+    global _cached_quota, _last_refresh_failed_at
     with _cache_lock:
         _cached_quota = None
+        _last_refresh_failed_at = 0.0
 
 
 def get_claude_credentials_path() -> Path:
@@ -189,12 +194,20 @@ def refresh_claude_access_token(
     scopes: Optional[Union[List[str], str]] = None,
     client_id: Optional[str] = None,
     try_cli_first: bool = True,
+    cooldown_seconds: float = DEFAULT_REFRESH_COOLDOWN_SECONDS,
 ) -> Optional[str]:
     """Exchange refreshToken for a new accessToken using Claude CLI or direct HTTP request."""
+    global _last_refresh_failed_at
+
     if try_cli_first:
         cli_token = refresh_claude_token_via_cli()
         if cli_token:
             return cli_token
+
+    now = time.time()
+    if (now - _last_refresh_failed_at) < cooldown_seconds:
+        logger.debug(f"Skipping Claude OAuth token refresh due to active cooldown ({int(cooldown_seconds - (now - _last_refresh_failed_at))}s remaining)")
+        return None
 
     resolved_client_id = client_id or os.environ.get("CLAUDE_CODE_OAUTH_CLIENT_ID") or DEFAULT_CLIENT_ID
 
@@ -232,13 +245,16 @@ def refresh_claude_access_token(
         new_expires_at = int(time.time() * 1000 + int(expires_in) * 1000) if expires_in else None
         if new_access_token:
             _update_credentials_file(str(new_access_token), str(new_refresh_token) if new_refresh_token else None, new_expires_at)
+            _last_refresh_failed_at = 0.0
             return str(new_access_token)
     except urllib.error.HTTPError as e:
+        _last_refresh_failed_at = time.time()
         if e.code == 429:
             logger.warning("Claude OAuth token refresh failed with HTTP 429: Rate limit exceeded")
             return None
         logger.warning(f"Failed to refresh Claude OAuth token (HTTP {e.code}): {e}")
     except Exception as e:
+        _last_refresh_failed_at = time.time()
         logger.warning(f"Failed to refresh Claude OAuth token: {e}")
     return None
 
@@ -270,6 +286,9 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
                     if refreshed:
                         return refreshed
                     if now_ms >= expires_at:
+                        if token and isinstance(token, str) and token.strip():
+                            logger.warning("Claude OAuth token is expired and refresh failed; using existing accessToken as fallback")
+                            return token.strip()
                         logger.warning("Claude OAuth token is expired and refresh failed")
                         return None
 

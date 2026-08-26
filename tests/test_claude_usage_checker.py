@@ -289,8 +289,8 @@ class TestClaudeUsageChecker:
             assert token == "proactive-refreshed-tok"
             mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
 
-    def test_resolve_token_proactive_refresh_failure_returns_none_when_expired(self):
-        """Test resolve_claude_oauth_token returns None when expired and proactive refresh fails."""
+    def test_resolve_token_proactive_refresh_failure_falls_back_to_existing_token(self):
+        """Test resolve_claude_oauth_token falls back to existing accessToken when expired and proactive refresh fails."""
         expired_ms = (1000.0) * 1000  # in the past
         creds = {
             "claudeAiOauth": {
@@ -306,8 +306,44 @@ class TestClaudeUsageChecker:
             patch("auto_coder.claude_usage_checker.refresh_claude_access_token", return_value=None) as mock_refresh,
         ):
             token = resolve_claude_oauth_token(None)
+            assert token == "expired-tok"
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+
+    def test_resolve_token_proactive_refresh_failure_returns_none_when_no_existing_token(self):
+        """Test resolve_claude_oauth_token returns None when expired, proactive refresh fails, and no existing token exists."""
+        expired_ms = (1000.0) * 1000  # in the past
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": None,
+                "refreshToken": "refresh-tok",
+                "expiresAt": expired_ms,
+                "scopes": ["user:profile"],
+            }
+        }
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=creds),
+            patch("auto_coder.claude_usage_checker.refresh_claude_access_token", return_value=None) as mock_refresh,
+        ):
+            token = resolve_claude_oauth_token(None)
             assert token is None
             mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+
+    def test_refresh_claude_access_token_cooldown_skips_http_request(self):
+        """Test refresh_claude_access_token honors cooldown after a failed HTTP refresh attempt."""
+        http_429 = urllib.error.HTTPError("url", 429, "Too Many Requests", {}, None)  # type: ignore
+        with (
+            patch("auto_coder.claude_usage_checker.refresh_claude_token_via_cli", return_value=None),
+            patch("urllib.request.urlopen", side_effect=http_429) as mock_urlopen,
+        ):
+            token1 = refresh_claude_access_token("my-refresh-token")
+            assert token1 is None
+            assert mock_urlopen.call_count == 1
+
+            # Second call immediately should skip HTTP request due to cooldown
+            token2 = refresh_claude_access_token("my-refresh-token")
+            assert token2 is None
+            assert mock_urlopen.call_count == 1
 
     def test_fetch_claude_usage_data_handles_429(self):
         """Test fetch_claude_usage_data returns rate limit error structure on HTTP 429."""
