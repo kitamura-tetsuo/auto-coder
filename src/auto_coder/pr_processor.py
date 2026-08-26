@@ -266,6 +266,12 @@ def process_pull_request(
             logger.error(f"Error in Jules PR processing for PR #{pr_number}: {e}")
             # Continue with normal processing even if Jules processing fails
 
+        # Process Codex Cloud PRs to append Codex Cloud URL if linked issue was processed by Codex Cloud
+        try:
+            _link_codex_cloud_pr_to_issue(repo_name, pr_data, github_client)
+        except Exception as e:
+            logger.error(f"Error in Codex Cloud PR processing for PR #{pr_number}: {e}")
+
         # Check if we should skip this PR because it's waiting for Jules
         if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
@@ -362,6 +368,9 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
     2. There are no commits after that comment.
     3. The wait has not exceeded ``config.JULES_WAIT_TIMEOUT_HOURS``.
     """
+    if _is_codex_or_claude_pr(pr_data):
+        return False
+
     wait_timeout_hours = (config or AutomationConfig()).JULES_WAIT_TIMEOUT_HOURS
     try:
         pr_number = pr_data["number"]
@@ -1617,8 +1626,8 @@ def _handle_pr_merge(
             actions.append(f"PR #{pr_number} is a dependabot PR, skipping fixes")
             return actions
 
-        # Step 6: Process PR in normal mode if it's not a Jules PR
-        if not _is_jules_pr(pr_data):
+        # Step 6: Process PR in Jules mode if it's not a Jules PR and not created by Codex/Claude
+        if not _is_jules_pr(pr_data) and not _is_codex_or_claude_pr(pr_data):
             jules_mode_actions = _process_pr_jules_mode(repo_name, pr_data, config, github_client)
             actions.extend(jules_mode_actions)
             return actions
@@ -2046,6 +2055,14 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         logger.debug(f"Found session ID pattern 3b (GitHub PR URL): {session_id}")
         return session_id
 
+    # Pattern 3c: Look for Codex Cloud task URLs (e.g., https://chatgpt.com/codex/tasks/task_01HJKLMNOPQRSTUVWXYZ)
+    codex_session_url_pattern = r"(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/tasks/(task_[a-zA-Z0-9_-]+)"
+    match = re.search(codex_session_url_pattern, pr_body, re.IGNORECASE)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 3c (Codex Task URL): {session_id}")
+        return session_id
+
     # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345 or "task 12345")
     # This is treated as a session ID
     task_url_pattern = r"jules\.google\.com/task/(\d+)"
@@ -2071,6 +2088,14 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     if match:
         session_id = match.group(1).strip()
         logger.debug(f"Found session ID pattern 6 (session_ prefix): {session_id}")
+        return session_id
+
+    # Pattern 7: Look for standalone Codex task IDs (e.g., task_e_...)
+    codex_task_pattern = r"\b(task_[a-zA-Z0-9_-]+)\b"
+    match = re.search(codex_task_pattern, pr_body)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 7 (Codex task_ prefix): {session_id}")
         return session_id
 
     logger.debug("No session ID found in PR body")
@@ -2211,6 +2236,176 @@ def _update_jules_pr_body(
         return False
 
 
+def _is_codex_pr(pr_data: Dict[str, Any]) -> bool:
+    """Check if a PR is created by Codex based on session/task URL in PR body."""
+    pr_author = get_pr_author_login(pr_data) or ""
+    if pr_author.lower().startswith("codex"):
+        return True
+
+    pr_body = pr_data.get("body", "") or ""
+    if not pr_body:
+        return False
+
+    # Check for Codex task / session URLs
+    if re.search(r"https?://(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/tasks/[a-zA-Z0-9_-]+", pr_body, re.IGNORECASE):
+        return True
+    if "/codex/tasks/" in pr_body:
+        return True
+
+    return False
+
+
+def _is_claude_pr(pr_data: Dict[str, Any]) -> bool:
+    """Check if a PR is created by Claude based on session URL in PR body."""
+    pr_author = get_pr_author_login(pr_data) or ""
+    if pr_author.lower().startswith("claude"):
+        return True
+
+    pr_body = pr_data.get("body", "") or ""
+    if not pr_body:
+        return False
+
+    # Check for Claude Routine / Code session URLs
+    if re.search(r"https?://claude\.ai/code/[a-zA-Z0-9_-]+", pr_body, re.IGNORECASE) or "claude.ai/code/" in pr_body:
+        return True
+    if re.search(r"\bClaude session\b", pr_body, re.IGNORECASE):
+        return True
+
+    return False
+
+
+def _is_codex_or_claude_pr(pr_data: Dict[str, Any]) -> bool:
+    """Check if a PR is created by Codex or Claude based on session URL in PR body."""
+    return _is_codex_pr(pr_data) or _is_claude_pr(pr_data)
+
+
+def _find_codex_cloud_task_for_issue(
+    repo_name: str,
+    issue_number: int,
+    github_client: Optional[Any] = None,
+) -> Optional[str]:
+    """Find the Codex Cloud task URL for an issue if it was processed by Codex Cloud.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        issue_number: GitHub issue number
+        github_client: Optional GitHub client instance
+
+    Returns:
+        Codex Cloud task URL if found, None otherwise
+    """
+    try:
+        # 1. Check CloudManager
+        cloud_manager = CloudManager(repo_name)
+        session_id = cloud_manager.get_session_id(issue_number)
+        if session_id:
+            if session_id.startswith("http") and "codex/tasks" in session_id:
+                return session_id
+            if re.match(r"^task_[a-zA-Z0-9_-]+$", session_id):
+                return f"https://chatgpt.com/codex/tasks/{session_id}"
+
+        # 2. Check comments on the issue if github_client is available
+        if github_client:
+            try:
+                comments = github_client.get_issue_comments(repo_name, issue_number)
+                for comment in comments:
+                    comment_body = comment.get("body", "") or ""
+                    # Check for direct URL in comment
+                    url_match = re.search(r"(https?://[^\s]+/codex/tasks/[a-zA-Z0-9_-]+)", comment_body)
+                    if url_match:
+                        return url_match.group(1)
+
+                    # Check for "Codex Cloud task ... Task ID: <id>"
+                    task_match = re.search(r"Codex Cloud task.*?Task ID:\s*(task_[a-zA-Z0-9_-]+)", comment_body, re.IGNORECASE | re.DOTALL)
+                    if task_match:
+                        return f"https://chatgpt.com/codex/tasks/{task_match.group(1)}"
+            except Exception as e:
+                logger.debug(f"Failed to fetch comments for issue #{issue_number}: {e}")
+
+        return None
+    except Exception as e:
+        logger.error(f"Error finding Codex Cloud task for issue #{issue_number}: {e}")
+        return None
+
+
+def _link_codex_cloud_pr_to_issue(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Any,
+) -> bool:
+    """If PR body contains 'Closes #xxx' and issue #xxx was processed by Codex Cloud,
+    append the Codex Cloud URL to the PR body.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        github_client: GitHub client instance
+
+    Returns:
+        True if updated or no update needed, False on error
+    """
+    try:
+        pr_number = pr_data.get("number")
+        pr_body = pr_data.get("body", "") or ""
+
+        # Extract linked issues from PR body using linking keywords (close, closes, fix, etc.)
+        linked_issues = extract_linked_issues_from_pr_body(pr_body)
+        if not linked_issues:
+            # Also check direct regex for Closes #xxx just in case
+            matches = re.findall(r"\b(?:close|closes|closed|closing|fix|fixes|fixed|resolve|resolves|resolved)\s*#(\d+)", pr_body, re.IGNORECASE)
+            linked_issues = [int(m) for m in matches]
+
+        if not linked_issues:
+            return True
+
+        urls_to_append: List[str] = []
+        for issue_number in linked_issues:
+            codex_url = _find_codex_cloud_task_for_issue(repo_name, issue_number, github_client)
+            if codex_url and codex_url not in pr_body and codex_url not in urls_to_append:
+                urls_to_append.append(codex_url)
+
+        if not urls_to_append:
+            return True
+
+        # Append URLs to PR body
+        separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
+        new_body = f"{pr_body}{separator}" + "\n\n".join(urls_to_append)
+
+        # Update PR body on GitHub
+        try:
+            from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
+
+            token = getattr(github_client, "token", None)
+            if isinstance(token, str):
+                api = get_ghapi_client(token)
+                owner, repo_split = repo_name.split("/")
+                validate_issue_references(new_body, github_client, repo_name)
+                api.pulls.update(owner, repo_split, pr_number, body=new_body)
+            elif hasattr(github_client, "get_repository"):
+                repo = github_client.get_repository(repo_name)
+                pr = repo.get_pull(pr_number)
+                validate_issue_references(new_body, github_client, repo_name)
+                pr.edit(body=new_body)
+            else:
+                token = GitHubClient.get_instance().token
+                api = get_ghapi_client(token)
+                owner, repo_split = repo_name.split("/")
+                validate_issue_references(new_body, github_client, repo_name)
+                api.pulls.update(owner, repo_split, pr_number, body=new_body)
+
+            pr_data["body"] = new_body
+            logger.info(f"Updated PR #{pr_number} body to include Codex Cloud URL(s): {', '.join(urls_to_append)}")
+            log_action(f"Updated PR #{pr_number} body with Codex Cloud URL(s)")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update PR #{pr_number} body with Codex Cloud URL: {e}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error linking Codex Cloud PR #{pr_data.get('number')}: {e}")
+        return False
+
+
 def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     """Check if a PR is created by Jules (google-labs-jules).
 
@@ -2220,9 +2415,13 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     Returns:
         True if the PR is created by Jules, False otherwise
     """
+    # Codex or Claude PRs should never be treated as Jules
+    if _is_codex_or_claude_pr(pr_data):
+        return False
+
     # Check author first
     pr_author = get_pr_author_login(pr_data) or ""
-    if pr_author.startswith("claude"):
+    if pr_author.startswith("claude") or pr_author.startswith("codex"):
         return False
     if pr_author.startswith("google-labs-jules"):
         return True
@@ -2232,18 +2431,14 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     if not pr_body:
         return False
 
-    # Explicit Claude indicators should never be treated as Jules
-    if "claude.ai/code/" in pr_body or re.search(r"\bClaude session\b", pr_body, re.IGNORECASE):
-        return False
-
     # Jules URL indicators
     if re.search(r"jules\.google\.com/(?:session|task)/", pr_body) or re.search(r"\bJules session\b", pr_body, re.IGNORECASE):
         return True
 
-    # Check for Session ID format without Claude or generic GitHub URL
+    # Check for Session ID format without Claude, Codex, or generic GitHub URL
     session_id = _extract_session_id_from_pr_body(pr_body)
     if session_id:
-        if "claude.ai" in session_id or "github.com" in session_id:
+        if "claude.ai" in session_id or "github.com" in session_id or "codex" in session_id:
             return False
         # Only treat as Jules session if "Session ID:" or "Session:" is explicitly in body
         session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
@@ -2522,6 +2717,11 @@ def _send_jules_error_feedback(
     """
     actions = []
     pr_number = pr_data["number"]
+
+    # Never send error feedback to Jules for PRs created by Codex or Claude
+    if _is_codex_or_claude_pr(pr_data):
+        logger.info(f"PR #{pr_number} is created by Codex/Claude, skipping Jules error feedback")
+        return [f"Skipped Jules error feedback for PR #{pr_number} (created by Codex/Claude)"]
 
     try:
         # Get the session ID from pr_data
