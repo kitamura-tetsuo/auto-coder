@@ -839,4 +839,18 @@ Recent configuration schema changes that require migration:
         - "Does not wait for Jules on CI failure (`_should_skip_waiting_for_jules` returns False)."
         - "Proceeds directly to branch checkout and local/backend automated fixing."
 
+## Quota Surplus-Based High-Score Backend Selection
 
+  quota_surplus_high_score_selection:
+    description: "Selects candidate backends for backend_with_high_score and backend_with_high_score_cloud based on weekly quota surplus rather than nearest reset time."
+    implementation: |
+      evaluate_backend_quota, rank_high_score_backends_by_quota, linear_planned_remaining_ratio,
+      calculate_quota_surplus in src/auto_coder/quota_selector.py,
+      create_high_score_backend_manager, create_high_score_cloud_backend_manager in src/auto_coder/cli_helpers.py,
+      _process_issue_high_score_cloud in src/auto_coder/issue_processor.py
+    behavior:
+      - "Calculates planned remaining quota ratio using a weekly consumption curve (planned_remaining_ratio = time_until_reset / quota_period)."
+      - "Computes quota surplus as (actual_remaining_ratio - planned_remaining_ratio) independently for each candidate backend using its own reset timestamp."
+      - "Prioritizes eligible backends with the largest positive quota surplus (consuming slower than planned), avoiding premature quota exhaustion."
+      - "Preserves existing capability and availability checks; ineligible backends (e.g. usage limit reached, insufficient minimum remaining percentage) are filtered out."
+      - "Unmetered backends or backends without weekly quota metrics retain stable fallback ordering."

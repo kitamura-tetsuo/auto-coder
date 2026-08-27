@@ -529,6 +529,11 @@ def _process_issue_high_score_cloud(
     elif high_score_cloud_config:
         candidates = [high_score_cloud_config.name]
 
+    if len(candidates) > 1:
+        from .quota_selector import rank_high_score_backends_by_quota
+
+        candidates = rank_high_score_backends_by_quota(candidates, llm_config) or candidates
+
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
         backend_type = (b_cfg and b_cfg.backend_type) or backend_name

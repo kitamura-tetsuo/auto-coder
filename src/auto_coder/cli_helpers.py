@@ -724,10 +724,12 @@ def create_high_score_backend_manager() -> Optional[BackendManager]:
     if not high_score_order and not high_score_config:
         return None
 
-    # If order is present, use it
+    # If order is present, rank candidates by quota surplus
     if high_score_order:
-        selected_backends = high_score_order
-        primary_backend = high_score_order[0]
+        from .quota_selector import rank_high_score_backends_by_quota
+
+        selected_backends = rank_high_score_backends_by_quota(high_score_order, config) or high_score_order
+        primary_backend = selected_backends[0]
 
         # Build models map for these backends
         models = {}
@@ -774,10 +776,12 @@ def create_high_score_cloud_backend_manager() -> Optional[BackendManager]:
     if not high_score_cloud_order and not high_score_cloud_config:
         return None
 
-    # If order is present, use it
+    # If order is present, rank candidates by quota surplus
     if high_score_cloud_order:
-        selected_backends = high_score_cloud_order
-        primary_backend = high_score_cloud_order[0]
+        from .quota_selector import rank_high_score_backends_by_quota
+
+        selected_backends = rank_high_score_backends_by_quota(high_score_cloud_order, config) or high_score_cloud_order
+        primary_backend = selected_backends[0]
 
         # Build models map for these backends
         models = {}
