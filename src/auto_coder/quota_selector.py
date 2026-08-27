@@ -28,6 +28,7 @@ class BackendQuotaEvaluation:
     planned_remaining_ratio: Optional[float] = None
     quota_surplus: Optional[float] = None
     reset_at: Optional[datetime] = None
+    usage_retrieval_failed: bool = False
     reason: str = ""
 
 
@@ -108,7 +109,8 @@ def evaluate_backend_quota(
         if usage is None:
             return BackendQuotaEvaluation(
                 backend_name=backend_name,
-                is_eligible=False,
+                is_eligible=True,
+                usage_retrieval_failed=True,
                 reason="Codex Cloud credentials or usage data unavailable",
             )
         if not usage.can_start_task:
@@ -168,6 +170,13 @@ def evaluate_backend_quota(
                     reset_at=reset_at,
                     reason="Eligible",
                 )
+            else:
+                return BackendQuotaEvaluation(
+                    backend_name=backend_name,
+                    is_eligible=True,
+                    usage_retrieval_failed=True,
+                    reason="Codex OAuth usage data could not be retrieved",
+                )
 
         # Unmetered / API key Codex
         return BackendQuotaEvaluation(
@@ -189,12 +198,13 @@ def evaluate_backend_quota(
         if resolved_token:
             quota = check_claude_usage(token=resolved_token, use_cache=True)
             if quota.is_quota_insufficient:
-                if quota.reason == "Claude usage data could not be retrieved":
+                if quota.reason == "Claude usage data could not be retrieved" or "could not be retrieved" in quota.reason:
                     return BackendQuotaEvaluation(
                         backend_name=backend_name,
                         is_eligible=True,
+                        usage_retrieval_failed=True,
                         quota_surplus=None,
-                        reason="Eligible (Claude usage data could not be retrieved)",
+                        reason="Eligible with lowered priority (Claude usage data could not be retrieved)",
                     )
                 return BackendQuotaEvaluation(
                     backend_name=backend_name,
@@ -240,7 +250,7 @@ def evaluate_backend_quota(
                 except Exception as e:
                     logger.debug(f"Failed to parse Claude resets_at '{window.resets_at}': {e}")
 
-        # Claude without valid OAuth token or unmetered API key
+        # Claude without resolved OAuth token or unmetered API key
         return BackendQuotaEvaluation(
             backend_name=backend_name,
             is_eligible=True,
@@ -270,9 +280,10 @@ def rank_high_score_backends_by_quota(
         planned_remaining_ratio = time_until_reset / quota_period
         quota_surplus = actual_remaining_ratio - planned_remaining_ratio
 
-    Candidates are filtered by eligibility and ranked in descending order of
-    quota_surplus (largest surplus first). Candidates without weekly quota metrics
-    retain stable relative ordering after quota-evaluated candidates.
+    Candidates are filtered by eligibility and ranked in order:
+    1. Backends with measured quota metrics, ordered by quota_surplus descending.
+    2. Healthy unmetered backends, retaining stable original order.
+    3. Backends whose usage data could not be retrieved, retaining stable original order at lowered priority.
 
     Args:
         candidate_backends: List of candidate backend names to rank.
@@ -304,9 +315,13 @@ def rank_high_score_backends_by_quota(
         return list(candidate_backends)
 
     # Sort key:
-    # 1. Backends with quota_surplus come first (key: 0), sorted by quota_surplus descending (-surplus)
-    # 2. Backends without quota_surplus come after (key: 1), maintaining stable original order
+    # 1. Backends with quota_surplus (and not usage_retrieval_failed) come first (tier: 0),
+    #    sorted by quota_surplus descending (-surplus)
+    # 2. Healthy unmetered backends come next (tier: 1), maintaining stable original order
+    # 3. Backends whose usage could not be retrieved come last (tier: 2), maintaining stable original order
     def _sort_key(eval_item: BackendQuotaEvaluation) -> tuple:
+        if eval_item.usage_retrieval_failed:
+            return (2, 0.0)
         if eval_item.quota_surplus is not None:
             return (0, -eval_item.quota_surplus)
         return (1, 0.0)
@@ -316,7 +331,9 @@ def rank_high_score_backends_by_quota(
 
     log_summaries = []
     for e in ranked_evals:
-        if e.quota_surplus is not None and e.actual_remaining_ratio is not None and e.planned_remaining_ratio is not None:
+        if e.usage_retrieval_failed:
+            log_summaries.append(f"{e.backend_name} (usage unretrieved)")
+        elif e.quota_surplus is not None and e.actual_remaining_ratio is not None and e.planned_remaining_ratio is not None:
             log_summaries.append(f"{e.backend_name} (surplus={e.quota_surplus * 100:+.1f}%, " f"actual={e.actual_remaining_ratio * 100:.1f}%, " f"planned={e.planned_remaining_ratio * 100:.1f}%)")
         else:
             log_summaries.append(f"{e.backend_name} (unmetered)")

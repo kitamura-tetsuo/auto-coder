@@ -854,3 +854,4 @@ Recent configuration schema changes that require migration:
       - "Prioritizes eligible backends with the largest positive quota surplus (consuming slower than planned), avoiding premature quota exhaustion."
       - "Preserves existing capability and availability checks; ineligible backends (e.g. usage limit reached, insufficient minimum remaining percentage) are filtered out."
       - "Unmetered backends or backends without weekly quota metrics retain stable fallback ordering."
+      - "Backends whose usage metrics cannot be retrieved (e.g. rate-limited token refresh or API errors) have their priority lowered below measured and unmetered backends."

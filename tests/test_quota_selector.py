@@ -249,6 +249,111 @@ class TestQuotaSurplusSelection:
         ranked = rank_high_score_backends_by_quota(["qwen", "antigravity"], config=config, now=fixed_now)
         assert ranked == ["qwen", "antigravity"]
 
+    def test_unretrieved_claude_usage_lowers_priority_below_measured_backend(self, fixed_now):
+        """Test that a backend whose Claude usage data could not be retrieved has lower priority than a measured backend."""
+        codex_reset = fixed_now + timedelta(days=2)
+        codex_usage = CodexWeeklyUsage(
+            remaining_percent=35.0,
+            reset_at=codex_reset,
+            days_until_reset=2,
+            minimum_remaining_percent=5.0,
+        )
+
+        claude_unretrieved = ClaudeUsageQuota(
+            is_quota_insufficient=True,
+            reason="Claude usage data could not be retrieved",
+        )
+
+        config = LLMBackendConfiguration(
+            backends={
+                "claude-routine": BackendConfig(name="claude-routine", backend_type="claude-routine"),
+                "codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud"),
+            }
+        )
+
+        with (
+            patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage),
+            patch("auto_coder.claude_usage_checker.check_claude_usage", return_value=claude_unretrieved),
+            patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"),
+        ):
+            ranked = rank_high_score_backends_by_quota(
+                ["claude-routine", "codex-cloud"],
+                config=config,
+                now=fixed_now,
+            )
+            # codex-cloud is preferred as primary, claude-routine is placed at the end due to unretrieved usage
+            assert ranked == ["codex-cloud", "claude-routine"]
+
+    def test_unretrieved_claude_usage_lowers_priority_below_unmetered_backend(self, fixed_now):
+        """Test that a backend whose Claude usage data could not be retrieved has lower priority than healthy unmetered backends."""
+        claude_unretrieved = ClaudeUsageQuota(
+            is_quota_insufficient=True,
+            reason="Claude usage data could not be retrieved",
+        )
+
+        config = LLMBackendConfiguration(
+            backends={
+                "claude-routine": BackendConfig(name="claude-routine", backend_type="claude-routine"),
+                "antigravity": BackendConfig(name="antigravity", backend_type="antigravity"),
+            }
+        )
+
+        with (
+            patch("auto_coder.claude_usage_checker.check_claude_usage", return_value=claude_unretrieved),
+            patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"),
+        ):
+            ranked = rank_high_score_backends_by_quota(
+                ["claude-routine", "antigravity"],
+                config=config,
+                now=fixed_now,
+            )
+            # antigravity (unmetered) is preferred first, claude-routine is lowered
+            assert ranked == ["antigravity", "claude-routine"]
+
+    def test_unretrieved_codex_cloud_usage_lowers_priority_below_unmetered_backend(self, fixed_now):
+        """Test that Codex Cloud when usage is unavailable has lower priority than unmetered backends."""
+        config = LLMBackendConfiguration(
+            backends={
+                "codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud"),
+                "qwen": BackendConfig(name="qwen", backend_type="qwen"),
+            }
+        )
+
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=None):
+            ranked = rank_high_score_backends_by_quota(
+                ["codex-cloud", "qwen"],
+                config=config,
+                now=fixed_now,
+            )
+            assert ranked == ["qwen", "codex-cloud"]
+
+    def test_multiple_unretrieved_backends_preserve_order_at_lowest_tier(self, fixed_now):
+        """Test multiple backends with unretrieved usage retain relative order at lowest priority tier."""
+        claude_unretrieved = ClaudeUsageQuota(
+            is_quota_insufficient=True,
+            reason="Claude usage data could not be retrieved",
+        )
+
+        config = LLMBackendConfiguration(
+            backends={
+                "claude-routine": BackendConfig(name="claude-routine", backend_type="claude-routine"),
+                "codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud"),
+                "qwen": BackendConfig(name="qwen", backend_type="qwen"),
+            }
+        )
+
+        with (
+            patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=None),
+            patch("auto_coder.claude_usage_checker.check_claude_usage", return_value=claude_unretrieved),
+            patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"),
+        ):
+            ranked = rank_high_score_backends_by_quota(
+                ["claude-routine", "codex-cloud", "qwen"],
+                config=config,
+                now=fixed_now,
+            )
+            assert ranked == ["qwen", "claude-routine", "codex-cloud"]
+
     def test_custom_consumption_curve_isolation(self, fixed_now):
         """Test that a custom consumption curve can be supplied."""
         # Custom non-linear curve (e.g. exponential or step curve)
