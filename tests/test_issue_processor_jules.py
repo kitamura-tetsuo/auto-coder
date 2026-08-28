@@ -321,10 +321,8 @@ class TestProcessIssueJulesMode:
     @patch("src.auto_coder.issue_processor.JulesClient")
     @patch("src.auto_coder.issue_processor.CloudManager")
     @patch("src.auto_coder.issue_processor.render_prompt")
-    @patch("src.auto_coder.issue_processor.ensure_parent_issue_open")
     def test_process_issue_jules_mode_passes_title(
         self,
-        mock_ensure_parent,
         mock_render,
         mock_cloud_manager_class,
         mock_jules_client_class,

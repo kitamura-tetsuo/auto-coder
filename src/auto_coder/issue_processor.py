@@ -36,101 +36,6 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def ensure_parent_issue_open(
-    github_client: GitHubClient,
-    repo_name: str,
-    parent_issue_details: Dict[str, Any],
-    issue_number: int,
-) -> bool:
-    """
-    Ensure parent issue is open, reopening if necessary.
-
-    This hook checks the state of the parent issue and reopens it if it's closed
-    before processing the child issue. This ensures parent issues remain open
-    during sub-issue processing and can track progress properly.
-
-    Args:
-        github_client: GitHub client for API operations
-        repo_name: Repository name (e.g., 'owner/repo')
-        parent_issue_details: Parent issue details from get_parent_issue_details
-        issue_number: Current issue number being processed
-
-    Returns:
-        bool: True if parent issue is open (or was reopened), False otherwise
-
-    Note:
-        Adds an audit comment when reopening to track when and why the parent
-        issue was reopened for child issue processing.
-    """
-    parent_issue_number_raw = parent_issue_details.get("number")
-    parent_issue_number: Optional[int]
-    if isinstance(parent_issue_number_raw, int):
-        parent_issue_number = parent_issue_number_raw
-    elif isinstance(parent_issue_number_raw, str):
-        try:
-            parent_issue_number = int(parent_issue_number_raw)
-        except ValueError:
-            parent_issue_number = None
-    else:
-        parent_issue_number = None
-    parent_state = parent_issue_details.get("state", "UNKNOWN").upper()
-
-    if parent_issue_number is None:
-        logger.error(
-            "Parent issue number missing/invalid for issue #%s (raw=%r)",
-            issue_number,
-            parent_issue_number_raw,
-        )
-        return False
-
-    if parent_state == "OPEN":
-        logger.debug(
-            "Parent issue #%s for issue #%s is already OPEN",
-            parent_issue_number,
-            issue_number,
-        )
-        return True
-
-    if parent_state == "CLOSED":
-        try:
-            logger.info(
-                "Reopening closed parent issue #%s before processing child issue #%s",
-                parent_issue_number,
-                issue_number,
-            )
-
-            # Add an audit comment when reopening
-            audit_comment = f"Auto-Coder: Reopened this parent issue to process child issue #{issue_number}. Branch and base selection will use the parent context."
-
-            # Call GitHub API to reopen the issue
-            assert parent_issue_number is not None
-            github_client.reopen_issue(repo_name, parent_issue_number, audit_comment)
-
-            logger.info(
-                "Successfully reopened parent issue #%s for child issue #%s",
-                parent_issue_number,
-                issue_number,
-            )
-            return True
-
-        except Exception as e:
-            logger.error(
-                "Failed to reopen parent issue #%s for child issue #%s: %s",
-                parent_issue_number,
-                issue_number,
-                e,
-            )
-            return False
-
-    logger.warning(
-        "Unexpected parent issue #%s state '%s' for issue #%s",
-        parent_issue_number,
-        parent_state,
-        issue_number,
-    )
-    return False
-
-
 def generate_work_branch_name(issue_number: int, attempt: int) -> str:
     """
     Generate the work branch name based on the issue number and attempt.
@@ -271,13 +176,6 @@ def _process_issue_jules_mode(
         # Determine base branch (default to main)
         base_branch = config.MAIN_BRANCH
 
-        # Check for parent issue
-        parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
-        if parent_issue_details:
-            parent_issue_number = parent_issue_details["number"]
-            # Call hook to ensure parent issue is open
-            ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
-
         # Start Jules session
         session_title = f"{issue_title} (#{issue_number})"
         session_id = jules_client.start_session(action_prompt, repo_name, base_branch, title=session_title)
@@ -384,9 +282,6 @@ def _process_issue_claude_routine_mode(
         logger.info(f"Starting Claude Routine session for issue #{issue_number}")
 
         base_branch = config.MAIN_BRANCH
-        parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
-        if parent_issue_details:
-            ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
 
         session_title = f"{issue_title} (#{issue_number})"
         session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
@@ -1029,10 +924,6 @@ def _apply_issue_actions_directly(
                     logger.info(f"Injecting parent issue #{parent_issue_details['number']} context into prompt for sub-issue #{issue_number}")
 
             base_branch = config.MAIN_BRANCH
-            if parent_issue_details:
-                parent_issue_number = parent_issue_details["number"]
-                # Call hook to ensure parent issue is open
-                ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
 
             # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])

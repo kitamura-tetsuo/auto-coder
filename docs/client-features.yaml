@@ -611,6 +611,7 @@ Recent configuration schema changes that require migration:
       - "When processing a child issue whose parent issue is closed, the system automatically reopens the parent issue before continuing"
       - "This ensures branch selection, base branch selection, and attempt tracking use the parent issue context"
       - "Reopening closed parents maintains proper workflow continuity and prevents branch naming and base selection issues"
+      - "When processing a child issue whose parent issue is closed, the system does not reopen the parent issue"
       - "Sub-issues are merged directly into the main branch upon completion"
       - "When all sub-issues of a parent issue are closed, the parent issue is processed via backend_with_high_score_cloud on a work branch from main"
       - "The prompt instructs the AI model to verify that main satisfies what the group of sub-issues was intended to implement, and implement any remaining requirements specified in the parent issue"
