@@ -606,7 +606,7 @@ Recent configuration schema changes that require migration:
       - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
       - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."
     propagation:
-      - "increment_attempt also reopens closed sub-issues and bumps their counters to keep parent/child attempts in sync."
+      - "increment_attempt propagates attempt counter increments to all sub-issues to keep parent/child attempts in sync without reopening closed sub-issues."
     parent_handling:
       - "When processing a child issue whose parent issue is closed, the system automatically reopens the parent issue before continuing"
       - "This ensures branch selection, base branch selection, and attempt tracking use the parent issue context"

@@ -380,8 +380,7 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
 
     Gets the current attempt count, increments by 1, and posts a new comment
     with the new attempt number. If the issue has sub-issues, propagates the
-    attempt increment to all sub-issues and reopens any closed sub-issues.
-
+    attempt increment to all sub-issues.
     When ``trigger`` is given, the increment is skipped if the latest attempt
     comment was already recorded for the same trigger. Without this guard a
     repeatedly failing PR bumps the counter on every automation cycle even
@@ -434,15 +433,6 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
 
             for sub_issue_number in sub_issues:
                 try:
-                    # Get the state of the sub-issue to check if it's closed
-                    sub_issue = client.get_issue(repo_name, sub_issue_number)
-
-                    # If sub-issue is closed, reopen it
-                    if sub_issue.get("state") == "closed":
-                        logger.info(f"Reopening closed sub-issue #{sub_issue_number}")
-                        reopen_comment = f"Auto-Coder: Reopened due to attempt increment on parent issue #{issue_number}"
-                        client.reopen_issue(repo_name, sub_issue_number, reopen_comment)
-
                     # Increment attempt for the sub-issue
                     increment_attempt(repo_name, sub_issue_number, attempt_number=new_attempt, trigger=trigger)
 
