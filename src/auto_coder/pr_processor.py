@@ -1626,10 +1626,9 @@ def _handle_pr_merge(
             actions.append(f"PR #{pr_number} is a dependabot PR, skipping fixes")
             return actions
 
-        # Step 6: Process PR in Jules mode if it's not a Jules PR and not created by Codex/Claude
-        if not _is_jules_pr(pr_data) and not _is_codex_or_claude_pr(pr_data):
-            jules_mode_actions = _process_pr_jules_mode(repo_name, pr_data, config, github_client)
-            actions.extend(jules_mode_actions)
+        # Step 6: Only PRs created by local LLM execution (or explicit local checkout) are fixed by local LLM
+        if not _is_local_llm_pr(pr_data) and not already_on_pr_branch:
+            actions.append(f"PR #{pr_number} was not created by local LLM, skipping local LLM fixes")
             return actions
 
         # Step 7: Checkout PR branch for non-Jules PRs
@@ -1950,6 +1949,12 @@ def _update_with_base_branch(
             # the bot recreates the PR against the updated base branch by itself.
             if _is_dependabot_pr(pr_data):
                 actions.append(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
+                cmd.run_command(["git", "merge", "--abort"])
+                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                return actions
+
+            if not _is_local_llm_pr(pr_data):
+                actions.append(f"PR #{pr_number} was not created by local LLM, skipping conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
@@ -2446,6 +2451,52 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
             return True
 
     return False
+
+
+def _is_local_llm_pr(pr_data: Dict[str, Any]) -> bool:
+    """Check if a PR was created by local LLM execution.
+
+    Returns True if:
+    1. The PR is not from Jules, Codex Cloud, Claude Routine, or Dependabot/bots.
+    2. And either:
+       - PR body contains the explicit local marker `<!-- auto-coder:local-llm -->` or `<!-- auto-coder:local -->`.
+       - PR head branch matches the Auto-Coder work branch pattern (e.g. `issue-<number>`, `issue-<number>_attempt-<attempt>`, `issue-<number>/attempt-<attempt>`).
+       - PR body contains standard Auto-Coder text like `This PR addresses issue #` or `Auto-Coder: Address issue #`.
+    """
+    if not pr_data:
+        return False
+
+    # Exclude cloud LLM PRs and dependency bots
+    if _is_jules_pr(pr_data):
+        return False
+    if _is_codex_or_claude_pr(pr_data):
+        return False
+    if _is_dependabot_pr(pr_data):
+        return False
+
+    pr_body = pr_data.get("body", "") or ""
+
+    # 1. Check explicit local LLM markers
+    if "<!-- auto-coder:local-llm -->" in pr_body or "<!-- auto-coder:local -->" in pr_body:
+        return True
+
+    # 2. Check head branch name
+    head_branch = pr_data.get("head_branch") or (pr_data.get("head") or {}).get("ref") or ""
+    if head_branch:
+        # Pattern matches: issue-123, issue-123_attempt-1, issue-123/attempt-1
+        if re.match(r"^issue-\d+(?:[_/]attempt-\d+)?$", head_branch):
+            return True
+
+    # 3. Check standard PR body signatures for Auto-Coder local issue PRs
+    if re.search(r"\bThis PR addresses issue #\d+", pr_body):
+        return True
+    if "Auto-Coder: Address issue #" in pr_body:
+        return True
+
+    return False
+
+
+is_local_llm_pr = _is_local_llm_pr
 
 
 def _resolve_jules_pr_issue_number(

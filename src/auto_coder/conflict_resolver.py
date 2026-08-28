@@ -566,10 +566,15 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
             # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
             # the bot recreates the PR against the updated base branch by itself.
-            from .pr_processor import _is_dependabot_pr
+            from .pr_processor import _is_dependabot_pr, _is_jules_pr, _is_local_llm_pr
 
             if _is_dependabot_pr(pr_data):
                 logger.info(f"Skipping merge conflict resolution for dependency-bot PR #{pr_number}")
+                cmd.run_command(["git", "merge", "--abort"])
+                return False
+
+            if not _is_local_llm_pr(pr_data) and not _is_jules_pr(pr_data):
+                logger.info(f"Skipping merge conflict resolution for non-local PR #{pr_number}")
                 cmd.run_command(["git", "merge", "--abort"])
                 return False
 
