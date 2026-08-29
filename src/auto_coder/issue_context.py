@@ -79,14 +79,89 @@ def validate_issue_references(pr_body: str, github_client: Any, repo_name: str) 
             logger.warning(f"Failed to validate reference #{issue_number}: {e}")
 
 
-def get_linked_issues_context(github_client: Any, repo_name: str, pr_body: str) -> str:
-    """Extract linked issues from PR body and fetch their details (including parent issues)."""
-    if not github_client or not pr_body:
+def extract_associated_issue_numbers(
+    pr_data: Optional[Dict[str, Any]] = None,
+    pr_body: str = "",
+    pr_title: str = "",
+    branch_name: str = "",
+) -> List[int]:
+    """Extract associated issue numbers from PR body, title, branch name, or PR metadata.
+
+    Args:
+        pr_data: Optional PR data dictionary
+        pr_body: PR description/body text
+        pr_title: PR title text
+        branch_name: Branch name
+
+    Returns:
+        List of candidate issue numbers
+    """
+    body_text = pr_body
+    title_text = pr_title
+    branch_text = branch_name
+    current_pr_number = None
+
+    if pr_data:
+        body_text = body_text or (pr_data.get("body") or "")
+        title_text = title_text or (pr_data.get("title") or "")
+        branch_text = branch_text or (pr_data.get("head", {}).get("ref") or "")
+        current_pr_number = pr_data.get("number")
+
+    candidate_numbers: List[int] = []
+
+    # 1. Standard linking keywords in body
+    if body_text:
+        candidate_numbers.extend(extract_linked_issues_from_pr_body(body_text))
+
+        # Additional fallback regex in body: e.g. "Issue #123", "issue-123", "Issue 123"
+        body_matches = re.finditer(r"(?:issue|task)[-_:\s]+#?(\d+)", body_text, re.IGNORECASE)
+        for m in body_matches:
+            candidate_numbers.append(int(m.group(1)))
+
+    # 2. Issue reference in PR title (e.g. "feat: implement #1567", "fix issue 123", "issue-456")
+    if title_text:
+        title_matches = re.finditer(r"(?:issue|fix|fixes|close|closes|resolve|resolves)?[-_:\s]*#(\d+)", title_text, re.IGNORECASE)
+        for m in title_matches:
+            candidate_numbers.append(int(m.group(1)))
+
+        title_issue_matches = re.finditer(r"\bissue[-_\s]+(\d+)\b", title_text, re.IGNORECASE)
+        for m in title_issue_matches:
+            candidate_numbers.append(int(m.group(1)))
+
+    # 3. Issue reference in branch name (e.g. "issue-1567-fix", "feat/issue-1567", "1567-new-feature")
+    if branch_text:
+        branch_matches = re.finditer(r"(?:issue|feat|fix)[-_/](\d+)", branch_text, re.IGNORECASE)
+        for m in branch_matches:
+            candidate_numbers.append(int(m.group(1)))
+
+        direct_branch_match = re.match(r"^(\d+)[-_]", branch_text)
+        if direct_branch_match:
+            candidate_numbers.append(int(direct_branch_match.group(1)))
+
+    # Deduplicate and filter out the PR's own number
+    seen = set()
+    unique_numbers: List[int] = []
+    for num in candidate_numbers:
+        if num != current_pr_number and num not in seen:
+            seen.add(num)
+            unique_numbers.append(num)
+
+    return unique_numbers
+
+
+def get_linked_issues_context(
+    github_client: Any,
+    repo_name: str,
+    pr_body: str = "",
+    pr_data: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Extract linked issues from PR body/metadata and fetch their details (including parent issues)."""
+    if not github_client:
         return ""
 
     linked_issues_context = ""
     try:
-        linked_issues = extract_linked_issues_from_pr_body(pr_body)
+        linked_issues = extract_associated_issue_numbers(pr_data=pr_data, pr_body=pr_body)
         context_parts = []
 
         for issue_number in linked_issues:
@@ -94,8 +169,17 @@ def get_linked_issues_context(github_client: Any, repo_name: str, pr_body: str) 
                 # Fetch linked issue details
                 issue = github_client.get_issue(repo_name, issue_number)
                 if issue:
-                    context_parts.append(f"Linked Issue #{issue_number}: {issue.title}")
-                    context_parts.append(f"Issue Description:\n{issue.body}")
+                    # Make sure it's an actual issue, not a PR
+                    if isinstance(issue, dict) and issue.get("pull_request"):
+                        continue
+                    if hasattr(issue, "_rawData") and isinstance(issue._rawData, dict) and issue._rawData.get("pull_request"):
+                        continue
+
+                    title = issue.get("title") if isinstance(issue, dict) else getattr(issue, "title", "Unknown")
+                    body = issue.get("body") if isinstance(issue, dict) else getattr(issue, "body", "")
+
+                    context_parts.append(f"Linked Issue #{issue_number}: {title}")
+                    context_parts.append(f"Issue Description:\n{body}")
 
                     # Check for parent issue
                     try:

@@ -17,6 +17,7 @@ from auto_coder.adversarial_validator import (
     run_adversarial_validation,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.prompt_loader import render_prompt
 
 
 class TestExtractChangedTestFiles:
@@ -121,6 +122,32 @@ class TestParseAdversarialValidationResponse:
         assert result.result == "NEEDS_FIX"
         assert len(result.findings) == 1
 
+    def test_parse_malformed_findings_dict_converts_to_needs_fix(self):
+        """Malformed findings as single dict must fail closed to NEEDS_FIX."""
+        json_resp = """{
+  "result": "PASS",
+  "findings": {"counterexample": "there is a bug in concurrency handling"}
+}"""
+        result = parse_adversarial_validation_response(json_resp)
+        assert not result.is_pass
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
+        assert len(result.findings) == 1
+        assert "there is a bug in concurrency handling" in result.findings[0].counterexample
+
+    def test_parse_malformed_findings_list_of_strings_converts_to_needs_fix(self):
+        """Malformed findings as list of strings must fail closed to NEEDS_FIX."""
+        json_resp = """{
+  "result": "PASS",
+  "findings": ["there is a bug in error response format"]
+}"""
+        result = parse_adversarial_validation_response(json_resp)
+        assert not result.is_pass
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
+        assert len(result.findings) == 1
+        assert "there is a bug in error response format" in result.findings[0].counterexample
+
     def test_parse_text_fallback_needs_fix(self):
         text_resp = """RESULT: NEEDS_FIX
 VIOLATED_REQUIREMENT: User session must expire after 2 hours
@@ -133,6 +160,18 @@ SUGGESTED_REGRESSION_SCENARIO: Assert token expiration with timezone offset diff
         assert len(result.findings) == 1
         assert "User session must expire" in result.findings[0].violated_requirement
         assert "Given state S" in result.findings[0].counterexample
+
+    def test_parse_text_contradictory_pass_with_defect_markers(self):
+        """Text response with RESULT: PASS and defect markers must fail closed to NEEDS_FIX."""
+        text_resp = """RESULT: PASS
+VIOLATED_REQUIREMENT: User session must expire after 2 hours
+COUNTEREXAMPLE: Given state S, produces invalid token
+"""
+        result = parse_adversarial_validation_response(text_resp)
+        assert not result.is_pass
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
+        assert len(result.findings) == 1
 
     def test_parse_empty_response_fails_closed_to_error(self):
         """Empty response must fail closed to ERROR and block merge."""
@@ -177,7 +216,7 @@ class TestBuildAdversarialValidationContext:
 
     def test_build_context_with_truncation_warning(self):
         mock_client = MagicMock()
-        huge_diff = "diff --git a/file1.py b/file1.py\n+++ b/file1.py\n" + ("+" + "a" * 100 + "\n") * 500
+        huge_diff = "diff --git a/file1.py b/file1.py\n+++ b/file1.py\n" + ("+" + "a" * 100 + "\n") * 500 + "diff --git a/file_late.py b/file_late.py\n+++ b/file_late.py\n"
         mock_client.get_pr_diff.return_value = huge_diff
         mock_issue = MagicMock()
         mock_issue.title = "Big change"
@@ -192,7 +231,67 @@ class TestBuildAdversarialValidationContext:
         context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
         assert context.is_diff_truncated
         assert "WARNING: PR Diff was truncated" in context.pr_diff
-        assert "file1.py" in context.all_changed_files
+        assert "file_late.py" in context.all_changed_files
+
+    def test_rendered_prompt_preserves_truncation_warning_and_late_filename(self):
+        """Rendered prompt must contain truncation warning and late filenames for large diffs."""
+        mock_client = MagicMock()
+        # Construct diff with initial file and a file at the very end
+        diff_prefix = "diff --git a/src/early.py b/src/early.py\n+++ b/src/early.py\n" + ("+early_line\n" * 200)
+        diff_suffix = "diff --git a/src/late_secret_feature.py b/src/late_secret_feature.py\n+++ b/src/late_secret_feature.py\n+late_line\n"
+        huge_diff = diff_prefix + diff_suffix
+
+        mock_client.get_pr_diff.return_value = huge_diff
+        mock_issue = MagicMock()
+        mock_issue.title = "Complex feature"
+        mock_issue.body = "Spec: Must handle late secret feature."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+
+        config = AutomationConfig()
+        config.MAX_PR_DIFF_SIZE = 200
+        pr_data = {"number": 100, "title": "Complex PR", "body": "Fixes #10"}
+
+        context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
+
+        # Render adversarial validation prompt as done in run_adversarial_validation
+        changed_tests_str = "\n".join(f"- {t}" for t in context.changed_tests) if context.changed_tests else "(No test files detected in diff)"
+        rendered_prompt = render_prompt(
+            "pr.adversarial_validation",
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title=context.pr_title,
+            pr_body=context.pr_body,
+            pr_diff=context.pr_diff,
+            linked_issues_context=context.issue_context,
+            changed_tests=changed_tests_str,
+        )
+
+        assert "WARNING: PR Diff was truncated" in rendered_prompt
+        assert "src/late_secret_feature.py" in rendered_prompt
+
+    def test_oracle_recovery_from_branch_and_title_without_body_link(self):
+        """Issue specification is recovered from PR title and branch even when body omits linking phrase."""
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py"
+        mock_issue = MagicMock()
+        mock_issue.title = "Implement rate limiting"
+        mock_issue.body = "Spec: Limit to 100 req/min"
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+
+        config = AutomationConfig()
+        # PR body has no 'Fixes #1567' keyword
+        pr_data = {
+            "number": 200,
+            "title": "feat: rate limiting implementation for issue #1567",
+            "head": {"ref": "issue-1567-rate-limit"},
+            "body": "This PR updates the rate limiting algorithm.",
+        }
+
+        context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
+        assert "Linked Issue #1567" in context.issue_context
+        assert "Limit to 100 req/min" in context.issue_context
 
 
 class TestRunAdversarialValidation:
@@ -323,6 +422,31 @@ class TestRunAdversarialValidation:
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_run_adversarial_validation_dynamic_check_success_resolves_inconclusive_to_pass(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """Successful dynamic check must resolve INCONCLUSIVE to PASS."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = '{"result": "INCONCLUSIVE", "summary": "Requires running tests/test_feature.py to confirm", "dynamic_check_requested": "tests/test_feature.py", "findings": []}'
+        mock_run_tests.return_value = {"success": True, "stdout": "1 passed"}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        assert result.is_pass
+        assert result.result == "PASS"
+        assert "passed" in result.summary
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
     def test_run_adversarial_validation_dynamic_check_exception_fails_closed(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
@@ -379,5 +503,56 @@ class TestApplyAdversarialFix:
         actions = apply_adversarial_fix("owner/repo", pr_data, config, val_result)
         assert any("Committed regression test (tests/test_regression.py)" in a for a in actions)
         assert any("Pushed adversarial fixes" in a for a in actions)
+        mock_git_commit.assert_called_once()
+        mock_git_push.assert_called_once()
+
+    @patch("auto_coder.adversarial_validator.cmd")
+    @patch("auto_coder.adversarial_validator.git_commit_with_retry")
+    @patch("auto_coder.adversarial_validator.git_push")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.adversarial_validator.get_commit_log")
+    def test_apply_adversarial_fix_rejects_code_only_without_test_or_exemption(self, mock_commit_log, mock_run_prompt, mock_git_push, mock_git_commit, mock_cmd):
+        """Fix that only changes code and fails to provide test or NO_TEST_REASON must be rejected."""
+        mock_commit_log.return_value = "commit log"
+        # First attempt: code only. Retry attempt: still code only with no NO_TEST_REASON
+        mock_run_prompt.return_value = "ACTION_SUMMARY: Updated code only"
+        mock_cmd.run_command.return_value = MagicMock(success=True, stdout=" M src/code.py")
+
+        config = AutomationConfig()
+        pr_data = {"number": 50, "title": "Feature PR", "body": "Fixes #5"}
+        val_result = AdversarialValidationResult(
+            result="NEEDS_FIX",
+            summary="Found violation",
+            findings=[AdversarialValidationFinding(violated_requirement="Spec requires Y", counterexample="Given S...")],
+        )
+
+        actions = apply_adversarial_fix("owner/repo", pr_data, config, val_result)
+        assert any("Adversarial fix rejected" in a for a in actions)
+        mock_git_commit.assert_not_called()
+        mock_git_push.assert_not_called()
+
+    @patch("auto_coder.adversarial_validator.cmd")
+    @patch("auto_coder.adversarial_validator.git_commit_with_retry")
+    @patch("auto_coder.adversarial_validator.git_push")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.adversarial_validator.get_commit_log")
+    def test_apply_adversarial_fix_accepts_documented_test_exemption(self, mock_commit_log, mock_run_prompt, mock_git_push, mock_git_commit, mock_cmd):
+        """Fix that only changes code but provides NO_TEST_REASON is accepted with documented exemption."""
+        mock_commit_log.return_value = "commit log"
+        mock_run_prompt.return_value = "ACTION_SUMMARY: Fixed code\nNO_TEST_REASON: Hardware IO cannot be mocked in CI environment"
+        mock_cmd.run_command.return_value = MagicMock(success=True, stdout=" M src/code.py")
+        mock_git_commit.return_value = MagicMock(success=True)
+        mock_git_push.return_value = MagicMock(success=True)
+
+        config = AutomationConfig()
+        pr_data = {"number": 50, "title": "Feature PR", "body": "Fixes #5"}
+        val_result = AdversarialValidationResult(
+            result="NEEDS_FIX",
+            summary="Found violation",
+            findings=[AdversarialValidationFinding(violated_requirement="Spec requires Y", counterexample="Given S...")],
+        )
+
+        actions = apply_adversarial_fix("owner/repo", pr_data, config, val_result)
+        assert any("Committed adversarial fix with documented test exemption" in a for a in actions)
         mock_git_commit.assert_called_once()
         mock_git_push.assert_called_once()

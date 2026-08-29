@@ -142,8 +142,8 @@ def build_adversarial_validation_context(
 ) -> AdversarialValidationContext:
     """Compile issue specification, PR diff, and changed tests for validation.
 
-    Informs the reviewer of complete changed file scope and explicitly notes
-    any truncation so partial review is never misrepresented as full coverage.
+    Recovers oracle/specification from PR body, title, branch name, and session.
+    Guarantees that truncation warning and full changed-file list are never stripped.
 
     Args:
         repo_name: Repository name in 'owner/repo' format
@@ -175,13 +175,13 @@ def build_adversarial_validation_context(
             raw_diff = client.get_pr_diff(repo_name, pr_number)
             if raw_diff:
                 all_changed_files = extract_all_changed_files(raw_diff)
-                max_diff_bytes = config.MAX_PR_DIFF_SIZE * 5
+                max_diff_bytes = config.MAX_PR_DIFF_SIZE * 3
 
                 if len(raw_diff) > max_diff_bytes:
                     is_diff_truncated = True
                     file_list_str = ", ".join(all_changed_files)
                     truncation_warning = (
-                        f"\n\n[WARNING: PR Diff was truncated at {max_diff_bytes} bytes due to size limit.\n"
+                        f"\n\n[WARNING: PR Diff was truncated to first {max_diff_bytes} bytes due to size limit.\n"
                         f"Complete list of changed files in this PR ({len(all_changed_files)} files): {file_list_str}\n"
                         f"IMPORTANT: If requirements or implementation details cannot be verified because critical files were omitted, "
                         f"you MUST output result: 'INCONCLUSIVE' rather than 'PASS'.]"
@@ -192,10 +192,10 @@ def build_adversarial_validation_context(
         except Exception as e:
             logger.warning(f"Could not retrieve diff for PR #{pr_number}: {e}")
 
-    # Extract linked issues context (contains requirements & acceptance criteria)
-    issue_context = get_linked_issues_context(client, repo_name, pr_body)
+    # Extract linked issues context (from body, title, branch name, session)
+    issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data)
 
-    # Extract changed test files from diff
+    # Extract changed test files from diff or all_changed_files
     changed_tests = [f for f in all_changed_files if is_test_file(f)] if all_changed_files else extract_changed_test_files(pr_diff)
 
     return AdversarialValidationContext(
@@ -211,12 +211,30 @@ def build_adversarial_validation_context(
     )
 
 
+def _extract_finding_from_dict(f: Dict[str, Any]) -> Optional[AdversarialValidationFinding]:
+    """Helper to parse an AdversarialValidationFinding from a dictionary."""
+    req = str(f.get("violated_requirement", "")).strip()
+    ce = str(f.get("counterexample", "")).strip()
+    gap = str(f.get("test_gap", "")).strip()
+    scen = str(f.get("suggested_regression_scenario", "")).strip()
+
+    if req or ce or gap or scen:
+        return AdversarialValidationFinding(
+            violated_requirement=req or "Specification requirement violated",
+            counterexample=ce or "Specification violation identified",
+            test_gap=gap or "Existing tests do not assert this condition",
+            suggested_regression_scenario=scen or "Add regression test covering counterexample",
+        )
+    return None
+
+
 def parse_adversarial_validation_response(response: str) -> AdversarialValidationResult:
     """Parse the strong model's adversarial validation output.
 
     Fail-closed policy:
-    - Empty, missing, unparseable, or malformed responses default to ERROR (non-pass).
-    - Contradictory responses (result=PASS with non-empty findings) convert to NEEDS_FIX.
+    - Entire response schema must be strictly valid and consistent.
+    - Malformed findings (e.g. dict where list expected, list of strings, etc.) are converted to findings (NEEDS_FIX) or fail closed to ERROR.
+    - PASS plus any defect markers, counterexamples, or malformed findings can NEVER produce PASS.
     - PASS is only returned for internally consistent, successfully parsed explicit PASS with 0 findings.
 
     Args:
@@ -255,19 +273,48 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if dynamic_check:
                     dynamic_check = str(dynamic_check).strip()
 
-                raw_findings = parsed.get("findings", [])
+                raw_findings = parsed.get("findings")
                 findings: List[AdversarialValidationFinding] = []
+
                 if isinstance(raw_findings, list):
-                    for f in raw_findings:
-                        if isinstance(f, dict):
+                    for item in raw_findings:
+                        if isinstance(item, dict):
+                            finding = _extract_finding_from_dict(item)
+                            if finding:
+                                findings.append(finding)
+                        elif isinstance(item, str) and item.strip():
                             findings.append(
                                 AdversarialValidationFinding(
-                                    violated_requirement=str(f.get("violated_requirement", "")).strip(),
-                                    counterexample=str(f.get("counterexample", "")).strip(),
-                                    test_gap=str(f.get("test_gap", "")).strip(),
-                                    suggested_regression_scenario=str(f.get("suggested_regression_scenario", "")).strip(),
+                                    violated_requirement="Specification requirement violated",
+                                    counterexample=item.strip(),
+                                    test_gap="Existing tests do not assert this condition",
+                                    suggested_regression_scenario="Add regression test covering counterexample",
                                 )
                             )
+                elif isinstance(raw_findings, dict):
+                    # Handle single finding dict placed in findings field
+                    finding = _extract_finding_from_dict(raw_findings)
+                    if finding:
+                        findings.append(finding)
+                elif isinstance(raw_findings, str) and raw_findings.strip():
+                    findings.append(
+                        AdversarialValidationFinding(
+                            violated_requirement="Specification requirement violated",
+                            counterexample=raw_findings.strip(),
+                            test_gap="Existing tests do not assert this condition",
+                            suggested_regression_scenario="Add regression test covering counterexample",
+                        )
+                    )
+                elif raw_findings is not None and not isinstance(raw_findings, (list, dict, str)):
+                    # Malformed findings type with value -> treat as defect
+                    findings.append(
+                        AdversarialValidationFinding(
+                            violated_requirement="Specification requirement violated",
+                            counterexample=f"Malformed finding payload: {raw_findings}",
+                            test_gap="Existing tests do not assert this condition",
+                            suggested_regression_scenario="Add regression test",
+                        )
+                    )
 
                 # Determine result - enforce consistency and fail-closed
                 if findings:
@@ -292,23 +339,25 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
             logger.debug(f"JSON parsing failed for adversarial response: {exc}")
 
     # 2. Fallback: Parse structured text markers
+    violated_req = ""
+    counterexample = ""
+    test_gap = ""
+    suggested_reg = ""
+
+    for line in cleaned_response.splitlines():
+        line_str = line.strip()
+        if line_str.upper().startswith("VIOLATED_REQUIREMENT:") or line_str.upper().startswith("VIOLATED REQUIREMENT:"):
+            violated_req = line.split(":", 1)[1].strip()
+        elif line_str.upper().startswith("COUNTEREXAMPLE:"):
+            counterexample = line.split(":", 1)[1].strip()
+        elif line_str.upper().startswith("TEST_GAP:") or line_str.upper().startswith("WHY_TESTS_PASS:"):
+            test_gap = line.split(":", 1)[1].strip()
+        elif line_str.upper().startswith("SUGGESTED_REGRESSION_SCENARIO:") or line_str.upper().startswith("SUGGESTED_REGRESSION:"):
+            suggested_reg = line.split(":", 1)[1].strip()
+
+    has_text_findings = bool(violated_req or counterexample or test_gap or suggested_reg)
+
     if re.search(r"^\s*RESULT\s*:\s*NEEDS_FIX", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        violated_req = ""
-        counterexample = ""
-        test_gap = ""
-        suggested_reg = ""
-
-        for line in cleaned_response.splitlines():
-            line_str = line.strip()
-            if line_str.upper().startswith("VIOLATED_REQUIREMENT:") or line_str.upper().startswith("VIOLATED REQUIREMENT:"):
-                violated_req = line.split(":", 1)[1].strip()
-            elif line_str.upper().startswith("COUNTEREXAMPLE:"):
-                counterexample = line.split(":", 1)[1].strip()
-            elif line_str.upper().startswith("TEST_GAP:") or line_str.upper().startswith("WHY_TESTS_PASS:"):
-                test_gap = line.split(":", 1)[1].strip()
-            elif line_str.upper().startswith("SUGGESTED_REGRESSION_SCENARIO:") or line_str.upper().startswith("SUGGESTED_REGRESSION:"):
-                suggested_reg = line.split(":", 1)[1].strip()
-
         findings_list = [
             AdversarialValidationFinding(
                 violated_requirement=violated_req or "Specification requirement violated",
@@ -325,6 +374,22 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*PASS", cleaned_response, re.MULTILINE | re.IGNORECASE):
+        # If RESULT: PASS is accompanied by defect markers, fail closed to NEEDS_FIX
+        if has_text_findings:
+            findings_list = [
+                AdversarialValidationFinding(
+                    violated_requirement=violated_req or "Specification requirement violated",
+                    counterexample=counterexample or "Specification violation identified",
+                    test_gap=test_gap or "Existing tests do not assert this condition",
+                    suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                )
+            ]
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Contradictory validator output (PASS with defect markers); converted to NEEDS_FIX",
+                findings=findings_list,
+                raw_response=response,
+            )
         return AdversarialValidationResult(
             result="PASS",
             summary="Validation passed",
@@ -365,6 +430,7 @@ def run_adversarial_validation(
     - If issue context cannot be retrieved (missing oracle), blocks merge (BLOCKED).
     - If no strong backend is available, blocks merge (BLOCKED).
     - If dynamic check fails or cannot complete, blocks merge (NEEDS_FIX / BLOCKED).
+    - If dynamic check passes, resolves INCONCLUSIVE to PASS.
 
     Args:
         repo_name: Repository name ('owner/repo')
@@ -404,7 +470,7 @@ def run_adversarial_validation(
             summary="No strong adversarial validation backend configured or available",
         )
 
-    # 3. Render adversarial validation prompt
+    # 3. Render adversarial validation prompt (context.pr_diff already includes truncation warning if applicable)
     changed_tests_str = "\n".join(f"- {t}" for t in context.changed_tests) if context.changed_tests else "(No test files detected in diff)"
     prompt = render_prompt(
         "pr.adversarial_validation",
@@ -412,7 +478,7 @@ def run_adversarial_validation(
         pr_number=pr_number,
         pr_title=context.pr_title,
         pr_body=context.pr_body[: config.MAX_PROMPT_SIZE * 2],
-        pr_diff=context.pr_diff[: config.MAX_PR_DIFF_SIZE * 3],
+        pr_diff=context.pr_diff,
         linked_issues_context=context.issue_context,
         changed_tests=changed_tests_str,
     )
@@ -444,6 +510,12 @@ def run_adversarial_validation(
                             suggested_regression_scenario=f"Ensure {check_target} passes",
                         )
                     )
+            else:
+                # Dynamic check succeeded! Test passed and rejected the suspected counterexample.
+                logger.info(f"Dynamic check passed successfully on {check_target}")
+                if result.result in ("INCONCLUSIVE", "PASS") and not result.findings:
+                    result.result = "PASS"
+                    result.summary = f"Dynamic validation check '{check_target}' passed; suspected defect rejected by execution."
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
             # Inability to complete a requested check must be treated as non-pass (fail-closed)
@@ -495,7 +567,7 @@ def apply_adversarial_fix(
     Instructs the implementation agent to:
     1. Add a regression test exposing the counterexample.
     2. Fix the implementation to satisfy the specification.
-    3. Verify regression test creation before pushing.
+    3. Verify regression test creation before pushing, requiring explicit exemption if impractical.
 
     Args:
         repo_name: Repository name ('owner/repo')
@@ -530,7 +602,7 @@ def apply_adversarial_fix(
                 client = GitHubClient.get_instance()
             except Exception:
                 client = None
-        linked_issues_context = get_linked_issues_context(client, repo_name, pr_data.get("body", ""))
+        linked_issues_context = get_linked_issues_context(client, repo_name, pr_body=pr_data.get("body", ""), pr_data=pr_data)
 
         # Render adversarial fix prompt
         fix_prompt = render_prompt(
@@ -556,28 +628,44 @@ def apply_adversarial_fix(
         changed_files = _get_modified_files_from_status()
         test_files_changed = [f for f in changed_files if is_test_file(f)]
 
-        # If code was changed but no regression test was created, prompt specifically for the missing test
+        # If code was changed but no regression test was created, prompt specifically for the missing test or justification
         if changed_files and not test_files_changed:
-            logger.warning(f"Adversarial fix modified files ({changed_files}) but no regression test file was added/modified. Prompting for regression test...")
+            logger.warning(f"Adversarial fix modified files ({changed_files}) but no regression test file was added/modified. Prompting for regression test or explicit exemption...")
             retry_test_prompt = (
-                f"You modified implementation files ({', '.join(changed_files)}), but did NOT create or update any test files.\n"
-                f"You MUST add a focused regression test under tests/ (e.g. tests/test_*.py) reproducing the following counterexample:\n"
+                f"You modified implementation files ({', '.join(changed_files)}), but did NOT create or update any test files under tests/.\n"
+                f"You MUST either:\n"
+                f"1. Add a focused regression test file under tests/ (e.g. tests/test_*.py) reproducing this counterexample:\n"
                 f"{findings_summary}\n\n"
-                f"Create the test file now and ensure it passes."
+                f"2. OR if an automated test is truly impossible/impractical to write, you MUST explicitly output: NO_TEST_REASON: <detailed justification>."
             )
-            run_llm_prompt(retry_test_prompt, backend_manager=backend_manager)
+            retry_resp = run_llm_prompt(retry_test_prompt, backend_manager=backend_manager)
+            if retry_resp:
+                response = f"{response}\n{retry_resp}"
             changed_files = _get_modified_files_from_status()
             test_files_changed = [f for f in changed_files if is_test_file(f)]
 
         if changed_files:
+            # Check if exemption reason was provided if no test was created
+            no_test_match = re.search(r"NO_TEST_REASON:\s*(.+)", response or "", re.IGNORECASE)
+            no_test_reason = no_test_match.group(1).strip() if no_test_match else ""
+
+            if not test_files_changed and not no_test_reason:
+                actions.append("Adversarial fix rejected: implementation was modified but no regression test was created and no NO_TEST_REASON justification was provided.")
+                logger.warning("Adversarial fix rejected: code modified without regression test or exemption reason.")
+                return actions
+
             cmd.run_command(["git", "add", "."])
-            commit_msg = f"Auto-Coder: Add regression test and fix adversarial violation (PR #{pr_number})"
+            if test_files_changed:
+                commit_msg = f"Auto-Coder: Add regression test and fix adversarial violation (PR #{pr_number})"
+            else:
+                commit_msg = f"Auto-Coder: Fix adversarial violation (test exemption: {no_test_reason}) (PR #{pr_number})"
+
             c_res = git_commit_with_retry(commit_msg)
             if c_res.success:
                 if test_files_changed:
                     actions.append(f"Committed regression test ({', '.join(test_files_changed)}) and fix for adversarial violation")
                 else:
-                    actions.append("Committed adversarial fix (warning: no separate test file detected)")
+                    actions.append(f"Committed adversarial fix with documented test exemption: {no_test_reason}")
 
                 p_res = git_push()
                 if p_res.success:
