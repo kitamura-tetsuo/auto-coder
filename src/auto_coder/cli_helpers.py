@@ -865,41 +865,74 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
         return None
 
 
-def is_read_only_review_capable_backend(backend_name: Optional[str]) -> bool:
-    """Check if a backend provides synchronous read-only review execution.
+READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex"}
 
-    Only local clients with enforced client-level read-only sandboxing (Claude, Codex)
-    are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules)
-    and non-enforcing clients are rejected.
-    """
+
+def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any] = None) -> Optional[str]:
+    """Resolve the underlying backend_type for a backend name/alias."""
     if not backend_name or not isinstance(backend_name, str):
+        return None
+    if config is not None:
+        try:
+            b_cfg = config.get_backend_config(backend_name)
+            if b_cfg and isinstance(getattr(b_cfg, "backend_type", None), str) and b_cfg.backend_type:
+                return b_cfg.backend_type
+        except Exception:
+            pass
+    return backend_name
+
+
+def is_read_only_review_capable_backend(backend_name: Optional[str], config: Optional[Any] = None) -> bool:
+    """Check if a backend provides synchronous read-only review execution based on resolved backend_type.
+
+    Only local clients with proven client-level read-only sandboxing (Claude, Codex)
+    are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules),
+    MCP variants without sandbox sanitization (CodexMCP), and non-enforcing clients are rejected.
+    """
+    effective_type = get_effective_backend_type(backend_name, config)
+    if not effective_type or not isinstance(effective_type, str):
         return False
-    normalized = backend_name.strip().lower().replace("-", "_")
-    # Explicitly reject cloud / routine / non-enforcing backends
-    if any(k in normalized for k in ("cloud", "routine", "jules", "aider", "auggie")):
+    normalized = effective_type.strip().lower().replace("-", "_")
+    # Reject cloud agents, routines, MCP variants, and non-enforcing clients
+    if any(k in normalized for k in ("cloud", "routine", "jules", "aider", "auggie", "mcp")):
         return False
-    # Permit local Claude and Codex backends
-    return normalized.startswith("claude") or normalized.startswith("codex")
+    return normalized in READ_ONLY_REVIEW_CAPABLE_TYPES or normalized.startswith("claude") or normalized.startswith("codex")
 
 
 def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
     """Create a BackendManager for the adversarial validation configuration.
 
     Uses dedicated [backend_adversarial_validation] settings if configured,
-    filtering strictly for backends that support synchronous read-only review capability.
-    Cloud coding backends (CodexCloud, ClaudeRoutine, Jules) are rejected.
+    or falls back to high-score order, filtering strictly for backends whose effective
+    backend_type supports synchronous read-only review capability.
+    Cloud coding backends, codex-mcp, and write-capable clients are rejected.
 
     Returns:
-        BackendManager instance configured with a strong model for adversarial validation,
-        or None if no read-only capable backend is available.
+        BackendManager instance configured strictly with read-only capable models,
+        or None if no read-only capable backend is available (fail-closed).
     """
     config = get_llm_config()
+    if config is None:
+        return None
 
     adv_order = config.get_adversarial_validation_backend_order()
     adv_config = config.get_backend_adversarial_validation()
 
-    if adv_order:
-        capable_backends = [b for b in adv_order if is_read_only_review_capable_backend(b)]
+    candidates: List[str] = []
+    if adv_order and isinstance(adv_order, list):
+        candidates = adv_order
+    elif adv_config and hasattr(adv_config, "name"):
+        candidates = [adv_config.name]
+    else:
+        # Fallback to high score order if defined
+        high_score_order = getattr(config, "backend_with_high_score_order", None)
+        if isinstance(high_score_order, list):
+            candidates = high_score_order
+
+    if candidates:
+        # Strict capability filter on EVERY backend in the candidate list
+        capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
+
         if capable_backends:
             from .quota_selector import rank_high_score_backends_by_quota
 
@@ -920,37 +953,17 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
                 from .logger_config import get_logger
 
                 logger = get_logger(__name__)
-                logger.warning(f"Failed to create backend manager for adversarial validation from order: {e}")
+                logger.warning(f"Failed to create backend manager for adversarial validation: {e}")
+                return None
 
-    elif adv_config and is_read_only_review_capable_backend(adv_config.name):
-        backend_name = adv_config.name
-        selected_backends = [backend_name]
-        primary_backend = backend_name
-        model = adv_config.model or config.get_model_for_backend(backend_name) or backend_name
-        models = {backend_name: model}
-
-        try:
-            return build_backend_manager(
-                selected_backends=selected_backends,
-                primary_backend=primary_backend,
-                models=models,
-            )
-        except Exception as e:
-            from .logger_config import get_logger
-
-            logger = get_logger(__name__)
-            logger.warning(f"Failed to create backend manager for adversarial validation from config: {e}")
-
-    # Fallback to high score backend manager if it uses a read-only review capable backend
+    # Fallback to high score backend manager if configured and read-only capable
     high_score_mgr = create_high_score_backend_manager()
     if high_score_mgr:
         try:
             curr_backend = getattr(high_score_mgr, "_current_backend_name", lambda: None)()
-            if curr_backend is None or is_read_only_review_capable_backend(curr_backend):
+            if curr_backend and is_read_only_review_capable_backend(curr_backend, config):
                 return high_score_mgr
         except Exception:
-            return high_score_mgr
+            pass
 
-    # Do not silently fall back to cloud backends or the general implementation backend
-    # to preserve independence between implementation and validation.
     return None

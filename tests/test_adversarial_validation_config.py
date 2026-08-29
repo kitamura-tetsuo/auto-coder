@@ -153,9 +153,10 @@ class TestCreateAdversarialValidationBackendManager:
         assert is_read_only_review_capable_backend("claude-3-5-sonnet") is True
         assert is_read_only_review_capable_backend("codex") is True
         assert is_read_only_review_capable_backend("codex_o3") is True
-        assert is_read_only_review_capable_backend("codex_mcp") is True
 
-        # Ineligible cloud backends, routines, and non-enforcing clients
+        # Ineligible MCP variants, cloud backends, routines, and non-enforcing clients
+        assert is_read_only_review_capable_backend("codex_mcp") is False
+        assert is_read_only_review_capable_backend("codex-mcp") is False
         assert is_read_only_review_capable_backend("codex_cloud") is False
         assert is_read_only_review_capable_backend("codex-cloud") is False
         assert is_read_only_review_capable_backend("claude_routine") is False
@@ -165,3 +166,22 @@ class TestCreateAdversarialValidationBackendManager:
         assert is_read_only_review_capable_backend("auggie") is False
         assert is_read_only_review_capable_backend(None) is False
         assert is_read_only_review_capable_backend("") is False
+
+    def test_is_read_only_review_capable_backend_with_backend_type_resolution(self):
+        """Verify that capability is determined by resolved backend_type rather than alias string."""
+        from auto_coder.cli_helpers import is_read_only_review_capable_backend
+
+        mock_config = MagicMock()
+
+        # Alias looks like codex, but backend_type is codex-cloud -> MUST BE REJECTED
+        mock_b1 = MagicMock(backend_type="codex-cloud")
+        # Alias looks unfamiliar, but backend_type is claude -> MUST BE ACCEPTED
+        mock_b2 = MagicMock(backend_type="claude")
+
+        mock_config.get_backend_config.side_effect = lambda name: {
+            "codex-heavy": mock_b1,
+            "custom-reviewer": mock_b2,
+        }.get(name)
+
+        assert is_read_only_review_capable_backend("codex-heavy", mock_config) is False
+        assert is_read_only_review_capable_backend("custom-reviewer", mock_config) is True
