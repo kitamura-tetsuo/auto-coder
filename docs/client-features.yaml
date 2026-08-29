@@ -85,9 +85,8 @@ The system supports extensive backend configuration options. Key fields include:
     - Supports all standard backend configuration fields (model, api_key, base_url, etc.)
     - If no fallback is configured, processing continues with the current backend (no error)
   - Configuration file: "~/.auto-coder/llm_config.toml"
-  - Optional field: Only used when automatic fallback is desired
-
-- **backend_with_high_score_cloud**: Cloud backend configuration with high score (e.g., for difficult issues)
+- **backend_cloud**: Cloud backend configuration for standard (non-difficult) tasks
+    [backends.codex-cloud-luna]
   - Purpose: Automatically delegates difficult issues to high-scoring cloud coding agents (like Claude Routine or Jules)
   - Trigger: When an issue has the `difficult` label, the system skips Jules mode and delegates directly to `backend_with_high_score_cloud`
   - Configuration section: `[backend_with_high_score_cloud]` in the TOML config file

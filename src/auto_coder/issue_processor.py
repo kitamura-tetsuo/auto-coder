@@ -483,6 +483,101 @@ def _process_issue_high_score_cloud(
     )
 
 
+def _process_issue_cloud_backend(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+    label_context: Optional[LabelManagerContext] = None,
+) -> List[str]:
+    """Process an issue using the backend_cloud configuration with failover support.
+
+    If backend_cloud is not configured, falls back to Jules mode.
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+        label_context: Optional LabelManagerContext
+
+    Returns:
+        List of action strings describing what was done
+    """
+    from .llm_backend_config import get_llm_config
+
+    llm_config = get_llm_config()
+    cloud_order = llm_config.backend_cloud_order
+    cloud_config = llm_config.get_backend_cloud()
+
+    candidates: List[str] = []
+    if cloud_order:
+        candidates = list(cloud_order)
+    elif cloud_config:
+        candidates = [cloud_config.name]
+    else:
+        # Default to jules if backend_cloud is not explicitly configured
+        candidates = ["jules"]
+
+    if len(candidates) > 1:
+        from .quota_selector import rank_high_score_backends_by_quota
+
+        candidates = rank_high_score_backends_by_quota(candidates, llm_config) or candidates
+
+    for backend_name in candidates:
+        b_cfg = llm_config.get_backend_config(backend_name)
+        backend_type = (b_cfg and b_cfg.backend_type) or backend_name
+
+        try:
+            if backend_type == "claude-routine":
+                return _process_issue_claude_routine_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_name=backend_name,
+                    label_context=label_context,
+                )
+            elif backend_type == "codex-cloud":
+                return _process_issue_codex_cloud_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_name=backend_name,
+                    label_context=label_context,
+                )
+            elif backend_type == "jules":
+                return _process_issue_jules_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    label_context=label_context,
+                )
+        except AutoCoderUsageLimitError as e:
+            logger.warning(f"Cloud backend '{backend_name}' hit usage limit: {e}. Trying next backend.")
+            continue
+        except Exception as e:
+            logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
+            continue
+
+    from .cli_helpers import create_cloud_backend_manager
+
+    backend_manager = create_cloud_backend_manager()
+    if backend_manager is None:
+        logger.warning("backend_cloud is not configured or all candidates failed; using the default backend")
+
+    return _take_issue_actions(
+        repo_name,
+        issue_data,
+        config,
+        github_client,
+        backend_manager=backend_manager,
+        check_labels=False,
+    )
+
+
 def _extract_session_id(session: Dict[str, Any]) -> Optional[str]:
     """Extract the session ID from a Jules session object."""
     name = session.get("name")

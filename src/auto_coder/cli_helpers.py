@@ -811,3 +811,55 @@ def create_high_score_cloud_backend_manager() -> Optional[BackendManager]:
         logger = get_logger(__name__)
         logger.error(f"Failed to create backend manager for high score cloud backend: {e}")
         return None
+
+
+def create_cloud_backend_manager() -> Optional[BackendManager]:
+    """Create a BackendManager for the backend_cloud configuration.
+
+    Returns:
+        BackendManager instance if backend_cloud is configured, None otherwise.
+    """
+    config = get_llm_config()
+
+    # Check for order first
+    cloud_order = config.backend_cloud_order
+    cloud_config = config.get_backend_cloud()
+
+    if not cloud_order and not cloud_config:
+        return None
+
+    # If order is present, rank candidates by quota surplus
+    if cloud_order:
+        from .quota_selector import rank_high_score_backends_by_quota
+
+        selected_backends = rank_high_score_backends_by_quota(cloud_order, config) or cloud_order
+        primary_backend = selected_backends[0]
+
+        # Build models map for these backends
+        models = {}
+        for backend_name in selected_backends:
+            models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+
+    else:
+        # Fallback to single backend config
+        assert cloud_config is not None
+        backend_name = cloud_config.name
+        selected_backends = [backend_name]
+        primary_backend = backend_name
+
+        # Determine model: use configured model or fallback to name
+        model = cloud_config.model or backend_name
+        models = {backend_name: model}
+
+    try:
+        return build_backend_manager(
+            selected_backends=selected_backends,
+            primary_backend=primary_backend,
+            models=models,
+        )
+    except Exception as e:
+        from .logger_config import get_logger
+
+        logger = get_logger(__name__)
+        logger.error(f"Failed to create backend manager for cloud backend: {e}")
+        return None

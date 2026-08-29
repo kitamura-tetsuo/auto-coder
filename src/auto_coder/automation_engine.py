@@ -1147,11 +1147,11 @@ class AutomationEngine:
                             label_context=should_process,
                         )
                     elif jules_mode:
-                        # Use Jules mode for issue processing
-                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Jules Mode", item_type="issue", item_number=item_number, details={"mode": "jules"})
-                        from .issue_processor import _process_issue_jules_mode
+                        # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
+                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Cloud Mode (backend_cloud)", item_type="issue", item_number=item_number, details={"mode": "cloud"})
+                        from .issue_processor import _process_issue_cloud_backend
 
-                        result.actions = _process_issue_jules_mode(
+                        result.actions = _process_issue_cloud_backend(
                             repo_name,
                             candidate.data,
                             config,

@@ -201,6 +201,9 @@ class LLMBackendConfiguration:
     # Fallback backend configuration for failed PRs
     backend_with_high_score: Optional[BackendConfig] = None
     backend_with_high_score_order: List[str] = field(default_factory=list)
+    # Cloud backend configuration (e.g., for standard/non-difficult cloud tasks)
+    backend_cloud: Optional[BackendConfig] = None
+    backend_cloud_order: List[str] = field(default_factory=list)
     # Cloud backend configuration with high score (e.g., for difficult issues)
     backend_with_high_score_cloud: Optional[BackendConfig] = None
     backend_with_high_score_cloud_order: List[str] = field(default_factory=list)
@@ -381,7 +384,7 @@ class LLMBackendConfiguration:
                 find_backends_recursive(value, full_key)
 
         # Exclude reserved top-level keys from recursion
-        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score", "backend_with_high_score_cloud"}
+        reserved_keys = {"backend", "backend_cloud", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score", "backend_with_high_score_cloud"}
 
         # Create a dict of potential top-level backends to recurse
         potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
@@ -456,6 +459,16 @@ class LLMBackendConfiguration:
             fallback_name = backend_with_high_score_data.get("name", "backend_with_high_score")
             backend_with_high_score = parse_backend_config(fallback_name, backend_with_high_score_data)
 
+        # Parse backend_cloud section
+        backend_cloud_data = data.get("backend_cloud", {})
+        backend_cloud = None
+        backend_cloud_order = []
+
+        if backend_cloud_data:
+            backend_cloud_order = backend_cloud_data.get("order", [])
+            fallback_name = backend_cloud_data.get("name", "backend_cloud")
+            backend_cloud = parse_backend_config(fallback_name, backend_cloud_data)
+
         # Parse backend_with_high_score_cloud section
         backend_with_high_score_cloud_data = data.get("backend_with_high_score_cloud", {})
         backend_with_high_score_cloud = None
@@ -474,6 +487,8 @@ class LLMBackendConfiguration:
             backend_for_noedit_default=backend_for_noedit_default,
             backend_with_high_score=backend_with_high_score,
             backend_with_high_score_order=backend_with_high_score_order,
+            backend_cloud=backend_cloud,
+            backend_cloud_order=backend_cloud_order,
             backend_with_high_score_cloud=backend_with_high_score_cloud,
             backend_with_high_score_cloud_order=backend_with_high_score_cloud_order,
             config_file_path=config_path or "~/.auto-coder/llm_config.toml",
@@ -566,6 +581,47 @@ class LLMBackendConfiguration:
             }
             backend_with_high_score_data = {k: v for k, v in raw_config.items() if v is not None}
 
+        # Prepare backend_cloud data
+        backend_cloud_data = {}
+        if self.backend_cloud:
+            config = self.backend_cloud
+            raw_config = {
+                "name": config.name,
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
+                "extra_args": config.extra_args,
+                "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "options_for_noedit": config.options_for_noedit,
+                "options_for_resume": config.options_for_resume,
+                "backend_type": config.backend_type,
+                "model_provider": config.model_provider,
+                "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
+                "usage_markers": config.usage_markers,
+                "options_explicitly_set": config.options_explicitly_set,
+                "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
+            }
+            backend_cloud_data = {k: v for k, v in raw_config.items() if v is not None}
+        elif self.backend_cloud_order:
+            backend_cloud_data = {"order": self.backend_cloud_order}
+
         # Prepare backend_with_high_score_cloud data
         backend_with_high_score_cloud_data = {}
         if self.backend_with_high_score_cloud:
@@ -613,6 +669,10 @@ class LLMBackendConfiguration:
         if backend_with_high_score_data:
             data["backend_with_high_score"] = backend_with_high_score_data
 
+        # Add backend_cloud section if configured
+        if backend_cloud_data:
+            data["backend_cloud"] = backend_cloud_data
+
         # Add backend_with_high_score_cloud section if configured
         if backend_with_high_score_cloud_data:
             data["backend_with_high_score_cloud"] = backend_with_high_score_cloud_data
@@ -651,6 +711,8 @@ class LLMBackendConfiguration:
         config = self.backends.get(backend_name)
         if config:
             return config
+        if self.backend_cloud and self.backend_cloud.name == backend_name:
+            return self.backend_cloud
         if self.backend_with_high_score and self.backend_with_high_score.name == backend_name:
             return self.backend_with_high_score
         if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name == backend_name:
@@ -723,6 +785,22 @@ class LLMBackendConfiguration:
         """
         if self.backend_with_high_score and self.backend_with_high_score.model:
             return self.backend_with_high_score.model
+        return None
+
+    def get_backend_cloud(self) -> Optional[BackendConfig]:
+        """Get the cloud backend configuration.
+
+        Returns the backend_cloud configuration if configured, None otherwise.
+        """
+        return self.backend_cloud
+
+    def get_model_for_backend_cloud(self) -> Optional[str]:
+        """Get the model for the cloud backend.
+
+        Returns the model name if configured, None otherwise.
+        """
+        if self.backend_cloud and self.backend_cloud.model:
+            return self.backend_cloud.model
         return None
 
     def get_backend_with_high_score_cloud(self) -> Optional[BackendConfig]:
@@ -892,20 +970,29 @@ def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
 
 
 def is_jules_mode_enabled() -> bool:
-    """Check if Jules mode is enabled.
+    """Check if Jules mode or Cloud mode is enabled.
 
-    Jules mode is enabled if:
-    1. The 'jules' backend is enabled in llm_config.toml
-    2. The [jules].enabled flag is set to true in config.toml (default: true)
+    Cloud/Jules mode is enabled if:
+    1. A cloud backend is configured via [backend_cloud] in llm_config.toml, OR
+    2. The 'jules' backend is enabled in llm_config.toml and [jules].enabled is true in config.toml
     """
+    llm_config = get_llm_config()
+    if llm_config.backend_cloud_order or llm_config.backend_cloud:
+        return True
+
     # Check [backends.jules] in llm_config.toml
-    jules_config = get_llm_config().get_backend_config("jules")
+    jules_config = llm_config.get_backend_config("jules")
     jules_backend_enabled = jules_config.enabled if jules_config else False
 
     # Check [jules].enabled in config.toml
     jules_config_enabled = get_jules_enabled_from_config()
 
     return jules_backend_enabled and jules_config_enabled
+
+
+def is_cloud_mode_enabled() -> bool:
+    """Check if Cloud mode (backend_cloud or Jules) is enabled."""
+    return is_jules_mode_enabled()
 
 
 def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
