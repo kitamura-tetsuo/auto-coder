@@ -268,3 +268,79 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_not_called()
         assert any("head SHA changed" in a for a in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_remote_head_sha_verification_failure_fails_closed(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """When get_pull_request fails during post-validation remote head check, merge must fail closed (aborted)."""
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="All specifications verified",
+            findings=[],
+        )
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+
+        # Remote verification API throws an exception
+        client = MagicMock()
+        client.get_pull_request.side_effect = RuntimeError("GitHub API rate limited")
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
+        mock_run_validation.assert_called_once()
+        mock_merge_pr.assert_not_called()
+        assert any("Failed to verify remote head SHA" in a for a in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_missing_head_sha_blocks_adversarial_validation_fail_closed(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """When pr_data is missing head.sha, validation and merge must fail closed without running against ambient workspace."""
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        # Missing sha in head dictionary
+        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch"}}
+
+        client = MagicMock()
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_worktree.assert_not_called()
+        mock_run_validation.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Missing head.sha in PR data" in a for a in actions)

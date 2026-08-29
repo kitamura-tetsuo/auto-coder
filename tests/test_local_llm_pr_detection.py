@@ -168,8 +168,9 @@ class TestHandlePrMergeFixLimitation:
         local_pr = {
             "number": 101,
             "body": "<!-- auto-coder:local-llm -->\nCloses #10",
-            "head": {"ref": "issue-10"},
+            "head": {"ref": "issue-10", "sha": "sha_101"},
         }
+        github_client.get_pull_request.return_value = {"head": {"sha": "sha_101"}}
         with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])):
             actions = _handle_pr_merge(github_client, "owner/repo", local_pr, config, {})
             assert any("Successfully merged PR #101" in a for a in actions)
@@ -181,8 +182,9 @@ class TestHandlePrMergeFixLimitation:
         codex_pr = {
             "number": 102,
             "body": "https://chatgpt.com/codex/tasks/task_123",
-            "head": {"ref": "codex-branch"},
+            "head": {"ref": "codex-branch", "sha": "sha_102"},
         }
+        github_client.get_pull_request.return_value = {"head": {"sha": "sha_102"}}
         with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[2])):
             actions = _handle_pr_merge(github_client, "owner/repo", codex_pr, config, {})
             assert any("Successfully merged PR #102" in a for a in actions)

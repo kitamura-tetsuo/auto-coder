@@ -1409,8 +1409,7 @@ def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional
     3. No branch switching, pulling, pushing, resetting, or cleaning occurs on the main workspace during validation.
     """
     if not head_sha:
-        yield None
-        return
+        raise ValueError(f"head_sha is required for isolated worktree validation of PR #{pr_number}")
 
     worktree_dir = None
     original_cwd = os.getcwd()
@@ -1524,12 +1523,44 @@ def _handle_pr_merge(
                 head_branch = pr_data.get("head", {}).get("ref")
                 workflow_id = "ci.yml"
 
-                success = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
-                if success:
-                    actions.append(f"Triggered {workflow_id} for PR #{pr_number} (branch: {head_branch})")
-                else:
-                    actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")
-                    logger.error(f"Failed to trigger workflow dispatch for PR #{pr_number}")
+                try:
+                    triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
+
+                    if triggered:
+                        actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
+                        get_trace_logger().log("CI Trigger", f"Triggered {workflow_id} for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
+
+                        # 3. Start async monitor
+                        head_sha = pr_data.get("head", {}).get("sha")
+
+                        try:
+                            monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
+                            monitor_thread.start()
+                            actions.append(f"Started async monitor for {workflow_id}")
+                            get_trace_logger().log("CI Trigger", f"Started async monitor for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"monitor": True})
+                        except Exception as e:
+                            # Clean up if thread fails to start
+                            with _active_monitors_lock:
+                                _active_monitors.discard(pr_number)
+                            logger.error(f"Failed to start monitor thread for PR #{pr_number}: {e}")
+                            actions.append(f"Failed to start monitor for {workflow_id}: {e}")
+
+                        # Keep the label so async monitor can remove it later
+                        lm.keep_label()
+                        return actions
+
+                    else:
+                        actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")
+                        # Clean up active monitor since we failed to trigger
+                        with _active_monitors_lock:
+                            _active_monitors.discard(pr_number)
+                        # Label will be removed by LabelManager exit
+
+                except Exception as e:
+                    # Clean up active monitor on exception
+                    with _active_monitors_lock:
+                        _active_monitors.discard(pr_number)
+                    raise e
 
             return actions
 
@@ -1558,9 +1589,14 @@ def _handle_pr_merge(
                 head_sha = pr_data.get("head", {}).get("sha", "")
                 pr_branch_name = pr_data.get("head", {}).get("ref", "")
 
+                if not head_sha:
+                    actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
+                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
+                    return actions
+
                 try:
                     with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
-                        actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8] if head_sha else 'HEAD'}")
+                        actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
                         val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
                 except Exception as e:
                     logger.error(f"Failed during isolated adversarial validation for PR #{pr_number}: {e}")
@@ -1593,19 +1629,29 @@ def _handle_pr_merge(
                 else:
                     actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
 
-            # Verify remote PR head SHA hasn't changed since CI check and validation before merging
+            # Verify remote PR head SHA hasn't changed since CI check and validation before merging (fail-closed)
             head_sha = pr_data.get("head", {}).get("sha", "")
-            if head_sha and github_client:
-                try:
-                    current_pr = github_client.get_pull_request(repo_name, pr_number)
-                    if current_pr:
-                        current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
-                        if current_head_sha and current_head_sha != head_sha:
-                            actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
-                            logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
-                            return actions
-                except Exception as e:
-                    logger.debug(f"Could not verify remote head SHA before merge: {e}")
+            if not github_client:
+                actions.append(f"Cannot verify remote head SHA for PR #{pr_number} without github_client; merge aborted.")
+                logger.warning(f"No github_client available to verify PR #{pr_number} head SHA; aborting merge.")
+                return actions
+
+            try:
+                current_pr = github_client.get_pull_request(repo_name, pr_number)
+                current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+                if not current_head_sha:
+                    actions.append(f"Could not determine current remote head SHA for PR #{pr_number}; merge aborted.")
+                    logger.warning(f"Could not determine remote head SHA for PR #{pr_number}; aborting merge.")
+                    return actions
+
+                if head_sha and current_head_sha != head_sha:
+                    actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
+                    logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
+                    return actions
+            except Exception as e:
+                actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
+                logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
+                return actions
 
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:

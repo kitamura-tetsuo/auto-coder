@@ -893,10 +893,7 @@ def is_read_only_review_capable_backend(backend_name: Optional[str], config: Opt
     if not effective_type or not isinstance(effective_type, str):
         return False
     normalized = effective_type.strip().lower().replace("-", "_")
-    # Reject cloud agents, routines, MCP variants, and non-enforcing clients
-    if any(k in normalized for k in ("cloud", "routine", "jules", "aider", "auggie", "mcp")):
-        return False
-    return normalized in READ_ONLY_REVIEW_CAPABLE_TYPES or normalized.startswith("claude") or normalized.startswith("codex")
+    return normalized in READ_ONLY_REVIEW_CAPABLE_TYPES
 
 
 def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
@@ -925,45 +922,40 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
         candidates = [adv_config.name]
     else:
         # Fallback to high score order if defined
-        high_score_order = getattr(config, "backend_with_high_score_order", None)
-        if isinstance(high_score_order, list):
-            candidates = high_score_order
+        if hasattr(config, "get_high_score_backend_order"):
+            candidates = config.get_high_score_backend_order() or []
+        elif hasattr(config, "backend_with_high_score_order"):
+            high_score_order = getattr(config, "backend_with_high_score_order", None)
+            if isinstance(high_score_order, list):
+                candidates = high_score_order
 
-    if candidates:
-        # Strict capability filter on EVERY backend in the candidate list
-        capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
+    if not candidates:
+        return None
 
-        if capable_backends:
-            from .quota_selector import rank_high_score_backends_by_quota
+    # Strict capability filter on EVERY backend in the candidate list
+    capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
 
-            selected_backends = rank_high_score_backends_by_quota(capable_backends, config) or capable_backends
-            primary_backend = selected_backends[0]
+    if not capable_backends:
+        return None
 
-            models = {}
-            for backend_name in selected_backends:
-                models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+    from .quota_selector import rank_high_score_backends_by_quota
 
-            try:
-                return build_backend_manager(
-                    selected_backends=selected_backends,
-                    primary_backend=primary_backend,
-                    models=models,
-                )
-            except Exception as e:
-                from .logger_config import get_logger
+    selected_backends = rank_high_score_backends_by_quota(capable_backends, config) or capable_backends
+    primary_backend = selected_backends[0]
 
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to create backend manager for adversarial validation: {e}")
-                return None
+    models = {}
+    for backend_name in selected_backends:
+        models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
 
-    # Fallback to high score backend manager if configured and read-only capable
-    high_score_mgr = create_high_score_backend_manager()
-    if high_score_mgr:
-        try:
-            curr_backend = getattr(high_score_mgr, "_current_backend_name", lambda: None)()
-            if curr_backend and is_read_only_review_capable_backend(curr_backend, config):
-                return high_score_mgr
-        except Exception:
-            pass
+    try:
+        return build_backend_manager(
+            selected_backends=selected_backends,
+            primary_backend=primary_backend,
+            models=models,
+        )
+    except Exception as e:
+        from .logger_config import get_logger
 
-    return None
+        logger = get_logger(__name__)
+        logger.warning(f"Failed to create backend manager for adversarial validation: {e}")
+        return None

@@ -116,43 +116,46 @@ class TestCreateAdversarialValidationBackendManager:
         mock_build.assert_not_called()
 
     @patch("auto_coder.cli_helpers.get_llm_config")
-    @patch("auto_coder.cli_helpers.create_high_score_backend_manager")
-    def test_fallback_to_high_score_when_not_configured(self, mock_create_high_score, mock_get_config):
+    @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_fallback_to_high_score_when_not_configured(self, mock_build, mock_rank, mock_get_config):
         mock_config = MagicMock()
         mock_config.get_adversarial_validation_backend_order.return_value = []
         mock_config.get_backend_adversarial_validation.return_value = None
+        mock_config.get_high_score_backend_order.return_value = ["claude", "antigravity"]
+        mock_config.get_backend_config.side_effect = lambda b: MagicMock(backend_type="claude") if b == "claude" else MagicMock(backend_type="antigravity")
+        mock_config.get_model_for_backend.side_effect = lambda b: f"model-{b}"
         mock_get_config.return_value = mock_config
 
-        mock_high_score_mgr = MagicMock()
-        mock_high_score_mgr._current_backend_name.return_value = "claude"
-        mock_create_high_score.return_value = mock_high_score_mgr
+        mock_rank.return_value = ["claude"]
 
         mgr = create_adversarial_validation_backend_manager()
-        assert mgr == mock_high_score_mgr
+        mock_build.assert_called_once_with(
+            selected_backends=["claude"],
+            primary_backend="claude",
+            models={"claude": "model-claude"},
+        )
 
     @patch("auto_coder.cli_helpers.get_llm_config")
-    @patch("auto_coder.cli_helpers.create_high_score_backend_manager")
-    def test_returns_none_when_no_strong_backend_configured(self, mock_create_high_score, mock_get_config):
+    def test_returns_none_when_no_strong_backend_configured(self, mock_get_config):
         """Must return None rather than falling back to cloud backends or general default backend."""
         mock_config = MagicMock()
         mock_config.get_adversarial_validation_backend_order.return_value = []
         mock_config.get_backend_adversarial_validation.return_value = None
+        mock_config.get_high_score_backend_order.return_value = ["antigravity", "gemini"]
+        mock_config.get_backend_config.side_effect = lambda b: MagicMock(backend_type=b)
         mock_get_config.return_value = mock_config
-
-        mock_create_high_score.return_value = None
 
         mgr = create_adversarial_validation_backend_manager()
         assert mgr is None
 
     def test_is_read_only_review_capable_backend(self):
-        """Verify capability filtering for synchronous read-only review."""
+        """Verify capability filtering for synchronous read-only review with exact backend_type matching."""
         from auto_coder.cli_helpers import is_read_only_review_capable_backend
 
-        # Capable local backends
+        # Exact capable factory backend types
         assert is_read_only_review_capable_backend("claude") is True
-        assert is_read_only_review_capable_backend("claude-3-5-sonnet") is True
         assert is_read_only_review_capable_backend("codex") is True
-        assert is_read_only_review_capable_backend("codex_o3") is True
 
         # Ineligible MCP variants, cloud backends, routines, and non-enforcing clients
         assert is_read_only_review_capable_backend("codex_mcp") is False
@@ -164,6 +167,7 @@ class TestCreateAdversarialValidationBackendManager:
         assert is_read_only_review_capable_backend("jules") is False
         assert is_read_only_review_capable_backend("aider") is False
         assert is_read_only_review_capable_backend("auggie") is False
+        assert is_read_only_review_capable_backend("gemini") is False
         assert is_read_only_review_capable_backend(None) is False
         assert is_read_only_review_capable_backend("") is False
 
@@ -177,11 +181,15 @@ class TestCreateAdversarialValidationBackendManager:
         mock_b1 = MagicMock(backend_type="codex-cloud")
         # Alias looks unfamiliar, but backend_type is claude -> MUST BE ACCEPTED
         mock_b2 = MagicMock(backend_type="claude")
+        # Alias has prefix claude, but backend_type is claude_routine -> MUST BE REJECTED
+        mock_b3 = MagicMock(backend_type="claude_routine")
 
         mock_config.get_backend_config.side_effect = lambda name: {
             "codex-heavy": mock_b1,
             "custom-reviewer": mock_b2,
+            "claude-custom-routine": mock_b3,
         }.get(name)
 
         assert is_read_only_review_capable_backend("codex-heavy", mock_config) is False
         assert is_read_only_review_capable_backend("custom-reviewer", mock_config) is True
+        assert is_read_only_review_capable_backend("claude-custom-routine", mock_config) is False
