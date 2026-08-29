@@ -497,6 +497,48 @@ class TestBuildAdversarialValidationContext:
             assert "read-only" in called_cmd
             assert "--ask-for-approval" in called_cmd
             assert "never" in called_cmd
+            assert "-c" in called_cmd
+            assert 'approvals_reviewer="user"' in called_cmd
+
+    @patch("auto_coder.codex_client.get_llm_config")
+    @patch("auto_coder.codex_client.subprocess.run")
+    def test_codex_client_strips_yolo_and_dangerously_bypass_approvals_and_sandbox(self, mock_sub_run, mock_get_config):
+        """CodexClient must strip real YOLO/bypass flags and -s alias and enforce -c approvals_reviewer="user"."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "codex-model"
+        mock_backend.options = ["--dangerously-bypass-approvals-and-sandbox", "-s", "workspace-write"]
+        mock_backend.options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--dangerously-bypass-approvals-and-sandbox", "-s", "workspace-write"],
+            "options_for_noedit": ["--dangerously-bypass-approvals-and-sandbox"],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.codex_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.codex_client import CodexClient
+
+            client = CodexClient(backend_name="codex")
+            client._extra_args = ["--yolo", "--approve-for-me", "--not-so-yolo", "-c", 'approvals_reviewer="auto_review"']
+            client._run_llm_cli("prompt", is_noedit=True)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "--dangerously-bypass-approvals-and-sandbox" not in called_cmd
+            assert "--yolo" not in called_cmd
+            assert "--approve-for-me" not in called_cmd
+            assert "--not-so-yolo" not in called_cmd
+            assert "workspace-write" not in called_cmd
+            assert 'approvals_reviewer="auto_review"' not in called_cmd
+            assert "--sandbox" in called_cmd
+            assert "read-only" in called_cmd
+            assert "--ask-for-approval" in called_cmd
+            assert "never" in called_cmd
+            assert "-c" in called_cmd
+            assert 'approvals_reviewer="user"' in called_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")

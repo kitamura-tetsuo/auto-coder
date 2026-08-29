@@ -150,22 +150,27 @@ class CodexClient(LLMClientBase):
 
             # When is_noedit is True, enforce Codex read-only sandboxing client-level invariant
             # against the final combined command (including configured options and extra args):
-            # - Remove conflicting --sandbox <value> pairs and --sandbox=*
-            # - Remove --full-auto, -y, --yes, and bypass flags
-            # - Remove conflicting --ask-for-approval <value> pairs and --ask-for-approval=*
-            # - Force exactly --sandbox read-only and --ask-for-approval never
+            # - Remove conflicting --sandbox / -s <value> pairs and --sandbox=... / -s=...
+            # - Remove dangerous approval, YOLO, and sandbox bypass flags:
+            #   --dangerously-bypass-approvals-and-sandbox, --yolo, --full-auto, -y, --yes,
+            #   --approve-for-me, --not-so-yolo, --danger-full-access
+            # - Remove conflicting --ask-for-approval <value> pairs and --ask-for-approval=...
+            # - Remove any conflicting runtime config overrides for approvals_reviewer (-c / --config)
+            # - Force exactly --sandbox read-only, --ask-for-approval never, and -c approvals_reviewer="user"
             if is_noedit:
                 sanitized_cmd = []
                 i = 0
                 while i < len(cmd):
                     opt_str = str(cmd[i])
-                    if opt_str == "--sandbox":
+                    # Handle sandbox flags
+                    if opt_str in ("--sandbox", "-s"):
                         # Skip flag and its subsequent value
                         i += 2
                         continue
-                    if opt_str.startswith("--sandbox="):
+                    if opt_str.startswith(("--sandbox=", "-s=")):
                         i += 1
                         continue
+                    # Handle ask-for-approval flags
                     if opt_str == "--ask-for-approval":
                         # Skip flag and its subsequent value
                         i += 2
@@ -173,12 +178,32 @@ class CodexClient(LLMClientBase):
                     if opt_str.startswith("--ask-for-approval="):
                         i += 1
                         continue
-                    if opt_str in ("--full-auto", "-y", "--yes", "--danger-full-access"):
+                    # Handle config override flags for approvals_reviewer
+                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and "approvals_reviewer" in str(cmd[i + 1]):
+                        i += 2
+                        continue
+                    if (opt_str.startswith("-c=") or opt_str.startswith("--config=")) and "approvals_reviewer" in opt_str:
+                        i += 1
+                        continue
+                    if opt_str.startswith("approvals_reviewer="):
+                        i += 1
+                        continue
+                    # Handle standalone dangerous bypass and YOLO flags
+                    if opt_str in (
+                        "--dangerously-bypass-approvals-and-sandbox",
+                        "--yolo",
+                        "--approve-for-me",
+                        "--not-so-yolo",
+                        "--full-auto",
+                        "-y",
+                        "--yes",
+                        "--danger-full-access",
+                    ):
                         i += 1
                         continue
                     sanitized_cmd.append(cmd[i])
                     i += 1
-                sanitized_cmd.extend(["--sandbox", "read-only", "--ask-for-approval", "never"])
+                sanitized_cmd.extend(["--sandbox", "read-only", "--ask-for-approval", "never", "-c", 'approvals_reviewer="user"'])
                 cmd = sanitized_cmd
 
             cmd.append(escaped_prompt)
