@@ -18,10 +18,14 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+    @patch("auto_coder.pr_processor.BranchManager")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
     def test_green_ci_with_adversarial_pass_merges(
         self,
         mock_merge_pr,
+        mock_branch_mgr,
+        mock_checkout,
         mock_run_validation,
         mock_threads,
         mock_checks,
@@ -44,6 +48,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
+        mock_branch_mgr.assert_called_once_with("feature-branch")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_called_once()
         assert any("Adversarial validation passed" in a for a in actions)
@@ -94,6 +99,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
+        mock_branch_mgr.assert_called_once_with("feature-branch")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_not_called()
         mock_apply_fix.assert_called_once()
@@ -105,10 +111,14 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+    @patch("auto_coder.pr_processor.BranchManager")
     @patch("auto_coder.pr_processor._merge_pr")
     def test_green_ci_with_adversarial_blocked_fails_closed_without_merging(
         self,
         mock_merge_pr,
+        mock_branch_mgr,
+        mock_checkout,
         mock_run_validation,
         mock_threads,
         mock_checks,
@@ -131,6 +141,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
+        mock_branch_mgr.assert_called_once_with("feature-branch")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_not_called()
         assert any("Adversarial validation blocked PR #100" in a for a in actions)
@@ -170,12 +181,16 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+    @patch("auto_coder.pr_processor.BranchManager")
     @patch("auto_coder.pr_processor.apply_adversarial_fix")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
     def test_inconclusive_with_findings_blocks_merge_without_triggering_fix(
         self,
         mock_merge_pr,
         mock_apply_fix,
+        mock_branch_mgr,
+        mock_checkout,
         mock_run_validation,
         mock_threads,
         mock_checks,
@@ -203,6 +218,7 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
+        mock_branch_mgr.assert_called_once_with("feature-branch")
         mock_run_validation.assert_called_once()
         mock_apply_fix.assert_not_called()
         mock_merge_pr.assert_not_called()

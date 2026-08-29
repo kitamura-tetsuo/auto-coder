@@ -865,14 +865,33 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
         return None
 
 
+def is_read_only_review_capable_backend(backend_name: Optional[str]) -> bool:
+    """Check if a backend provides synchronous read-only review execution.
+
+    Only local clients with enforced client-level read-only sandboxing (Claude, Codex)
+    are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules)
+    and non-enforcing clients are rejected.
+    """
+    if not backend_name or not isinstance(backend_name, str):
+        return False
+    normalized = backend_name.strip().lower().replace("-", "_")
+    # Explicitly reject cloud / routine / non-enforcing backends
+    if any(k in normalized for k in ("cloud", "routine", "jules", "aider", "auggie")):
+        return False
+    # Permit local Claude and Codex backends
+    return normalized.startswith("claude") or normalized.startswith("codex")
+
+
 def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
     """Create a BackendManager for the adversarial validation configuration.
 
     Uses dedicated [backend_adversarial_validation] settings if configured,
-    or falls back to high-score/strong backends or the default manager.
+    filtering strictly for backends that support synchronous read-only review capability.
+    Cloud coding backends (CodexCloud, ClaudeRoutine, Jules) are rejected.
 
     Returns:
-        BackendManager instance configured with a strong model for adversarial validation.
+        BackendManager instance configured with a strong model for adversarial validation,
+        or None if no read-only capable backend is available.
     """
     config = get_llm_config()
 
@@ -880,28 +899,30 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
     adv_config = config.get_backend_adversarial_validation()
 
     if adv_order:
-        from .quota_selector import rank_high_score_backends_by_quota
+        capable_backends = [b for b in adv_order if is_read_only_review_capable_backend(b)]
+        if capable_backends:
+            from .quota_selector import rank_high_score_backends_by_quota
 
-        selected_backends = rank_high_score_backends_by_quota(adv_order, config) or adv_order
-        primary_backend = selected_backends[0]
+            selected_backends = rank_high_score_backends_by_quota(capable_backends, config) or capable_backends
+            primary_backend = selected_backends[0]
 
-        models = {}
-        for backend_name in selected_backends:
-            models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+            models = {}
+            for backend_name in selected_backends:
+                models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
 
-        try:
-            return build_backend_manager(
-                selected_backends=selected_backends,
-                primary_backend=primary_backend,
-                models=models,
-            )
-        except Exception as e:
-            from .logger_config import get_logger
+            try:
+                return build_backend_manager(
+                    selected_backends=selected_backends,
+                    primary_backend=primary_backend,
+                    models=models,
+                )
+            except Exception as e:
+                from .logger_config import get_logger
 
-            logger = get_logger(__name__)
-            logger.warning(f"Failed to create backend manager for adversarial validation from order: {e}")
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to create backend manager for adversarial validation from order: {e}")
 
-    elif adv_config:
+    elif adv_config and is_read_only_review_capable_backend(adv_config.name):
         backend_name = adv_config.name
         selected_backends = [backend_name]
         primary_backend = backend_name
@@ -920,16 +941,16 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
             logger = get_logger(__name__)
             logger.warning(f"Failed to create backend manager for adversarial validation from config: {e}")
 
-    # Fallback to high score backend manager
+    # Fallback to high score backend manager if it uses a read-only review capable backend
     high_score_mgr = create_high_score_backend_manager()
     if high_score_mgr:
-        return high_score_mgr
+        try:
+            curr_backend = getattr(high_score_mgr, "_current_backend_name", lambda: None)()
+            if curr_backend is None or is_read_only_review_capable_backend(curr_backend):
+                return high_score_mgr
+        except Exception:
+            return high_score_mgr
 
-    # Fallback to high score cloud backend manager
-    high_score_cloud_mgr = create_high_score_cloud_backend_manager()
-    if high_score_cloud_mgr:
-        return high_score_cloud_mgr
-
-    # Do not silently fall back to the general implementation backend
+    # Do not silently fall back to cloud backends or the general implementation backend
     # to preserve independence between implementation and validation.
     return None

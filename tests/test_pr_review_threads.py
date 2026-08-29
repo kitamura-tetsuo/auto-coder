@@ -261,8 +261,10 @@ def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_un
 @patch("auto_coder.pr_processor._check_github_actions_status")
 @patch("auto_coder.pr_processor.has_unresolved_review_threads")
 @patch("auto_coder.pr_processor.run_adversarial_validation")
+@patch("auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+@patch("auto_coder.pr_processor.BranchManager")
 @patch("auto_coder.pr_processor._merge_pr")
-def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
+def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_branch_mgr, mock_checkout, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
     mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
     mock_has_unresolved.return_value = False
     mock_merge_pr.return_value = True
@@ -272,7 +274,7 @@ def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_
 
     config = AutomationConfig()
     config.AUTO_MERGE = True
-    pr_data = {"number": 123, "labels": []}
+    pr_data = {"number": 123, "labels": [], "head": {"ref": "feature-123"}}
 
     client = MagicMock()
     actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})

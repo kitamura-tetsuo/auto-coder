@@ -82,19 +82,38 @@ class TestCreateAdversarialValidationBackendManager:
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
     @patch("auto_coder.cli_helpers.build_backend_manager")
-    def test_create_from_order(self, mock_build, mock_rank, mock_get_config):
+    def test_create_from_order_filters_read_only_capable(self, mock_build, mock_rank, mock_get_config):
+        """Order must filter out cloud/non-enforcing backends and only include read-only capable ones."""
         mock_config = MagicMock()
-        mock_config.get_adversarial_validation_backend_order.return_value = ["claude", "antigravity"]
+        # Order includes cloud agents and capable local backends
+        mock_config.get_adversarial_validation_backend_order.return_value = ["codex_cloud", "claude", "claude_routine", "codex"]
         mock_config.get_backend_adversarial_validation.return_value = None
         mock_config.get_model_for_backend.side_effect = lambda b: f"model-{b}"
         mock_get_config.return_value = mock_config
-        mock_rank.return_value = ["claude", "antigravity"]
+        mock_rank.return_value = ["claude", "codex"]
 
         mgr = create_adversarial_validation_backend_manager()
         mock_build.assert_called_once()
         call_kwargs = mock_build.call_args.kwargs
-        assert call_kwargs["selected_backends"] == ["claude", "antigravity"]
+        assert call_kwargs["selected_backends"] == ["claude", "codex"]
         assert call_kwargs["primary_backend"] == "claude"
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=None)
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_rejects_cloud_and_non_enforcing_single_backend_config(self, mock_build, mock_high_score, mock_get_config):
+        """Single backend config with cloud backend must be rejected (returns None)."""
+        mock_config = MagicMock()
+        mock_config.get_adversarial_validation_backend_order.return_value = []
+        adv_backend = MagicMock()
+        adv_backend.name = "codex_cloud"
+        adv_backend.model = "cloud-model"
+        mock_config.get_backend_adversarial_validation.return_value = adv_backend
+        mock_get_config.return_value = mock_config
+
+        mgr = create_adversarial_validation_backend_manager()
+        assert mgr is None
+        mock_build.assert_not_called()
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.create_high_score_backend_manager")
@@ -105,6 +124,7 @@ class TestCreateAdversarialValidationBackendManager:
         mock_get_config.return_value = mock_config
 
         mock_high_score_mgr = MagicMock()
+        mock_high_score_mgr._current_backend_name.return_value = "claude"
         mock_create_high_score.return_value = mock_high_score_mgr
 
         mgr = create_adversarial_validation_backend_manager()
@@ -112,16 +132,36 @@ class TestCreateAdversarialValidationBackendManager:
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.create_high_score_backend_manager")
-    @patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager")
-    def test_returns_none_when_no_strong_backend_configured(self, mock_create_cloud, mock_create_high_score, mock_get_config):
-        """Must return None rather than silently falling back to general default backend."""
+    def test_returns_none_when_no_strong_backend_configured(self, mock_create_high_score, mock_get_config):
+        """Must return None rather than falling back to cloud backends or general default backend."""
         mock_config = MagicMock()
         mock_config.get_adversarial_validation_backend_order.return_value = []
         mock_config.get_backend_adversarial_validation.return_value = None
         mock_get_config.return_value = mock_config
 
         mock_create_high_score.return_value = None
-        mock_create_cloud.return_value = None
 
         mgr = create_adversarial_validation_backend_manager()
         assert mgr is None
+
+    def test_is_read_only_review_capable_backend(self):
+        """Verify capability filtering for synchronous read-only review."""
+        from auto_coder.cli_helpers import is_read_only_review_capable_backend
+
+        # Capable local backends
+        assert is_read_only_review_capable_backend("claude") is True
+        assert is_read_only_review_capable_backend("claude-3-5-sonnet") is True
+        assert is_read_only_review_capable_backend("codex") is True
+        assert is_read_only_review_capable_backend("codex_o3") is True
+        assert is_read_only_review_capable_backend("codex_mcp") is True
+
+        # Ineligible cloud backends, routines, and non-enforcing clients
+        assert is_read_only_review_capable_backend("codex_cloud") is False
+        assert is_read_only_review_capable_backend("codex-cloud") is False
+        assert is_read_only_review_capable_backend("claude_routine") is False
+        assert is_read_only_review_capable_backend("claude-routine") is False
+        assert is_read_only_review_capable_backend("jules") is False
+        assert is_read_only_review_capable_backend("aider") is False
+        assert is_read_only_review_capable_backend("auggie") is False
+        assert is_read_only_review_capable_backend(None) is False
+        assert is_read_only_review_capable_backend("") is False

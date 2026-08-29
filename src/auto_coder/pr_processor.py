@@ -3,6 +3,7 @@ PR processing functionality for Auto-Coder automation engine.
 """
 
 import asyncio
+import contextlib
 import json
 import math
 import os
@@ -1539,31 +1540,32 @@ def _handle_pr_merge(
 
             # Strong-model adversarial validation step
             if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
-                val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
-                if val_result.needs_fix:
-                    actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
-                    logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
-
-                    # Check out PR branch and apply regression test + fix
-                    pr_branch_name = pr_data.get("head", {}).get("ref", "")
+                pr_branch_name = pr_data.get("head", {}).get("ref", "")
+                if pr_branch_name:
                     prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
                     if not prepare_ok:
-                        actions.append(f"Failed to prepare PR #{pr_number} branch for adversarial fix")
+                        actions.append(f"Failed to prepare PR #{pr_number} branch for adversarial validation")
                         return actions
 
-                    with BranchManager(pr_branch_name) as manager:
-                        actions.append(f"Checked out PR #{pr_number} branch for adversarial regression fix")
+                bm_ctx = BranchManager(pr_branch_name) if pr_branch_name else contextlib.nullcontext()
+                with bm_ctx:
+                    if pr_branch_name:
+                        actions.append(f"Checked out PR #{pr_number} branch for adversarial validation")
+                    val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                    if val_result.needs_fix:
+                        actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
+                        logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
+
                         fix_actions = apply_adversarial_fix(repo_name, pr_data, config, val_result, github_client=github_client)
                         actions.extend(fix_actions)
-
-                    return actions
-                elif not val_result.is_pass:
-                    # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
-                    actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
-                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
-                    return actions
-                else:
-                    actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
+                        return actions
+                    elif not val_result.is_pass:
+                        # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
+                        actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                        logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                        return actions
+                    else:
+                        actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
 
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:
@@ -1573,9 +1575,7 @@ def _handle_pr_merge(
                 try:
                     is_jules = _is_jules_pr(pr_data)
                     session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
-
                     if is_jules and session_id:
-                        # Find other open PRs that reference this session ID
                         # Note: search_issues returns Issue objects which can be PRs
                         query = f'repo:{repo_name} is:pr is:open "Session ID: {session_id}"'
                         logger.info(f"Searching for other PRs with session ID {session_id} to clean up: {query}")
