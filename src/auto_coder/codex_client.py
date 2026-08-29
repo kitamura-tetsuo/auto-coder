@@ -143,16 +143,43 @@ class CodexClient(LLMClientBase):
             if options_to_use:
                 cmd.extend(options_to_use)
 
-            # When is_noedit is True, enforce Codex read-only sandboxing invariant
-            if is_noedit:
-                has_sandbox = any("--sandbox" in str(opt) for opt in cmd)
-                if not has_sandbox:
-                    cmd.extend(["--sandbox", "read-only"])
-
             # Append any one-time extra arguments (e.g., resume flags)
             extra_args = self.consume_extra_args()
             if extra_args:
                 cmd.extend(extra_args)
+
+            # When is_noedit is True, enforce Codex read-only sandboxing client-level invariant
+            # against the final combined command (including configured options and extra args):
+            # - Remove conflicting --sandbox <value> pairs and --sandbox=*
+            # - Remove --full-auto, -y, --yes, and bypass flags
+            # - Remove conflicting --ask-for-approval <value> pairs and --ask-for-approval=*
+            # - Force exactly --sandbox read-only and --ask-for-approval never
+            if is_noedit:
+                sanitized_cmd = []
+                i = 0
+                while i < len(cmd):
+                    opt_str = str(cmd[i])
+                    if opt_str == "--sandbox":
+                        # Skip flag and its subsequent value
+                        i += 2
+                        continue
+                    if opt_str.startswith("--sandbox="):
+                        i += 1
+                        continue
+                    if opt_str == "--ask-for-approval":
+                        # Skip flag and its subsequent value
+                        i += 2
+                        continue
+                    if opt_str.startswith("--ask-for-approval="):
+                        i += 1
+                        continue
+                    if opt_str in ("--full-auto", "-y", "--yes", "--danger-full-access"):
+                        i += 1
+                        continue
+                    sanitized_cmd.append(cmd[i])
+                    i += 1
+                sanitized_cmd.extend(["--sandbox", "read-only", "--ask-for-approval", "never"])
+                cmd = sanitized_cmd
 
             cmd.append(escaped_prompt)
 

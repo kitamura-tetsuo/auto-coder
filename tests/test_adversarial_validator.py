@@ -368,6 +368,68 @@ class TestBuildAdversarialValidationContext:
             assert "--permission-mode" in called_cmd
             assert "plan" in called_cmd
 
+    @patch("auto_coder.claude_client.get_llm_config")
+    @patch("auto_coder.claude_client.subprocess.run")
+    def test_claude_client_overrides_configured_and_extra_args_write_modes_in_noedit(self, mock_sub_run, mock_get_config):
+        """ClaudeClient must override configured bypassPermissions and strip extra args --dangerously-skip-permissions."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "claude-3-5-sonnet-20241022"
+        mock_backend.options = ["--permission-mode", "bypassPermissions"]
+        mock_backend.options_for_noedit = ["--permission-mode", "bypassPermissions"]
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--permission-mode", "bypassPermissions"],
+            "options_for_noedit": ["--permission-mode", "bypassPermissions"],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.claude_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.claude_client import ClaudeClient
+
+            client = ClaudeClient(backend_name="claude")
+            client._extra_args = ["--dangerously-skip-permissions", "--permission-mode", "default"]
+            client._run_llm_cli("prompt", is_noedit=True)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "--dangerously-skip-permissions" not in called_cmd
+            assert "bypassPermissions" not in called_cmd
+            assert "default" not in called_cmd
+            assert "--permission-mode" in called_cmd
+            assert "plan" in called_cmd
+
+    @patch("auto_coder.claude_client.get_llm_config")
+    @patch("auto_coder.claude_client.subprocess.run")
+    def test_claude_client_preserves_writable_mode_when_not_noedit(self, mock_sub_run, mock_get_config):
+        """Normal implementation runs (is_noedit=False) retain writable configurations."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "claude-3-5-sonnet-20241022"
+        mock_backend.options = ["--dangerously-skip-permissions"]
+        mock_backend.options_for_noedit = []
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--dangerously-skip-permissions"],
+            "options_for_noedit": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.claude_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.claude_client import ClaudeClient
+
+            client = ClaudeClient(backend_name="claude")
+            client._run_llm_cli("prompt", is_noedit=False)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "--dangerously-skip-permissions" in called_cmd
+            assert "--permission-mode" not in called_cmd
+
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")
     def test_codex_client_enforces_sandbox_readonly_on_noedit(self, mock_sub_run, mock_get_config):
@@ -378,6 +440,10 @@ class TestBuildAdversarialValidationContext:
         mock_backend.model = "codex-model"
         mock_backend.options = ["--json"]
         mock_backend.options_for_noedit = []
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--json"],
+            "options_for_noedit": [],
+        }
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -392,6 +458,75 @@ class TestBuildAdversarialValidationContext:
             called_cmd = mock_run.call_args[0][0]
             assert "--sandbox" in called_cmd
             assert "read-only" in called_cmd
+            assert "--ask-for-approval" in called_cmd
+            assert "never" in called_cmd
+
+    @patch("auto_coder.codex_client.get_llm_config")
+    @patch("auto_coder.codex_client.subprocess.run")
+    def test_codex_client_overrides_configured_and_extra_args_write_modes_in_noedit(self, mock_sub_run, mock_get_config):
+        """CodexClient must override configured workspace-write and strip extra args danger-full-access/full-auto."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "codex-model"
+        mock_backend.options = ["--sandbox", "workspace-write", "--full-auto"]
+        mock_backend.options_for_noedit = ["--sandbox", "workspace-write"]
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--sandbox", "workspace-write", "--full-auto"],
+            "options_for_noedit": ["--sandbox", "workspace-write"],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.codex_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.codex_client import CodexClient
+
+            client = CodexClient(backend_name="codex")
+            client._extra_args = ["--sandbox", "danger-full-access", "-y", "--ask-for-approval", "always"]
+            client._run_llm_cli("prompt", is_noedit=True)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "workspace-write" not in called_cmd
+            assert "danger-full-access" not in called_cmd
+            assert "--full-auto" not in called_cmd
+            assert "-y" not in called_cmd
+            assert "always" not in called_cmd
+            assert "--sandbox" in called_cmd
+            assert "read-only" in called_cmd
+            assert "--ask-for-approval" in called_cmd
+            assert "never" in called_cmd
+
+    @patch("auto_coder.codex_client.get_llm_config")
+    @patch("auto_coder.codex_client.subprocess.run")
+    def test_codex_client_preserves_writable_mode_when_not_noedit(self, mock_sub_run, mock_get_config):
+        """Normal implementation runs (is_noedit=False) retain writable configurations."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "codex-model"
+        mock_backend.options = ["--sandbox", "workspace-write", "--full-auto"]
+        mock_backend.options_for_noedit = []
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--sandbox", "workspace-write", "--full-auto"],
+            "options_for_noedit": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.codex_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.codex_client import CodexClient
+
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("prompt", is_noedit=False)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "--sandbox" in called_cmd
+            assert "workspace-write" in called_cmd
+            assert "--full-auto" in called_cmd
 
     def test_oracle_recovery_falls_back_to_title_when_no_body_link(self):
         """Issue specification is recovered from PR title when body omits linking phrase."""
