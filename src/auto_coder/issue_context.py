@@ -212,8 +212,13 @@ def get_linked_issues_context(
                             parent_number = parent_details.get("number")
                             parent_body = github_client.get_parent_issue_body(repo_name, issue_number)
                             if parent_body:
-                                context_parts.append(f"Parent Issue #{parent_number} (of #{issue_number}): {parent_details.get('title', 'Unknown')}")
-                                context_parts.append(f"Parent Issue Description:\n{parent_body}")
+                                context_parts.append(
+                                    f"Parent Issue #{parent_number} (CONTEXT ONLY - Parent of #{issue_number}): {parent_details.get('title', 'Unknown')}\n"
+                                    f"[SCOPE BOUNDARY NOTICE: The following parent issue description is provided for background context only. "
+                                    f"The implementation scope and acceptance criteria for this PR are defined strictly by the child issue #{issue_number}. "
+                                    f"Do NOT require parent requirements outside the child issue scope.]\n"
+                                    f"Parent Issue Description:\n{parent_body}"
+                                )
                     except Exception as e:
                         logger.warning(f"Failed to fetch parent issue for #{issue_number}: {e}")
             except Exception as e:

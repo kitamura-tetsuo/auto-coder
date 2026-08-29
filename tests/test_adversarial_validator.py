@@ -307,6 +307,92 @@ class TestBuildAdversarialValidationContext:
         assert "Linked Issue #100" in context.issue_context
         assert "Linked Issue #200" not in context.issue_context
 
+    def test_inconclusive_with_findings_has_needs_fix_false_and_is_blocked_true(self):
+        """INCONCLUSIVE with findings must NOT have needs_fix=True, must be is_blocked=True."""
+        finding = AdversarialValidationFinding(
+            violated_requirement="Spec invariant",
+            counterexample="Given state S, action A produces X",
+        )
+        res = AdversarialValidationResult(
+            result="INCONCLUSIVE",
+            summary="Need dynamic verification",
+            findings=[finding],
+        )
+        assert not res.needs_fix
+        assert not res.is_pass
+        assert res.is_blocked
+
+    def test_parent_issue_scope_boundary_notice(self):
+        """Parent issue context includes explicit SCOPE BOUNDARY NOTICE ensuring sub-issue PR scope is preserved."""
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py"
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Sub-issue A"
+        mock_issue.body = "Specification: Implement feature A only."
+        mock_client.get_issue.return_value = mock_issue
+
+        mock_client.get_parent_issue_details.return_value = {"number": 100, "title": "Epic Feature A, B and C"}
+        mock_client.get_parent_issue_body.return_value = "Parent Specification: Must implement A, B, and C."
+
+        config = AutomationConfig()
+        pr_data = {"number": 10, "title": "feat: feature A", "body": "Fixes #101"}
+
+        context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
+        assert "Linked Issue #101: Sub-issue A" in context.issue_context
+        assert "SCOPE BOUNDARY NOTICE" in context.issue_context
+        assert "Do NOT require parent requirements outside the child issue scope" in context.issue_context
+        assert "Parent Issue #100 (CONTEXT ONLY" in context.issue_context
+
+    @patch("auto_coder.claude_client.get_llm_config")
+    @patch("auto_coder.claude_client.subprocess.run")
+    def test_claude_client_enforces_permission_mode_plan_on_noedit(self, mock_sub_run, mock_get_config):
+        """ClaudeClient must inject --permission-mode plan when is_noedit=True even if no options_for_noedit configured."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "claude-3-5-sonnet-20241022"
+        mock_backend.options = ["--max-thinking-tokens", "1000"]
+        mock_backend.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.claude_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.claude_client import ClaudeClient
+
+            client = ClaudeClient(backend_name="claude")
+            client._run_llm_cli("prompt", is_noedit=True)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "--permission-mode" in called_cmd
+            assert "plan" in called_cmd
+
+    @patch("auto_coder.codex_client.get_llm_config")
+    @patch("auto_coder.codex_client.subprocess.run")
+    def test_codex_client_enforces_sandbox_readonly_on_noedit(self, mock_sub_run, mock_get_config):
+        """CodexClient must inject --sandbox read-only when is_noedit=True even if no options_for_noedit configured."""
+        mock_sub_run.return_value.returncode = 0
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "codex-model"
+        mock_backend.options = ["--json"]
+        mock_backend.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        with patch("auto_coder.codex_client.CommandExecutor.run_command") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="output", stderr="", returncode=0)
+            from auto_coder.codex_client import CodexClient
+
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("prompt", is_noedit=True)
+
+            mock_run.assert_called_once()
+            called_cmd = mock_run.call_args[0][0]
+            assert "--sandbox" in called_cmd
+            assert "read-only" in called_cmd
+
     def test_oracle_recovery_falls_back_to_title_when_no_body_link(self):
         """Issue specification is recovered from PR title when body omits linking phrase."""
         mock_client = MagicMock()

@@ -60,8 +60,8 @@ class AdversarialValidationResult:
 
     @property
     def needs_fix(self) -> bool:
-        """Return True if validation identified issues requiring a fix."""
-        return self.result.strip().upper() == "NEEDS_FIX" or len(self.findings) > 0
+        """Return True if validation explicitly determined NEEDS_FIX with findings."""
+        return self.result.strip().upper() == "NEEDS_FIX" and len(self.findings) > 0
 
     @property
     def is_blocked(self) -> bool:
@@ -519,7 +519,7 @@ def run_adversarial_validation(
 
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):
-        response = run_llm_prompt(prompt, backend_manager=backend_manager)
+        response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
 
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
@@ -568,7 +568,7 @@ def run_adversarial_validation(
                 pr_diff=context.pr_diff,
             )
             with ProgressStage("Adversarial dynamic check follow-up"):
-                followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager)
+                followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager, is_noedit=True)
             result = parse_adversarial_validation_response(followup_response)
 
         except Exception as e:

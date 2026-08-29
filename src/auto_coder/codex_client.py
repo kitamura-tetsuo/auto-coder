@@ -143,6 +143,12 @@ class CodexClient(LLMClientBase):
             if options_to_use:
                 cmd.extend(options_to_use)
 
+            # When is_noedit is True, enforce Codex read-only sandboxing invariant
+            if is_noedit:
+                has_sandbox = any("--sandbox" in str(opt) for opt in cmd)
+                if not has_sandbox:
+                    cmd.extend(["--sandbox", "read-only"])
+
             # Append any one-time extra arguments (e.g., resume flags)
             extra_args = self.consume_extra_args()
             if extra_args:

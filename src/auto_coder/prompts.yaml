@@ -489,6 +489,7 @@ pr:
     - All existing tests are currently passing (green CI), but that is NOT proof of correctness.
     - Assume the implementation may contain subtle requirement misunderstandings, unhandled edge cases, or false-success tests.
     - Treat the issue specification and acceptance criteria as the absolute source of truth (test oracle).
+    - SCOPE BOUNDARY: If linked issue context includes a parent issue, the parent issue is for background context only. Judge correctness and acceptance criteria STRICTLY against the linked child issue/specification. Do NOT report missing features from a parent issue as violations if they are outside the child issue scope.
     - The implementation code and changed tests are evidence to inspect, NOT definitions of correct behavior.
     - Do NOT perform a general style review, cosmetic suggestions, or subjective refactoring review.
     - Focus strictly on behavioral correctness, invariant preservation, and specification coverage.

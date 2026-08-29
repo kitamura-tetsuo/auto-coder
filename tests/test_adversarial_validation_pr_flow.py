@@ -164,3 +164,46 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_not_called()
         mock_merge_pr.assert_called_once()
         assert any("Successfully merged PR #100" in a for a in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.apply_adversarial_fix")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_inconclusive_with_findings_blocks_merge_without_triggering_fix(
+        self,
+        mock_merge_pr,
+        mock_apply_fix,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """INCONCLUSIVE with findings must block merge but MUST NOT trigger apply_adversarial_fix."""
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="INCONCLUSIVE",
+            summary="Uncertain about behavior",
+            findings=[
+                AdversarialValidationFinding(
+                    violated_requirement="Suspected invariant",
+                    counterexample="Given state S, might fail",
+                )
+            ],
+        )
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch"}}
+
+        client = MagicMock()
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_called_once()
+        mock_apply_fix.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Adversarial validation blocked PR #100" in a for a in actions)

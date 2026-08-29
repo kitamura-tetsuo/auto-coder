@@ -329,6 +329,13 @@ class ClaudeClient(LLMClientBase):
                     # Can't extend, skip adding options
                     pass
 
+            # When is_noedit is True, enforce Claude read-only/plan mode client-level invariant
+            if is_noedit:
+                has_permission_mode = any("--permission-mode" in str(opt) for opt in base_cmd)
+                if not has_permission_mode:
+                    base_cmd.extend(["--permission-mode", "plan"])
+                base_cmd = [opt for opt in base_cmd if str(opt) != "--dangerously-skip-permissions"]
+
             # Append extra args if any (e.g., --resume <session_id>)
             cmd = base_cmd.copy()
             extra_args = self.consume_extra_args()
