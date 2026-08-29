@@ -89,7 +89,14 @@ async def process_github_payload(event_type: Optional[str], payload: Dict[str, A
     try:
         if event_type == "pull_request":
             action = payload.get("action")
-            if action in ["opened", "reopened", "synchronize", "ready_for_review"]:
+            if action == "closed":
+                pr_data_raw = payload.get("pull_request", {})
+                pr_number = pr_data_raw.get("number", "N/A")
+                merged = pr_data_raw.get("merged", False)
+                state_str = "merged" if merged else "closed"
+                logger.info(f"PR #{pr_number} was {state_str} on GitHub. Waking up engine producer loop...")
+                engine.notify_pr_merged_or_closed()
+            elif action in ["opened", "reopened", "synchronize", "ready_for_review"]:
                 pr_data_raw = payload.get("pull_request")
                 if pr_data_raw:
                     pr_number = pr_data_raw.get("number")

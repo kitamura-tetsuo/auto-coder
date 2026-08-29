@@ -737,6 +737,11 @@ def _create_pr_for_issue(
         if closes_keyword not in pr_body:
             pr_body = f"{closes_keyword}\n\n{pr_body}"
 
+        # Inject local LLM marker so PR is unambiguously recognized as local LLM PR
+        local_marker = "<!-- auto-coder:local-llm -->"
+        if local_marker not in pr_body:
+            pr_body = f"{local_marker}\n\n{pr_body}"
+
         # Validate issue references in PR body
         try:
             validate_issue_references(pr_body, github_client, repo_name)

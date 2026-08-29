@@ -856,3 +856,18 @@ Recent configuration schema changes that require migration:
       - "Preserves existing capability and availability checks; ineligible backends (e.g. usage limit reached, insufficient minimum remaining percentage) are filtered out."
       - "Unmetered backends or backends without weekly quota metrics retain stable fallback ordering."
       - "Backends whose usage metrics cannot be retrieved (e.g. rate-limited token refresh or API errors) have their priority lowered below measured and unmetered backends."
+
+## Early Loop Resume on PR Merge/Close & Jules Enumeration Skip
+
+  producer_early_wake_on_pr_event:
+    description: "Cuts short the main producer loop sleep duration (300s) upon PR merge or close events and resumes candidate processing immediately while skipping Jules session enumeration."
+    implementation: |
+      notify_pr_merged_or_closed, _sleep_or_wake, _check_if_pr_merged_or_closed,
+      _producer_loop, _worker_loop in src/auto_coder/automation_engine.py,
+      process_github_payload in src/auto_coder/webhook_server.py
+    behavior:
+      - "When a PR is merged or closed (internally by a worker, via branch cleanup, or externally received via GitHub webhook), signals the engine to cut short the active wait time in _producer_loop."
+      - "On early resume, bypasses time-consuming Jules session listing and checks (invalidate_jules_sessions_cache, check_and_resume_or_archive_sessions, handle_stale_jules_issue_sessions, check_and_start_recurrent_jules_tasks_async) for that single iteration."
+      - "Immediately pulls latest changes and checks for actionable candidates so unlocked issues or PRs can be picked up without waiting for the full sleep duration to elapse."
+      - "Subsequent scheduled iterations (when sleep completes normally) continue to enumerate and check Jules sessions as usual."
+

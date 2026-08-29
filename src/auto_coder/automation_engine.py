@@ -56,9 +56,61 @@ class AutomationEngine:
         self.active_workers: Dict[int, Optional[Candidate]] = {}
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
+        self._wake_up_event: Optional[asyncio.Event] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._pr_merged_or_closed: bool = False
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
+
+    def notify_pr_merged_or_closed(self) -> None:
+        """Signal that a PR was merged or closed, interrupting any active wait in the producer loop."""
+        logger.info("PR merged or closed event received; requesting early wake-up of producer loop")
+        self._pr_merged_or_closed = True
+        if self._wake_up_event is not None:
+            if self._loop is not None and not self._loop.is_closed():
+                try:
+                    self._loop.call_soon_threadsafe(self._wake_up_event.set)
+                except RuntimeError:
+                    self._wake_up_event.set()
+            else:
+                self._wake_up_event.set()
+
+    async def _sleep_or_wake(self, sleep_time: float) -> bool:
+        """Sleep for sleep_time seconds, or cut short if a PR is merged/closed.
+
+        Returns:
+            True if woken up early (by PR merge/close), False if sleep completed normally.
+        """
+        if self._pr_merged_or_closed:
+            self._pr_merged_or_closed = False
+            if self._wake_up_event is not None:
+                self._wake_up_event.clear()
+            logger.info("PR merged/closed event was already queued; cutting short wait time and resuming immediately")
+            return True
+
+        if self._wake_up_event is None:
+            self._wake_up_event = asyncio.Event()
+        self._wake_up_event.clear()
+
+        try:
+            await asyncio.wait_for(self._wake_up_event.wait(), timeout=sleep_time)
+            self._pr_merged_or_closed = False
+            self._wake_up_event.clear()
+            logger.info("Wait time cut short by PR merged/closed event; resuming main loop immediately")
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    def _check_if_pr_merged_or_closed(self, candidate: Candidate, result: CandidateProcessingResult) -> bool:
+        """Check if the processing result indicates a PR was merged or closed."""
+        for action in result.actions:
+            action_lower = action.lower()
+            if "successfully merged pr" in action_lower or "merged pr #" in action_lower or "was merged" in action_lower:
+                return True
+            if "closed pr #" in action_lower or "closed unfixable pr" in action_lower or "closed stale jules pr" in action_lower or "closed empty jules pr" in action_lower or "closing pr" in action_lower:
+                return True
+        return False
 
     async def check_and_start_recurrent_jules_tasks_async(self, repo_name: str) -> None:
         """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
@@ -91,7 +143,10 @@ class AutomationEngine:
         os.environ["REPO_NAME"] = repo_name
 
         # Record resource usage and unhandled asyncio errors for the whole run
-        install_asyncio_diagnostics(asyncio.get_running_loop())
+        self._loop = asyncio.get_running_loop()
+        self._wake_up_event = asyncio.Event()
+        self._pr_merged_or_closed = False
+        install_asyncio_diagnostics(self._loop)
         get_health_monitor().start()
         heartbeat("engine:start", repo_name)
 
@@ -129,6 +184,7 @@ class AutomationEngine:
             logger.info("Closed item handled on startup, continuing to producer loop")
             get_health_monitor().record_event("producer_startup", "closed item handled on startup", repo_name)
 
+        skip_jules_sessions = False
         iteration = 0
         while True:
             try:
@@ -138,18 +194,22 @@ class AutomationEngine:
                 # Check updates
                 await asyncio.to_thread(check_for_updates_and_restart)
 
-                # Fetch the Jules session listing at most once per loop iteration
-                invalidate_jules_sessions_cache()
+                if not skip_jules_sessions:
+                    # Fetch the Jules session listing at most once per loop iteration
+                    invalidate_jules_sessions_cache()
 
-                # Resume sessions
-                heartbeat("producer:jules-sessions", f"iteration {iteration}")
-                await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
+                    # Resume sessions
+                    heartbeat("producer:jules-sessions", f"iteration {iteration}")
+                    await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
 
-                # Take issues away from Jules sessions that timed out without creating a PR
-                await asyncio.to_thread(self.handle_stale_jules_issue_sessions, repo_name)
+                    # Take issues away from Jules sessions that timed out without creating a PR
+                    await asyncio.to_thread(self.handle_stale_jules_issue_sessions, repo_name)
 
-                # Check and start recurrent Jules tasks
-                await self.check_and_start_recurrent_jules_tasks_async(repo_name)
+                    # Check and start recurrent Jules tasks
+                    await self.check_and_start_recurrent_jules_tasks_async(repo_name)
+                else:
+                    logger.info("Resumed loop early after PR merge/close; skipping Jules session enumeration")
+                    skip_jules_sessions = False
 
                 # Pull latest changes for monitored repository
                 try:
@@ -183,7 +243,9 @@ class AutomationEngine:
                         logger.info(f"No actionable candidates. Sleeping for {sleep_time} seconds...")
 
                     heartbeat("producer:sleep-no-candidates", f"{sleep_time}s")
-                    await asyncio.sleep(sleep_time)
+                    woken_early = await self._sleep_or_wake(sleep_time)
+                    if woken_early:
+                        skip_jules_sessions = True
                     continue
 
                 # Add candidates to queue
@@ -199,7 +261,9 @@ class AutomationEngine:
                 sleep_time = get_process_issues_sleep_time_from_config()
                 logger.info(f"Batch queued. Sleeping for {sleep_time} seconds...")
                 heartbeat("producer:sleep-after-batch", f"{sleep_time}s")
-                await asyncio.sleep(sleep_time)
+                woken_early = await self._sleep_or_wake(sleep_time)
+                if woken_early:
+                    skip_jules_sessions = True
 
             except asyncio.CancelledError:
                 logger.info("Producer loop cancelled")
@@ -228,6 +292,8 @@ class AutomationEngine:
                 # Check if the item is already closed before processing
                 if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
                     logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
+                    if candidate.type == "pr":
+                        self.notify_pr_merged_or_closed()
                     continue
 
                 get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
@@ -241,6 +307,10 @@ class AutomationEngine:
                 else:
                     logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{item_number}")
                     get_trace_logger().log("Worker", f"Worker {worker_id} successfully processed {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
+
+                # Check if PR was merged or closed during candidate processing
+                if self._check_if_pr_merged_or_closed(candidate, result):
+                    self.notify_pr_merged_or_closed()
 
                 # Save report after each processing (optional, but good for tracking)
                 # Converting result to the dict format expected by _save_report is annoying here
