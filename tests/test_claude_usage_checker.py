@@ -184,10 +184,10 @@ class TestClaudeUsageChecker:
             mock_refresh.assert_called_once_with("refresh-tok", scopes=None)
 
     def test_refresh_claude_token_via_cli_success(self):
-        """Test refresh_claude_token_via_cli successfully runs claude auth status and returns updated token."""
+        """Test refresh_claude_token_via_cli successfully runs claude and returns updated token."""
         mock_proc = MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = '{"loggedIn": true}'
+        mock_proc.stdout = "pong"
 
         future_ms = (10000.0) * 1000  # unexpired
         creds = {
@@ -204,18 +204,58 @@ class TestClaudeUsageChecker:
             token = refresh_claude_token_via_cli()
             assert token == "cli-refreshed-token"
             mock_run.assert_called_once_with(
-                ["claude", "auth", "status", "--json"],
+                ["claude", "-p", "ping", "--tools", "", "--no-session-persistence"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=15.0,
+                timeout=30.0,
+            )
+
+    def test_refresh_claude_token_via_cli_fallback_success(self):
+        """Test refresh_claude_token_via_cli falls back to minimal command if primary options fail."""
+        mock_fail = MagicMock()
+        mock_fail.returncode = 1
+        mock_fail.stderr = "unknown option --no-session-persistence"
+
+        mock_ok = MagicMock()
+        mock_ok.returncode = 0
+        mock_ok.stdout = "pong"
+
+        future_ms = (10000.0) * 1000  # unexpired
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": "cli-fallback-token",
+                "expiresAt": future_ms,
+            }
+        }
+        with (
+            patch("subprocess.run", side_effect=[mock_fail, mock_ok]) as mock_run,
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=creds),
+            patch("time.time", return_value=1000.0),
+        ):
+            token = refresh_claude_token_via_cli()
+            assert token == "cli-fallback-token"
+            assert mock_run.call_count == 2
+            mock_run.assert_any_call(
+                ["claude", "-p", "ping", "--tools", "", "--no-session-persistence"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30.0,
+            )
+            mock_run.assert_any_call(
+                ["claude", "-p", "ping"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30.0,
             )
 
     def test_refresh_claude_token_via_cli_failure(self):
-        """Test refresh_claude_token_via_cli returns None when claude auth status fails."""
+        """Test refresh_claude_token_via_cli returns None when all claude CLI commands fail."""
         mock_proc = MagicMock()
         mock_proc.returncode = 1
-        mock_proc.stderr = "Not logged in"
+        mock_proc.stderr = "Command not found"
 
         with patch("subprocess.run", return_value=mock_proc):
             token = refresh_claude_token_via_cli()
@@ -328,6 +368,60 @@ class TestClaudeUsageChecker:
             token = resolve_claude_oauth_token(None)
             assert token is None
             mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+
+    def test_resolve_token_proactive_refresh_when_no_refresh_token(self):
+        """Test resolve_claude_oauth_token still calls refresh_claude_access_token when refreshToken is None."""
+        expired_ms = (1000.0) * 1000  # in the past
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": "expired-tok",
+                "refreshToken": None,
+                "expiresAt": expired_ms,
+                "scopes": ["user:profile"],
+            }
+        }
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=creds),
+            patch("auto_coder.claude_usage_checker.refresh_claude_access_token", return_value="cli-refreshed-tok") as mock_refresh,
+        ):
+            token = resolve_claude_oauth_token(None)
+            assert token == "cli-refreshed-tok"
+            mock_refresh.assert_called_once_with(None, scopes=["user:profile"])
+
+    def test_fetch_claude_usage_data_handles_401_and_refresh_without_refresh_token(self):
+        """Test that HTTP 401 attempts token refresh even when credentials have no refreshToken."""
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value.read.return_value = json.dumps({"five_hour": {"utilization": 10.0}}).encode("utf-8")
+
+        http_401 = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)  # type: ignore
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise http_401
+            return mock_resp
+
+        with (
+            patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="old-token"),
+            patch(
+                "auto_coder.claude_usage_checker._read_credentials_file",
+                return_value={"claudeAiOauth": {"accessToken": "old-token"}},
+            ),
+            patch(
+                "auto_coder.claude_usage_checker.refresh_claude_access_token",
+                return_value="cli-refreshed-tok",
+            ) as mock_refresh,
+            patch(
+                "urllib.request.urlopen",
+                side_effect=side_effect,
+            ),
+        ):
+            result = fetch_claude_usage_data("old-token")
+            assert result == {"five_hour": {"utilization": 10.0}}
+            mock_refresh.assert_called_once_with(None, scopes=None)
 
     def test_refresh_claude_access_token_cooldown_skips_http_request(self):
         """Test refresh_claude_access_token honors cooldown after a failed HTTP refresh attempt."""

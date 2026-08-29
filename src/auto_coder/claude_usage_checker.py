@@ -152,45 +152,72 @@ def _update_credentials_file(
         logger.warning(f"Failed to update credentials file at {path}: {e}")
 
 
-def refresh_claude_token_via_cli(timeout: float = 15.0) -> Optional[str]:
-    """Run `claude auth status` once to trigger Claude CLI's internal token refresh mechanism.
+def refresh_claude_token_via_cli(timeout: float = 30.0) -> Optional[str]:
+    """Run Claude CLI with a lightweight ping prompt to trigger Claude CLI's internal OAuth token refresh mechanism.
+
+    Executes `claude -p "ping" --tools "" --no-session-persistence` (with fallback to `claude -p "ping"`)
+    so that Claude CLI performs its internal authentication refresh with Anthropic, updating
+    .credentials.json.
 
     Returns:
         The refreshed accessToken from .credentials.json if valid and unexpired, else None.
     """
     cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
     base_cmd = shlex.split(cmd_override) if cmd_override else ["claude"]
-    cmd = base_cmd + ["auth", "status", "--json"]
+    primary_cmd = base_cmd + ["-p", "ping", "--tools", "", "--no-session-persistence"]
+
+    def _check_refreshed_creds() -> Optional[str]:
+        creds = _read_credentials_file()
+        if creds:
+            oauth_info = creds.get("claudeAiOauth")
+            if isinstance(oauth_info, dict):
+                token = oauth_info.get("accessToken")
+                expires_at = oauth_info.get("expiresAt")
+                now_ms = time.time() * 1000
+                if token and isinstance(token, str) and token.strip():
+                    if not expires_at or (isinstance(expires_at, (int, float)) and now_ms < (expires_at - 60000)):
+                        logger.info("Successfully refreshed Claude OAuth token via Claude CLI")
+                        return token.strip()
+        return None
+
     try:
-        logger.debug(f"Attempting Claude OAuth token refresh via CLI: {' '.join(cmd)}")
+        logger.debug(f"Attempting Claude OAuth token refresh via CLI: {' '.join(primary_cmd)}")
         result = subprocess.run(
-            cmd,
+            primary_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
         )
         if result.returncode == 0:
-            creds = _read_credentials_file()
-            if creds:
-                oauth_info = creds.get("claudeAiOauth")
-                if isinstance(oauth_info, dict):
-                    token = oauth_info.get("accessToken")
-                    expires_at = oauth_info.get("expiresAt")
-                    now_ms = time.time() * 1000
-                    if token and isinstance(token, str):
-                        if not expires_at or (isinstance(expires_at, (int, float)) and now_ms < (expires_at - 60000)):
-                            logger.info("Successfully refreshed Claude OAuth token via Claude CLI")
-                            return token.strip()
+            token = _check_refreshed_creds()
+            if token:
+                return token
         else:
-            logger.debug(f"Claude CLI auth status returned code {result.returncode}: {result.stderr or result.stdout}")
+            logger.debug(f"Claude CLI token refresh command returned code {result.returncode}: {result.stderr or result.stdout}")
+            # Try fallback minimal command in case extra options are unsupported
+            fallback_cmd = base_cmd + ["-p", "ping"]
+            logger.debug(f"Retrying Claude OAuth token refresh via CLI fallback: {' '.join(fallback_cmd)}")
+            fb_result = subprocess.run(
+                fallback_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+            )
+            if fb_result.returncode == 0:
+                token = _check_refreshed_creds()
+                if token:
+                    return token
+            else:
+                logger.debug(f"Claude CLI fallback returned code {fb_result.returncode}: {fb_result.stderr or fb_result.stdout}")
     except (OSError, subprocess.SubprocessError) as e:
         logger.debug(f"Failed to run Claude CLI for token refresh: {e}")
     return None
 
 
 def refresh_claude_access_token(
-    refresh_token: str,
+    refresh_token: Optional[str] = None,
     scopes: Optional[Union[List[str], str]] = None,
     client_id: Optional[str] = None,
     try_cli_first: bool = True,
@@ -202,7 +229,12 @@ def refresh_claude_access_token(
     if try_cli_first:
         cli_token = refresh_claude_token_via_cli()
         if cli_token:
+            _last_refresh_failed_at = 0.0
             return cli_token
+
+    if not refresh_token:
+        logger.debug("No refresh token available for direct HTTP refresh")
+        return None
 
     now = time.time()
     if (now - _last_refresh_failed_at) < cooldown_seconds:
@@ -280,7 +312,7 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
             # Check if token is expired or expiring within 60 seconds (expiresAt is in milliseconds)
             if expires_at and isinstance(expires_at, (int, float)):
                 now_ms = time.time() * 1000
-                if now_ms >= (expires_at - 60000) and refresh_token:
+                if now_ms >= (expires_at - 60000):
                     logger.debug("Claude OAuth accessToken is expired or expiring soon; proactively refreshing")
                     refreshed = refresh_claude_access_token(refresh_token, scopes=scopes)
                     if refreshed:
@@ -343,7 +375,7 @@ def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) 
                 except Exception as fb_err:
                     logger.debug(f"Fallback OAuth token request failed: {fb_err}")
 
-        # Attempt token refresh from credentials file if refreshToken exists
+        # Attempt token refresh from credentials file
         creds = _read_credentials_file()
         rtoken = None
         scopes = None
@@ -352,24 +384,23 @@ def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) 
             if isinstance(oauth_info, dict):
                 rtoken = oauth_info.get("refreshToken")
                 scopes = oauth_info.get("scopes")
-        if rtoken and isinstance(rtoken, str):
-            refreshed_token = refresh_claude_access_token(rtoken, scopes=scopes)
-            if refreshed_token:
-                try:
-                    return _make_request(refreshed_token)
-                except urllib.error.HTTPError as retry_http_err:
-                    if retry_http_err.code == 429:
-                        return {
-                            "is_rate_limited": True,
-                            "http_status": 429,
-                            "error": {
-                                "type": "rate_limit_error",
-                                "message": f"Rate limit reached on refresh retry (HTTP 429): {retry_http_err.reason}",
-                            },
-                        }
-                    logger.debug(f"Retry after token refresh failed with HTTP {retry_http_err.code}: {retry_http_err}")
-                except Exception as retry_err:
-                    logger.debug(f"Retry after token refresh failed: {retry_err}")
+        refreshed_token = refresh_claude_access_token(rtoken, scopes=scopes)
+        if refreshed_token:
+            try:
+                return _make_request(refreshed_token)
+            except urllib.error.HTTPError as retry_http_err:
+                if retry_http_err.code == 429:
+                    return {
+                        "is_rate_limited": True,
+                        "http_status": 429,
+                        "error": {
+                            "type": "rate_limit_error",
+                            "message": f"Rate limit reached on refresh retry (HTTP 429): {retry_http_err.reason}",
+                        },
+                    }
+                logger.debug(f"Retry after token refresh failed with HTTP {retry_http_err.code}: {retry_http_err}")
+            except Exception as retry_err:
+                logger.debug(f"Retry after token refresh failed: {retry_err}")
         return None
 
     try:
