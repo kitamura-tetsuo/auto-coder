@@ -8,13 +8,16 @@ Reference: https://github.com/openai/codex
 import json
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
 from .codex_usage_checker import codex_cloud_quota_allows_task
+from .codex_wham_client import CodexWhamClient
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -46,6 +49,8 @@ class CodexCloudClient(CloudTaskClientBase):
         # Optional environment ID for Codex Cloud executions
         self.environment_id: Optional[str] = (self.config_backend and self.config_backend.environment_id) or os.environ.get("CODEX_CLOUD_ENV_ID") or os.environ.get("CODEX_ENVIRONMENT_ID")
         self.attempts = (self.config_backend and self.config_backend.attempts) or 1
+        self.wham_client: Optional[CodexWhamClient] = None
+        self.last_continued_at: Dict[str, float] = {}
 
     def _extract_task_id(self, output: str) -> Optional[str]:
         """Extract a task ID or task URL from Codex Cloud CLI output.
@@ -385,19 +390,50 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.warning(f"Failed to apply changes for Codex Cloud task {task_id}: {e}")
             return False
 
-    def continue_if_paused(self, task_id: str) -> bool:
-        """Attempt to continue a paused Codex Cloud task.
+    def continue_if_paused(self, task_id: str, prompt: Optional[str] = None) -> bool:
+        """Attempt to continue a paused or waiting Codex Cloud task via WHAM follow-up.
 
-        Codex Cloud currently has no supported CLI operation for sending an
-        additional message to an existing task.
+        Resolves the latest usable assistant turn ID and sends a continuation prompt
+        using the internal WHAM tasks backend API.
 
         Args:
-            task_id: The cloud task ID.
+            task_id: The Codex Cloud task ID.
+            prompt: Optional custom continuation prompt. If None, renders the default
+                    prompt from prompts.yaml (codex_cloud.continuation).
 
         Returns:
-            False as continuation/follow-up messaging is not supported in Codex Cloud CLI.
+            True if the continuation request was accepted, False otherwise.
         """
-        logger.debug(f"Codex Cloud does not support continuing/messaging existing task {task_id}")
+        if not task_id:
+            logger.warning("continue_if_paused called with empty task_id")
+            return False
+
+        # Anti-tight-loop cooldown (60 seconds)
+        now = time.time()
+        last_time = self.last_continued_at.get(task_id, 0.0)
+        if now - last_time < 60.0:
+            logger.info(f"Codex Cloud task '{task_id}' was continued {int(now - last_time)}s ago; skipping to avoid tight loops")
+            return False
+
+        wham = self.wham_client or CodexWhamClient()
+        turn_id = wham.resolve_latest_assistant_turn(task_id)
+        if not turn_id:
+            logger.warning(f"Codex Cloud task '{task_id}' cannot be resumed: no usable latest assistant turn found")
+            return False
+
+        if not prompt:
+            continuation_prompt = render_prompt("codex_cloud.continuation")
+        else:
+            continuation_prompt = prompt
+
+        success = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=continuation_prompt)
+        if success:
+            self.last_continued_at[task_id] = now
+            self.active_tasks[task_id] = continuation_prompt
+            logger.info(f"Successfully sent continuation follow-up to Codex Cloud task '{task_id}' (turn_id='{turn_id}')")
+            return True
+
+        logger.warning(f"Failed to send continuation follow-up to Codex Cloud task '{task_id}'")
         return False
 
     def stop_task(self, task_id: str) -> bool:

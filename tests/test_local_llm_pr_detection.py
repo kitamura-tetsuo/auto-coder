@@ -223,17 +223,17 @@ class TestHandlePrMergeFixLimitation:
         config = AutomationConfig()
         github_client = MagicMock()
 
-        codex_pr = {
+        non_local_pr = {
             "number": 102,
-            "body": "Implementation\n\nhttps://chatgpt.com/codex/tasks/task_abc123",
-            "user": {"login": "octocat"},
-            "head": {"ref": "feature-codex"},
+            "body": "Implementation by contributor",
+            "user": {"login": "external-dev"},
+            "head": {"ref": "feature-external"},
         }
 
         mock_cmd.return_value = MagicMock(success=True, stdout="main\n")
 
         with patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=False, ids=[1])), patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=DetailedChecksResult(success=False, failed_checks=["test_failed"])):
-            actions = _handle_pr_merge(github_client, "owner/repo", codex_pr, config, {})
+            actions = _handle_pr_merge(github_client, "owner/repo", non_local_pr, config, {})
             assert any("was not created by local LLM, skipping local LLM fixes" in a for a in actions)
             mock_fix.assert_not_called()
 

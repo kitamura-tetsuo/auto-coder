@@ -1356,3 +1356,9 @@ jules:
 
       Please proceed with analyzing and taking action on this issue now.
 
+
+codex_cloud:
+  continuation: |-
+    Review the current pull request status and continue working on it. If CI checks are failing, review the latest failure logs, fix the issues, push the fixes to the existing pull request, and continue until all CI checks pass. Also address any valid unresolved review comments.
+
+

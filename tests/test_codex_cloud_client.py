@@ -189,11 +189,76 @@ class TestCodexCloudClient:
                 cmd_args = mock_run.call_args[0][0]
                 assert cmd_args == ["codex", "cloud", "apply", "task_e_123"]
 
-    def test_continue_if_paused_returns_false(self, mock_backend_config):
-        """Test continue_if_paused returns False as continuation is unsupported by Codex Cloud CLI."""
+    def test_continue_if_paused_success(self, mock_backend_config):
+        """Test continue_if_paused resolves latest turn and sends default continuation prompt."""
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
             client = CodexCloudClient("codex-cloud")
+            mock_wham = MagicMock()
+            mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            mock_wham.send_follow_up.return_value = True
+            client.wham_client = mock_wham
+
+            success = client.continue_if_paused("task_e_123")
+            assert success is True
+            mock_wham.resolve_latest_assistant_turn.assert_called_once_with("task_e_123")
+            mock_wham.send_follow_up.assert_called_once()
+            call_kwargs = mock_wham.send_follow_up.call_args[1]
+            assert call_kwargs["task_id"] == "task_e_123"
+            assert call_kwargs["turn_id"] == "task_e_123~assttrn_1"
+            assert "Review the current pull request status and continue working on it" in call_kwargs["prompt"]
+
+    def test_continue_if_paused_custom_prompt(self, mock_backend_config):
+        """Test continue_if_paused with custom prompt."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            mock_wham = MagicMock()
+            mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            mock_wham.send_follow_up.return_value = True
+            client.wham_client = mock_wham
+
+            success = client.continue_if_paused("task_e_123", prompt="Custom fix request")
+            assert success is True
+            call_kwargs = mock_wham.send_follow_up.call_args[1]
+            assert call_kwargs["prompt"] == "Custom fix request"
+
+    def test_continue_if_paused_missing_turn_returns_false(self, mock_backend_config):
+        """Test continue_if_paused fails safely when no usable assistant turn exists."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            mock_wham = MagicMock()
+            mock_wham.resolve_latest_assistant_turn.return_value = None
+            client.wham_client = mock_wham
+
             assert client.continue_if_paused("task_e_123") is False
+            mock_wham.send_follow_up.assert_not_called()
+
+    def test_continue_if_paused_wham_failure_returns_false(self, mock_backend_config):
+        """Test continue_if_paused returns False when WHAM follow-up send fails."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            mock_wham = MagicMock()
+            mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            mock_wham.send_follow_up.return_value = False
+            client.wham_client = mock_wham
+
+            assert client.continue_if_paused("task_e_123") is False
+
+    def test_continue_if_paused_cooldown_prevents_tight_loop(self, mock_backend_config):
+        """Test anti-tight-loop cooldown prevents sending multiple follow-ups in quick succession."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            mock_wham = MagicMock()
+            mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            mock_wham.send_follow_up.return_value = True
+            client.wham_client = mock_wham
+
+            # First continuation succeeds
+            assert client.continue_if_paused("task_e_123") is True
+            assert mock_wham.send_follow_up.call_count == 1
+
+            # Second continuation immediately afterwards is blocked by cooldown
+            assert client.continue_if_paused("task_e_123") is False
+            assert mock_wham.send_follow_up.call_count == 1
 
     def test_stop_task(self, mock_backend_config):
         """Test stop_task removes task from active tasks."""

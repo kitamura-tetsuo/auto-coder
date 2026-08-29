@@ -109,12 +109,14 @@ The system supports extensive backend configuration options. Key fields include:
   - Behavior:
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
     - Before creating a Codex Cloud task, weekly usage is fetched with ChatGPT OAuth credentials from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). The task starts only when the remaining percentage is at least `(days_until_reset + 1) * 5`; missing credentials, authentication errors, and malformed responses safely route to the next backend. OpenAI API keys are never used for this request.
+    - Codex Cloud supports `continue_if_paused()` via the internal WHAM backend API (`POST https://chatgpt.com/backend-api/wham/tasks`). When CI checks fail on a Codex Cloud-created PR, auto-coder resolves the latest assistant turn ID via WHAM turn APIs and sends a follow-up continuation prompt using Codex OAuth credentials (never the OpenAI API key), allowing Codex to resume and fix the PR without spawning new tasks.
     - When `model` is configured, it is forwarded to Codex Cloud as a CLI configuration override.
     - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
     - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.
     - Saves the returned session ID in `cloud.csv`, comments on the issue with the session link, and retains the `@auto-coder` label.
     - Subsequent pull requests opened by Claude routines are tracked and linked to the issue.
   - Configuration file: "~/.auto-coder/llm_config.toml"
+
 
 - **Claude / Claude-Routine Usage Quota Pre-Check & Failover**:
   - Purpose: Automatically checks remaining rate limit and usage allowances before calling Claude or Claude-Routine backends.

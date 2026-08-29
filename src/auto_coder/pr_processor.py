@@ -1621,6 +1621,14 @@ def _handle_pr_merge(
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
             return actions
 
+        # Check if this is a Codex PR.
+        if _is_codex_pr(pr_data) and not already_on_pr_branch:
+            actions.append(f"PR #{pr_number} is a Codex-created PR, sending continuation request to Codex Cloud")
+            codex_feedback_actions = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+            actions.extend(codex_feedback_actions)
+            actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
+            return actions
+
         # Step 5: Skip to process PR if it is dependabot PR
         if _is_dependabot_pr(pr_data):
             actions.append(f"PR #{pr_number} is a dependabot PR, skipping fixes")
@@ -2840,6 +2848,95 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
             logger.error(error_msg)
         except Exception:
             pass  # Prevent logging failures from affecting the result
+        actions.append(error_msg)
+
+    return actions
+
+
+def _send_codex_cloud_error_feedback(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    failed_checks: List[Dict[str, Any]],
+    config: AutomationConfig,
+    github_client: Optional[Any] = None,
+) -> List[str]:
+    """Send continuation request via continue_if_paused to Codex Cloud for Codex-created PRs.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        failed_checks: List of failed GitHub Actions checks
+        config: AutomationConfig instance
+        github_client: Optional GitHub client instance
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    pr_number = pr_data["number"]
+
+    try:
+        # Resolve task ID from PR data
+        task_id = pr_data.get("_codex_task_id")
+        if not task_id:
+            task_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
+
+        if not task_id:
+            # Check CloudManager / linked issues
+            linked_issues = extract_linked_issues_from_pr_body(pr_data.get("body", ""))
+            for issue_num in linked_issues:
+                found_url = _find_codex_cloud_task_for_issue(repo_name, issue_num, github_client)
+                if found_url:
+                    m = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", found_url)
+                    if m:
+                        task_id = m.group(1)
+                        break
+
+        # If task_id is a full URL, extract the token
+        if task_id and "codex/tasks/" in task_id:
+            m = re.search(r"/tasks/(task_[a-zA-Z0-9_-]+)", task_id)
+            if m:
+                task_id = m.group(1)
+
+        if not task_id or not task_id.startswith("task_"):
+            actions.append(f"Cannot resume Codex Cloud task for PR #{pr_number}: no valid Codex task ID found")
+            logger.warning(f"No valid Codex task ID found in PR #{pr_number} data for continuation")
+            return actions
+
+        from .codex_cloud_client import CodexCloudClient
+
+        logger.info(f"Triggering continue_if_paused for Codex Cloud task '{task_id}' on PR #{pr_number}")
+        client = CodexCloudClient()
+        resumed = client.continue_if_paused(task_id)
+
+        if resumed:
+            get_trace_logger().log(
+                "Codex Cloud Feedback",
+                f"Resumed Codex Cloud task '{task_id}' for PR #{pr_number}",
+                item_type="pr",
+                item_number=pr_number,
+                details={"task_id": task_id},
+            )
+            actions.append(f"Sent continuation request to Codex Cloud task '{task_id}' for PR #{pr_number}")
+
+            # Post a comment on the PR if github_client is available
+            if github_client:
+                comment_body = "🤖 Auto-Coder: CI checks failed. I've requested continuation from Codex Cloud to resolve the failures. Please wait for updates."
+                try:
+                    github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
+                    actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Codex Cloud")
+                except Exception as e:
+                    error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
+                    logger.error(error_msg)
+                    actions.append(error_msg)
+            else:
+                actions.append(f"Skipped posting comment on PR #{pr_number}: no GitHub client available")
+        else:
+            actions.append(f"Codex Cloud task '{task_id}' could not be resumed for PR #{pr_number}")
+
+    except Exception as e:
+        error_msg = f"Error resuming Codex Cloud task for PR #{pr_number}: {e}"
+        logger.error(error_msg)
         actions.append(error_msg)
 
     return actions
