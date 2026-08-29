@@ -483,6 +483,14 @@ def run_adversarial_validation(
             summary=f"Oracle acquisition failed for PR #{pr_number}: no linked issue specification found to falsify against",
         )
 
+    # Diff accessibility check: If PR diff could not be retrieved, fail closed
+    if not context.pr_diff or not context.pr_diff.strip():
+        logger.warning(f"PR #{pr_number} has no accessible diff. Blocking merge.")
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary=f"Diff retrieval failed for PR #{pr_number}: no PR diff available for adversarial validation",
+        )
+
     # 2. Select strong backend manager
     if backend_manager is None:
         from .cli_helpers import create_adversarial_validation_backend_manager
@@ -522,42 +530,46 @@ def run_adversarial_validation(
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
         try:
             from .fix_to_pass_tests_runner import run_local_tests
+            from .test_result import TestResult
 
             test_res = run_local_tests(config, test_file=check_target if check_target != "all" else None)
-            test_success = bool(test_res.get("success"))
-            test_output = (str(test_res.get("stdout", "")) + "\n" + str(test_res.get("stderr", ""))).strip()
 
-            if not test_success:
-                logger.info(f"Dynamic check confirmed failure on {check_target}")
-                result.result = "NEEDS_FIX"
-                if not result.findings:
-                    result.findings.append(
-                        AdversarialValidationFinding(
-                            violated_requirement="Dynamic check failed",
-                            counterexample=f"Dynamic test execution failed on: {check_target}",
-                            test_gap="Confirmed failing scenario during dynamic validation",
-                            suggested_regression_scenario=f"Ensure {check_target} passes",
-                        )
-                    )
+            if isinstance(test_res, TestResult):
+                test_success = test_res.success
+                test_output = (test_res.output + "\n" + test_res.errors).strip()
+            elif isinstance(test_res, dict):
+                test_success = bool(test_res.get("success", False))
+                out = str(test_res.get("output") or test_res.get("stdout") or "")
+                err = str(test_res.get("errors") or test_res.get("stderr") or "")
+                test_output = (out + "\n" + err).strip()
             else:
-                # Dynamic check succeeded! Send execution result back to reviewer for final decision
-                logger.info(f"Dynamic check passed on {check_target}; querying reviewer with test output for final decision")
-                followup_prompt = render_prompt(
-                    "pr.adversarial_validation_followup",
-                    repo_name=repo_name,
-                    pr_number=pr_number,
-                    pr_title=context.pr_title,
-                    check_target=check_target,
-                    test_status="PASSED",
-                    test_success="True",
-                    test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
-                    original_summary=result.summary,
-                    linked_issues_context=context.issue_context,
-                    pr_diff=context.pr_diff,
-                )
-                with ProgressStage("Adversarial dynamic check follow-up"):
-                    followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager)
-                result = parse_adversarial_validation_response(followup_response)
+                test_success = False
+                test_output = str(test_res)
+
+            # Preserve original counterexamples and findings in the follow-up
+            original_findings_blocks = []
+            for idx, f in enumerate(result.findings, start=1):
+                original_findings_blocks.append(f"Finding {idx}:\n" f"- Violated Requirement: {f.violated_requirement}\n" f"- Suspected Counterexample: {f.counterexample}\n" f"- Test Gap: {f.test_gap}\n" f"- Suggested Regression Scenario: {f.suggested_regression_scenario}\n")
+            original_findings_str = "\n".join(original_findings_blocks) if original_findings_blocks else "(No initial findings recorded)"
+
+            logger.info(f"Dynamic check executed on {check_target} (success={test_success}); querying reviewer with raw test output for final decision")
+            followup_prompt = render_prompt(
+                "pr.adversarial_validation_followup",
+                repo_name=repo_name,
+                pr_number=pr_number,
+                pr_title=context.pr_title,
+                check_target=check_target,
+                test_status="PASSED" if test_success else "FAILED",
+                test_success="True" if test_success else "False",
+                test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
+                original_summary=result.summary,
+                original_findings=original_findings_str,
+                linked_issues_context=context.issue_context,
+                pr_diff=context.pr_diff,
+            )
+            with ProgressStage("Adversarial dynamic check follow-up"):
+                followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager)
+            result = parse_adversarial_validation_response(followup_response)
 
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")

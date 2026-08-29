@@ -409,6 +409,28 @@ class TestRunAdversarialValidation:
         assert "Oracle acquisition failed" in result.summary
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    def test_run_adversarial_validation_missing_diff_fails_closed_to_blocked(self, mock_build_ctx):
+        """Diff retrieval failure must block merge (BLOCKED) rather than validating against empty diff."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="",  # Diff unavailable
+            changed_tests=[],
+            issue_context="Issue specification: Must do X.",
+        )
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        assert not result.is_pass
+        assert result.is_blocked
+        assert result.result == "BLOCKED"
+        assert "Diff retrieval failed" in result.summary
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.cli_helpers.create_adversarial_validation_backend_manager", return_value=None)
     def test_run_adversarial_validation_no_backend_available_fails_closed(self, mock_mgr, mock_build_ctx):
         """No strong backend configured or available must fail closed to BLOCKED."""
@@ -434,7 +456,8 @@ class TestRunAdversarialValidation:
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
-    def test_run_adversarial_validation_dynamic_check_failure(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+    def test_run_adversarial_validation_dynamic_check_reads_output_and_errors_and_preserves_findings(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """Dynamic check follow-up must consume run_local_tests output/errors shape and preserve original counterexample."""
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -444,37 +467,28 @@ class TestRunAdversarialValidation:
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
         )
-        mock_run_prompt.return_value = '{"result": "INCONCLUSIVE", "summary": "Need dynamic run", "dynamic_check_requested": "tests/test_feature.py", "findings": []}'
-        mock_run_tests.return_value = {"success": False, "stderr": "AssertionError"}
-
-        config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
-
-        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
-        assert result.needs_fix
-        assert len(result.findings) == 1
-        assert "Dynamic check failed" in result.findings[0].violated_requirement
-
-    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
-    @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
-    def test_run_adversarial_validation_dynamic_check_success_queries_reviewer(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
-        """Passing dynamic check must be sent back to reviewer for final determination rather than auto-passing."""
-        mock_build_ctx.return_value = AdversarialValidationContext(
-            repo_name="owner/repo",
-            pr_number=100,
-            pr_title="Add feature",
-            pr_body="Fixes #1",
-            pr_diff="diff content",
-            changed_tests=["tests/test_feature.py"],
-            issue_context="Issue specification: Must do X.",
-        )
-        # First call: reviewer requests dynamic check. Second call: reviewer confirms PASS after reviewing test output.
         mock_run_prompt.side_effect = [
-            '{"result": "INCONCLUSIVE", "summary": "Requires running tests/test_feature.py to confirm", "dynamic_check_requested": "tests/test_feature.py", "findings": []}',
-            '{"result": "PASS", "summary": "Dynamic test execution confirmed specification compliance", "findings": []}',
+            """{
+  "result": "INCONCLUSIVE",
+  "summary": "Suspected defect in state reload",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [
+    {
+      "violated_requirement": "State reload invariant",
+      "counterexample": "Given state S, when reload occurs, then persisted timestamp is lost",
+      "test_gap": "Test does not check reload",
+      "suggested_regression_scenario": "Test state reload"
+    }
+  ]
+}""",
+            '{"result": "PASS", "summary": "Reviewer confirmed reload output satisfies spec", "findings": []}',
         ]
-        mock_run_tests.return_value = {"success": True, "stdout": "1 passed in 0.05s"}
+        # run_local_tests returns dict with output and errors
+        mock_run_tests.return_value = {
+            "success": True,
+            "output": "PASSED tests/test_feature.py::test_reload_scenario",
+            "errors": "DeprecationWarning: something deprecated",
+        }
 
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
@@ -482,7 +496,61 @@ class TestRunAdversarialValidation:
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert result.is_pass
         assert result.result == "PASS"
-        assert "confirmed specification compliance" in result.summary
+        assert mock_run_prompt.call_count == 2
+
+        # Verify the second prompt (followup) received the real test output and preserved the original counterexample
+        followup_call_prompt = mock_run_prompt.call_args_list[1][0][0]
+        assert "PASSED tests/test_feature.py::test_reload_scenario" in followup_call_prompt
+        assert "DeprecationWarning" in followup_call_prompt
+        assert "Given state S, when reload occurs, then persisted timestamp is lost" in followup_call_prompt
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_run_adversarial_validation_dynamic_check_failure_routes_to_reviewer(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """Failing dynamic check is sent to the reviewer for semantic determination against the counterexample."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.side_effect = [
+            """{
+  "result": "INCONCLUSIVE",
+  "summary": "Need dynamic verification",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": []
+}""",
+            """{
+  "result": "NEEDS_FIX",
+  "summary": "Test failure confirmed the suspected specification violation",
+  "findings": [
+    {
+      "violated_requirement": "State reload invariant",
+      "counterexample": "Given state S, produces X",
+      "test_gap": "Test failed on reload",
+      "suggested_regression_scenario": "Fix reload logic"
+    }
+  ]
+}""",
+        ]
+        mock_run_tests.return_value = {
+            "success": False,
+            "output": "FAILED tests/test_feature.py::test_reload",
+            "errors": "AssertionError: 1 != 2",
+        }
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
+        assert len(result.findings) == 1
         assert mock_run_prompt.call_count == 2
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")

@@ -567,8 +567,11 @@ pr:
     $test_output
     ```
 
-    Original validation findings/summary:
+    Original validation summary:
     $original_summary
+
+    Original suspected findings / counterexamples:
+    $original_findings
 
     Context:
     Repository: $repo_name
