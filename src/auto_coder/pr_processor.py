@@ -1020,7 +1020,8 @@ def _process_pr_for_merge(
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
             return processed_pr
 
-        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
+        head_sha = pr_data.get("head", {}).get("sha", "")
+        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client, expected_head_sha=head_sha or None)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
             # Retain label on successful merge
@@ -1653,7 +1654,14 @@ def _handle_pr_merge(
                 logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
                 return actions
 
-            merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
+            merge_result = _merge_pr(
+                repo_name,
+                pr_number,
+                analysis,
+                config,
+                github_client=github_client,
+                expected_head_sha=current_head_sha or head_sha or None,
+            )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
 
@@ -3068,6 +3076,7 @@ def _merge_pr(
     analysis: Dict[str, Any],
     config: AutomationConfig,
     github_client: Optional[Any] = None,
+    expected_head_sha: Optional[str] = None,
 ) -> bool:
     """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
 
@@ -3096,7 +3105,10 @@ def _merge_pr(
                 # GhApi method names for merge_method are: 'merge', 'squash', 'rebase'
                 # method argument from config (e.g. '--squash') needs to be stripped
                 api_method = method.replace("--", "")
-                result = api.pulls.merge(owner, repo, pr_number, merge_method=api_method)
+                kwargs: Dict[str, Any] = {"merge_method": api_method}
+                if expected_head_sha:
+                    kwargs["sha"] = expected_head_sha
+                result = api.pulls.merge(owner, repo, pr_number, **kwargs)
                 if result.get("merged"):
                     get_trace_logger().log("Merging", f"Successfully merged PR #{pr_number}", item_type="pr", item_number=pr_number, details={"method": method})
                     log_action(f"Successfully merged PR #{pr_number} (method: {method})")
@@ -3106,7 +3118,8 @@ def _merge_pr(
                 return False
             except Exception as e:
                 # 405/409 errors come here
-                logger.warning(f"Merge failed for PR #{pr_number} with method {method}: {e}")
+                sha_info = f" (expected SHA {expected_head_sha[:8]})" if expected_head_sha else ""
+                logger.warning(f"Merge failed for PR #{pr_number} with method {method}{sha_info}: {e}")
                 return False
 
         # Check if the PR is authored by a dependency bot and auto-approve it
