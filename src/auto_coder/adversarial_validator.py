@@ -233,9 +233,10 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
     Fail-closed policy:
     - Entire response schema must be strictly valid and consistent.
-    - Malformed findings (e.g. dict where list expected, list of strings, etc.) are converted to findings (NEEDS_FIX) or fail closed to ERROR.
-    - PASS plus any defect markers, counterexamples, or malformed findings can NEVER produce PASS.
-    - PASS is only returned for internally consistent, successfully parsed explicit PASS with 0 findings.
+    - PASS requires raw_result == "PASS" and findings to be strictly empty ([] or None).
+    - Any non-empty findings on PASS, or malformed/empty elements in findings, fail closed to ERROR.
+    - NEEDS_FIX requires at least one finding with a concrete counterexample; missing counterexamples are never synthesized.
+    - Malformed or unparseable schemas fail closed to ERROR.
 
     Args:
         response: Raw LLM response string
@@ -276,56 +277,83 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 raw_findings = parsed.get("findings")
                 findings: List[AdversarialValidationFinding] = []
 
-                if isinstance(raw_findings, list):
+                if raw_findings is not None:
+                    if not isinstance(raw_findings, list):
+                        # Findings must be a list; non-list types are malformed schema
+                        logger.warning("Malformed adversarial validation schema: findings is not a list; failing closed to ERROR")
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Malformed validator schema: findings must be a list",
+                            raw_response=response,
+                        )
+
                     for item in raw_findings:
-                        if isinstance(item, dict):
-                            finding = _extract_finding_from_dict(item)
-                            if finding:
-                                findings.append(finding)
-                        elif isinstance(item, str) and item.strip():
-                            findings.append(
-                                AdversarialValidationFinding(
-                                    violated_requirement="Specification requirement violated",
-                                    counterexample=item.strip(),
-                                    test_gap="Existing tests do not assert this condition",
-                                    suggested_regression_scenario="Add regression test covering counterexample",
-                                )
+                        if not isinstance(item, dict):
+                            # Non-dict item in findings list is malformed schema
+                            logger.warning(f"Malformed finding item (not a dict): {item}; failing closed to ERROR")
+                            return AdversarialValidationResult(
+                                result="ERROR",
+                                summary="Malformed finding entry in validator response",
+                                raw_response=response,
                             )
-                elif isinstance(raw_findings, dict):
-                    # Handle single finding dict placed in findings field
-                    finding = _extract_finding_from_dict(raw_findings)
-                    if finding:
-                        findings.append(finding)
-                elif isinstance(raw_findings, str) and raw_findings.strip():
-                    findings.append(
-                        AdversarialValidationFinding(
-                            violated_requirement="Specification requirement violated",
-                            counterexample=raw_findings.strip(),
-                            test_gap="Existing tests do not assert this condition",
-                            suggested_regression_scenario="Add regression test covering counterexample",
+
+                        if not item:
+                            # Empty dict in findings is malformed
+                            logger.warning("Malformed empty finding dict in validator response; failing closed to ERROR")
+                            return AdversarialValidationResult(
+                                result="ERROR",
+                                summary="Malformed empty finding entry in validator response",
+                                raw_response=response,
+                            )
+
+                        ce = str(item.get("counterexample", "")).strip()
+                        if not ce:
+                            # Counterexample is mandatory for a valid finding. Do NOT synthesize fake counterexamples.
+                            logger.warning("Finding missing mandatory counterexample; failing closed to ERROR")
+                            return AdversarialValidationResult(
+                                result="ERROR",
+                                summary="Reviewer reported a defect without providing the required concrete counterexample",
+                                raw_response=response,
+                            )
+
+                        req = str(item.get("violated_requirement", "")).strip() or "Specification requirement violated"
+                        gap = str(item.get("test_gap", "")).strip() or "Existing tests do not assert this condition"
+                        scen = str(item.get("suggested_regression_scenario", "")).strip() or "Add regression test covering counterexample"
+
+                        findings.append(
+                            AdversarialValidationFinding(
+                                violated_requirement=req,
+                                counterexample=ce,
+                                test_gap=gap,
+                                suggested_regression_scenario=scen,
+                            )
                         )
-                    )
-                elif raw_findings is not None and not isinstance(raw_findings, (list, dict, str)):
-                    # Malformed findings type with value -> treat as defect
-                    findings.append(
-                        AdversarialValidationFinding(
-                            violated_requirement="Specification requirement violated",
-                            counterexample=f"Malformed finding payload: {raw_findings}",
-                            test_gap="Existing tests do not assert this condition",
-                            suggested_regression_scenario="Add regression test",
-                        )
-                    )
 
                 # Determine result - enforce consistency and fail-closed
-                if findings:
-                    # Non-empty findings always require a fix, even if raw_result claimed PASS
-                    result_val = "NEEDS_FIX"
-                elif raw_result == "PASS":
+                if raw_result == "PASS":
+                    if findings or (raw_findings is not None and len(raw_findings) > 0):
+                        # Contradictory: PASS claimed but findings present -> fail closed to ERROR
+                        logger.warning("Contradictory validator response: PASS claimed with non-empty findings; failing closed to ERROR")
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Contradictory validator response: PASS claimed with non-empty findings",
+                            raw_response=response,
+                        )
                     result_val = "PASS"
-                elif raw_result in ("NEEDS_FIX", "INCONCLUSIVE", "BLOCKED"):
+                elif raw_result == "NEEDS_FIX":
+                    if not findings:
+                        # NEEDS_FIX claimed but no valid counterexample findings provided -> fail closed to ERROR
+                        logger.warning("NEEDS_FIX claimed without valid counterexample findings; failing closed to ERROR")
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexamples",
+                            raw_response=response,
+                        )
+                    result_val = "NEEDS_FIX"
+                elif raw_result in ("INCONCLUSIVE", "BLOCKED"):
                     result_val = raw_result
                 else:
-                    # Unrecognized result tag without findings -> fail-closed to ERROR
+                    # Unrecognized result tag -> fail-closed to ERROR
                     result_val = "ERROR"
 
                 return AdversarialValidationResult(
@@ -358,10 +386,17 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     has_text_findings = bool(violated_req or counterexample or test_gap or suggested_reg)
 
     if re.search(r"^\s*RESULT\s*:\s*NEEDS_FIX", cleaned_response, re.MULTILINE | re.IGNORECASE):
+        if not counterexample:
+            logger.warning("Text NEEDS_FIX missing COUNTEREXAMPLE; failing closed to ERROR")
+            return AdversarialValidationResult(
+                result="ERROR",
+                summary="Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexample",
+                raw_response=response,
+            )
         findings_list = [
             AdversarialValidationFinding(
                 violated_requirement=violated_req or "Specification requirement violated",
-                counterexample=counterexample or "Specification violation identified",
+                counterexample=counterexample,
                 test_gap=test_gap or "Existing tests do not assert this condition",
                 suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
             )
@@ -374,20 +409,11 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*PASS", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        # If RESULT: PASS is accompanied by defect markers, fail closed to NEEDS_FIX
+        # If RESULT: PASS is accompanied by defect markers, fail closed to ERROR
         if has_text_findings:
-            findings_list = [
-                AdversarialValidationFinding(
-                    violated_requirement=violated_req or "Specification requirement violated",
-                    counterexample=counterexample or "Specification violation identified",
-                    test_gap=test_gap or "Existing tests do not assert this condition",
-                    suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
-                )
-            ]
             return AdversarialValidationResult(
-                result="NEEDS_FIX",
-                summary="Contradictory validator output (PASS with defect markers); converted to NEEDS_FIX",
-                findings=findings_list,
+                result="ERROR",
+                summary="Contradictory validator output (PASS with defect markers); failing closed to ERROR",
                 raw_response=response,
             )
         return AdversarialValidationResult(
@@ -430,7 +456,7 @@ def run_adversarial_validation(
     - If issue context cannot be retrieved (missing oracle), blocks merge (BLOCKED).
     - If no strong backend is available, blocks merge (BLOCKED).
     - If dynamic check fails or cannot complete, blocks merge (NEEDS_FIX / BLOCKED).
-    - If dynamic check passes, resolves INCONCLUSIVE to PASS.
+    - If dynamic check passes, re-queries reviewer with test execution result for final decision.
 
     Args:
         repo_name: Repository name ('owner/repo')
@@ -498,7 +524,10 @@ def run_adversarial_validation(
             from .fix_to_pass_tests_runner import run_local_tests
 
             test_res = run_local_tests(config, test_file=check_target if check_target != "all" else None)
-            if not test_res.get("success"):
+            test_success = bool(test_res.get("success"))
+            test_output = (str(test_res.get("stdout", "")) + "\n" + str(test_res.get("stderr", ""))).strip()
+
+            if not test_success:
                 logger.info(f"Dynamic check confirmed failure on {check_target}")
                 result.result = "NEEDS_FIX"
                 if not result.findings:
@@ -511,11 +540,25 @@ def run_adversarial_validation(
                         )
                     )
             else:
-                # Dynamic check succeeded! Test passed and rejected the suspected counterexample.
-                logger.info(f"Dynamic check passed successfully on {check_target}")
-                if result.result in ("INCONCLUSIVE", "PASS") and not result.findings:
-                    result.result = "PASS"
-                    result.summary = f"Dynamic validation check '{check_target}' passed; suspected defect rejected by execution."
+                # Dynamic check succeeded! Send execution result back to reviewer for final decision
+                logger.info(f"Dynamic check passed on {check_target}; querying reviewer with test output for final decision")
+                followup_prompt = render_prompt(
+                    "pr.adversarial_validation_followup",
+                    repo_name=repo_name,
+                    pr_number=pr_number,
+                    pr_title=context.pr_title,
+                    check_target=check_target,
+                    test_status="PASSED",
+                    test_success="True",
+                    test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
+                    original_summary=result.summary,
+                    linked_issues_context=context.issue_context,
+                    pr_diff=context.pr_diff,
+                )
+                with ProgressStage("Adversarial dynamic check follow-up"):
+                    followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager)
+                result = parse_adversarial_validation_response(followup_response)
+
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
             # Inability to complete a requested check must be treated as non-pass (fail-closed)

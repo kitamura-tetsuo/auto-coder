@@ -556,6 +556,52 @@ pr:
     Changed/Added Tests:
     $changed_tests
 
+  adversarial_validation_followup: |-
+    You are an expert adversarial software correctness reviewer.
+    You previously evaluated PR #$pr_number in $repo_name and requested a focused dynamic check: '$check_target'.
+
+    Dynamic check execution result:
+    - Status: $test_status (Success: $test_success)
+    - Output:
+    ```
+    $test_output
+    ```
+
+    Original validation findings/summary:
+    $original_summary
+
+    Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+    $linked_issues_context
+
+    PR Changes (Diff):
+    $pr_diff
+
+    TASK:
+    Based on the execution results of the dynamic check:
+    1. Does the dynamic execution resolve or reject your suspected counterexample?
+    2. If the dynamic test ran and proved the implementation behaves correctly per the specification, return `result: "PASS"`.
+    3. If the dynamic test failed or revealed a defect, return `result: "NEEDS_FIX"` with the concrete counterexample.
+    4. If the test ran but did NOT test the suspected scenario, explain why and return `result: "INCONCLUSIVE"` or `result: "NEEDS_FIX"` if a concrete defect remains proven.
+
+    OUTPUT FORMAT:
+    Respond with JSON:
+    ```json
+    {
+      "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
+      "summary": "<Clear explanation of final determination>",
+      "findings": [
+        {
+          "violated_requirement": "<Exact specification requirement or invariant violated>",
+          "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
+          "test_gap": "<Why the test suite failed to catch this>",
+          "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
+        }
+      ]
+    }
+    ```
+
   adversarial_fix: |-
     You are operating directly in the repository workspace with write access and git CLIs available.
 

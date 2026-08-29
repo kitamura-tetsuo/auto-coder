@@ -85,7 +85,13 @@ def extract_associated_issue_numbers(
     pr_title: str = "",
     branch_name: str = "",
 ) -> List[int]:
-    """Extract associated issue numbers from PR body, title, branch name, or PR metadata.
+    """Extract associated issue numbers hierarchically from PR body, title, branch, or metadata.
+
+    Hierarchical selection priority:
+    1. Explicit linking keywords in PR body (Fixes #123, Closes #123, etc.)
+    2. Explicit issue references in PR title (e.g. 'feat: implement #123')
+    3. Branch name issue pattern (e.g. 'issue-123-fix', 'feat/issue-123')
+    4. General issue references in PR body (e.g. 'Issue #123')
 
     Args:
         pr_data: Optional PR data dictionary
@@ -94,7 +100,7 @@ def extract_associated_issue_numbers(
         branch_name: Branch name
 
     Returns:
-        List of candidate issue numbers
+        List of authoritative candidate issue numbers
     """
     body_text = pr_body
     title_text = pr_title
@@ -107,46 +113,64 @@ def extract_associated_issue_numbers(
         branch_text = branch_text or (pr_data.get("head", {}).get("ref") or "")
         current_pr_number = pr_data.get("number")
 
-    candidate_numbers: List[int] = []
-
-    # 1. Standard linking keywords in body
+    # Tier 1: Explicit linking keywords in body (authoritative)
     if body_text:
-        candidate_numbers.extend(extract_linked_issues_from_pr_body(body_text))
+        explicit_issues = extract_linked_issues_from_pr_body(body_text)
+        filtered_explicit = [n for n in explicit_issues if n != current_pr_number]
+        if filtered_explicit:
+            return filtered_explicit
 
-        # Additional fallback regex in body: e.g. "Issue #123", "issue-123", "Issue 123"
-        body_matches = re.finditer(r"(?:issue|task)[-_:\s]+#?(\d+)", body_text, re.IGNORECASE)
-        for m in body_matches:
-            candidate_numbers.append(int(m.group(1)))
-
-    # 2. Issue reference in PR title (e.g. "feat: implement #1567", "fix issue 123", "issue-456")
+    # Tier 2: Issue reference in PR title
     if title_text:
         title_matches = re.finditer(r"(?:issue|fix|fixes|close|closes|resolve|resolves)?[-_:\s]*#(\d+)", title_text, re.IGNORECASE)
-        for m in title_matches:
-            candidate_numbers.append(int(m.group(1)))
-
+        title_numbers = [int(m.group(1)) for m in title_matches]
         title_issue_matches = re.finditer(r"\bissue[-_\s]+(\d+)\b", title_text, re.IGNORECASE)
         for m in title_issue_matches:
-            candidate_numbers.append(int(m.group(1)))
+            title_numbers.append(int(m.group(1)))
 
-    # 3. Issue reference in branch name (e.g. "issue-1567-fix", "feat/issue-1567", "1567-new-feature")
+        filtered_title = []
+        seen_title = set()
+        for num in title_numbers:
+            if num != current_pr_number and num not in seen_title:
+                seen_title.add(num)
+                filtered_title.append(num)
+        if filtered_title:
+            return filtered_title
+
+    # Tier 3: Issue reference in branch name
     if branch_text:
+        branch_numbers = []
         branch_matches = re.finditer(r"(?:issue|feat|fix)[-_/](\d+)", branch_text, re.IGNORECASE)
         for m in branch_matches:
-            candidate_numbers.append(int(m.group(1)))
+            branch_numbers.append(int(m.group(1)))
 
         direct_branch_match = re.match(r"^(\d+)[-_]", branch_text)
         if direct_branch_match:
-            candidate_numbers.append(int(direct_branch_match.group(1)))
+            branch_numbers.append(int(direct_branch_match.group(1)))
 
-    # Deduplicate and filter out the PR's own number
-    seen = set()
-    unique_numbers: List[int] = []
-    for num in candidate_numbers:
-        if num != current_pr_number and num not in seen:
-            seen.add(num)
-            unique_numbers.append(num)
+        filtered_branch = []
+        seen_branch = set()
+        for num in branch_numbers:
+            if num != current_pr_number and num not in seen_branch:
+                seen_branch.add(num)
+                filtered_branch.append(num)
+        if filtered_branch:
+            return filtered_branch
 
-    return unique_numbers
+    # Tier 4: General issue reference fallback in body
+    if body_text:
+        body_matches = re.finditer(r"(?:issue|task)[-_:\s]+#?(\d+)", body_text, re.IGNORECASE)
+        body_fallback_numbers = []
+        seen_fallback = set()
+        for m in body_matches:
+            num = int(m.group(1))
+            if num != current_pr_number and num not in seen_fallback:
+                seen_fallback.add(num)
+                body_fallback_numbers.append(num)
+        if body_fallback_numbers:
+            return body_fallback_numbers
+
+    return []
 
 
 def get_linked_issues_context(
