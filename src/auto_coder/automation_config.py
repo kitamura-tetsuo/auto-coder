@@ -246,6 +246,7 @@ class AutomationConfig:
         object.__setattr__(self, "MERGE_METHOD", "--squash")
         object.__setattr__(self, "MERGE_AUTO", True)
         object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
+        object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", True)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
         object.__setattr__(self, "JULES_ONLY_MODE", False)
@@ -518,6 +519,13 @@ class AutomationConfig:
             except Exception as e:
                 logger.error(f"Failed to parse AUTO_CODER_PR_ALLOWLIST: {e}")
 
+        # Read adversarial validation flag from environment variable
+        adv_val_env = os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
+        if adv_val_env is not None:
+            enabled = adv_val_env.strip().lower() not in ("false", "0", "no")
+            object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", enabled)
+            logger.info(f"Loaded ENABLE_ADVERSARIAL_VALIDATION={enabled} from environment")
+
     def _merge_label_mappings(self, new_mappings: Dict[str, str]) -> None:
         """Merge new label mappings with existing ones.
 
@@ -649,6 +657,10 @@ class AutomationConfig:
     # Enable/disable auto-merge feature
     # Default: True (auto-merge enabled)
     AUTO_MERGE: bool = True
+
+    # Enable/disable strong-model adversarial validation step before merge
+    # Default: True (adversarial validation enabled)
+    ENABLE_ADVERSARIAL_VALIDATION: bool = True
 
     # Enable/disable auto-merge for Dependabot PRs
     # When IGNORE_DEPENDABOT_PRS is False and this is True:

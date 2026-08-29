@@ -207,6 +207,10 @@ class LLMBackendConfiguration:
     # Cloud backend configuration with high score (e.g., for difficult issues)
     backend_with_high_score_cloud: Optional[BackendConfig] = None
     backend_with_high_score_cloud_order: List[str] = field(default_factory=list)
+    # Backend configuration for strong-model adversarial validation
+    backend_adversarial_validation: Optional[BackendConfig] = None
+    backend_adversarial_validation_order: List[str] = field(default_factory=list)
+    backend_adversarial_validation_default: Optional[str] = None
     # Environment variable overrides
     env_prefix: str = "AUTO_CODER_"
     # Configuration file path - relative to user's home directory
@@ -384,8 +388,7 @@ class LLMBackendConfiguration:
                 find_backends_recursive(value, full_key)
 
         # Exclude reserved top-level keys from recursion
-        reserved_keys = {"backend", "backend_cloud", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score", "backend_with_high_score_cloud"}
-
+        reserved_keys = {"backend", "backend_cloud", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score", "backend_with_high_score_cloud", "backend_adversarial_validation"}
         # Create a dict of potential top-level backends to recurse
         potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
 
@@ -479,6 +482,18 @@ class LLMBackendConfiguration:
             fallback_name = backend_with_high_score_cloud_data.get("name", "backend_with_high_score_cloud")
             backend_with_high_score_cloud = parse_backend_config(fallback_name, backend_with_high_score_cloud_data)
 
+        # Parse backend_adversarial_validation section
+        backend_adversarial_validation_data = data.get("backend_adversarial_validation", {})
+        backend_adversarial_validation = None
+        backend_adversarial_validation_order = []
+        backend_adversarial_validation_default = None
+
+        if backend_adversarial_validation_data:
+            backend_adversarial_validation_order = backend_adversarial_validation_data.get("order", [])
+            backend_adversarial_validation_default = backend_adversarial_validation_data.get("default")
+            fallback_name = backend_adversarial_validation_data.get("name", "backend_adversarial_validation")
+            backend_adversarial_validation = parse_backend_config(fallback_name, backend_adversarial_validation_data)
+
         config = cls(
             backend_order=backend_order,
             default_backend=default_backend,
@@ -491,6 +506,9 @@ class LLMBackendConfiguration:
             backend_cloud_order=backend_cloud_order,
             backend_with_high_score_cloud=backend_with_high_score_cloud,
             backend_with_high_score_cloud_order=backend_with_high_score_cloud_order,
+            backend_adversarial_validation=backend_adversarial_validation,
+            backend_adversarial_validation_order=backend_adversarial_validation_order,
+            backend_adversarial_validation_default=backend_adversarial_validation_default,
             config_file_path=config_path or "~/.auto-coder/llm_config.toml",
         )
 
@@ -663,6 +681,49 @@ class LLMBackendConfiguration:
         elif self.backend_with_high_score_cloud_order:
             backend_with_high_score_cloud_data = {"order": self.backend_with_high_score_cloud_order}
 
+        # Prepare backend_adversarial_validation data
+        backend_adversarial_validation_data = {}
+        if self.backend_adversarial_validation:
+            config = self.backend_adversarial_validation
+            raw_config = {
+                "name": config.name,
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
+                "extra_args": config.extra_args,
+                "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "options_for_noedit": config.options_for_noedit,
+                "options_for_resume": config.options_for_resume,
+                "backend_type": config.backend_type,
+                "model_provider": config.model_provider,
+                "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
+                "usage_markers": config.usage_markers,
+                "options_explicitly_set": config.options_explicitly_set,
+                "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
+            }
+            backend_adversarial_validation_data = {k: v for k, v in raw_config.items() if v is not None}
+        elif self.backend_adversarial_validation_order:
+            backend_adversarial_validation_data = {"order": self.backend_adversarial_validation_order}
+            if self.backend_adversarial_validation_default:
+                backend_adversarial_validation_data["default"] = self.backend_adversarial_validation_default
+
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend}, "backends": backend_data}
 
         # Add backend_with_high_score section if configured
@@ -677,7 +738,9 @@ class LLMBackendConfiguration:
         if backend_with_high_score_cloud_data:
             data["backend_with_high_score_cloud"] = backend_with_high_score_cloud_data
 
-        # Write TOML file
+        # Add backend_adversarial_validation section if configured
+        if backend_adversarial_validation_data:
+            data["backend_adversarial_validation"] = backend_adversarial_validation_data
         # Use os.open to ensure file is created with 600 permissions
         try:
             fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -717,6 +780,8 @@ class LLMBackendConfiguration:
             return self.backend_with_high_score
         if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name == backend_name:
             return self.backend_with_high_score_cloud
+        if self.backend_adversarial_validation and self.backend_adversarial_validation.name == backend_name:
+            return self.backend_adversarial_validation
         return None
 
     def get_active_backends(self) -> List[str]:
@@ -817,6 +882,30 @@ class LLMBackendConfiguration:
         """
         if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.model:
             return self.backend_with_high_score_cloud.model
+        return None
+
+    def get_backend_adversarial_validation(self) -> Optional[BackendConfig]:
+        """Get the adversarial validation backend configuration."""
+        return self.backend_adversarial_validation
+
+    def get_adversarial_validation_backend_order(self) -> List[str]:
+        """Get the adversarial validation backend order."""
+        return list(self.backend_adversarial_validation_order)
+
+    def get_adversarial_validation_default_backend(self) -> Optional[str]:
+        """Get the default backend for adversarial validation."""
+        if self.backend_adversarial_validation_default:
+            return self.backend_adversarial_validation_default
+        if self.backend_adversarial_validation_order:
+            return self.backend_adversarial_validation_order[0]
+        if self.backend_adversarial_validation:
+            return self.backend_adversarial_validation.name
+        return None
+
+    def get_model_for_backend_adversarial_validation(self) -> Optional[str]:
+        """Get the model for the adversarial validation backend."""
+        if self.backend_adversarial_validation and self.backend_adversarial_validation.model:
+            return self.backend_adversarial_validation.model
         return None
 
     def get_model_for_backend(self, backend_name: str) -> Optional[str]:

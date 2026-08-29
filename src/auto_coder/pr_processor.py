@@ -22,6 +22,12 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
+from .adversarial_validator import (
+    AdversarialValidationFinding,
+    AdversarialValidationResult,
+    apply_adversarial_fix,
+    run_adversarial_validation,
+)
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, StaleJulesPRResult
 from .branch_manager import BranchManager
@@ -1530,6 +1536,29 @@ def _handle_pr_merge(
             if has_unresolved_review_threads(github_client, repo_name, pr_number):
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
+
+            # Strong-model adversarial validation step
+            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
+                val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                if val_result.needs_fix:
+                    actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
+                    logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
+
+                    # Check out PR branch and apply regression test + fix
+                    pr_branch_name = pr_data.get("head", {}).get("ref", "")
+                    prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
+                    if not prepare_ok:
+                        actions.append(f"Failed to prepare PR #{pr_number} branch for adversarial fix")
+                        return actions
+
+                    with BranchManager(pr_branch_name) as manager:
+                        actions.append(f"Checked out PR #{pr_number} branch for adversarial regression fix")
+                        fix_actions = apply_adversarial_fix(repo_name, pr_data, config, val_result, github_client=github_client)
+                        actions.extend(fix_actions)
+
+                    return actions
+                else:
+                    actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
 
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:

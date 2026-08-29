@@ -872,3 +872,31 @@ Recent configuration schema changes that require migration:
       - "Immediately pulls latest changes and checks for actionable candidates so unlocked issues or PRs can be picked up without waiting for the full sleep duration to elapse."
       - "Subsequent scheduled iterations (when sleep completes normally) continue to enumerate and check Jules sessions as usual."
 
+## Strong-Model Adversarial Validation Before PR Merge
+
+  adversarial_validation_before_merge:
+    description: "Executes a strong-model adversarial review on green PRs to falsify the implementation against the issue specification oracle and trigger corrective regression fixes before merge."
+    implementation: |
+      run_adversarial_validation, parse_adversarial_validation_response,
+      build_adversarial_validation_context, extract_changed_test_files,
+      apply_adversarial_fix in src/auto_coder/adversarial_validator.py,
+      _handle_pr_merge in src/auto_coder/pr_processor.py,
+      create_adversarial_validation_backend_manager in src/auto_coder/cli_helpers.py,
+      backend_adversarial_validation in src/auto_coder/llm_backend_config.py
+    configuration:
+      - "[backend_adversarial_validation]: Configures order / default / model for the strong adversarial reviewer in ~/.auto-coder/llm_config.toml."
+      - "ENABLE_ADVERSARIAL_VALIDATION (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var)."
+    behavior:
+      - "Runs after normal CI / GitHub Actions checks are green and before merge eligibility."
+      - "Treats the original issue specification and acceptance criteria as the test oracle (source of truth)."
+      - "Static-first review prioritizing the issue specification, PR diff, and changed/added tests without broad repository scanning."
+      - "Falsifies the implementation to find subtle requirement misunderstandings and false-success tests."
+      - "Requires concrete behavioral counterexamples: `Given state S, when action A occurs, then specification requires R, but implementation produces X, and tests pass because ...`."
+      - "Produces a machine-readable PASS or NEEDS_FIX decision."
+      - "When NEEDS_FIX is determined:"
+        - "Blocks PR merge."
+        - "Checks out the PR branch and triggers a corrective fix prompt with the concrete counterexamples on the same PR / branch."
+        - "Instructs the implementation agent to add a focused regression test reproducing the counterexample and fix the code."
+        - "Stages, commits, and pushes changes to GitHub to trigger a new CI run."
+        - "Re-runs adversarial validation once CI is green again; only merges after validation returns PASS."
+

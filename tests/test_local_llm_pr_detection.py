@@ -153,9 +153,13 @@ class TestHandlePrMergeFixLimitation:
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True})
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
-    def test_clean_pr_merges_regardless_of_pr_type(self, mock_merge, mock_mergeable, mock_exit_check):
+    def test_clean_pr_merges_regardless_of_pr_type(self, mock_merge, mock_val, mock_mergeable, mock_exit_check):
         """Any PR with passing CI checks is merged regardless of whether it's local or non-local."""
+        from auto_coder.adversarial_validator import AdversarialValidationResult
+
+        mock_val.return_value = AdversarialValidationResult(result="PASS", summary="Pass", findings=[])
         config = AutomationConfig()
         config.AUTO_MERGE = True
         github_client = MagicMock()
