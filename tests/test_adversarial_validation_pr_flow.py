@@ -105,6 +105,41 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_green_ci_with_adversarial_blocked_fails_closed_without_merging(
+        self,
+        mock_merge_pr,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """When validation produces a BLOCKED or INCONCLUSIVE status, merge must be blocked (fail-closed)."""
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="BLOCKED",
+            summary="Oracle acquisition failed",
+            findings=[],
+        )
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch"}}
+
+        client = MagicMock()
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_called_once()
+        mock_merge_pr.assert_not_called()
+        assert any("Adversarial validation blocked PR #100" in a for a in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
     def test_disabled_adversarial_validation_merges_directly(
         self,

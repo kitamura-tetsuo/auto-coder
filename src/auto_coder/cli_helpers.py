@@ -930,10 +930,6 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
     if high_score_cloud_mgr:
         return high_score_cloud_mgr
 
-    # Fallback to general default backend manager
-    try:
-        from .backend_manager import get_llm_backend_manager
-
-        return get_llm_backend_manager()
-    except Exception:
-        return None
+    # Do not silently fall back to the general implementation backend
+    # to preserve independence between implementation and validation.
+    return None

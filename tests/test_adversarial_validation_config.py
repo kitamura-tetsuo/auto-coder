@@ -109,3 +109,19 @@ class TestCreateAdversarialValidationBackendManager:
 
         mgr = create_adversarial_validation_backend_manager()
         assert mgr == mock_high_score_mgr
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.cli_helpers.create_high_score_backend_manager")
+    @patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager")
+    def test_returns_none_when_no_strong_backend_configured(self, mock_create_cloud, mock_create_high_score, mock_get_config):
+        """Must return None rather than silently falling back to general default backend."""
+        mock_config = MagicMock()
+        mock_config.get_adversarial_validation_backend_order.return_value = []
+        mock_config.get_backend_adversarial_validation.return_value = None
+        mock_get_config.return_value = mock_config
+
+        mock_create_high_score.return_value = None
+        mock_create_cloud.return_value = None
+
+        mgr = create_adversarial_validation_backend_manager()
+        assert mgr is None

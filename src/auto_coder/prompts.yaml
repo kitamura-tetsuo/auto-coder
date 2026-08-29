@@ -517,8 +517,9 @@ pr:
 
     ```json
     {
-      "result": "PASS" | "NEEDS_FIX",
+      "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
       "summary": "<Clear explanation of determination>",
+      "dynamic_check_requested": "<optional test file/path to execute if dynamic verification is required to confirm a suspected defect, or null>",
       "findings": [
         {
           "violated_requirement": "<The exact specification requirement or invariant violated>",
@@ -535,6 +536,7 @@ pr:
     {
       "result": "PASS",
       "summary": "Implementation satisfies all specification requirements and test coverage is complete.",
+      "dynamic_check_requested": null,
       "findings": []
     }
     ```
@@ -561,7 +563,7 @@ pr:
     Fix the PR by adding a regression test that reproduces the counterexample and fixing the implementation.
 
     STRICT DIRECTIVES:
-    1. First, add a focused regression test that exposes the counterexample identified below.
+    1. First, you MUST add or modify a focused regression test file under tests/ (e.g. tests/test_*.py) that explicitly reproduces and asserts against the counterexample identified below.
     2. Fix the implementation to satisfy the original specification and pass the new regression test as well as all existing tests.
     3. Do NOT delete or weaken valid tests.
     4. Do NOT post comments to the PR or issues.

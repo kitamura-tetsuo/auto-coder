@@ -1557,6 +1557,11 @@ def _handle_pr_merge(
                         actions.extend(fix_actions)
 
                     return actions
+                elif not val_result.is_pass:
+                    # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
+                    actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                    return actions
                 else:
                     actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
 
