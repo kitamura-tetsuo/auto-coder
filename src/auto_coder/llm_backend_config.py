@@ -16,10 +16,13 @@ import tomli_w
 
 from .logger_config import get_logger
 
-# Define required options for each backend type
-# These are options that must be present in the options list for the backend to work
+# Define implementation-required options for each backend type. Execution-policy
+# options belong at the invocation layer because they can differ between editable
+# and no-edit runs of the same backend.
 REQUIRED_OPTIONS_BY_BACKEND = {
-    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    # Codex does not require a bypass flag to function. In particular, no-edit
+    # runs remove dangerous flags and enforce their own read-only policy.
+    "codex": [],
     "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
     "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],

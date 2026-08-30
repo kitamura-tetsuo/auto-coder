@@ -449,19 +449,12 @@ options = ["--print", "--model", "[model_name]", "--settings", "[settings]"]
 
 ## Troubleshooting
 
-### Missing Required Options
+### Codex Execution Policy
 
-**Error**:
-```
-Backend 'codex' missing required option: --dangerously-bypass-approvals-and-sandbox
-```
-
-**Solution**:
-Add the required option to your configuration:
-```toml
-[backends.codex]
-options = ["--model", "[model_name]", "--json", "--dangerously-bypass-approvals-and-sandbox"]
-```
+`--dangerously-bypass-approvals-and-sandbox` is optional for Codex backends; it
+is not a configuration requirement. Use it only for editable workflows that
+explicitly need that policy. No-edit executions remove dangerous/YOLO flags and
+enforce `--sandbox read-only` with `--ask-for-approval never` automatically.
 
 ### Placeholder Not Replaced
 
