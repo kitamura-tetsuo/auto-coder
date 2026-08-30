@@ -88,7 +88,7 @@ class CodexClient(LLMClientBase):
 
         # Validate required options for this backend
         if self.config_backend:
-            required_errors = self.config_backend.validate_required_options()
+            required_errors = self.config_backend.validate_required_options(is_noedit=use_noedit_options)
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)

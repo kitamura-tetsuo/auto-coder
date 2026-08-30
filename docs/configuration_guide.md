@@ -451,10 +451,12 @@ options = ["--print", "--model", "[model_name]", "--settings", "[settings]"]
 
 ### Codex Execution Policy
 
-`--dangerously-bypass-approvals-and-sandbox` is optional for Codex backends; it
-is not a configuration requirement. Use it only for editable workflows that
-explicitly need that policy. No-edit executions remove dangerous/YOLO flags and
-enforce `--sandbox read-only` with `--ask-for-approval never` automatically.
+No-edit Codex backends do not require
+`--dangerously-bypass-approvals-and-sandbox`: no-edit executions remove
+dangerous/YOLO flags and enforce `--sandbox read-only` with
+`--ask-for-approval never` automatically. Editable Codex backends must instead
+configure an unattended policy: the bypass flag, `--full-auto`, or both
+`--sandbox workspace-write` and `--ask-for-approval never`.
 
 ### Placeholder Not Replaced
 

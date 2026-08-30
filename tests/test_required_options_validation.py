@@ -22,21 +22,26 @@ class TestRequiredOptionsValidation:
         assert "jules" in REQUIRED_OPTIONS_BY_BACKEND
         assert "codex-mcp" in REQUIRED_OPTIONS_BY_BACKEND
 
-    def test_codex_backend_does_not_require_dangerous_bypass_option(self):
-        """Codex execution policy must not be misclassified as a required option."""
-        config = BackendConfig(name="codex")
+    def test_codex_noedit_backend_does_not_require_dangerous_bypass_option(self):
+        """No-edit Codex execution uses its enforced client-side safety policy."""
+        config = BackendConfig(name="codex-review", backend_type="codex")
         config.options = []
-        errors = config.validate_required_options()
+        errors = config.validate_required_options(is_noedit=True)
         assert errors == []
 
-    def test_backend_config_validate_required_options_still_checks_other_backends(self):
-        """Removing the Codex policy requirement must not disable validation globally."""
-        config = BackendConfig(name="qwen")
+    def test_codex_editable_backend_requires_unattended_policy(self):
+        """Editable Codex runs may not silently fall back to interactive approval."""
+        config = BackendConfig(name="codex-review", backend_type="codex")
         config.options = []
         errors = config.validate_required_options()
         assert len(errors) == 1
-        assert "missing required option: -y" in errors[0]
-        assert "Add to [backends.qwen].options" in errors[0]
+        assert "missing an unattended editable Codex execution policy" in errors[0]
+
+    def test_codex_editable_backend_accepts_explicit_noninteractive_policy(self):
+        """Editable Codex validation accepts a safe alternative to the bypass flag."""
+        config = BackendConfig(name="codex-review", backend_type="codex")
+        config.options = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+        assert config.validate_required_options() == []
 
     def test_backend_config_validate_required_options_uses_backend_type(self):
         """Test validation uses backend_type when available."""
@@ -107,11 +112,12 @@ class TestRequiredOptionsValidation:
         from src.auto_coder.cli_commands_config import config_validate
 
         config = LLMBackendConfiguration()
-        # Codex has no implementation-required command line options.
+        # The default Codex backend is editable and therefore needs an unattended policy.
         config.get_backend_config("codex").options = []
 
         errors = config_validate(config)
-        assert errors == []
+        assert len(errors) == 1
+        assert "missing an unattended editable Codex execution policy" in errors[0]
 
     def test_config_validate_passes_with_all_required_options(self):
         """Test that config_validate passes when all required options are present."""
@@ -138,13 +144,15 @@ class TestConfigValidateCommand:
 
         config_file = tmp_path / "llm_config.toml"
         data = {
-            "backend": {"default": "codex", "order": ["codex"]},
+            "backend": {"default": "qwen", "order": ["qwen"]},
+            "backend_for_noedit": {"default": "codex", "order": ["codex"]},
             "backends": {
                 "codex": {
                     "enabled": True,
                     "model": "codex",
                     "options": [],
-                }
+                },
+                "qwen": {"enabled": True, "options": ["-y"]},
             },
         }
         with open(config_file, "wb") as fh:
@@ -270,19 +278,21 @@ class TestConfigValidateCommand:
         assert "Configuration is valid" in result.output
 
     def test_config_validate_custom_backend_with_backend_type(self, tmp_path):
-        """Custom Codex aliases have the same policy-neutral validation."""
+        """A custom Codex alias used only for no-edit work needs no bypass flag."""
         import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
-            "backend": {"default": "my-custom-codex", "order": ["my-custom-codex"]},
+            "backend": {"default": "qwen", "order": ["qwen"]},
+            "backend_for_noedit": {"default": "my-custom-codex", "order": ["my-custom-codex"]},
             "backends": {
                 "my-custom-codex": {
                     "enabled": True,
                     "model": "custom-codex-model",
                     "backend_type": "codex",
                     "options": [],
-                }
+                },
+                "qwen": {"enabled": True, "options": ["-y"]},
             },
         }
         with open(config_file, "wb") as fh:

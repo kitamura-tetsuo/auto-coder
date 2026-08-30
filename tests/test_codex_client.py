@@ -79,7 +79,7 @@ class TestCodexClient:
         )
         mock_get_config.return_value.get_backend_config.return_value = backend
 
-        client = CodexClient(backend_name="codex-review")
+        client = CodexClient(backend_name="codex-review", use_noedit_options=True)
         mock_warning.assert_not_called()
 
         client._run_llm_cli("review this", is_noedit=True)
@@ -98,9 +98,19 @@ class TestCodexClient:
         ]
         assert "--dangerously-bypass-approvals-and-sandbox" not in noedit_cmd
 
-        client._run_llm_cli("implement this", is_noedit=False)
-        editable_cmd = mock_run_command.call_args.args[0]
-        assert editable_cmd == ["codex", "exec", "--json", "implement this"]
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.logger.warning")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_custom_codex_alias_editable_requires_unattended_policy(self, mock_get_config, mock_warning, mock_run):
+        """A custom Codex alias warns when an editable policy would be interactive."""
+        mock_run.return_value.returncode = 0
+        backend = BackendConfig(name="codex-review", backend_type="codex", options=["exec", "--json"])
+        mock_get_config.return_value.get_backend_config.return_value = backend
+
+        CodexClient(backend_name="codex-review")
+
+        warning = mock_warning.call_args.args[0]
+        assert "missing an unattended editable Codex execution policy" in warning
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
