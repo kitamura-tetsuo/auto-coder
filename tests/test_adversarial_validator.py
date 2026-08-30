@@ -53,6 +53,11 @@ diff --git a/src/service_test.py b/src/service_test.py
         assert extract_changed_test_files("") == []
         assert extract_all_changed_files("") == []
 
+    def test_git_quoted_utf8_path_is_decoded_into_complete_manifest(self):
+        quoted_diff = r'diff --git "a/src/\346\227\245\346\234\254.py" "b/src/\346\227\245\346\234\254.py"' "\n" r'--- "a/src/\346\227\245\346\234\254.py"' "\n" r'+++ "b/src/\346\227\245\346\234\254.py"' "\n" "+changed = True\n"
+
+        assert extract_all_changed_files(quoted_diff) == ["src/日本.py"]
+
 
 class TestParseAdversarialValidationResponse:
     """Test parsing of strong-model validation output."""
@@ -410,6 +415,17 @@ class TestBuildAdversarialValidationContext:
         assert "+reject_unsafe_input()" in evidence
         assert "### Changed file: tests/test_security.py" in evidence
         assert "+assert_rejected()" in evidence
+
+    def test_quoted_path_before_normal_file_is_never_omitted_or_reported_complete(self):
+        quoted_patch = r'diff --git "a/src/\346\227\245\346\234\254.py" "b/src/\346\227\245\346\234\254.py"' "\n" r'--- "a/src/\346\227\245\346\234\254.py"' "\n" r'+++ "b/src/\346\227\245\346\234\254.py"' "\n" + "+quoted_change\n" * 100
+        normal_patch = "diff --git a/src/normal.py b/src/normal.py\n+++ b/src/normal.py\n+normal_change\n"
+
+        evidence, unverified = build_file_aware_diff(quoted_patch + normal_patch, 300)
+
+        assert "### Changed file: src/日本.py" in evidence
+        assert "### Changed file: src/normal.py" in evidence
+        assert "src/日本.py" in unverified
+        assert "Coverage: PARTIAL / UNVERIFIED" in evidence
 
     @pytest.mark.parametrize("late_file_first", [False, True])
     def test_violating_file_evidence_is_order_independent(self, late_file_first):

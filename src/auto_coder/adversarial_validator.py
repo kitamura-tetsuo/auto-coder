@@ -6,6 +6,7 @@ using a strong model to catch false-success PRs before merge.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -160,6 +161,59 @@ def is_test_file(file_path: str) -> bool:
     return path_lower.startswith("tests/") or path_lower.startswith("test/") or "/tests/" in path_lower or "/test/" in path_lower or path_lower.endswith("_test.py") or path_lower.endswith("test.py") or ".spec." in path_lower or ".test." in path_lower
 
 
+def _decode_git_path_token(token: str) -> str:
+    """Decode a pathname token emitted with Git's ``core.quotePath`` format."""
+    value = token.strip()
+    if not (value.startswith('"') and value.endswith('"')):
+        return value
+
+    try:
+        decoded = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        return value
+    if not isinstance(decoded, str):
+        return value
+
+    # Git writes non-ASCII UTF-8 bytes as C-style octal escapes. Python's
+    # string-literal decoder maps each byte to the same Latin-1 code point, so
+    # convert those code points back to bytes before decoding the pathname.
+    try:
+        return decoded.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return decoded
+
+
+def _extract_diff_header_path(line: str) -> Optional[str]:
+    """Extract the destination path from quoted or unquoted ``diff --git`` headers."""
+    prefix = "diff --git "
+    if not line.startswith(prefix):
+        return None
+    payload = line[len(prefix) :]
+
+    if payload.startswith('"'):
+        quoted_pair = re.fullmatch(r'("(?:\\.|[^"\\])*")\s+("(?:\\.|[^"\\])*")', payload)
+        if not quoted_pair:
+            return None
+        destination = _decode_git_path_token(quoted_pair.group(2))
+    else:
+        unquoted_pair = re.fullmatch(r"a/(.*)\s+b/(.*)", payload)
+        if not unquoted_pair:
+            return None
+        destination = f"b/{unquoted_pair.group(2)}"
+
+    return destination[2:] if destination.startswith("b/") else destination
+
+
+def _extract_marker_path(line: str) -> Optional[str]:
+    """Extract a path from a unified diff ``+++`` destination marker."""
+    if not line.startswith("+++ "):
+        return None
+    destination = _decode_git_path_token(line[4:])
+    if destination == "/dev/null":
+        return None
+    return destination[2:] if destination.startswith("b/") else destination
+
+
 def extract_all_changed_files(pr_diff: str) -> List[str]:
     """Extract all modified or added file paths from a unified diff string.
 
@@ -172,21 +226,15 @@ def extract_all_changed_files(pr_diff: str) -> List[str]:
     if not pr_diff:
         return []
 
-    files: List[str] = []
-    patterns = [
-        r"^\+\+\+\s+b/(.*)$",
-        r"^diff\s+--git\s+a/.*?\s+b/(.*)$",
-    ]
+    files = [file_patch.path for file_patch in _split_diff_by_file(pr_diff)]
+    if files:
+        return files
 
+    # Retain support for a bare unified patch without ``diff --git`` headers.
     for line in pr_diff.splitlines():
-        for pattern in patterns:
-            match = re.match(pattern, line)
-            if match:
-                path = match.group(1).strip()
-                if path.startswith("dev/null"):
-                    continue
-                if path not in files:
-                    files.append(path)
+        path = _extract_marker_path(line)
+        if path and path not in files:
+            files.append(path)
 
     return files
 
@@ -206,12 +254,13 @@ def extract_changed_test_files(pr_diff: str) -> List[str]:
 
 def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
     """Split a unified Git diff into ordered per-file patches."""
-    matches = list(re.finditer(r"^diff --git\s+a/.*?\s+b/(.*)$", pr_diff, re.MULTILINE))
+    matches = list(re.finditer(r"^diff --git .*$", pr_diff, re.MULTILINE))
     evidence: List[FileDiffEvidence] = []
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(pr_diff)
         patch = pr_diff[match.start() : end].rstrip()
-        path = match.group(1).strip()
+        path = next((_extract_marker_path(line) for line in patch.splitlines() if _extract_marker_path(line)), None)
+        path = path or _extract_diff_header_path(match.group(0)) or f"<unparsed diff header at character {match.start()}>"
         evidence.append(FileDiffEvidence(path=path, patch=patch, original_size=len(patch)))
     return evidence
 
