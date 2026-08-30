@@ -203,7 +203,20 @@ class CodexClient(LLMClientBase):
                         continue
                     sanitized_cmd.append(cmd[i])
                     i += 1
-                sanitized_cmd.extend(["--sandbox", "read-only", "--ask-for-approval", "never", "-c", 'approvals_reviewer="user"'])
+
+                noedit_flags = [
+                    "--sandbox",
+                    "read-only",
+                    "--ask-for-approval",
+                    "never",
+                    "-c",
+                    'approvals_reviewer="user"',
+                ]
+                if "exec" in sanitized_cmd:
+                    exec_idx = sanitized_cmd.index("exec")
+                    sanitized_cmd = sanitized_cmd[:exec_idx] + noedit_flags + sanitized_cmd[exec_idx:]
+                else:
+                    sanitized_cmd.extend(noedit_flags)
                 cmd = sanitized_cmd
 
             cmd.append(escaped_prompt)

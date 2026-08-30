@@ -196,6 +196,7 @@ The system supports extensive backend configuration options. Key fields include:
     - If not specified or empty, falls back to using `options` value
     - Allows different configurations for editing vs message generation
     - The system automatically adds required flags for each backend type during execution
+    - When `is_noedit=True` in CodexClient, enforced global safety options (`--sandbox read-only`, `--ask-for-approval never`, `-c approvals_reviewer="user"`) strictly precede the `exec` subcommand so that global options are placed in the global-option section of the command rather than as unrecognized subcommand arguments.
     - Useful for optimizing different operations with different option sets
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Backward compatible with existing configurations
