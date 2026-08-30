@@ -1924,6 +1924,9 @@ def _handle_pr_merge(
             )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
+                from .reviewer_session_registry import ReviewerSessionRegistry
+
+                ReviewerSessionRegistry().remove_pr(repo_name, pr_number)
 
                 # Clean up old PRs if this is a Jules PR with a session ID
                 try:

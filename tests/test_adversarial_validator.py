@@ -1412,11 +1412,24 @@ class TestRunAdversarialValidation:
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
 
-        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "NEEDS_FIX",
+  "summary": "Test failure confirmed the suspected specification violation",
+  "findings": [{
+    "violated_requirement": "State reload invariant",
+    "counterexample": "Given state S, produces X",
+    "test_gap": "Test failed on reload",
+    "suggested_regression_scenario": "Fix reload logic"
+  }]
+}"""
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
         assert result.needs_fix
         assert result.result == "NEEDS_FIX"
         assert len(result.findings) == 1
-        assert mock_run_prompt.call_count == 2
+        assert mock_run_prompt.call_count == 1
+        manager.continue_session.assert_called_once()
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

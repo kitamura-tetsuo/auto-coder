@@ -19,6 +19,7 @@ from .issue_context import get_linked_issues_context
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
@@ -1111,6 +1112,7 @@ def run_adversarial_validation(
     config: AutomationConfig,
     github_client: Optional[Any] = None,
     backend_manager: Optional[BackendManager] = None,
+    session_registry: Optional[ReviewerSessionRegistry] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -1134,6 +1136,7 @@ def run_adversarial_validation(
         AdversarialValidationResult indicating validation outcome
     """
     pr_number = pr_data.get("number", 0)
+    head_sha = str((pr_data.get("head") or {}).get("sha") or pr_data.get("head_sha") or "")
     logger.info(f"Starting strong-model adversarial validation for PR #{pr_number}")
     get_trace_logger().log("Adversarial Validation", f"Validating PR #{pr_number} against specification", item_type="pr", item_number=pr_number)
 
@@ -1217,9 +1220,45 @@ def run_adversarial_validation(
         requirement_manifest=requirement_manifest,
     )
 
+    registry = session_registry or ReviewerSessionRegistry()
+
+    def manager_identity() -> tuple[str, str, str]:
+        identity = backend_manager.get_current_backend_identity()
+        if not isinstance(identity, tuple) or len(identity) != 3:
+            return "", "", ""
+        return str(identity[0]), str(identity[1]), str(identity[2])
+
+    backend_name, backend_type, model_name = manager_identity()
+    stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
+    if stored_session and stored_session.last_head_sha != head_sha:
+        prompt = render_prompt(
+            "pr.adversarial_validation_rereview",
+            previous_head_sha=stored_session.last_head_sha,
+            current_head_sha=head_sha,
+            review_prompt=prompt,
+        )
+
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):
-        response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
+        if stored_session:
+            response = backend_manager.continue_session(stored_session.session_id, prompt, is_noedit=True)
+        else:
+            response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
+
+    used_backend, used_type, used_model = manager_identity()
+    provider_session_id = getattr(backend_manager, "_last_session_id", None)
+    if used_backend and isinstance(provider_session_id, str) and provider_session_id:
+        registry.save(
+            ReviewerSession(
+                repository=repo_name,
+                pr_number=pr_number,
+                backend_name=used_backend,
+                backend_type=used_type,
+                model_name=used_model,
+                session_id=provider_session_id,
+                last_head_sha=head_sha,
+            )
+        )
 
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
@@ -1271,7 +1310,13 @@ def run_adversarial_validation(
                 requirement_manifest=requirement_manifest,
             )
             with ProgressStage("Adversarial dynamic check follow-up"):
-                followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager, is_noedit=True)
+                followup_session_id = getattr(backend_manager, "_last_session_id", None)
+                if isinstance(followup_session_id, str) and followup_session_id:
+                    followup_response = backend_manager.continue_session(followup_session_id, followup_prompt, is_noedit=True)
+                else:
+                    # Never guess an implicit last session. A provider that did not
+                    # expose an ID cannot safely retain dynamic-check context.
+                    raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
             result = _apply_coverage_and_verdict_precedence(result, context)

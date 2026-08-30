@@ -459,53 +459,6 @@ class BackendManager(LLMBackendManagerBase):
         """
         return self._provider_manager.get_current_provider_name(backend_name)
 
-    def _inject_resume_options_if_applicable(self, backend_name: str, cli: Any) -> None:
-        """
-        Inject resume options into the client if conditions are met.
-
-        Checks if:
-        1. Current backend matches the last backend
-        2. A session ID is available from the last execution
-        3. The backend has resume options configured
-
-        If all conditions are met, prepares resume options by replacing
-        "[sessionId]" placeholder with the actual session ID and sets
-        them as extra args for the next execution.
-
-        Args:
-            backend_name: Name of the current backend
-            cli: Client instance to inject resume options into
-        """
-        # Check if current backend matches the last backend
-        if backend_name != self._last_backend:
-            logger.debug(f"Backend changed from {self._last_backend} to {backend_name}, not resuming")
-            return
-
-        # Check if we have a session ID from the last execution
-        if self._last_session_id is None:
-            logger.debug("No session ID available, cannot resume")
-            return
-
-        # Get backend configuration
-        backend_config = get_llm_config().get_backend_config(backend_name)
-        if not backend_config or not backend_config.options_for_resume:
-            logger.debug(f"No resume options configured for backend '{backend_name}'")
-            return
-
-        # Create a copy of options_for_resume and replace [sessionId] placeholder
-        resume_options = []
-        for option in backend_config.options_for_resume:
-            # Replace [sessionId] placeholder with actual session ID
-            replaced_option = option.replace("[sessionId]", self._last_session_id)
-            resume_options.append(replaced_option)
-
-        # Set the resume options as extra args for the next execution
-        if hasattr(cli, "set_extra_args"):
-            cli.set_extra_args(resume_options)
-            logger.info(f"Injected resume options for backend '{backend_name}': {resume_options}")
-        else:
-            logger.warning(f"Client for backend '{backend_name}' does not support set_extra_args")
-
     # ---------- Direct Compatibility Methods ----------
     @log_calls  # type: ignore[misc]
     def _run_llm_cli(self, prompt: str) -> str:
@@ -556,9 +509,6 @@ class BackendManager(LLMBackendManagerBase):
                 attempts += 1
                 continue
 
-            # Inject resume options if conditions are met
-            self._inject_resume_options_if_applicable(backend_name, cli)
-
             try:
                 result = self._execute_backend_with_providers(
                     backend_name=backend_name,
@@ -603,6 +553,36 @@ class BackendManager(LLMBackendManagerBase):
         if last_error:
             raise last_error
         raise RuntimeError("No backend available to run prompt")
+
+    def get_current_backend_identity(self) -> Tuple[str, str, str]:
+        """Return the current alias, resolved type, and model for registry keys."""
+        backend_name = self._current_backend_name()
+        client = self._get_or_create_client(backend_name)
+        config = get_llm_config().get_backend_config(backend_name)
+        backend_type = str(getattr(config, "backend_type", "") or backend_name)
+        return backend_name, backend_type, str(getattr(client, "model_name", "") or "")
+
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        """Ask the current client to continue an opaque session explicitly.
+
+        Session-specific rejection falls back to a new session on the same
+        backend. Usage failures retain ordinary backend rotation behavior.
+        """
+        backend_name = self._current_backend_name()
+        client = self._get_or_create_client(backend_name)
+        self._is_noedit = is_noedit
+        try:
+            output = client.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+            self._last_backend = backend_name
+            self._last_model = getattr(client, "model_name", None)
+            self._last_session_id = client.get_last_session_id() or session_id
+            return str(output)
+        except AutoCoderUsageLimitError:
+            self.switch_to_next_backend()
+            return self._run_llm_cli(prompt)
+        except (ValueError, RuntimeError, NotImplementedError) as exc:
+            logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
+            return self._run_llm_cli(prompt)
 
     def run_prompt(self, prompt: str) -> str:
         """
