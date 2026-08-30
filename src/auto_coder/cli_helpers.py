@@ -863,3 +863,99 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
         logger = get_logger(__name__)
         logger.error(f"Failed to create backend manager for cloud backend: {e}")
         return None
+
+
+READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex"}
+
+
+def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any] = None) -> Optional[str]:
+    """Resolve the underlying backend_type for a backend name/alias."""
+    if not backend_name or not isinstance(backend_name, str):
+        return None
+    if config is not None:
+        try:
+            b_cfg = config.get_backend_config(backend_name)
+            if b_cfg and isinstance(getattr(b_cfg, "backend_type", None), str) and b_cfg.backend_type:
+                return b_cfg.backend_type
+        except Exception:
+            pass
+    return backend_name
+
+
+def is_read_only_review_capable_backend(backend_name: Optional[str], config: Optional[Any] = None) -> bool:
+    """Check if a backend provides synchronous read-only review execution based on resolved backend_type.
+
+    Only local clients with proven client-level read-only sandboxing (Claude, Codex)
+    are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules),
+    MCP variants without sandbox sanitization (CodexMCP), and non-enforcing clients are rejected.
+    """
+    effective_type = get_effective_backend_type(backend_name, config)
+    if not effective_type or not isinstance(effective_type, str):
+        return False
+    normalized = effective_type.strip().lower().replace("-", "_")
+    return normalized in READ_ONLY_REVIEW_CAPABLE_TYPES
+
+
+def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
+    """Create a BackendManager for the adversarial validation configuration.
+
+    Uses dedicated [backend_adversarial_validation] settings if configured,
+    or falls back to high-score order, filtering strictly for backends whose effective
+    backend_type supports synchronous read-only review capability.
+    Cloud coding backends, codex-mcp, and write-capable clients are rejected.
+
+    Returns:
+        BackendManager instance configured strictly with read-only capable models,
+        or None if no read-only capable backend is available (fail-closed).
+    """
+    config = get_llm_config()
+    if config is None:
+        return None
+
+    adv_order = config.get_adversarial_validation_backend_order()
+    adv_config = config.get_backend_adversarial_validation()
+
+    candidates: List[str] = []
+    if adv_order and isinstance(adv_order, list):
+        candidates = adv_order
+    elif adv_config and hasattr(adv_config, "name"):
+        candidates = [adv_config.name]
+    else:
+        # Fallback to high score order if defined
+        if hasattr(config, "get_high_score_backend_order"):
+            candidates = config.get_high_score_backend_order() or []
+        elif hasattr(config, "backend_with_high_score_order"):
+            high_score_order = getattr(config, "backend_with_high_score_order", None)
+            if isinstance(high_score_order, list):
+                candidates = high_score_order
+
+    if not candidates:
+        return None
+
+    # Strict capability filter on EVERY backend in the candidate list
+    capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
+
+    if not capable_backends:
+        return None
+
+    from .quota_selector import rank_high_score_backends_by_quota
+
+    selected_backends = rank_high_score_backends_by_quota(capable_backends, config) or capable_backends
+    primary_backend = selected_backends[0]
+
+    models = {}
+    for backend_name in selected_backends:
+        models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+
+    try:
+        return build_backend_manager(
+            selected_backends=selected_backends,
+            primary_backend=primary_backend,
+            models=models,
+        )
+    except Exception as e:
+        from .logger_config import get_logger
+
+        logger = get_logger(__name__)
+        logger.warning(f"Failed to create backend manager for adversarial validation: {e}")
+        return None

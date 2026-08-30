@@ -45,7 +45,8 @@ class TestPRPromptGeneration:
         assert "Linked Issues Context:" in prompt
         assert "Linked Issue #123: Bug in login" in prompt
         assert "Issue Description:\nLogin fails with 500 error" in prompt
-        assert "Parent Issue #456 (of #123): Epic: Auth Refactor" in prompt
+        assert "Parent Issue #456 (CONTEXT ONLY - Parent of #123): Epic: Auth Refactor" in prompt
+        assert "SCOPE BOUNDARY NOTICE" in prompt
         assert "Parent Issue Description:\nRefactor the entire auth system" in prompt
 
     @patch("src.auto_coder.pr_processor.get_commit_log")

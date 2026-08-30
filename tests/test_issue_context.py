@@ -40,7 +40,8 @@ def test_get_linked_issues_context():
 
     assert "Linked Issue #100: Bug Fix" in context
     assert "Issue Description:\nFixing a bug." in context
-    assert "Parent Issue #99 (of #100): Epic Feature" in context
+    assert "Parent Issue #99 (CONTEXT ONLY - Parent of #100): Epic Feature" in context
+    assert "SCOPE BOUNDARY NOTICE" in context
     assert "Parent Issue Description:\nThis is a big feature." in context
     assert context.startswith("Linked Issues Context:")
 

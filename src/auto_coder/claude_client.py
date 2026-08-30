@@ -340,6 +340,31 @@ class ClaudeClient(LLMClientBase):
                     # Can't extend, skip extra args
                     pass
 
+            # When is_noedit is True, enforce Claude read-only/plan mode client-level invariant
+            # against the final combined command (including configured options and extra args):
+            # - Remove all existing --permission-mode <value> pairs and --permission-mode=*
+            # - Remove --dangerously-skip-permissions
+            # - Force exactly --permission-mode plan
+            if is_noedit:
+                sanitized_cmd = []
+                i = 0
+                while i < len(cmd):
+                    opt_str = str(cmd[i])
+                    if opt_str == "--permission-mode":
+                        # Skip flag and its subsequent value
+                        i += 2
+                        continue
+                    if opt_str.startswith("--permission-mode="):
+                        i += 1
+                        continue
+                    if opt_str == "--dangerously-skip-permissions":
+                        i += 1
+                        continue
+                    sanitized_cmd.append(cmd[i])
+                    i += 1
+                sanitized_cmd.extend(["--permission-mode", "plan"])
+                cmd = sanitized_cmd
+
             cmd.append(escaped_prompt)
 
             # Prepare environment variables for subprocess

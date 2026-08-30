@@ -481,6 +481,159 @@ pr:
     Example format:
     {"title": "Fix authentication bug in login flow", "body": "Updated the authentication logic to properly handle edge cases when users have special characters in their passwords. This resolves the login failures reported in the issue."}
 
+  adversarial_validation: |-
+    You are an expert adversarial software correctness reviewer with deep domain expertise.
+    Your mission: Falsify the implementation of this Pull Request against the original issue specification and acceptance criteria.
+
+    CRITICAL MINDSET:
+    - All existing tests are currently passing (green CI), but that is NOT proof of correctness.
+    - Assume the implementation may contain subtle requirement misunderstandings, unhandled edge cases, or false-success tests.
+    - Treat the issue specification and acceptance criteria as the absolute source of truth (test oracle).
+    - SCOPE BOUNDARY: If linked issue context includes a parent issue, the parent issue is for background context only. Judge correctness and acceptance criteria STRICTLY against the linked child issue/specification. Do NOT report missing features from a parent issue as violations if they are outside the child issue scope.
+    - The implementation code and changed tests are evidence to inspect, NOT definitions of correct behavior.
+    - Do NOT perform a general style review, cosmetic suggestions, or subjective refactoring review.
+    - Focus strictly on behavioral correctness, invariant preservation, and specification coverage.
+
+    INVESTIGATION QUESTIONS:
+    1. Is there any requirement in the issue/spec that is not actually guaranteed by the implementation?
+    2. Can a plausible incorrect behavior still pass the current test suite?
+    3. Do the implementation and its tests share the same mistaken interpretation of a requirement?
+    4. Is the visible result correct while the underlying persisted state, data model, or side effects are wrong?
+    5. Does the implementation only work for the common path while failing for valid edge cases covered by the spec?
+    6. Has the implementation introduced an unintended regression or violated an invariant?
+    7. Is the implementation satisfying the symptom via a workaround/special case rather than implementing the true intended behavior?
+
+    COUNTEREXAMPLE STANDARD:
+    Every blocking finding MUST include a concrete behavioral counterexample in this form:
+    Given state S,
+    when action A occurs,
+    then the specification requires R,
+    but the current implementation can produce X,
+    and the current tests would still pass because ...
+
+    A finding without a plausible behavioral counterexample must not block the PR.
+
+    OUTPUT FORMAT:
+    Respond with a JSON object in the following format:
+
+    ```json
+    {
+      "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
+      "summary": "<Clear explanation of determination>",
+      "dynamic_check_requested": "<optional test file/path to execute if dynamic verification is required to confirm a suspected defect, or null>",
+      "findings": [
+        {
+          "violated_requirement": "<The exact specification requirement or invariant violated>",
+          "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
+          "test_gap": "<Why the existing test suite fails to detect this defect>",
+          "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
+        }
+      ]
+    }
+    ```
+
+    If no concrete specification violation or meaningful missing oracle can be identified, return:
+    ```json
+    {
+      "result": "PASS",
+      "summary": "Implementation satisfies all specification requirements and test coverage is complete.",
+      "dynamic_check_requested": null,
+      "findings": []
+    }
+    ```
+
+    Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body
+
+    $linked_issues_context
+
+    PR Changes (Diff):
+    $pr_diff
+
+    Changed/Added Tests:
+    $changed_tests
+
+  adversarial_validation_followup: |-
+    You are an expert adversarial software correctness reviewer.
+    You previously evaluated PR #$pr_number in $repo_name and requested a focused dynamic check: '$check_target'.
+
+    Dynamic check execution result:
+    - Status: $test_status (Success: $test_success)
+    - Output:
+    ```
+    $test_output
+    ```
+
+    Original validation summary:
+    $original_summary
+
+    Original suspected findings / counterexamples:
+    $original_findings
+
+    Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+    $linked_issues_context
+
+    PR Changes (Diff):
+    $pr_diff
+
+    TASK:
+    Based on the execution results of the dynamic check:
+    1. Does the dynamic execution resolve or reject your suspected counterexample?
+    2. If the dynamic test ran and proved the implementation behaves correctly per the specification, return `result: "PASS"`.
+    3. If the dynamic test failed or revealed a defect, return `result: "NEEDS_FIX"` with the concrete counterexample.
+    4. If the test ran but did NOT test the suspected scenario, explain why and return `result: "INCONCLUSIVE"` or `result: "NEEDS_FIX"` if a concrete defect remains proven.
+
+    OUTPUT FORMAT:
+    Respond with JSON:
+    ```json
+    {
+      "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
+      "summary": "<Clear explanation of final determination>",
+      "findings": [
+        {
+          "violated_requirement": "<Exact specification requirement or invariant violated>",
+          "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
+          "test_gap": "<Why the test suite failed to catch this>",
+          "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
+        }
+      ]
+    }
+    ```
+
+  adversarial_fix: |-
+    You are operating directly in the repository workspace with write access and git CLIs available.
+
+    Task: A strong-model adversarial validator found that this PR passed tests but violates the original issue specification.
+    Fix the PR by adding a regression test that reproduces the counterexample and fixing the implementation.
+
+    STRICT DIRECTIVES:
+    1. First, you MUST add or modify a focused regression test file under tests/ (e.g. tests/test_*.py) that explicitly reproduces and asserts against the counterexample identified below.
+    2. Fix the implementation to satisfy the original specification and pass the new regression test as well as all existing tests.
+    3. Do NOT delete or weaken valid tests.
+    4. Do NOT post comments to the PR or issues.
+    5. Do NOT run git commit/push; the system will handle committing.
+
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of regression test added and implementation fix applied>
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    $linked_issues_context
+
+    Adversarial Validation Findings (Violations to Fix):
+    $adversarial_findings
+
+    Commit History Since Branch Creation:
+    $commit_log
+
 issue:
   action: |-
     Analyze the following GitHub issue and take appropriate actions:

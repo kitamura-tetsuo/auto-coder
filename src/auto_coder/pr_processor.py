@@ -3,10 +3,12 @@ PR processing functionality for Auto-Coder automation engine.
 """
 
 import asyncio
+import contextlib
 import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +24,12 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
+from .adversarial_validator import (
+    AdversarialValidationFinding,
+    AdversarialValidationResult,
+    apply_adversarial_fix,
+    run_adversarial_validation,
+)
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, StaleJulesPRResult
 from .branch_manager import BranchManager
@@ -1012,7 +1020,8 @@ def _process_pr_for_merge(
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
             return processed_pr
 
-        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
+        head_sha = pr_data.get("head", {}).get("sha", "")
+        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client, expected_head_sha=head_sha or None)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
             # Retain label on successful merge
@@ -1391,6 +1400,49 @@ def _process_pr_jules_mode(
         return actions
 
 
+@contextlib.contextmanager
+def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional[str] = None):
+    """Context manager that creates an isolated, detached git worktree at head_sha for side-effect-free validation.
+
+    Ensures that:
+    1. Static repository inspection and dynamic test checks run against the exact CI-green head_sha.
+    2. The caller's workspace, current branch, index, and untracked files remain completely untouched.
+    3. No branch switching, pulling, pushing, resetting, or cleaning occurs on the main workspace during validation.
+    """
+    if not head_sha:
+        raise ValueError(f"head_sha is required for isolated worktree validation of PR #{pr_number}")
+
+    worktree_dir = None
+    original_cwd = os.getcwd()
+    try:
+        # Ensure the exact head_sha / pull head is fetched locally
+        cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head"])
+
+        worktree_dir = tempfile.mkdtemp(prefix=f"auto_coder_val_pr{pr_number}_")
+
+        add_res = cmd.run_command(["git", "worktree", "add", "--detach", worktree_dir, head_sha])
+        if not add_res.success:
+            logger.warning(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
+            raise RuntimeError(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
+
+        os.chdir(worktree_dir)
+        logger.info(f"Entered isolated detached worktree at {head_sha[:8]} ({worktree_dir}) for validation")
+        yield worktree_dir
+    finally:
+        try:
+            os.chdir(original_cwd)
+        except Exception as e:
+            logger.error(f"Failed to restore original cwd '{original_cwd}': {e}")
+
+        if worktree_dir and os.path.exists(worktree_dir):
+            try:
+                cmd.run_command(["git", "worktree", "remove", "--force", worktree_dir])
+                shutil.rmtree(worktree_dir, ignore_errors=True)
+                logger.debug(f"Cleaned up isolated worktree at {worktree_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up worktree dir {worktree_dir}: {e}")
+
+
 def _handle_pr_merge(
     github_client: Any,
     repo_name: str,
@@ -1511,6 +1563,8 @@ def _handle_pr_merge(
                         _active_monitors.discard(pr_number)
                     raise e
 
+            return actions
+
         # Step 4: If GitHub Actions passed, merge directly
         if github_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
@@ -1531,7 +1585,83 @@ def _handle_pr_merge(
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
 
-            merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
+            # Strong-model adversarial validation step
+            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
+                head_sha = pr_data.get("head", {}).get("sha", "")
+                pr_branch_name = pr_data.get("head", {}).get("ref", "")
+
+                if not head_sha:
+                    actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
+                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
+                    return actions
+
+                try:
+                    with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
+                        actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                        val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                except Exception as e:
+                    logger.error(f"Failed during isolated adversarial validation for PR #{pr_number}: {e}")
+                    val_result = AdversarialValidationResult(
+                        result="BLOCKED",
+                        summary=f"Isolated validation environment creation failed: {e}",
+                    )
+
+                if val_result.needs_fix:
+                    actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
+                    logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
+
+                    # Transition to implementation/fix phase on the actual PR branch
+                    prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
+                    if not prepare_ok:
+                        actions.append(f"Failed to prepare PR #{pr_number} branch for adversarial fix")
+                        return actions
+
+                    with BranchManager(pr_branch_name) as manager:
+                        actions.append(f"Checked out PR #{pr_number} branch for adversarial regression fix")
+                        fix_actions = apply_adversarial_fix(repo_name, pr_data, config, val_result, github_client=github_client)
+                        actions.extend(fix_actions)
+                    return actions
+
+                elif not val_result.is_pass:
+                    # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
+                    actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                    return actions
+                else:
+                    actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
+
+            # Verify remote PR head SHA hasn't changed since CI check and validation before merging (fail-closed)
+            head_sha = pr_data.get("head", {}).get("sha", "")
+            if not github_client:
+                actions.append(f"Cannot verify remote head SHA for PR #{pr_number} without github_client; merge aborted.")
+                logger.warning(f"No github_client available to verify PR #{pr_number} head SHA; aborting merge.")
+                return actions
+
+            try:
+                current_pr = github_client.get_pull_request(repo_name, pr_number)
+                current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+                if not current_head_sha:
+                    actions.append(f"Could not determine current remote head SHA for PR #{pr_number}; merge aborted.")
+                    logger.warning(f"Could not determine remote head SHA for PR #{pr_number}; aborting merge.")
+                    return actions
+
+                if head_sha and current_head_sha != head_sha:
+                    actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
+                    logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
+                    return actions
+            except Exception as e:
+                actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
+                logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
+                return actions
+
+            merge_result = _merge_pr(
+                repo_name,
+                pr_number,
+                analysis,
+                config,
+                github_client=github_client,
+                expected_head_sha=current_head_sha or head_sha or None,
+            )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
 
@@ -1539,9 +1669,7 @@ def _handle_pr_merge(
                 try:
                     is_jules = _is_jules_pr(pr_data)
                     session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
-
                     if is_jules and session_id:
-                        # Find other open PRs that reference this session ID
                         # Note: search_issues returns Issue objects which can be PRs
                         query = f'repo:{repo_name} is:pr is:open "Session ID: {session_id}"'
                         logger.info(f"Searching for other PRs with session ID {session_id} to clean up: {query}")
@@ -2948,6 +3076,7 @@ def _merge_pr(
     analysis: Dict[str, Any],
     config: AutomationConfig,
     github_client: Optional[Any] = None,
+    expected_head_sha: Optional[str] = None,
 ) -> bool:
     """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
 
@@ -2976,7 +3105,10 @@ def _merge_pr(
                 # GhApi method names for merge_method are: 'merge', 'squash', 'rebase'
                 # method argument from config (e.g. '--squash') needs to be stripped
                 api_method = method.replace("--", "")
-                result = api.pulls.merge(owner, repo, pr_number, merge_method=api_method)
+                kwargs: Dict[str, Any] = {"merge_method": api_method}
+                if expected_head_sha:
+                    kwargs["sha"] = expected_head_sha
+                result = api.pulls.merge(owner, repo, pr_number, **kwargs)
                 if result.get("merged"):
                     get_trace_logger().log("Merging", f"Successfully merged PR #{pr_number}", item_type="pr", item_number=pr_number, details={"method": method})
                     log_action(f"Successfully merged PR #{pr_number} (method: {method})")
@@ -2986,7 +3118,8 @@ def _merge_pr(
                 return False
             except Exception as e:
                 # 405/409 errors come here
-                logger.warning(f"Merge failed for PR #{pr_number} with method {method}: {e}")
+                sha_info = f" (expected SHA {expected_head_sha[:8]})" if expected_head_sha else ""
+                logger.warning(f"Merge failed for PR #{pr_number} with method {method}{sha_info}: {e}")
                 return False
 
         # Check if the PR is authored by a dependency bot and auto-approve it
