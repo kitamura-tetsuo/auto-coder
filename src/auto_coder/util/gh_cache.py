@@ -761,6 +761,13 @@ class GitHubClient:
             logger.warning(f"Failed to get issue #{issue_number} from {repo_name}: {e}")
             return None
 
+    @retry_with_backoff()
+    def get_issue_strict(self, repo_name: str, issue_number: int) -> Any:
+        """Get an issue while preserving REST lookup failures for merge gates."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        return api.issues.get(owner, repo, issue_number)
+
     def get_issue_details(self, issue: Any) -> Dict[str, Any]:
         """Extract detailed information from an issue.
 
@@ -1006,8 +1013,19 @@ class GitHubClient:
             List of ReviewThread dataclass instances.
         """
         try:
-            owner, repo = repo_name.split("/")
-            query = """
+            return self._get_pr_review_threads(repo_name, pr_number)
+        except Exception as e:
+            logger.error(f"Failed to get review threads for PR #{pr_number}: {e}")
+            return []
+
+    def get_pr_review_threads_strict(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
+        """Get review threads while preserving lookup failures for merge gates."""
+        return self._get_pr_review_threads(repo_name, pr_number)
+
+    def _get_pr_review_threads(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
+        """Fetch all review-thread pages and let callers decide error handling."""
+        owner, repo = repo_name.split("/")
+        query = """
             query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
@@ -1025,49 +1043,45 @@ class GitHubClient:
                 }
               }
             }
-            """
+        """
 
-            threads: List[ReviewThread] = []
-            cursor: Optional[str] = None
+        threads: List[ReviewThread] = []
+        cursor: Optional[str] = None
 
-            while True:
-                variables: Dict[str, Any] = {"owner": owner, "name": repo, "number": pr_number, "cursor": cursor}
-                response = self.graphql_query(query, variables)
+        while True:
+            variables: Dict[str, Any] = {"owner": owner, "name": repo, "number": pr_number, "cursor": cursor}
+            response = self.graphql_query(query, variables)
 
-                if not response or "data" not in response:
-                    break
+            if not response or "data" not in response:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} did not contain data")
 
-                pr_data = response.get("data", {}).get("repository", {}).get("pullRequest")
-                if not pr_data:
-                    break
+            pr_data = response.get("data", {}).get("repository", {}).get("pullRequest")
+            if not pr_data:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} did not contain the pull request")
 
-                review_threads_data = pr_data.get("reviewThreads")
-                if not review_threads_data:
-                    break
+            review_threads_data = pr_data.get("reviewThreads")
+            if review_threads_data is None:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} did not contain reviewThreads")
 
-                nodes = review_threads_data.get("nodes") or []
-                for node in nodes:
-                    if node:
-                        threads.append(
-                            ReviewThread(
-                                id=node.get("id", ""),
-                                is_resolved=bool(node.get("isResolved", False)),
-                                is_outdated=bool(node.get("isOutdated", False)),
-                            )
+            nodes = review_threads_data.get("nodes") or []
+            for node in nodes:
+                if node:
+                    threads.append(
+                        ReviewThread(
+                            id=node.get("id", ""),
+                            is_resolved=bool(node.get("isResolved", False)),
+                            is_outdated=bool(node.get("isOutdated", False)),
                         )
+                    )
 
-                page_info = review_threads_data.get("pageInfo") or {}
-                if not page_info.get("hasNextPage"):
-                    break
-                cursor = page_info.get("endCursor")
-                if not cursor:
-                    break
+            page_info = review_threads_data.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} omitted the next-page cursor")
 
-            return threads
-
-        except Exception as e:
-            logger.error(f"Failed to get review threads for PR #{pr_number}: {e}")
-            return []
+        return threads
 
     def has_unresolved_review_threads(self, repo_name: str, pr_number: int) -> bool:
         """Check if a pull request has any unresolved review threads.
@@ -1481,6 +1495,10 @@ class GitHubClient:
         """
         return self.get_issue_comments(repo_name, pr_number)
 
+    def get_pr_comments_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Get PR conversation comments while preserving REST lookup failures."""
+        return self._get_issue_comments(repo_name, pr_number, fresh=True)
+
     def get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Get all comments for an issue (or PR conversation).
 
@@ -1489,36 +1507,47 @@ class GitHubClient:
         callers (e.g. attempt tracking) read a stale state.
         """
         try:
-            owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
-
-            per_page = 100
-            result = []
-            page = 1
-            while page <= COMMENTS_MAX_PAGES:
-                comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
-                if not comments:
-                    break
-
-                for comment in comments:
-                    user = comment.get("user")
-                    created_at = comment.get("created_at")
-                    # GhApi returns strings for dates, pass through
-                    if hasattr(created_at, "isoformat"):
-                        created_at = created_at.isoformat()
-
-                    result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
-
-                if len(comments) < per_page:
-                    break
-                page += 1
-            else:
-                logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
-
-            return result
+            return self._get_issue_comments(repo_name, issue_number)
         except Exception as e:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")
             return []
+
+    def _get_issue_comments(self, repo_name: str, issue_number: int, fresh: bool = False) -> List[Dict[str, Any]]:
+        """Fetch every comment page and let callers decide how to handle errors."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+
+        per_page = 100
+        result = []
+        page = 1
+        while page <= COMMENTS_MAX_PAGES:
+            if fresh:
+                comments = api(
+                    f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                    verb="GET",
+                    headers={"Cache-Control": "no-cache"},
+                    query={"per_page": per_page, "page": page},
+                )
+            else:
+                comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
+            if not comments:
+                break
+
+            for comment in comments:
+                user = comment.get("user")
+                created_at = comment.get("created_at")
+                if hasattr(created_at, "isoformat"):
+                    created_at = created_at.isoformat()
+
+                result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
+
+            if len(comments) < per_page:
+                break
+            page += 1
+        else:
+            logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
+
+        return result
 
     def update_comment_for_issue(self, repo_name: str, comment_id: int, body: str) -> None:
         """Update an existing comment."""

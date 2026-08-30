@@ -924,7 +924,9 @@ Recent configuration schema changes that require migration:
       run_adversarial_validation, parse_adversarial_validation_response,
       build_adversarial_validation_context, extract_changed_test_files,
       format_adversarial_validation_comment in src/auto_coder/adversarial_validator.py,
-      _handle_pr_merge in src/auto_coder/pr_processor.py,
+      _handle_pr_merge, _get_adversarial_validation_eligibility,
+      _get_codex_review_state in src/auto_coder/pr_processor.py,
+      resolve_issue_oracles, get_linked_issues_context in src/auto_coder/issue_context.py,
       create_adversarial_validation_backend_manager in src/auto_coder/cli_helpers.py,
       backend_adversarial_validation in src/auto_coder/llm_backend_config.py
     configuration:
@@ -932,12 +934,16 @@ Recent configuration schema changes that require migration:
       - "ENABLE_ADVERSARIAL_VALIDATION (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var)."
     behavior:
       - "Runs after normal CI / GitHub Actions checks are green and before merge eligibility."
+      - "Issue Eligibility: Eligibility and validation context share one verified-oracle resolver for candidates found in PR body, title, or branch metadata. A PR with no candidate Issue is outside validation scope and continues through other merge requirements without a validation result. A candidate that is missing, unavailable, or resolves to another PR fails closed instead of being treated as intentionally Issue-less."
+      - "Codex Review Ordering: For Issue-backed PRs, a Codex GitHub review summary from chatgpt-codex-connector[bot] must reach Code Review / Completed before adversarial validation starts. A summary that is still running defers the PR to a later processing iteration without a fixed delay. Comment lookup uses a strict, cache-revalidated REST path so API failures or stale cached summaries cannot be mistaken for absent/completed review activity."
+      - "Optional Codex Stage: If no Codex review summary exists, adversarial validation runs normally. A Completed summary is sufficient even without a +1 reaction and regardless of whether its reviewed commit differs from the current head."
+      - "Review Feedback Ordering: Strict tri-state review-thread checks prevent adversarial validation and merge until actionable feedback is resolved. A review-thread API error is distinct from an empty thread list and fails closed. After observing a Completed Codex summary, Auto-Coder performs a fresh second thread check before starting adversarial validation, closing the completion/finding TOCTOU window; validation remains pinned to the current PR head."
       - "Fail-Closed Design: PASS is only produced for an explicitly parsed, internally consistent PASS with 0 blocking findings; all empty, malformed, contradictory, or inconclusive responses block PR merge."
       - "Parse Failure Diagnostics: Empty responses, invalid JSON, schema violations, contradictions, and unrecognized formats remain fail-closed and are logged with PR/attempt/backend/model context, a redacted 2,000-character preview, and the structured LLM interaction-log path."
       - "Full Effective Response Retention: The structured LLM interaction log retains the redacted combined CLI response (stdout and stderr), while normal operational and trace logs remain bounded."
       - "PR Result Publishing and SHA Deduplication: Publishes the parsed validation status, summary, structured findings, requested dynamic check, and parse diagnostic to the PR conversation for the exact validated head SHA. Before invoking the reviewer, Auto-Coder reads that durable comment: the same SHA is never sent to the LLM again, a saved PASS proceeds to merge checks, and any saved non-PASS remains blocked until the PR head changes. Failure to read prior comments fails closed without invoking the LLM. Raw CLI event streams are excluded and oversized reports are bounded."
       - "Codex JSONL Handling: For `codex --json` reviewers, parses only the final completed agent message while retaining the full event stream; failed, incomplete, or non-JSON-contaminated streams remain blocked."
-      - "Oracle Acquisition Required: Fails closed (BLOCKED) if the linked issue specification or acceptance criteria cannot be acquired."
+      - "Oracle Acquisition Required for Eligible PRs: An Issue-backed PR fails closed (BLOCKED) if its linked specification or acceptance criteria cannot be acquired after validation starts; an intentionally Issue-less PR is skipped rather than assigned a validation status."
       - "Backend Independence: Uses independently configured strong model without silently falling back to the general implementation backend."
       - "Diff Truncation Transparency: Alerts the reviewer when diffs exceed limits and provides complete changed-file lists so partial review is never misrepresented as complete coverage."
       - "Dynamic-on-Suspicion Contract: Supports dynamic test execution when requested by the reviewer; failure or inability to execute dynamic checks fails closed."

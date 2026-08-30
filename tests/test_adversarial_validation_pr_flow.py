@@ -12,11 +12,120 @@ from auto_coder.adversarial_validator import (
 )
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.pr_processor import (
+    _get_adversarial_validation_eligibility,
+    _get_codex_review_state,
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
     _publish_adversarial_validation_result,
 )
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
+
+
+def codex_review_summary(status: str, reviewed_sha: str = "original1") -> dict[str, object]:
+    return {
+        "body": ("<!-- codex-pull-request-review-summary -->\n\n" "| Review | Status | Commit | Review trigger |\n" "| --- | --- | --- | --- |\n" f"| 📝 **Code Review** | {status} | `{reviewed_sha}` | PR opened |"),
+        "user": {"login": "chatgpt-codex-connector[bot]"},
+    }
+
+
+class TestCodexReviewState:
+    def test_completed_summary_is_authoritative_without_reaction(self):
+        client = MagicMock()
+        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
+
+        state = _get_codex_review_state(client, "owner/repo", 100)
+
+        assert state.present is True
+        assert state.completed is True
+        assert state.lookup_error is None
+
+    def test_summary_without_completed_status_is_still_running(self):
+        client = MagicMock()
+        client.get_pr_comments.return_value = [codex_review_summary("👀 **In progress**")]
+
+        state = _get_codex_review_state(client, "owner/repo", 100)
+
+        assert state.present is True
+        assert state.completed is False
+        assert state.lookup_error is None
+
+    def test_marker_from_non_codex_author_is_ignored(self):
+        client = MagicMock()
+        comment = codex_review_summary("✅ **Completed**")
+        comment["user"] = {"login": "someone-else"}
+        client.get_pr_comments.return_value = [comment]
+
+        state = _get_codex_review_state(client, "owner/repo", 100)
+
+        assert state.present is False
+        assert state.completed is False
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_real_client_comment_api_failure_is_not_treated_as_codex_absence(self, mock_get_api):
+        mock_api = Mock()
+        mock_api.issues.list_comments.side_effect = RuntimeError("comment API unavailable")
+        mock_api.side_effect = RuntimeError("comment API unavailable")
+        mock_get_api.return_value = mock_api
+        client = GitHubClient("test-token")
+
+        assert client.get_pr_comments("owner/repo", 100) == []
+
+        state = _get_codex_review_state(client, "owner/repo", 100)
+
+        assert state.present is False
+        assert state.completed is False
+        assert state.lookup_error == "comment API unavailable"
+
+
+class TestAdversarialValidationEligibility:
+    def test_issue_less_pr_mentioning_another_pr_is_not_eligible(self):
+        client = MagicMock()
+        pr_data = {"number": 100, "body": "Maintenance update; see PR #42 for background"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is False
+        assert eligibility.issue_numbers == ()
+        assert eligibility.lookup_error is None
+        client.get_issue.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [None, {"number": 42, "pull_request": {"url": "https://api.github.test/pulls/42"}}],
+    )
+    def test_nonexistent_or_pull_request_candidate_is_not_an_oracle(self, candidate):
+        client = MagicMock()
+        client.get_issue.return_value = candidate
+        pr_data = {"number": 100, "body": "Fixes #42"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is False
+        assert eligibility.issue_numbers == ()
+        assert eligibility.lookup_error is not None
+        client.get_issue.assert_called_once_with("owner/repo", 42)
+
+    def test_verified_linked_issue_makes_validation_applicable(self):
+        client = MagicMock()
+        client.get_issue.return_value = {"number": 42, "title": "Behavioral contract"}
+        pr_data = {"number": 100, "body": "Fixes #42"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is True
+        assert eligibility.issue_numbers == (42,)
+        assert eligibility.lookup_error is None
+
+    def test_title_inferred_issue_uses_same_verified_oracle_resolution(self):
+        client = MagicMock()
+        client.get_issue.return_value = {"number": 42, "title": "Behavioral contract", "body": "Required behavior"}
+        pr_data = {"number": 100, "title": "Implement issue #42", "body": "Implementation details"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is True
+        assert eligibility.issue_numbers == (42,)
 
 
 class TestAdversarialValidationPRComment:
@@ -191,7 +300,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -235,7 +344,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -274,7 +383,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
@@ -329,7 +438,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -376,7 +485,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -410,7 +519,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = False
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
@@ -455,7 +564,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -494,7 +603,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         # Remote PR now has a newer commit "def987654321" pushed
         client = MagicMock()
@@ -536,7 +645,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         # Remote verification API throws an exception
         client = MagicMock()
@@ -573,7 +682,7 @@ class TestAdversarialValidationPRFlow:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         # Missing sha in head dictionary
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch"}}
 
         client = MagicMock()
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -612,7 +721,7 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
-        pr_data = {"number": 100, "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
@@ -628,6 +737,175 @@ class TestAdversarialValidationPRFlow:
             expected_head_sha="abc123456789",
         )
         assert any("Successfully merged PR #100" in a for a in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_issue_less_pr_skips_validation_and_continues_merge(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "maintenance123"
+        pr_data = {"number": 100, "body": "Periodic documentation refresh", "labels": [], "head": {"ref": "docs-refresh", "sha": head_sha}}
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        client.get_pr_comments.assert_not_called()
+        client.add_comment_to_pr.assert_not_called()
+        mock_merge_pr.assert_called_once()
+        assert any("no linked Issue specification oracle" in action for action in actions)
+        assert not any("BLOCKED" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_unresolved_explicit_issue_reference_fails_closed(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        pr_data = {"number": 100, "body": "Fixes #42", "labels": [], "head": {"ref": "feature-branch", "sha": "current-head"}}
+        client = MagicMock()
+        client.get_issue.return_value = None
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Could not verify adversarial-validation eligibility" in action for action in actions)
+        assert not any("no linked Issue specification oracle" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_in_progress_codex_review_waits_without_validation_or_merge(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
+        client = MagicMock()
+        client.get_pr_comments.return_value = [codex_review_summary("👀 **In progress**")]
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Waiting for Codex GitHub review to complete" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", side_effect=[False, True])
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_codex_completion_rechecks_threads_before_validation(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
+        client = MagicMock()
+        client.get_issue.return_value = {"number": 99, "title": "Specification"}
+        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert mock_threads.call_count == 2
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Codex review completed" in action and "unresolved review threads" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_completed_codex_review_of_old_sha_validates_current_head(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Current head satisfies the Issue")
+        current_sha = "current-head-h2"
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": current_sha}}
+        client = MagicMock()
+        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
+        client.get_pull_request.return_value = {"head": {"sha": current_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_worktree.assert_called_once_with("owner/repo", 100, current_sha)
+        mock_run_validation.assert_called_once_with("owner/repo", pr_data, config, github_client=client)
+        mock_merge_pr.assert_called_once()
 
 
 class TestAtomicMergeSHAPrecondition:

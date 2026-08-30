@@ -1,9 +1,28 @@
 import re
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class VerifiedIssueOracle:
+    number: int
+    title: str = "Unknown"
+    body: str = ""
+
+
+@dataclass(frozen=True)
+class IssueOracleResolution:
+    candidates: Tuple[int, ...] = ()
+    issues: Tuple[VerifiedIssueOracle, ...] = ()
+    error: Optional[str] = None
+
+    @property
+    def has_verified_issue(self) -> bool:
+        return bool(self.issues)
 
 
 def extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
@@ -173,6 +192,50 @@ def extract_associated_issue_numbers(
     return []
 
 
+def resolve_issue_oracles(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Optional[Dict[str, Any]] = None,
+    pr_body: str = "",
+) -> IssueOracleResolution:
+    """Resolve all inferred candidates through GitHub and reject invalid oracles."""
+    candidates = tuple(extract_associated_issue_numbers(pr_data=pr_data, pr_body=pr_body))
+    if not candidates:
+        return IssueOracleResolution()
+    if not github_client:
+        return IssueOracleResolution(candidates=candidates, error="GitHub client unavailable while resolving linked Issue oracle")
+
+    strict_getter = getattr(type(github_client), "get_issue_strict", None)
+    verified_issues = []
+    for issue_number in candidates:
+        try:
+            if callable(strict_getter):
+                issue = github_client.get_issue_strict(repo_name, issue_number)
+            else:
+                issue = github_client.get_issue(repo_name, issue_number)
+        except Exception as e:
+            return IssueOracleResolution(candidates=candidates, error=f"Failed to retrieve referenced Issue #{issue_number}: {e}")
+
+        if not issue:
+            return IssueOracleResolution(candidates=candidates, error=f"Referenced Issue #{issue_number} was not found")
+
+        if isinstance(issue, dict):
+            if issue.get("pull_request") is not None:
+                return IssueOracleResolution(candidates=candidates, error=f"Reference #{issue_number} resolves to a pull request, not an Issue")
+            title = issue.get("title") or "Unknown"
+            body = issue.get("body") or ""
+        else:
+            raw_data = getattr(issue, "_rawData", None)
+            if isinstance(raw_data, dict) and raw_data.get("pull_request") is not None:
+                return IssueOracleResolution(candidates=candidates, error=f"Reference #{issue_number} resolves to a pull request, not an Issue")
+            title = getattr(issue, "title", "Unknown") or "Unknown"
+            body = getattr(issue, "body", "") or ""
+
+        verified_issues.append(VerifiedIssueOracle(number=issue_number, title=str(title), body=str(body)))
+
+    return IssueOracleResolution(candidates=candidates, issues=tuple(verified_issues))
+
+
 def get_linked_issues_context(
     github_client: Any,
     repo_name: str,
@@ -185,42 +248,33 @@ def get_linked_issues_context(
 
     linked_issues_context = ""
     try:
-        linked_issues = extract_associated_issue_numbers(pr_data=pr_data, pr_body=pr_body)
+        resolution = resolve_issue_oracles(github_client, repo_name, pr_data=pr_data, pr_body=pr_body)
+        if resolution.error:
+            logger.warning(f"Failed to resolve linked issue oracle: {resolution.error}")
+            return ""
         context_parts = []
 
-        for issue_number in linked_issues:
+        for verified_issue in resolution.issues:
+            issue_number = verified_issue.number
             try:
-                # Fetch linked issue details
-                issue = github_client.get_issue(repo_name, issue_number)
-                if issue:
-                    # Make sure it's an actual issue, not a PR
-                    if isinstance(issue, dict) and issue.get("pull_request"):
-                        continue
-                    if hasattr(issue, "_rawData") and isinstance(issue._rawData, dict) and issue._rawData.get("pull_request"):
-                        continue
+                context_parts.append(f"Linked Issue #{issue_number}: {verified_issue.title}")
+                context_parts.append(f"Issue Description:\n{verified_issue.body}")
 
-                    title = issue.get("title") if isinstance(issue, dict) else getattr(issue, "title", "Unknown")
-                    body = issue.get("body") if isinstance(issue, dict) else getattr(issue, "body", "")
-
-                    context_parts.append(f"Linked Issue #{issue_number}: {title}")
-                    context_parts.append(f"Issue Description:\n{body}")
-
-                    # Check for parent issue
-                    try:
-                        parent_details = github_client.get_parent_issue_details(repo_name, issue_number)
-                        if parent_details:
-                            parent_number = parent_details.get("number")
-                            parent_body = github_client.get_parent_issue_body(repo_name, issue_number)
-                            if parent_body:
-                                context_parts.append(
-                                    f"Parent Issue #{parent_number} (CONTEXT ONLY - Parent of #{issue_number}): {parent_details.get('title', 'Unknown')}\n"
-                                    f"[SCOPE BOUNDARY NOTICE: The following parent issue description is provided for background context only. "
-                                    f"The implementation scope and acceptance criteria for this PR are defined strictly by the child issue #{issue_number}. "
-                                    f"Do NOT require parent requirements outside the child issue scope.]\n"
-                                    f"Parent Issue Description:\n{parent_body}"
-                                )
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch parent issue for #{issue_number}: {e}")
+                try:
+                    parent_details = github_client.get_parent_issue_details(repo_name, issue_number)
+                    if parent_details:
+                        parent_number = parent_details.get("number")
+                        parent_body = github_client.get_parent_issue_body(repo_name, issue_number)
+                        if parent_body:
+                            context_parts.append(
+                                f"Parent Issue #{parent_number} (CONTEXT ONLY - Parent of #{issue_number}): {parent_details.get('title', 'Unknown')}\n"
+                                f"[SCOPE BOUNDARY NOTICE: The following parent issue description is provided for background context only. "
+                                f"The implementation scope and acceptance criteria for this PR are defined strictly by the child issue #{issue_number}. "
+                                f"Do NOT require parent requirements outside the child issue scope.]\n"
+                                f"Parent Issue Description:\n{parent_body}"
+                            )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch parent issue for #{issue_number}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to fetch details for linked issue #{issue_number}: {e}")
 
