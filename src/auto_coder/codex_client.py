@@ -102,6 +102,7 @@ class CodexClient(LLMClientBase):
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
         self._last_session_id: Optional[str] = None
+        self._resume_session_id: Optional[str] = None
 
         # Check if codex CLI is available
         try:
@@ -150,6 +151,51 @@ class CodexClient(LLMClientBase):
             logger.warning("Codex read-only sandbox preflight failed; using the disposable worktree fallback")
         return self._noedit_sandbox_fallback_required
 
+    @staticmethod
+    def _has_usage_limit_diagnostic(
+        stdout: str,
+        stderr: str,
+        usage_markers: list[object],
+        returncode: int,
+    ) -> bool:
+        """Detect provider limit diagnostics without scanning Codex tool payloads.
+
+        A successful ``codex exec --json`` response can contain arbitrary source
+        code and command output inside item events. Those payloads are reviewer
+        evidence, not Codex diagnostics, and may legitimately contain configured
+        strings such as ``usage limit`` or ``rate limit``.
+        """
+        full_output = "\n".join(part for part in (stdout, stderr) if part)
+        if returncode != 0:
+            return has_usage_marker_match(full_output, usage_markers)
+
+        events: list[dict[str, object]] = []
+        is_jsonl_stream = False
+        for line in stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                events = []
+                is_jsonl_stream = False
+                break
+            if not isinstance(value, dict):
+                events = []
+                is_jsonl_stream = False
+                break
+            event_type = str(value.get("type", ""))
+            if event_type in {"thread.started", "turn.started", "turn.completed", "turn.failed", "error"} or event_type.startswith("item."):
+                is_jsonl_stream = True
+            events.append(value)
+
+        if not is_jsonl_stream:
+            return has_usage_marker_match(full_output, usage_markers)
+
+        diagnostic_events = [event for event in events if str(event.get("type", "")) in {"error", "turn.failed"} or event.get("is_error") is True or "error" in event]
+        diagnostic_output = "\n".join([stderr, *(json.dumps(event, ensure_ascii=False) for event in diagnostic_events)])
+        return has_usage_marker_match(diagnostic_output, usage_markers)
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
         start_time = time.time()
@@ -176,6 +222,16 @@ class CodexClient(LLMClientBase):
             # Add configured options from config
             if options_to_use:
                 cmd.extend(options_to_use)
+
+            resume_session_id = self._resume_session_id
+            self._resume_session_id = None
+            if resume_session_id:
+                try:
+                    exec_index = cmd.index("exec")
+                except ValueError:
+                    cmd.extend(["exec", "resume"])
+                else:
+                    cmd.insert(exec_index + 1, "resume")
 
             # Append any one-time extra arguments (e.g., resume flags)
             extra_args = self.consume_extra_args()
@@ -274,6 +330,8 @@ class CodexClient(LLMClientBase):
                     sanitized_cmd = ["codex", *noedit_flags]
                 cmd = sanitized_cmd
 
+            if resume_session_id:
+                cmd.append(resume_session_id)
             cmd.append(escaped_prompt)
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
@@ -319,7 +377,12 @@ class CodexClient(LLMClientBase):
             if result.returncode == -1 and "timed out" in low:
                 raise AutoCoderTimeoutError(full_output)
 
-            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+            usage_limit_detected = self._has_usage_limit_diagnostic(
+                stdout,
+                stderr,
+                list(usage_markers),
+                result.returncode,
+            )
 
             if result.returncode != 0:
                 if usage_limit_detected:
@@ -400,7 +463,7 @@ class CodexClient(LLMClientBase):
         """Continue a specific Codex session using Codex's resume subcommand."""
         if not session_id or session_id.startswith("-"):
             raise ValueError("A valid explicit Codex session ID is required")
-        self.set_extra_args(["exec", "resume", session_id])
+        self._resume_session_id = session_id
         return self._run_llm_cli(prompt, is_noedit=is_noedit)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:

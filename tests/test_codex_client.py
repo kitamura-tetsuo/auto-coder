@@ -89,6 +89,64 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_successful_jsonl_does_not_treat_reviewed_usage_limit_text_as_provider_limit(self, mock_run_command, mock_run):
+        """Source and command evidence inside successful item events is not a provider diagnostic."""
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"raise AutoCoderUsageLimitError if usage limit is reached"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"The rate limit handling is correct."}}',
+                '{"type":"turn.completed","usage":{"input_tokens":100}}',
+            ]
+        )
+        mock_run_command.return_value = CommandResult(True, stdout, "", 0)
+
+        client = CodexClient()
+
+        assert client._run_llm_cli("review usage detection") == stdout
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_successful_jsonl_still_detects_top_level_provider_limit_error(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"error","message":"usage limit exceeded; retry later"}',
+            ]
+        )
+        mock_run_command.return_value = CommandResult(True, stdout, "", 0)
+
+        client = CodexClient()
+
+        with pytest.raises(AutoCoderUsageLimitError):
+            client._run_llm_cli("review this")
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_continue_session_builds_single_exec_resume_command(self, mock_get_config, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, '{"type":"turn.completed"}', "", 0)
+        backend = BackendConfig(
+            name="codex-review",
+            backend_type="codex",
+            options=["exec", "--json"],
+            options_for_noedit=["exec", "--json"],
+        )
+        mock_get_config.return_value.get_backend_config.return_value = backend
+        client = CodexClient(backend_name="codex-review", use_noedit_options=True)
+
+        client.continue_session("session-123", "review current head", is_noedit=True)
+
+        called_cmd = mock_run_command.call_args.args[0]
+        assert called_cmd.count("exec") == 1
+        assert called_cmd.index("resume") == called_cmd.index("exec") + 1
+        assert called_cmd[-2:] == ["session-123", "review current head"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_includes_extra_args(self, mock_run_command, mock_run):
         """Extra args (e.g., resume flags) should be passed to codex CLI."""
         mock_run.return_value.returncode = 0
