@@ -438,10 +438,10 @@ class TestBuildAdversarialValidationContext:
         mock_config = MagicMock()
         mock_backend = MagicMock()
         mock_backend.model = "codex-model"
-        mock_backend.options = ["--json"]
+        mock_backend.options = ["exec", "--json"]
         mock_backend.options_for_noedit = []
         mock_backend.replace_placeholders.return_value = {
-            "options": ["--json"],
+            "options": ["exec", "--json"],
             "options_for_noedit": [],
         }
         mock_config.get_backend_config.return_value = mock_backend
@@ -456,10 +456,19 @@ class TestBuildAdversarialValidationContext:
 
             mock_run.assert_called_once()
             called_cmd = mock_run.call_args[0][0]
-            assert "--sandbox" in called_cmd
-            assert "read-only" in called_cmd
-            assert "--ask-for-approval" in called_cmd
-            assert "never" in called_cmd
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")
@@ -469,11 +478,11 @@ class TestBuildAdversarialValidationContext:
         mock_config = MagicMock()
         mock_backend = MagicMock()
         mock_backend.model = "codex-model"
-        mock_backend.options = ["--sandbox", "workspace-write", "--full-auto"]
-        mock_backend.options_for_noedit = ["--sandbox", "workspace-write"]
+        mock_backend.options = ["--sandbox", "workspace-write", "exec", "--full-auto"]
+        mock_backend.options_for_noedit = ["--sandbox", "workspace-write", "exec"]
         mock_backend.replace_placeholders.return_value = {
-            "options": ["--sandbox", "workspace-write", "--full-auto"],
-            "options_for_noedit": ["--sandbox", "workspace-write"],
+            "options": ["--sandbox", "workspace-write", "exec", "--full-auto"],
+            "options_for_noedit": ["--sandbox", "workspace-write", "exec"],
         }
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
@@ -493,12 +502,18 @@ class TestBuildAdversarialValidationContext:
             assert "--full-auto" not in called_cmd
             assert "-y" not in called_cmd
             assert "always" not in called_cmd
-            assert "--sandbox" in called_cmd
-            assert "read-only" in called_cmd
-            assert "--ask-for-approval" in called_cmd
-            assert "never" in called_cmd
-            assert "-c" in called_cmd
-            assert 'approvals_reviewer="user"' in called_cmd
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")
@@ -508,11 +523,11 @@ class TestBuildAdversarialValidationContext:
         mock_config = MagicMock()
         mock_backend = MagicMock()
         mock_backend.model = "codex-model"
-        mock_backend.options = ["--dangerously-bypass-approvals-and-sandbox", "-s", "workspace-write"]
-        mock_backend.options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
+        mock_backend.options = ["--dangerously-bypass-approvals-and-sandbox", "exec", "-s", "workspace-write"]
+        mock_backend.options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox", "exec"]
         mock_backend.replace_placeholders.return_value = {
-            "options": ["--dangerously-bypass-approvals-and-sandbox", "-s", "workspace-write"],
-            "options_for_noedit": ["--dangerously-bypass-approvals-and-sandbox"],
+            "options": ["--dangerously-bypass-approvals-and-sandbox", "exec", "-s", "workspace-write"],
+            "options_for_noedit": ["--dangerously-bypass-approvals-and-sandbox", "exec"],
         }
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
@@ -533,12 +548,18 @@ class TestBuildAdversarialValidationContext:
             assert "--not-so-yolo" not in called_cmd
             assert "workspace-write" not in called_cmd
             assert 'approvals_reviewer="auto_review"' not in called_cmd
-            assert "--sandbox" in called_cmd
-            assert "read-only" in called_cmd
-            assert "--ask-for-approval" in called_cmd
-            assert "never" in called_cmd
-            assert "-c" in called_cmd
-            assert 'approvals_reviewer="user"' in called_cmd
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")

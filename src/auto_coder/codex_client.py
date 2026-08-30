@@ -151,41 +151,62 @@ class CodexClient(LLMClientBase):
             # When is_noedit is True, enforce Codex read-only sandboxing client-level invariant
             # against the final combined command (including configured options and extra args):
             # - Remove conflicting --sandbox / -s <value> pairs and --sandbox=... / -s=...
+            # - Remove conflicting --sandbox / -s <value> pairs, --sandbox=..., -s=..., and -s<value>
             # - Remove dangerous approval, YOLO, and sandbox bypass flags:
             #   --dangerously-bypass-approvals-and-sandbox, --yolo, --full-auto, -y, --yes,
             #   --approve-for-me, --not-so-yolo, --danger-full-access
-            # - Remove conflicting --ask-for-approval <value> pairs and --ask-for-approval=...
-            # - Remove any conflicting runtime config overrides for approvals_reviewer (-c / --config)
+            # - Remove conflicting --ask-for-approval / -a <value> pairs, --ask-for-approval=..., -a=..., and -a<value>
+            # - Remove any conflicting runtime config overrides for approvals_reviewer, approval_policy,
+            #   and sandbox_mode (-c / --config, -c=..., --config=..., -c<value>)
             # - Force exactly --sandbox read-only, --ask-for-approval never, and -c approvals_reviewer="user"
             if is_noedit:
+                unsafe_config_keys = ("approvals_reviewer", "approval_reviewer", "approval_policy", "sandbox_mode")
+
+                def _is_unsafe_config_override(override: str) -> bool:
+                    """Return True if a Codex ``-c``/``--config`` override targets a protected key.
+
+                    The comparison is performed against the override key (the left-hand
+                    side before ``=``) only, so safe overrides whose *value* merely
+                    contains a protected name (e.g. ``model="sandbox_mode"``) are kept.
+                    """
+                    key = override.split("=", 1)[0].strip()
+                    return key in unsafe_config_keys
+
+                def _extract_config_override(token: str) -> str:
+                    """Extract the ``KEY=VALUE`` payload from a concatenated config flag token."""
+                    if token.startswith("--config="):
+                        return token[len("--config=") :]
+                    if token.startswith("-c="):
+                        return token[len("-c=") :]
+                    if token.startswith("-c") and not token.startswith("--"):
+                        return token[len("-c") :]
+                    return ""
+
                 sanitized_cmd = []
                 i = 0
                 while i < len(cmd):
                     opt_str = str(cmd[i])
-                    # Handle sandbox flags
+                    # Handle sandbox flags (--sandbox <val>, -s <val>, --sandbox=<val>, -s=<val>, -s<val>)
                     if opt_str in ("--sandbox", "-s"):
                         # Skip flag and its subsequent value
                         i += 2
                         continue
-                    if opt_str.startswith(("--sandbox=", "-s=")):
+                    if opt_str.startswith("--sandbox=") or (opt_str.startswith("-s") and not opt_str.startswith("--")):
                         i += 1
                         continue
-                    # Handle ask-for-approval flags
-                    if opt_str == "--ask-for-approval":
+                    # Handle ask-for-approval flags (--ask-for-approval <val>, -a <val>, --ask-for-approval=<val>, -a=<val>, -a<val>)
+                    if opt_str in ("--ask-for-approval", "-a"):
                         # Skip flag and its subsequent value
                         i += 2
                         continue
-                    if opt_str.startswith("--ask-for-approval="):
+                    if opt_str.startswith("--ask-for-approval=") or (opt_str.startswith("-a") and not opt_str.startswith("--")):
                         i += 1
                         continue
-                    # Handle config override flags for approvals_reviewer
-                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and "approvals_reviewer" in str(cmd[i + 1]):
+                    # Handle config override flags for permission keys (-c <val>, --config <val>, -c=..., --config=..., -c<val>)
+                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and _is_unsafe_config_override(str(cmd[i + 1])):
                         i += 2
                         continue
-                    if (opt_str.startswith("-c=") or opt_str.startswith("--config=")) and "approvals_reviewer" in opt_str:
-                        i += 1
-                        continue
-                    if opt_str.startswith("approvals_reviewer="):
+                    if (opt_str.startswith("--config=") or (opt_str.startswith("-c") and not opt_str.startswith("--") and opt_str != "-c")) and _is_unsafe_config_override(_extract_config_override(opt_str)):
                         i += 1
                         continue
                     # Handle standalone dangerous bypass and YOLO flags
@@ -203,11 +224,22 @@ class CodexClient(LLMClientBase):
                         continue
                     sanitized_cmd.append(cmd[i])
                     i += 1
-                sanitized_cmd.extend(["--sandbox", "read-only", "--ask-for-approval", "never", "-c", 'approvals_reviewer="user"'])
+
+                noedit_flags = [
+                    "--sandbox",
+                    "read-only",
+                    "--ask-for-approval",
+                    "never",
+                    "-c",
+                    'approvals_reviewer="user"',
+                ]
+                if sanitized_cmd:
+                    sanitized_cmd = [sanitized_cmd[0], *noedit_flags, *sanitized_cmd[1:]]
+                else:
+                    sanitized_cmd = ["codex", *noedit_flags]
                 cmd = sanitized_cmd
 
             cmd.append(escaped_prompt)
-
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
                 usage_markers = self.usage_markers
