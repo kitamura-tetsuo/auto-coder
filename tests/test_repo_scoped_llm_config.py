@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -10,6 +11,7 @@ from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.llm_backend_config import (
     BackendConfig,
     LLMBackendConfiguration,
+    _normalize_config_dict,
     active_repo_context,
     deep_merge_config_dict,
     get_active_repo_name,
@@ -18,6 +20,7 @@ from auto_coder.llm_backend_config import (
     resolve_repo_override_path,
     set_active_repo_name,
 )
+from auto_coder.utils import CommandResult
 
 
 class TestResolveRepoOverridePath:
@@ -47,6 +50,17 @@ class TestResolveRepoOverridePath:
         assert resolve_repo_override_path("/") is None
         assert resolve_repo_override_path("/repo") is None
         assert resolve_repo_override_path("owner/") is None
+        assert resolve_repo_override_path("owner/repo/extra") is None
+
+    def test_reject_path_traversal_components(self):
+        base_path = "/tmp/test_dir/llm_config.toml"
+        assert resolve_repo_override_path("../something", base_config_path=base_path) is None
+        assert resolve_repo_override_path("owner/..", base_config_path=base_path) is None
+        assert resolve_repo_override_path("../..", base_config_path=base_path) is None
+        assert resolve_repo_override_path("owner/../other", base_config_path=base_path) is None
+        assert resolve_repo_override_path("../../etc/passwd", base_config_path=base_path) is None
+        assert resolve_repo_override_path("./repo", base_config_path=base_path) is None
+        assert resolve_repo_override_path("owner/.", base_config_path=base_path) is None
 
 
 class TestDeepMergeConfigDict:
@@ -106,6 +120,25 @@ class TestDeepMergeConfigDict:
         override = {"order": "codex"}
         with pytest.raises(ValueError, match="Incompatible override type"):
             deep_merge_config_dict(base, override)
+
+    def test_unrelated_tables_preserve_environment_key_unmodified(self):
+        """Regression test: unrelated non-backend tables must keep 'environment' keys untouched."""
+        data = {
+            "some_feature": {"environment": "production", "env_id": "prod-42"},
+            "logging_config": {"environment": "staging"},
+            "backends": {
+                "codex_cloud": {"environment": "env-cloud-1"},
+            },
+        }
+        normalized = _normalize_config_dict(data)
+        # Unrelated tables are NOT rewritten
+        assert normalized["some_feature"]["environment"] == "production"
+        assert normalized["some_feature"]["env_id"] == "prod-42"
+        assert "environment_id" not in normalized["some_feature"]
+        assert normalized["logging_config"]["environment"] == "staging"
+        # Backend tables ARE normalized
+        assert normalized["backends"]["codex_cloud"]["environment_id"] == "env-cloud-1"
+        assert "environment" not in normalized["backends"]["codex_cloud"]
 
 
 class TestRepoScopedLLMBackendConfiguration:
@@ -369,3 +402,65 @@ url = "https://autocoder.url"
             client_repo = ClaudeRoutineClient(backend_name="claude_routine", repo_name="kitamura-tetsuo/auto-coder")
             assert client_repo.token == "token-autocoder"
             assert client_repo.url == "https://autocoder.url"
+
+    def test_codex_cloud_start_task_initial_request_receives_repo_override_env(self, monkeypatch):
+        """Boundary test: assert that start_task initial CLI execution uses the repository override environment."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_config_path = os.path.join(tmpdir, "llm_config.toml")
+            repo_dir = os.path.join(tmpdir, "kitamura-tetsuo", "auto-coder")
+            os.makedirs(repo_dir, exist_ok=True)
+
+            with open(base_config_path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "env-outliner-base"
+attempts = 1
+"""
+                )
+
+            with open(os.path.join(repo_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "env-autocoder-override"
+attempts = 3
+"""
+                )
+
+            monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", base_config_path)
+
+            fake_output = "Task created successfully. Task ID: task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+            mock_result = CommandResult(returncode=0, stdout=fake_output, stderr="", success=True)
+
+            with patch("auto_coder.codex_cloud_client.codex_cloud_quota_allows_task", return_value=True):
+                with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=mock_result) as mock_run:
+                    # 1. Initial request from repo-scoped client
+                    client = CodexCloudClient(backend_name="codex_cloud", repo_name="kitamura-tetsuo/auto-coder")
+                    task_id = client.start_task("Implement feature", title="Test Task")
+
+                    assert task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+                    assert mock_run.call_count == 1
+                    cmd_args = mock_run.call_args[0][0]
+
+                    # Assert that the initial command contains the override environment
+                    assert "--env" in cmd_args
+                    env_idx = cmd_args.index("--env")
+                    assert cmd_args[env_idx + 1] == "env-autocoder-override"
+                    assert "--attempts" in cmd_args
+                    attempts_idx = cmd_args.index("--attempts")
+                    assert cmd_args[attempts_idx + 1] == "3"
+
+                with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=mock_result) as mock_run_2:
+                    # 2. Initial request from base client with repo_name passed to start_task
+                    client_base = CodexCloudClient(backend_name="codex_cloud")
+                    task_id_2 = client_base.start_task("Implement feature", repo_name="kitamura-tetsuo/auto-coder", title="Test Task 2")
+
+                    assert task_id_2 == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+                    assert mock_run_2.call_count == 1
+                    cmd_args_2 = mock_run_2.call_args[0][0]
+
+                    # Assert that the initial create-task command receives the repository override
+                    assert "--env" in cmd_args_2
+                    env_idx_2 = cmd_args_2.index("--env")
+                    assert cmd_args_2[env_idx_2 + 1] == "env-autocoder-override"

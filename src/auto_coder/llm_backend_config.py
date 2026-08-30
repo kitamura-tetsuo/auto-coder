@@ -104,13 +104,32 @@ def resolve_repo_override_path(
     if not owner or not repo:
         return None
 
+    # Validate that owner and repo are valid GitHub identifiers (no path traversal, no . or ..)
+    import re
+
+    valid_identifier_pattern = re.compile(r"^[a-zA-Z0-9_.-]+$")
+    if not valid_identifier_pattern.match(owner) or not valid_identifier_pattern.match(repo):
+        return None
+    if owner in (".", "..") or repo in (".", ".."):
+        return None
+
     if base_config_path is not None:
         base_dir = os.path.dirname(os.path.abspath(os.path.expanduser(base_config_path)))
     else:
         base_dir = os.path.expanduser("~/.auto-coder")
 
-    override_path = os.path.join(base_dir, owner, repo, "llm_config.toml")
-    return os.path.abspath(override_path)
+    base_dir = os.path.abspath(base_dir)
+    override_path = os.path.abspath(os.path.join(base_dir, owner, repo, "llm_config.toml"))
+
+    # Ensure resolved path is strictly inside base_dir
+    try:
+        common = os.path.commonpath([base_dir, override_path])
+        if common != base_dir:
+            return None
+    except ValueError:
+        return None
+
+    return override_path
 
 
 def deep_merge_config_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -162,22 +181,42 @@ def deep_merge_config_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Di
     return merged
 
 
+def _normalize_backend_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize environment / env_id alias keys inside a backend configuration dictionary."""
+    if not isinstance(data, dict):
+        return data
+    norm = dict(data)
+    if "environment" in norm:
+        norm["environment_id"] = norm.pop("environment")
+    if "env_id" in norm:
+        norm["environment_id"] = norm.pop("env_id")
+    return norm
+
+
 def _normalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize aliases in configuration dictionary."""
+    """Normalize aliases in configuration dictionary only for known backend tables."""
     if not isinstance(data, dict):
         return data
 
     result: Dict[str, Any] = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            sub_dict = _normalize_config_dict(value)
-            # Normalize environment and env_id aliases in backend tables
-            if "environment" in sub_dict:
-                sub_dict["environment_id"] = sub_dict.pop("environment")
-            if "env_id" in sub_dict:
-                sub_dict["environment_id"] = sub_dict.pop("env_id")
+    backend_section_keys = {
+        "backend_cloud",
+        "backend_with_high_score",
+        "backend_with_high_score_cloud",
+        "backend_adversarial_validation",
+    }
 
-            result[key] = sub_dict
+    for key, value in data.items():
+        if key == "backends" and isinstance(value, dict):
+            norm_backends: Dict[str, Any] = {}
+            for b_name, b_val in value.items():
+                if isinstance(b_val, dict):
+                    norm_backends[b_name] = _normalize_backend_dict(b_val)
+                else:
+                    norm_backends[b_name] = b_val
+            result[key] = norm_backends
+        elif key in backend_section_keys and isinstance(value, dict):
+            result[key] = _normalize_backend_dict(value)
         else:
             result[key] = value
     return result
@@ -553,16 +592,6 @@ class LLMBackendConfiguration:
             if isinstance(config_data, dict):
                 backends[name] = parse_backend_config(name, config_data)
                 explicitly_configured_backends.add(name)
-
-        # Parse nested backends in [backend] section (e.g. [backend.codex_cloud])
-        backend_table = data.get("backend", {})
-        if isinstance(backend_table, dict):
-            for name, config_data in backend_table.items():
-                if name not in ("order", "default") and isinstance(config_data, dict):
-                    backends[name] = parse_backend_config(name, config_data)
-                    explicitly_configured_backends.add(name)
-                    backends[f"backend.{name}"] = parse_backend_config(f"backend.{name}", config_data)
-                    explicitly_configured_backends.add(f"backend.{name}")
 
         # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
         # This handles cases where TOML parses dotted keys as nested dictionaries
@@ -1005,32 +1034,13 @@ class LLMBackendConfiguration:
         config = self.backends.get(backend_name)
         if config:
             return config
-        alt_name = backend_name.replace("-", "_") if "-" in backend_name else backend_name.replace("_", "-")
-        if alt_name in self.backends:
-            return self.backends[alt_name]
-        for prefix in ("backend.", "backends."):
-            if backend_name.startswith(prefix):
-                short = backend_name[len(prefix) :]
-                if short in self.backends:
-                    return self.backends[short]
-                alt_short = short.replace("-", "_") if "-" in short else short.replace("_", "-")
-                if alt_short in self.backends:
-                    return self.backends[alt_short]
-            else:
-                prefixed = f"{prefix}{backend_name}"
-                if prefixed in self.backends:
-                    return self.backends[prefixed]
-                alt_prefixed = f"{prefix}{alt_name}"
-                if alt_prefixed in self.backends:
-                    return self.backends[alt_prefixed]
-
-        if self.backend_cloud and self.backend_cloud.name in (backend_name, alt_name):
+        if self.backend_cloud and self.backend_cloud.name == backend_name:
             return self.backend_cloud
-        if self.backend_with_high_score and self.backend_with_high_score.name in (backend_name, alt_name):
+        if self.backend_with_high_score and self.backend_with_high_score.name == backend_name:
             return self.backend_with_high_score
-        if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name in (backend_name, alt_name):
+        if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name == backend_name:
             return self.backend_with_high_score_cloud
-        if self.backend_adversarial_validation and self.backend_adversarial_validation.name in (backend_name, alt_name):
+        if self.backend_adversarial_validation and self.backend_adversarial_validation.name == backend_name:
             return self.backend_adversarial_validation
         return None
 
