@@ -4,6 +4,17 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Configuration
 
+#### Dedicated adversarial reviewer GitHub App
+
+Adversarial validation verdicts are published as native pull-request reviews using
+the separately configured `auto-coder-reviewer` GitHub App. Configure its `app_id`
+and optional `client_id` under `[github-app-auto-coder-reviewer]` in
+`~/.auto-coder/config.toml`; keep the private key at
+`~/.auto-coder/auto-coder-reviewer.pem`. `PASS` maps to `APPROVE`, `NEEDS_FIX`
+maps to `REQUEST_CHANGES`, and other outcomes map deterministically to `COMMENT`.
+Publication is pinned to the validated head SHA and fails closed without falling
+back to the normal user credential.
+
 #### Backend Configuration
 
 The auto-coder system supports multiple LLM backends:
@@ -935,4 +946,3 @@ Recent configuration schema changes that require migration:
         - "Instructs the implementation agent to add a focused regression test reproducing the counterexample and fix the code."
         - "Stages, commits, and pushes changes to GitHub to trigger a new CI run."
         - "Re-runs adversarial validation once CI is green again; only merges after validation returns PASS."
-

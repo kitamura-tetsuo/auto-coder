@@ -38,6 +38,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
+from .github_app_reviewer import publish_adversarial_review
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
@@ -1605,6 +1606,13 @@ def _handle_pr_merge(
                         result="BLOCKED",
                         summary=f"Isolated validation environment creation failed: {e}",
                     )
+
+                publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
+                if not publication.success:
+                    actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}")
+                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                    return actions
+                actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
 
                 if val_result.needs_fix:
                     actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")

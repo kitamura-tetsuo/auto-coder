@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
     _handle_pr_merge,
     _merge_pr,
@@ -261,9 +262,10 @@ def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_un
 @patch("auto_coder.pr_processor._check_github_actions_status")
 @patch("auto_coder.pr_processor.has_unresolved_review_threads")
 @patch("auto_coder.pr_processor.run_adversarial_validation")
+@patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
 @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
 @patch("auto_coder.pr_processor._merge_pr")
-def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_worktree, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
+def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_worktree, mock_publish, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
     mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
     mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
     mock_has_unresolved.return_value = False
