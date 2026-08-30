@@ -845,6 +845,22 @@ class GitHubClient:
             "url": get(pr, "html_url"),
             "author": get(user, "login") if user else None,
             "author_id": get(user, "id") if user else None,
+            "user": (
+                {
+                    "login": get(user, "login"),
+                    "id": get(user, "id"),
+                }
+                if user
+                else {}
+            ),
+            "head": {
+                "ref": get(head, "ref"),
+                "sha": get(head, "sha"),
+            },
+            "base": {
+                "ref": get(base, "ref"),
+                "sha": get(base, "sha"),
+            },
             "head_branch": get(head, "ref"),
             "head_sha": get(head, "sha"),
             "base_branch": get(base, "ref"),

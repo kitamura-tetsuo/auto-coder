@@ -31,6 +31,7 @@ class CodexClient(LLMClientBase):
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
         use_noedit_options: bool = False,
+        allow_isolated_noedit_sandbox_fallback: bool = False,
     ) -> None:
         """Initialize Codex CLI client.
 
@@ -42,6 +43,8 @@ class CodexClient(LLMClientBase):
             openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
             openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
             use_noedit_options: If True, use options_for_noedit instead of options.
+            allow_isolated_noedit_sandbox_fallback: Allow a no-edit review running in
+                a disposable worktree to bypass a broken local Linux sandbox.
         """
         super().__init__()
         config = get_llm_config()
@@ -85,6 +88,8 @@ class CodexClient(LLMClientBase):
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None
+        self.allow_isolated_noedit_sandbox_fallback = allow_isolated_noedit_sandbox_fallback
+        self._noedit_sandbox_fallback_required: Optional[bool] = None
 
         # Validate required options for this backend
         if self.config_backend:
@@ -115,6 +120,33 @@ class CodexClient(LLMClientBase):
     def _escape_prompt(self, prompt: str) -> str:
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
+
+    def _requires_isolated_noedit_sandbox_fallback(self) -> bool:
+        """Return whether Codex's Linux sandbox cannot start in this container.
+
+        This probe does not invoke an LLM. The fallback is opt-in and is only set by
+        the adversarial validator after it has entered a disposable detached worktree.
+        """
+        if not self.allow_isolated_noedit_sandbox_fallback:
+            return False
+        if self._noedit_sandbox_fallback_required is not None:
+            return self._noedit_sandbox_fallback_required
+
+        try:
+            probe = subprocess.run(
+                ["codex", "sandbox", "linux", "--", "true"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            probe_output = f"{probe.stdout or ''}\n{probe.stderr or ''}".lower()
+            self._noedit_sandbox_fallback_required = probe.returncode != 0 and "bwrap:" in probe_output
+        except (OSError, subprocess.SubprocessError):
+            self._noedit_sandbox_fallback_required = False
+
+        if self._noedit_sandbox_fallback_required:
+            logger.warning("Codex read-only sandbox preflight failed; using the disposable worktree fallback")
+        return self._noedit_sandbox_fallback_required
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
@@ -225,9 +257,10 @@ class CodexClient(LLMClientBase):
                     sanitized_cmd.append(cmd[i])
                     i += 1
 
+                sandbox_mode = "danger-full-access" if self._requires_isolated_noedit_sandbox_fallback() else "read-only"
                 noedit_flags = [
                     "--sandbox",
-                    "read-only",
+                    sandbox_mode,
                     "--ask-for-approval",
                     "never",
                     "-c",
@@ -276,6 +309,7 @@ class CodexClient(LLMClientBase):
             combined_parts = [part for part in (stdout, stderr) if part]
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
+            response_output = stdout or stderr
             low = full_output.lower()
 
             # Check for timeout (returncode -1 and "timed out" in stderr)
@@ -298,7 +332,11 @@ class CodexClient(LLMClientBase):
                 error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)
 
-            return full_output
+            # Codex writes its machine-readable ``--json`` event stream to
+            # stdout. Keep stderr in the interaction log and error detection,
+            # but do not append diagnostics to a successful response: doing so
+            # corrupts otherwise valid JSONL before downstream parsing.
+            return response_output
         except AutoCoderUsageLimitError:
             # Re-raise without catching
             raise

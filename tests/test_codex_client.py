@@ -49,6 +49,46 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("builtins.print")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_success_returns_stdout_without_stderr_contamination(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
+        """Successful machine-readable output must exclude stderr diagnostics."""
+        mock_run.return_value.returncode = 0
+        stdout = '{"type":"turn.completed"}'
+        stderr = "WARNING: failed to clean up temporary directory"
+        mock_run_command.return_value = CommandResult(True, stdout, stderr, 0)
+
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = ["exec", "--json"]
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
+        log_file = tmp_path / "test_log.jsonl"
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
+
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
+
+        output = client._run_llm_cli("review this")
+
+        assert output == stdout
+        logged = json.loads(log_file.read_text(encoding="utf-8"))
+        assert logged["response_length"] == len(f"{stdout}\n{stderr}")
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_success_falls_back_to_stderr_when_stdout_is_empty(self, mock_run_command, mock_run):
+        """Preserve clients that emit their successful response only on stderr."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "", "plain response", 0)
+
+        client = CodexClient()
+
+        assert client._run_llm_cli("hello world") == "plain response"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_includes_extra_args(self, mock_run_command, mock_run):
         """Extra args (e.g., resume flags) should be passed to codex CLI."""
         mock_run.return_value.returncode = 0
@@ -875,6 +915,45 @@ class TestCodexClient:
                 "test prompt",
             ]
             assert called_cmd == expected_cmd
+
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("src.auto_coder.codex_client.subprocess.run")
+    def test_isolated_noedit_falls_back_when_bwrap_preflight_fails(self, mock_run, mock_run_command):
+        """A disposable validation worktree remains usable when nested bwrap cannot start."""
+        version_result = MagicMock(returncode=0, stdout="codex-cli 1.0", stderr="")
+        probe_result = MagicMock(returncode=1, stdout="", stderr="bwrap: Failed to make / slave: Permission denied")
+        mock_run.side_effect = [version_result, probe_result]
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex", allow_isolated_noedit_sandbox_fallback=True)
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+        assert mock_run.call_args_list[1].args[0] == ["codex", "sandbox", "linux", "--", "true"]
+        assert mock_run_command.call_args.args[0] == [
+            "codex",
+            "--sandbox",
+            "danger-full-access",
+            "--ask-for-approval",
+            "never",
+            "-c",
+            'approvals_reviewer="user"',
+            "exec",
+            "--json",
+            "test prompt",
+        ]
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")

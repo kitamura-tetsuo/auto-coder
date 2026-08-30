@@ -27,6 +27,9 @@ logger = get_logger(__name__)
 
 ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
+ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
+ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v3"
 
 
 @dataclass
@@ -126,8 +129,22 @@ class FileDiffEvidence:
 
 
 def adversarial_validation_comment_marker(head_sha: str) -> str:
-    """Return the stable marker used to deduplicate validation comments."""
-    return f"<!-- auto-coder-adversarial-validation:{head_sha} -->"
+    """Return the versioned marker used to deduplicate validation comments."""
+    return f"<!-- auto-coder-adversarial-validation:{ADVERSARIAL_VALIDATION_CACHE_VERSION}:{head_sha} -->"
+
+
+def _bounded_comment_field(value: str) -> str:
+    """Return redacted, bounded prose without embedding raw Codex JSONL."""
+    text = redact_string(value).strip()
+    event_match = re.search(r'\{"type":"(?:thread|turn|item)\.', text)
+    if event_match:
+        prefix = text[: event_match.start()].rstrip(" :\n")
+        omission = "_Codex CLI event details omitted; see the structured interaction log._"
+        return f"{prefix}.\n\n{omission}" if prefix else omission
+    if len(text) <= ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT:
+        return text
+    omitted = len(text) - ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT
+    return f"{text[:ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT]}... [{omitted} characters omitted]"
 
 
 def format_adversarial_validation_comment(result: AdversarialValidationResult, head_sha: str) -> str:
@@ -145,35 +162,44 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
         "",
         f"Validated commit: `{head_sha}`",
         "",
-        result.summary.strip() or "No validation summary was provided.",
+        _bounded_comment_field(result.summary) or "No validation summary was provided.",
     ]
 
     if result.dynamic_check_requested:
-        lines.extend(["", f"Dynamic check requested: `{result.dynamic_check_requested}`"])
+        lines.extend(["", f"Dynamic check requested: `{_bounded_comment_field(result.dynamic_check_requested)}`"])
 
     if result.requirement_coverage:
-        lines.extend(["", "Issue requirement coverage:"])
+        coverage_by_status: Dict[str, List[str]] = {}
         for entry in result.requirement_coverage:
-            detail = f" — {entry.evidence}" if entry.evidence else ""
-            lines.append(f"- `{entry.requirement_id}`: **{entry.status}**{detail}")
+            status = entry.status.strip().upper() or "UNVERIFIED"
+            coverage_by_status.setdefault(status, []).append(entry.requirement_id)
+        counts = ", ".join(f"{status}: {len(requirement_ids)}" for status, requirement_ids in sorted(coverage_by_status.items()))
+        lines.extend(["", f"Issue requirement coverage ({len(result.requirement_coverage)} total): {counts}."])
+        for status, requirement_ids in sorted(coverage_by_status.items()):
+            if status in {"VERIFIED", "IRRELEVANT"}:
+                continue
+            displayed_ids = requirement_ids[:ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT]
+            omitted = len(requirement_ids) - len(displayed_ids)
+            suffix = f" (+{omitted} more)" if omitted else ""
+            lines.append(f"- **{status}**: {', '.join(f'`{requirement_id}`' for requirement_id in displayed_ids)}{suffix}")
 
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
         for index, finding in enumerate(result.findings, start=1):
-            lines.extend(["", f"#### {index}. Violated requirement", finding.violated_requirement.strip() or "Not specified."])
+            lines.extend(["", f"#### {index}. Violated requirement", _bounded_comment_field(finding.violated_requirement) or "Not specified."])
             if finding.counterexample.strip():
-                lines.extend(["", "**Counterexample**", "", finding.counterexample.strip()])
+                lines.extend(["", "**Counterexample**", "", _bounded_comment_field(finding.counterexample)])
             if finding.test_gap.strip():
-                lines.extend(["", "**Test gap**", "", finding.test_gap.strip()])
+                lines.extend(["", "**Test gap**", "", _bounded_comment_field(finding.test_gap)])
             if finding.suggested_regression_scenario.strip():
-                lines.extend(["", "**Suggested regression scenario**", "", finding.suggested_regression_scenario.strip()])
+                lines.extend(["", "**Suggested regression scenario**", "", _bounded_comment_field(finding.suggested_regression_scenario)])
 
     if result.diagnostic_category or result.diagnostic_reason:
         lines.extend(["", "### Diagnostic"])
         if result.diagnostic_category:
             lines.append(f"Category: `{result.diagnostic_category}`")
         if result.diagnostic_reason:
-            lines.append(f"Reason: {result.diagnostic_reason}")
+            lines.append(f"Reason: {_bounded_comment_field(result.diagnostic_reason)}")
 
     comment = "\n".join(lines)
     if len(comment) > ADVERSARIAL_VALIDATION_COMMENT_LIMIT:
@@ -1033,19 +1059,25 @@ def _apply_coverage_and_verdict_precedence(
     if result.findings:
         result.result = "NEEDS_FIX"
         incomplete_coverage: List[str] = []
+        coverage_details: List[str] = []
         if context.unverified_files:
-            incomplete_coverage.append(f"changed files: {', '.join(context.unverified_files)}")
+            incomplete_coverage.append(f"{len(context.unverified_files)} changed file(s)")
+            coverage_details.append(f"changed files: {', '.join(context.unverified_files)}")
         if not expected_requirement_ids:
             incomplete_coverage.append("Issue requirement manifest was empty")
+            coverage_details.append("Issue requirement manifest was empty")
         elif incomplete_requirement_ids:
-            incomplete_coverage.append(f"Issue requirement IDs: {', '.join(incomplete_requirement_ids)}")
+            incomplete_coverage.append(f"{len(incomplete_requirement_ids)} Issue requirement(s)")
+            coverage_details.append(f"Issue requirement IDs: {', '.join(incomplete_requirement_ids)}")
         if unknown_requirement_ids:
-            incomplete_coverage.append(f"unknown requirement IDs: {', '.join(unknown_requirement_ids)}")
+            incomplete_coverage.append(f"{len(unknown_requirement_ids)} unknown requirement ID(s)")
+            coverage_details.append(f"unknown requirement IDs: {', '.join(unknown_requirement_ids)}")
         if incomplete_coverage:
-            coverage_note = f"Review coverage also remains incomplete for {'; '.join(incomplete_coverage)}"
-            result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
+            coverage_note = f"Review coverage also remains incomplete for {', '.join(incomplete_coverage)}."
+            if coverage_note not in result.summary:
+                result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
             result.diagnostic_category = result.diagnostic_category or "incomplete_evidence_coverage"
-            result.diagnostic_reason = result.diagnostic_reason or coverage_note
+            result.diagnostic_reason = result.diagnostic_reason or "; ".join(coverage_details)
         return result
 
     if result.result.strip().upper() == "PASS" and not context.has_complete_file_coverage:

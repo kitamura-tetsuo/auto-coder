@@ -8,6 +8,7 @@ from auto_coder.adversarial_validator import (
     ADVERSARIAL_VALIDATION_COMMENT_LIMIT,
     AdversarialValidationFinding,
     AdversarialValidationResult,
+    RequirementCoverageEntry,
     format_adversarial_validation_comment,
 )
 from auto_coder.automation_config import AutomationConfig
@@ -148,7 +149,7 @@ class TestAdversarialValidationPRComment:
 
         comment = format_adversarial_validation_comment(result, "abc123")
 
-        assert comment.startswith("<!-- auto-coder-adversarial-validation:abc123 -->")
+        assert comment.startswith("<!-- auto-coder-adversarial-validation:v3:abc123 -->")
         assert "adversarial validation: NEEDS_FIX" in comment
         assert "Summary" in comment
         assert "Required behavior" in comment
@@ -168,7 +169,45 @@ class TestAdversarialValidationPRComment:
         comment = format_adversarial_validation_comment(result, "abc123")
 
         assert len(comment) <= ADVERSARIAL_VALIDATION_COMMENT_LIMIT
-        assert "Comment truncated by Auto-Coder" in comment
+        assert "characters omitted" in comment
+
+    def test_summarizes_large_requirement_coverage_without_evidence_noise(self):
+        result = AdversarialValidationResult(
+            result="NEEDS_FIX",
+            summary="Concrete failure",
+            requirement_coverage=[RequirementCoverageEntry(requirement_id=f"REQ-{index:03d}", status="UNVERIFIED", evidence="verbose evidence") for index in range(25)] + [RequirementCoverageEntry(requirement_id="REQ-999", status="VERIFIED", evidence="verified evidence")],
+        )
+
+        comment = format_adversarial_validation_comment(result, "abc123")
+
+        assert "Issue requirement coverage (26 total): UNVERIFIED: 25, VERIFIED: 1." in comment
+        assert "`REQ-000`" in comment
+        assert "`REQ-019`" in comment
+        assert "`REQ-020`" not in comment
+        assert "(+5 more)" in comment
+        assert "verbose evidence" not in comment
+        assert "verified evidence" not in comment
+
+    def test_omits_raw_codex_event_stream_from_comment_fields(self):
+        raw_stream = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thread-1"}',
+                '{"type":"turn.started"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"large payload"}}',
+            ]
+        )
+        result = AdversarialValidationResult(
+            result="BLOCKED",
+            summary=f"Adversarial validation execution failed: {raw_stream}",
+            diagnostic_category="validation_execution_error",
+            diagnostic_reason=raw_stream,
+        )
+
+        comment = format_adversarial_validation_comment(result, "abc123")
+
+        assert '"type":"thread.started"' not in comment
+        assert '"type":"item.completed"' not in comment
+        assert comment.count("Codex CLI event details omitted") == 2
 
     def test_publish_deduplicates_the_same_head_sha(self):
         client = MagicMock()
@@ -233,6 +272,31 @@ class TestAdversarialValidationPRComment:
         )
 
         assert saved_status == status
+        assert error is None
+
+    def test_legacy_unversioned_result_does_not_suppress_revalidation(self):
+        client = MagicMock()
+        client.get_pr_comments.return_value = [
+            {
+                "body": "\n".join(
+                    [
+                        "<!-- auto-coder-adversarial-validation:abc123 -->",
+                        "## ⚠️ Auto-Coder adversarial validation: ERROR",
+                        "",
+                        "Invalid Codex validator event stream",
+                    ]
+                )
+            }
+        ]
+
+        saved_status, error = _get_published_adversarial_validation_status(
+            client,
+            "owner/repo",
+            100,
+            "abc123",
+        )
+
+        assert saved_status is None
         assert error is None
 
     def test_prior_status_lookup_failure_is_fail_closed(self):
@@ -497,6 +561,43 @@ class TestAdversarialValidationPRFlow:
         assert "adversarial validation: BLOCKED" in client.add_comment_to_pr.call_args.args[2]
         assert "Oracle acquisition failed" in client.add_comment_to_pr.call_args.args[2]
         assert any("Adversarial validation blocked PR #100" in a for a in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_validation_execution_error_comment_excludes_exception_event_stream(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        raw_stream = '{"type":"thread.started"}\n{"type":"item.completed","item":{"text":"noise"}}'
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.side_effect = RuntimeError(raw_stream)
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
+        client = MagicMock()
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        comment = client.add_comment_to_pr.call_args.args[2]
+        assert "adversarial validation: BLOCKED" in comment
+        assert "validation_execution_error" in comment
+        assert "RuntimeError" in comment
+        assert '"type":"thread.started"' not in comment
+        assert any("Adversarial validation blocked PR #100" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

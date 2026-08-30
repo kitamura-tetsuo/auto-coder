@@ -45,6 +45,7 @@ from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
+from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -94,6 +95,20 @@ class ReviewThreadGateState:
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
     """Read a field from either a REST dictionary or a GhApi object."""
     return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
+
+
+def _add_unique_pr_comment(github_client: Any, repo_name: str, pr_number: int, body: str) -> bool:
+    """Post an informational comment only when the same body is not present."""
+    comments = github_client.get_pr_comments(repo_name, pr_number)
+    if isinstance(comments, list):
+        normalized_body = body.strip()
+        for comment in comments:
+            existing_body = _comment_value(comment, "body", "")
+            if isinstance(existing_body, str) and existing_body.strip() == normalized_body:
+                logger.info(f"Skipped duplicate informational comment on PR #{pr_number}")
+                return False
+    github_client.add_comment_to_pr(repo_name, pr_number, body)
+    return True
 
 
 def _get_codex_review_state(github_client: Any, repo_name: str, pr_number: int) -> CodexReviewState:
@@ -1790,10 +1805,13 @@ def _handle_pr_merge(
                             actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
                             val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
                     except Exception as e:
-                        logger.error(f"Failed during isolated adversarial validation for PR #{pr_number}: {e}")
+                        exception_preview = redact_string(str(e))[:2000]
+                        logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
                         val_result = AdversarialValidationResult(
                             result="BLOCKED",
-                            summary=f"Isolated validation environment creation failed: {e}",
+                            summary="Adversarial validation execution failed; see the structured interaction log for details",
+                            diagnostic_category="validation_execution_error",
+                            diagnostic_reason=type(e).__name__,
                         )
 
                     actions.append(
@@ -3150,8 +3168,10 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         if github_client:
             comment_body = f"🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
             try:
-                github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
-                actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
+                if _add_unique_pr_comment(github_client, repo_name, pr_number, comment_body):
+                    actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
+                else:
+                    actions.append(f"Skipped duplicate Jules fix-request comment on PR #{pr_number}")
             except Exception as e:
                 error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
                 try:
@@ -3243,8 +3263,10 @@ def _send_codex_cloud_error_feedback(
             if github_client:
                 comment_body = "🤖 Auto-Coder: CI checks failed. I've requested continuation from Codex Cloud to resolve the failures. Please wait for updates."
                 try:
-                    github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
-                    actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Codex Cloud")
+                    if _add_unique_pr_comment(github_client, repo_name, pr_number, comment_body):
+                        actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Codex Cloud")
+                    else:
+                        actions.append(f"Skipped duplicate Codex Cloud fix-request comment on PR #{pr_number}")
                 except Exception as e:
                     error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
                     logger.error(error_msg)

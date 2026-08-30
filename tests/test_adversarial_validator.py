@@ -1367,6 +1367,7 @@ class TestRunAdversarialValidation:
         assert result.needs_fix
         assert result.diagnostic_category == "incomplete_evidence_coverage"
         assert "src/huge.py" in (result.diagnostic_reason or "")
+        assert result.summary.count("Review coverage also remains incomplete") == 1
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

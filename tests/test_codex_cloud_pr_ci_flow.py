@@ -59,6 +59,26 @@ class TestCodexCloudPRCIFlow:
             comment = mock_github_client.add_comment_to_pr.call_args[0][2]
             assert "Codex Cloud" in comment
 
+    def test_send_codex_cloud_error_feedback_skips_duplicate_comment(self, config, mock_github_client):
+        comment = "🤖 Auto-Coder: CI checks failed. I've requested continuation from Codex Cloud to resolve the failures. Please wait for updates."
+        mock_github_client.get_pr_comments.return_value = [{"body": comment}]
+        pr_data = {
+            "number": 101,
+            "body": "https://chatgpt.com/codex/tasks/task_e_11223344",
+        }
+
+        with patch("auto_coder.codex_cloud_client.CodexCloudClient.continue_if_paused", return_value=True):
+            actions = _send_codex_cloud_error_feedback(
+                repo_name="owner/repo",
+                pr_data=pr_data,
+                failed_checks=[{"name": "PR Tests", "conclusion": "failure"}],
+                config=config,
+                github_client=mock_github_client,
+            )
+
+        mock_github_client.add_comment_to_pr.assert_not_called()
+        assert "Skipped duplicate Codex Cloud fix-request comment on PR #101" in actions
+
     def test_send_codex_cloud_error_feedback_resolves_task_from_cloud_manager(self, config, tmp_path):
         """Test resolving task ID via CloudManager when not directly in PR body."""
         repo = "owner/repo"
