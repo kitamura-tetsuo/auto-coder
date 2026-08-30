@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,7 @@ class CodexClient(LLMClientBase):
         openai_base_url: Optional[str] = None,
         use_noedit_options: bool = False,
         allow_isolated_noedit_sandbox_fallback: bool = False,
+        capture_final_message: bool = False,
     ) -> None:
         """Initialize Codex CLI client.
 
@@ -46,6 +48,8 @@ class CodexClient(LLMClientBase):
             use_noedit_options: If True, use options_for_noedit instead of options.
             allow_isolated_noedit_sandbox_fallback: Allow a no-edit review running in
                 a disposable worktree to bypass a broken local Linux sandbox.
+            capture_final_message: Use Codex's dedicated final-message output for
+                structured no-edit review responses.
         """
         super().__init__()
         config = get_llm_config()
@@ -90,6 +94,7 @@ class CodexClient(LLMClientBase):
         self.conflict_model = self.model_name
         self.timeout = None
         self.allow_isolated_noedit_sandbox_fallback = allow_isolated_noedit_sandbox_fallback
+        self.capture_final_message = capture_final_message
         self._noedit_sandbox_fallback_required: Optional[bool] = None
 
         # Validate required options for this backend
@@ -202,6 +207,7 @@ class CodexClient(LLMClientBase):
         status = "success"
         error_message = None
         full_output = ""
+        final_message_path: Optional[Path] = None
 
         try:
             escaped_prompt = self._escape_prompt(prompt)
@@ -330,6 +336,20 @@ class CodexClient(LLMClientBase):
                     sanitized_cmd = ["codex", *noedit_flags]
                 cmd = sanitized_cmd
 
+            # Codex's JSONL event stream is useful for diagnostics, but the
+            # validator only needs the final assistant payload. Ask Codex to
+            # write that payload through its dedicated output channel so an
+            # incidental non-JSON stdout line cannot corrupt a valid result.
+            if self.capture_final_message and is_noedit and "--json" in cmd:
+                final_message_file = tempfile.NamedTemporaryFile(
+                    prefix="auto-coder-codex-final-",
+                    suffix=".txt",
+                    delete=False,
+                )
+                final_message_path = Path(final_message_file.name)
+                final_message_file.close()
+                cmd.extend(["--output-last-message", str(final_message_path)])
+
             if resume_session_id:
                 cmd.append(resume_session_id)
             cmd.append(escaped_prompt)
@@ -398,10 +418,15 @@ class CodexClient(LLMClientBase):
                 error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)
 
-            # Codex writes its machine-readable ``--json`` event stream to
-            # stdout. Keep stderr in the interaction log and error detection,
-            # but do not append diagnostics to a successful response: doing so
-            # corrupts otherwise valid JSONL before downstream parsing.
+            if final_message_path is not None:
+                final_message = final_message_path.read_text(encoding="utf-8").strip()
+                if final_message:
+                    return final_message
+
+            # Keep stderr in the interaction log and error detection, but do
+            # not append diagnostics to a successful response. The JSONL
+            # parser remains a fail-closed fallback when Codex did not write a
+            # final-message file.
             return response_output
         except AutoCoderUsageLimitError:
             # Re-raise without catching
@@ -412,6 +437,12 @@ class CodexClient(LLMClientBase):
         except Exception as e:
             raise RuntimeError(f"Failed to run codex CLI: {e}")
         finally:
+            if final_message_path is not None:
+                try:
+                    final_message_path.unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning(f"Failed to remove temporary Codex final-message file: {e}")
+
             # Always log the interaction and print summary
             duration_ms = (time.time() - start_time) * 1000
 

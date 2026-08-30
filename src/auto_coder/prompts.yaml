@@ -662,6 +662,14 @@ pr:
     }
     ```
 
+  adversarial_validation_fix: |-
+    Auto-Coder's adversarial validation found concrete specification violations in PR #$pr_number in $repo_name at commit $head_sha.
+
+    Apply fixes for every concrete finding below, add strict regression tests for the counterexamples, and update the existing PR branch. Re-read the linked Issue specification before editing. Do not dismiss findings merely because the current tests pass. Run the repository test script after making the changes. Do not post PR comments.
+
+    Adversarial validation report:
+    $validation_report
+
 issue:
   action: |-
     Analyze the following GitHub issue and take appropriate actions:

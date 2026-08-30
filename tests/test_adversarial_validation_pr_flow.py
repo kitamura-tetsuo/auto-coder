@@ -9,6 +9,7 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     RequirementCoverageEntry,
+    adversarial_validation_codex_feedback_marker,
     format_adversarial_validation_comment,
 )
 from auto_coder.automation_config import AutomationConfig
@@ -18,6 +19,7 @@ from auto_coder.pr_processor import (
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
     _publish_adversarial_validation_result,
+    _send_adversarial_validation_feedback_to_codex_cloud,
 )
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
@@ -149,7 +151,7 @@ class TestAdversarialValidationPRComment:
 
         comment = format_adversarial_validation_comment(result, "abc123")
 
-        assert comment.startswith("<!-- auto-coder-adversarial-validation:v3:abc123 -->")
+        assert comment.startswith("<!-- auto-coder-adversarial-validation:v4:abc123 -->")
         assert "adversarial validation: NEEDS_FIX" in comment
         assert "Summary" in comment
         assert "Required behavior" in comment
@@ -329,6 +331,61 @@ class TestAdversarialValidationPRComment:
         assert action == "Failed to publish adversarial validation result to PR #100: API unavailable"
 
 
+class TestAdversarialValidationCodexFeedback:
+    def test_sends_complete_report_as_custom_codex_cloud_followup(self):
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_abc123",
+        }
+        report = "## Auto-Coder adversarial validation: NEEDS_FIX\n\nConcrete counterexample"
+
+        with patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client):
+            actions = _send_adversarial_validation_feedback_to_codex_cloud(
+                "owner/repo",
+                pr_data,
+                "head123",
+                report,
+                client,
+            )
+
+        cloud_client.continue_if_paused.assert_called_once()
+        (task_id,) = cloud_client.continue_if_paused.call_args.args
+        prompt = cloud_client.continue_if_paused.call_args.kwargs["prompt"]
+        assert task_id == "task_e_abc123"
+        assert "PR #100" in prompt
+        assert "head123" in prompt
+        assert report in prompt
+        assert "add strict regression tests" in prompt
+        assert any("Sent adversarial NEEDS_FIX report" in action for action in actions)
+        delivery_comment = client.add_comment_to_pr.call_args.args[2]
+        assert delivery_comment.startswith(adversarial_validation_codex_feedback_marker("head123"))
+
+    def test_delivery_marker_prevents_duplicate_codex_cloud_followup(self):
+        client = MagicMock()
+        client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+        }
+
+        with patch("auto_coder.codex_cloud_client.CodexCloudClient") as cloud_client_type:
+            actions = _send_adversarial_validation_feedback_to_codex_cloud(
+                "owner/repo",
+                pr_data,
+                "head123",
+                "report",
+                client,
+            )
+
+        cloud_client_type.assert_not_called()
+        client.add_comment_to_pr.assert_not_called()
+        assert actions == ["Skipped duplicate adversarial feedback to Codex Cloud for PR #100 at head123"]
+
+
 class TestAdversarialValidationPRFlow:
     """Test adversarial validation integration into _handle_pr_merge."""
 
@@ -410,13 +467,20 @@ class TestAdversarialValidationPRFlow:
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        with patch(
+            "auto_coder.pr_processor._send_adversarial_validation_feedback_to_codex_cloud",
+            return_value=["Sent saved report"],
+        ) as mock_feedback:
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_run_validation.assert_not_called()
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
+        mock_feedback.assert_called_once()
+        assert "Previously rejected" in mock_feedback.call_args.args[3]
         assert any("already validated as NEEDS_FIX" in action for action in actions)
         assert any("remains non-pass" in action for action in actions)
+        assert "Sent saved report" in actions
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
@@ -518,7 +582,7 @@ class TestAdversarialValidationPRFlow:
         assert "Tests only test single execution" in comment
         assert "Call action twice and verify state" in comment
         assert any("Adversarial validation failed for PR #100" in a for a in actions)
-        assert any("no automatic adversarial fix was attempted" in a for a in actions)
+        assert any("no local automatic adversarial fix was attempted" in a for a in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

@@ -30,7 +30,7 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v3"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v4"
 
 
 @dataclass
@@ -132,6 +132,11 @@ class FileDiffEvidence:
 def adversarial_validation_comment_marker(head_sha: str) -> str:
     """Return the versioned marker used to deduplicate validation comments."""
     return f"<!-- auto-coder-adversarial-validation:{ADVERSARIAL_VALIDATION_CACHE_VERSION}:{head_sha} -->"
+
+
+def adversarial_validation_codex_feedback_marker(head_sha: str) -> str:
+    """Return the durable marker for a validation result sent to Codex Cloud."""
+    return f"<!-- auto-coder-adversarial-validation-codex-feedback:{ADVERSARIAL_VALIDATION_CACHE_VERSION}:{head_sha} -->"
 
 
 def _bounded_comment_field(value: str) -> str:
