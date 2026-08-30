@@ -10,10 +10,12 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationContext,
     AdversarialValidationFinding,
     AdversarialValidationResult,
+    IssueRequirement,
     build_adversarial_validation_context,
     build_file_aware_diff,
     extract_all_changed_files,
     extract_changed_test_files,
+    extract_issue_requirements,
     is_test_file,
     parse_adversarial_validation_response,
     run_adversarial_validation,
@@ -57,6 +59,13 @@ diff --git a/src/service_test.py b/src/service_test.py
         quoted_diff = r'diff --git "a/src/\346\227\245\346\234\254.py" "b/src/\346\227\245\346\234\254.py"' "\n" r'--- "a/src/\346\227\245\346\234\254.py"' "\n" r'+++ "b/src/\346\227\245\346\234\254.py"' "\n" "+changed = True\n"
 
         assert extract_all_changed_files(quoted_diff) == ["src/日本.py"]
+
+    def test_issue_requirements_receive_stable_machine_checkable_ids(self):
+        requirements = extract_issue_requirements("Issue Description:\nR1: Persist state.\nR2: Emit an audit event.")
+
+        assert [requirement.text for requirement in requirements] == ["R1: Persist state.", "R2: Emit an audit event."]
+        assert requirements[0].requirement_id.startswith("REQ-001-")
+        assert requirements[1].requirement_id.startswith("REQ-002-")
 
 
 class TestParseAdversarialValidationResponse:
@@ -209,6 +218,22 @@ COUNTEREXAMPLE: Given state S, produces invalid token
         assert not result.is_pass
         assert result.needs_fix
         assert result.result == "NEEDS_FIX"
+
+    def test_parse_text_concrete_finding_overrides_blocked(self):
+        text_resp = """RESULT: BLOCKED
+VIOLATED_REQUIREMENT: Audit events must be persisted
+COUNTEREXAMPLE: Given state S, when save succeeds but audit delivery is unavailable, then the specification requires a durable event, but the implementation drops it, and tests pass because delivery is mocked
+TEST_GAP: No test covers unavailable audit delivery
+SUGGESTED_REGRESSION_SCENARIO: Persist an event while delivery is offline
+"""
+
+        result = parse_adversarial_validation_response(text_resp)
+
+        assert result.result == "NEEDS_FIX"
+        assert result.needs_fix
+        assert len(result.findings) == 1
+        assert "delivery is mocked" in result.findings[0].counterexample
+        assert result.diagnostic_category == "blocked_with_concrete_finding"
 
     def test_parse_empty_response_fails_closed_to_error(self):
         """Empty response must fail closed to ERROR and block merge."""
@@ -396,6 +421,7 @@ class TestBuildAdversarialValidationContext:
             changed_tests=changed_tests_str,
             changed_files="\n".join(f"- {path}" for path in context.all_changed_files),
             coverage_status="INCOMPLETE",
+            requirement_manifest="\n".join(f"- {item.requirement_id}: {item.text}" for item in context.issue_requirements),
         )
 
         assert "Complete Changed-File Manifest" in rendered_prompt
@@ -802,8 +828,14 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-x", text="Must do X")],
         )
-        mock_run_prompt.return_value = '{"result": "PASS", "summary": "Valid implementation", "requirement_coverage_complete": true, "unverified_requirements": [], "findings": []}'
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Valid implementation",
+  "requirement_coverage": [{"requirement_id": "REQ-001-x", "status": "VERIFIED", "evidence": "Patch implements X and its test asserts X"}],
+  "findings": []
+}"""
 
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
@@ -1036,6 +1068,10 @@ class TestRunAdversarialValidation:
             pr_diff="complete bounded evidence",
             all_changed_files=["src/feature.py"],
             issue_context="R1: persist state. R2: emit an audit event.",
+            issue_requirements=[
+                IssueRequirement(requirement_id="REQ-001-r1", text="R1: persist state"),
+                IssueRequirement(requirement_id="REQ-002-r2", text="R2: emit an audit event"),
+            ],
         )
         mock_run_prompt.return_value = '{"result": "PASS", "summary": "Reviewed R1", "findings": []}'
 
@@ -1051,7 +1087,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
+    def test_false_complete_boolean_cannot_hide_omitted_requirement_id(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -1059,12 +1095,18 @@ class TestRunAdversarialValidation:
             pr_diff="complete bounded evidence",
             all_changed_files=["src/feature.py"],
             issue_context="R1: persist state. R2: emit an audit event.",
+            issue_requirements=[
+                IssueRequirement(requirement_id="REQ-001-r1", text="R1: persist state"),
+                IssueRequirement(requirement_id="REQ-002-r2", text="R2: emit an audit event"),
+            ],
         )
         mock_run_prompt.return_value = """{
   "result": "PASS",
-  "summary": "R1 was verified but R2 was not inspected",
-  "requirement_coverage_complete": false,
-  "unverified_requirements": ["R2: emit an audit event"],
+  "summary": "R1 is correct",
+  "requirement_coverage_complete": true,
+  "requirement_coverage": [
+    {"requirement_id": "REQ-001-r1", "status": "VERIFIED", "evidence": "R1 patch inspected"}
+  ],
   "findings": []
 }"""
 
@@ -1076,7 +1118,42 @@ class TestRunAdversarialValidation:
         )
 
         assert result.result == "INCONCLUSIVE"
-        assert "R2: emit an audit event" in (result.diagnostic_reason or "")
+        assert "REQ-002-r2" in (result.diagnostic_reason or "")
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Two requirements",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="R1: persist state. R2: emit an audit event.",
+            issue_requirements=[
+                IssueRequirement(requirement_id="REQ-001-r1", text="R1: persist state"),
+                IssueRequirement(requirement_id="REQ-002-r2", text="R2: emit an audit event"),
+            ],
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "R1 was verified but R2 was not inspected",
+  "requirement_coverage": [
+    {"requirement_id": "REQ-001-r1", "status": "VERIFIED", "evidence": "Persistence patch inspected"},
+    {"requirement_id": "REQ-002-r2", "status": "UNVERIFIED", "evidence": "Audit behavior was not inspected"}
+  ],
+  "findings": []
+}"""
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Two requirements"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "INCONCLUSIVE"
+        assert "REQ-002-r2" in (result.diagnostic_reason or "")
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

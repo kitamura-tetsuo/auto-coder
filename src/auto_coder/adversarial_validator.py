@@ -40,6 +40,23 @@ class AdversarialValidationFinding:
 
 
 @dataclass
+class IssueRequirement:
+    """Stable requirement unit extracted deterministically from the Issue oracle."""
+
+    requirement_id: str = ""
+    text: str = ""
+
+
+@dataclass
+class RequirementCoverageEntry:
+    """Reviewer's structured disposition for one stable Issue requirement."""
+
+    requirement_id: str = ""
+    status: str = "UNVERIFIED"
+    evidence: str = ""
+
+
+@dataclass
 class AdversarialValidationResult:
     """Outcome of adversarial PR validation against the specification oracle.
 
@@ -56,8 +73,7 @@ class AdversarialValidationResult:
     dynamic_check_requested: Optional[str] = None
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
-    requirement_coverage_complete: Optional[bool] = None
-    unverified_requirements: List[str] = field(default_factory=list)
+    requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
@@ -89,6 +105,7 @@ class AdversarialValidationContext:
     issue_context: str = ""
     is_diff_truncated: bool = False
     unverified_files: List[str] = field(default_factory=list)
+    issue_requirements: List[IssueRequirement] = field(default_factory=list)
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -132,12 +149,11 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     if result.dynamic_check_requested:
         lines.extend(["", f"Dynamic check requested: `{result.dynamic_check_requested}`"])
 
-    if result.requirement_coverage_complete is not None:
-        coverage = "complete" if result.requirement_coverage_complete else "incomplete"
-        lines.extend(["", f"Issue requirement coverage: **{coverage}**"])
-    if result.unverified_requirements:
-        lines.extend(["", "Unverified Issue requirements:"])
-        lines.extend(f"- {requirement}" for requirement in result.unverified_requirements)
+    if result.requirement_coverage:
+        lines.extend(["", "Issue requirement coverage:"])
+        for entry in result.requirement_coverage:
+            detail = f" — {entry.evidence}" if entry.evidence else ""
+            lines.append(f"- `{entry.requirement_id}`: **{entry.status}**{detail}")
 
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
@@ -259,6 +275,31 @@ def extract_changed_test_files(pr_diff: str) -> List[str]:
     """
     all_files = extract_all_changed_files(pr_diff)
     return [f for f in all_files if is_test_file(f)]
+
+
+def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
+    """Create stable, machine-checkable requirement units from the Issue oracle.
+
+    Every substantive oracle line is included, so a reviewer cannot silently omit
+    a requirement-bearing prose line. Non-requirement background may be marked
+    IRRELEVANT by the reviewer, but it still needs an explicit coverage entry.
+    """
+    requirements: List[IssueRequirement] = []
+    seen: set[str] = set()
+    ignored_labels = {"issue description:", "parent issue description:"}
+    for raw_line in issue_context.splitlines():
+        text = raw_line.strip()
+        if not text or text.lower() in ignored_labels:
+            continue
+        normalized = re.sub(r"^#{1,6}\s+", "", text)
+        normalized = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s+)", "", normalized).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        digest = hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:10]
+        requirement_id = f"REQ-{len(requirements) + 1:03d}-{digest}"
+        requirements.append(IssueRequirement(requirement_id=requirement_id, text=normalized))
+    return requirements
 
 
 def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
@@ -427,6 +468,7 @@ def build_adversarial_validation_context(
 
     # Extract linked issues context (from body, title, branch name, session)
     issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data)
+    issue_requirements = extract_issue_requirements(issue_context)
 
     # Extract changed test files from diff or all_changed_files
     changed_tests = [f for f in all_changed_files if is_test_file(f)] if all_changed_files else extract_changed_test_files(pr_diff)
@@ -442,6 +484,7 @@ def build_adversarial_validation_context(
         issue_context=issue_context,
         is_diff_truncated=is_diff_truncated,
         unverified_files=unverified_files,
+        issue_requirements=issue_requirements,
     )
 
 
@@ -660,29 +703,49 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if dynamic_check:
                     dynamic_check = str(dynamic_check).strip()
 
-                requirement_coverage = parsed.get("requirement_coverage_complete")
-                if requirement_coverage is not None and not isinstance(requirement_coverage, bool):
+                raw_requirement_coverage = parsed.get("requirement_coverage", [])
+                if not isinstance(raw_requirement_coverage, list):
                     return _parse_error(
                         raw_response,
                         "schema_error",
-                        "Malformed validator schema: requirement_coverage_complete must be a boolean",
-                        f"requirement_coverage_complete must be a boolean, got {type(requirement_coverage).__name__}",
+                        "Malformed validator schema: requirement_coverage must be a list",
+                        f"requirement_coverage must be a list, got {type(raw_requirement_coverage).__name__}",
                     )
-                raw_unverified_requirements = parsed.get("unverified_requirements", [])
-                if not isinstance(raw_unverified_requirements, list) or any(not isinstance(item, str) or not item.strip() for item in raw_unverified_requirements):
-                    return _parse_error(
-                        raw_response,
-                        "schema_error",
-                        "Malformed validator schema: unverified_requirements must be a list of non-empty strings",
-                        "unverified_requirements must be a list of non-empty strings",
-                    )
-                unverified_requirements = [item.strip() for item in raw_unverified_requirements]
-                if requirement_coverage is True and unverified_requirements:
-                    return _parse_error(
-                        raw_response,
-                        "contradictory_response",
-                        "Contradictory requirement coverage: complete claimed with unverified requirements",
-                        "requirement_coverage_complete=true requires unverified_requirements to be empty",
+                requirement_coverage: List[RequirementCoverageEntry] = []
+                seen_requirement_ids: set[str] = set()
+                valid_coverage_statuses = {"VERIFIED", "VIOLATED", "IRRELEVANT", "UNVERIFIED"}
+                for item in raw_requirement_coverage:
+                    if not isinstance(item, dict):
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Malformed requirement coverage entry",
+                            "requirement coverage entries must be objects",
+                        )
+                    requirement_id = str(item.get("requirement_id", "")).strip()
+                    status = str(item.get("status", "")).strip().upper()
+                    evidence = str(item.get("evidence", "")).strip()
+                    if not requirement_id or status not in valid_coverage_statuses or not evidence:
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Malformed requirement coverage entry",
+                            "each coverage entry requires a unique requirement_id, valid status, and non-empty evidence",
+                        )
+                    if requirement_id in seen_requirement_ids:
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Duplicate requirement coverage entry",
+                            f"requirement_id {requirement_id} appears more than once",
+                        )
+                    seen_requirement_ids.add(requirement_id)
+                    requirement_coverage.append(
+                        RequirementCoverageEntry(
+                            requirement_id=requirement_id,
+                            status=status,
+                            evidence=evidence,
+                        )
                     )
 
                 raw_findings = parsed.get("findings")
@@ -772,8 +835,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     findings=findings,
                     raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
-                    requirement_coverage_complete=requirement_coverage,
-                    unverified_requirements=unverified_requirements,
+                    requirement_coverage=requirement_coverage,
                 )
             else:
                 return _parse_error(
@@ -878,6 +940,29 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
             raw_response=raw_response,
         )
 
+    if re.search(r"^\s*RESULT\s*:\s*BLOCKED", cleaned_response, re.MULTILINE | re.IGNORECASE):
+        if counterexample:
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Concrete specification violation overrides BLOCKED uncertainty",
+                findings=[
+                    AdversarialValidationFinding(
+                        violated_requirement=violated_req or "Specification requirement violated",
+                        counterexample=counterexample,
+                        test_gap=test_gap or "Existing tests do not assert this condition",
+                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                    )
+                ],
+                raw_response=raw_response,
+                diagnostic_category="blocked_with_concrete_finding",
+                diagnostic_reason="Infrastructure or evidence uncertainty coexists with a concrete finding",
+            )
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary="Validation blocked by infrastructure or evidence failure",
+            raw_response=raw_response,
+        )
+
     if json_failure_reason:
         return _parse_error(
             raw_response,
@@ -899,14 +984,21 @@ def _apply_coverage_and_verdict_precedence(
     context: AdversarialValidationContext,
 ) -> AdversarialValidationResult:
     """Apply deterministic finding-first and complete-coverage verdict rules."""
+    expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
+    coverage_by_id = {entry.requirement_id: entry for entry in result.requirement_coverage}
+    missing_requirement_ids = sorted(expected_requirement_ids - coverage_by_id.keys())
+    unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
+    incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
+
     if result.findings:
         result.result = "NEEDS_FIX"
         incomplete_coverage: List[str] = []
         if context.unverified_files:
             incomplete_coverage.append(f"changed files: {', '.join(context.unverified_files)}")
-        if result.requirement_coverage_complete is not True:
-            requirements = ", ".join(result.unverified_requirements) or "requirement coverage was not explicitly attested"
-            incomplete_coverage.append(f"Issue requirements: {requirements}")
+        if not expected_requirement_ids:
+            incomplete_coverage.append("Issue requirement manifest was empty")
+        elif incomplete_requirement_ids:
+            incomplete_coverage.append(f"Issue requirement IDs: {', '.join(incomplete_requirement_ids)}")
         if incomplete_coverage:
             coverage_note = f"Review coverage also remains incomplete for {'; '.join(incomplete_coverage)}"
             result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
@@ -922,9 +1014,11 @@ def _apply_coverage_and_verdict_precedence(
         result.diagnostic_reason = reason
         return result
 
-    if result.result.strip().upper() == "PASS" and result.requirement_coverage_complete is not True:
-        requirements = ", ".join(result.unverified_requirements) or "the reviewer did not provide a complete requirement-coverage attestation"
-        reason = f"Material Issue requirements remain unverified: {requirements}"
+    if result.result.strip().upper() == "PASS" and (not expected_requirement_ids or incomplete_requirement_ids):
+        if not expected_requirement_ids:
+            reason = "The deterministic Issue requirement manifest was empty"
+        else:
+            reason = f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}"
         result.result = "INCONCLUSIVE"
         result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_requirement_coverage"
@@ -1001,6 +1095,7 @@ def run_adversarial_validation(
     manifest_budget = max(256, config.MAX_PR_DIFF_SIZE)
     changed_tests_str = _bounded_path_manifest(context.changed_tests, manifest_budget, "(No test files detected in diff)")
     changed_files_str = _bounded_path_manifest(context.all_changed_files, manifest_budget, "(No changed files detected)")
+    requirement_manifest = "\n".join(f"- {requirement.requirement_id}: {requirement.text}" for requirement in context.issue_requirements) if context.issue_requirements else "(Requirement manifest extraction failed; PASS is forbidden.)"
     if context.has_complete_file_coverage:
         coverage_status = "COMPLETE: every changed file has complete patch evidence."
     else:
@@ -1021,6 +1116,7 @@ def run_adversarial_validation(
         changed_tests=changed_tests_str,
         changed_files=changed_files_str,
         coverage_status=coverage_status,
+        requirement_manifest=requirement_manifest,
     )
 
     # 4. Invoke the strong model
@@ -1074,6 +1170,7 @@ def run_adversarial_validation(
                 original_findings=original_findings_str,
                 linked_issues_context=context.issue_context,
                 pr_diff=context.pr_diff,
+                requirement_manifest=requirement_manifest,
             )
             with ProgressStage("Adversarial dynamic check follow-up"):
                 followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager, is_noedit=True)
