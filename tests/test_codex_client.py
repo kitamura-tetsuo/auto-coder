@@ -812,16 +812,19 @@ class TestCodexClient:
             assert mock_run_command.called
             called_cmd = mock_run_command.call_args[0][0]
 
-            assert "exec" in called_cmd
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-
-            assert called_cmd[called_cmd.index("--sandbox") + 1] == "read-only"
-            assert called_cmd[called_cmd.index("--ask-for-approval") + 1] == "never"
-            assert called_cmd[called_cmd.index("-c") + 1] == 'approvals_reviewer="user"'
-            assert called_cmd[-1] == "test prompt"
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -849,19 +852,18 @@ class TestCodexClient:
             assert mock_run_command.called
             called_cmd = mock_run_command.call_args[0][0]
 
-            assert "workspace-write" not in called_cmd
-            assert "danger-full-access" not in called_cmd
-            assert "always" not in called_cmd
-
-            assert "exec" in called_cmd
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-
-            assert called_cmd[called_cmd.index("--sandbox") + 1] == "read-only"
-            assert called_cmd[called_cmd.index("--ask-for-approval") + 1] == "never"
-            assert called_cmd[called_cmd.index("-c") + 1] == 'approvals_reviewer="user"'
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -890,20 +892,19 @@ class TestCodexClient:
             assert mock_run_command.called
             called_cmd = mock_run_command.call_args[0][0]
 
-            assert "--dangerously-bypass-approvals-and-sandbox" not in called_cmd
-            assert "--yolo" not in called_cmd
-            assert "danger-full-access" not in called_cmd
-            assert 'approvals_reviewer="auto"' not in called_cmd
-
-            assert "exec" in called_cmd
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-
-            assert called_cmd[called_cmd.index("--sandbox") + 1] == "read-only"
-            assert called_cmd[called_cmd.index("--ask-for-approval") + 1] == "never"
-            assert called_cmd[called_cmd.index("-c") + 1] == 'approvals_reviewer="user"'
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -962,13 +963,62 @@ class TestCodexClient:
             assert mock_run_command.called
             called_cmd = mock_run_command.call_args[0][0]
 
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-            assert called_cmd.index("--model") < exec_index
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "--model",
+                "custom-model",
+                "exec",
+                "--json",
+                "--profile",
+                "custom-profile",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
 
-            assert called_cmd.index("--json") > exec_index
-            assert called_cmd.index("--profile") > exec_index
-            assert called_cmd.index("custom-profile") > exec_index
-            assert called_cmd[-1] == "test prompt"
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_when_exec_is_option_value_before_subcommand(self, mock_run_command, mock_run):
+        """CodexClient correctly handles 'exec' appearing as a global option value before the exec subcommand."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "exec"
+        mock_backend_config.options = ["--model", "exec", "exec", "--json"]
+        mock_backend_config.options_for_noedit = ["--model", "exec", "exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["--model", "exec", "exec", "--json"],
+            "options_for_noedit": ["--model", "exec", "exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "--model",
+                "exec",
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd

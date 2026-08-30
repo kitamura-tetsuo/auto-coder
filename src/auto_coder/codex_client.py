@@ -212,15 +212,13 @@ class CodexClient(LLMClientBase):
                     "-c",
                     'approvals_reviewer="user"',
                 ]
-                if "exec" in sanitized_cmd:
-                    exec_idx = sanitized_cmd.index("exec")
-                    sanitized_cmd = sanitized_cmd[:exec_idx] + noedit_flags + sanitized_cmd[exec_idx:]
+                if sanitized_cmd:
+                    sanitized_cmd = [sanitized_cmd[0], *noedit_flags, *sanitized_cmd[1:]]
                 else:
-                    sanitized_cmd.extend(noedit_flags)
+                    sanitized_cmd = ["codex", *noedit_flags]
                 cmd = sanitized_cmd
 
             cmd.append(escaped_prompt)
-
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
                 usage_markers = self.usage_markers

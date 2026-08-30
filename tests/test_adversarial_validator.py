@@ -456,14 +456,19 @@ class TestBuildAdversarialValidationContext:
 
             mock_run.assert_called_once()
             called_cmd = mock_run.call_args[0][0]
-            assert "exec" in called_cmd
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-            assert called_cmd[called_cmd.index("--sandbox") + 1] == "read-only"
-            assert called_cmd[called_cmd.index("--ask-for-approval") + 1] == "never"
-            assert called_cmd[called_cmd.index("-c") + 1] == 'approvals_reviewer="user"'
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")
@@ -497,14 +502,18 @@ class TestBuildAdversarialValidationContext:
             assert "--full-auto" not in called_cmd
             assert "-y" not in called_cmd
             assert "always" not in called_cmd
-            assert "exec" in called_cmd
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-            assert called_cmd[called_cmd.index("--sandbox") + 1] == "read-only"
-            assert called_cmd[called_cmd.index("--ask-for-approval") + 1] == "never"
-            assert called_cmd[called_cmd.index("-c") + 1] == 'approvals_reviewer="user"'
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")
@@ -539,14 +548,18 @@ class TestBuildAdversarialValidationContext:
             assert "--not-so-yolo" not in called_cmd
             assert "workspace-write" not in called_cmd
             assert 'approvals_reviewer="auto_review"' not in called_cmd
-            assert "exec" in called_cmd
-            exec_index = called_cmd.index("exec")
-            assert called_cmd.index("--sandbox") < exec_index
-            assert called_cmd.index("--ask-for-approval") < exec_index
-            assert called_cmd.index("-c") < exec_index
-            assert called_cmd[called_cmd.index("--sandbox") + 1] == "read-only"
-            assert called_cmd[called_cmd.index("--ask-for-approval") + 1] == "never"
-            assert called_cmd[called_cmd.index("-c") + 1] == 'approvals_reviewer="user"'
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "prompt",
+            ]
+            assert called_cmd == expected_cmd
 
     @patch("auto_coder.codex_client.get_llm_config")
     @patch("auto_coder.codex_client.subprocess.run")
