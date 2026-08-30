@@ -22,6 +22,12 @@ class TestRequiredOptionsValidation:
         assert "jules" in REQUIRED_OPTIONS_BY_BACKEND
         assert "codex-mcp" in REQUIRED_OPTIONS_BY_BACKEND
 
+    def test_default_codex_config_does_not_inject_dangerous_bypass_option(self):
+        """Codex's editable policy must not become a dangerous configuration default."""
+        config = LLMBackendConfiguration()
+
+        assert "--dangerously-bypass-approvals-and-sandbox" not in config.backends["codex"].options
+
     def test_codex_noedit_backend_does_not_require_dangerous_bypass_option(self):
         """No-edit Codex execution uses its enforced client-side safety policy."""
         config = BackendConfig(name="codex-review", backend_type="codex")

@@ -1051,7 +1051,8 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
     """Validate configuration and return list of errors."""
     errors: List[str] = []
     editable_backends = {backend_name for backend_name in config.get_active_backends()}
-    noedit_only_backends = {backend_name for backend_name in config.get_active_noedit_backends()} - editable_backends
+    noedit_backends = {backend_name for backend_name in config.get_active_noedit_backends()}
+    noedit_only_backends = noedit_backends - editable_backends
 
     # Check each backend
     for name, backend_config in config.backends.items():
@@ -1097,6 +1098,9 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
 
         # Validate required options (only for enabled backends)
         if backend_config.enabled:
+            backend_type = backend_config.backend_type or backend_config.name
+            if backend_type == "codex" and name not in editable_backends and name not in noedit_backends:
+                continue
             required_errors = backend_config.validate_required_options(is_noedit=name in noedit_only_backends)
             errors.extend(required_errors)
 

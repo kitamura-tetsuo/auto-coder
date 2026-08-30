@@ -16,9 +16,11 @@ import tomli_w
 
 from .logger_config import get_logger
 
-# Define default options and implementation-required options for each backend type.
+# Define implementation-required options for each backend type. Codex execution
+# policies are validated by mode in ``BackendConfig.validate_required_options``
+# and must never be injected as defaults.
 REQUIRED_OPTIONS_BY_BACKEND = {
-    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    "codex": [],
     "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
     "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],
