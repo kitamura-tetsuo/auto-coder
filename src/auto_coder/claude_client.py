@@ -16,6 +16,7 @@ from .claude_usage_checker import check_claude_usage_or_raise
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
+from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
@@ -164,6 +165,7 @@ class ClaudeClient(LLMClientBase):
         self._extra_args: List[str] = []
         self._last_session_id: Optional[str] = None
         self._last_output: Optional[str] = None
+        self.output_logger = LLMOutputLogger()
 
         # Validate required options for this backend
         if self.config_backend:
@@ -208,6 +210,10 @@ class ClaudeClient(LLMClientBase):
             backend_name=getattr(self, "backend_name", "claude"),
             allow_unknown=True,
         )
+        start_time = time.time()
+        full_output = ""
+        status = "success"
+        error_message: Optional[str] = None
         try:
             escaped_prompt = self._escape_prompt(prompt)
 
@@ -450,10 +456,24 @@ class ClaudeClient(LLMClientBase):
                 raise AutoCoderUsageLimitError(full_output)
 
             return full_output
-        except AutoCoderUsageLimitError:
+        except AutoCoderUsageLimitError as exc:
+            status = "error"
+            error_message = str(exc)
             raise
         except Exception as e:
+            status = "error"
+            error_message = str(e)
             raise RuntimeError(f"Failed to run claude CLI: {e}")
+        finally:
+            self.output_logger.log_interaction(
+                backend=getattr(self, "backend_name", "claude"),
+                model=self.model_name,
+                prompt=prompt,
+                response=full_output,
+                duration_ms=(time.time() - start_time) * 1000,
+                status=status,
+                error=error_message,
+            )
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Claude CLI.

@@ -16,10 +16,11 @@ import tomli_w
 
 from .logger_config import get_logger
 
-# Define required options for each backend type
-# These are options that must be present in the options list for the backend to work
+# Define implementation-required options for each backend type. Codex execution
+# policies are validated by mode in ``BackendConfig.validate_required_options``
+# and must never be injected as defaults.
 REQUIRED_OPTIONS_BY_BACKEND = {
-    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    "codex": [],
     "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
     "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],
@@ -298,15 +299,42 @@ class BackendConfig:
             return extra[name]
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-    def validate_required_options(self) -> List[str]:
-        """Validate that required options are configured.
+    def validate_required_options(self, is_noedit: bool = False) -> List[str]:
+        """Validate required options for the requested execution mode.
+
+        No-edit Codex invocations do not rely on configured permission flags:
+        ``CodexClient`` removes unsafe options and enforces its read-only,
+        non-interactive policy. Editable Codex runs, however, need a configured
+        unattended execution policy.
 
         Returns:
             List of error messages (empty if valid)
         """
-        errors = []
+        errors: List[str] = []
         # Use backend_type if available, otherwise fall back to name
         backend_type = self.backend_type or self.name
+
+        if backend_type == "codex":
+            if is_noedit:
+                return errors
+
+            options = set(self.options)
+            has_unattended_policy = bool(
+                options
+                & {
+                    "--dangerously-bypass-approvals-and-sandbox",
+                    "--full-auto",
+                    "--yolo",
+                }
+            )
+            has_never_approval = any(option in {"--ask-for-approval=never", "-a=never", "-anever"} or (option in {"--ask-for-approval", "-a"} and index + 1 < len(self.options) and self.options[index + 1] == "never") for index, option in enumerate(self.options))
+            has_writable_sandbox = any(option in {"--sandbox=workspace-write", "-s=workspace-write", "-sworkspace-write"} or (option in {"--sandbox", "-s"} and index + 1 < len(self.options) and self.options[index + 1] == "workspace-write") for index, option in enumerate(self.options))
+            if has_unattended_policy or (has_never_approval and has_writable_sandbox):
+                return errors
+
+            errors.append(f"Backend '{self.name}' missing an unattended editable Codex execution policy. " "Configure --dangerously-bypass-approvals-and-sandbox, --full-auto, or " "--sandbox workspace-write with --ask-for-approval never.")
+            return errors
+
         required = REQUIRED_OPTIONS_BY_BACKEND.get(backend_type, [])
 
         for req_opt in required:

@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,9 +26,9 @@ from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_clien
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .adversarial_validator import (
-    AdversarialValidationFinding,
     AdversarialValidationResult,
-    apply_adversarial_fix,
+    adversarial_validation_comment_marker,
+    format_adversarial_validation_comment,
     run_adversarial_validation,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
@@ -38,12 +39,13 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
+from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
+from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -56,6 +58,93 @@ cmd = CommandExecutor()
 # Track active monitors to prevent duplicate execution within the same process
 _active_monitors: set[int] = set()
 _active_monitors_lock = threading.Lock()
+
+CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
+CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
+
+
+@dataclass(frozen=True)
+class CodexReviewState:
+    """State of the latest Codex GitHub review summary for a pull request."""
+
+    present: bool = False
+    completed: bool = False
+    lookup_error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AdversarialValidationEligibility:
+    """Verified Issue-oracle eligibility for adversarial validation."""
+
+    issue_numbers: Tuple[int, ...] = ()
+    lookup_error: Optional[str] = None
+
+    @property
+    def is_applicable(self) -> bool:
+        return bool(self.issue_numbers)
+
+
+@dataclass(frozen=True)
+class ReviewThreadGateState:
+    """Tri-state review-thread result used by merge gates."""
+
+    has_unresolved: bool = False
+    lookup_error: Optional[str] = None
+
+
+def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either a REST dictionary or a GhApi object."""
+    return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
+
+
+def _add_unique_pr_comment(github_client: Any, repo_name: str, pr_number: int, body: str) -> bool:
+    """Post an informational comment only when the same body is not present."""
+    comments = github_client.get_pr_comments(repo_name, pr_number)
+    if isinstance(comments, list):
+        normalized_body = body.strip()
+        for comment in comments:
+            existing_body = _comment_value(comment, "body", "")
+            if isinstance(existing_body, str) and existing_body.strip() == normalized_body:
+                logger.info(f"Skipped duplicate informational comment on PR #{pr_number}")
+                return False
+    github_client.add_comment_to_pr(repo_name, pr_number, body)
+    return True
+
+
+def _get_codex_review_state(github_client: Any, repo_name: str, pr_number: int) -> CodexReviewState:
+    """Return Codex review presence/completion without tying it to a reviewed SHA."""
+    try:
+        strict_getter = getattr(type(github_client), "get_pr_comments_strict", None)
+        if callable(strict_getter):
+            comments = github_client.get_pr_comments_strict(repo_name, pr_number)
+        else:
+            comments = github_client.get_pr_comments(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to inspect Codex review state for PR #{pr_number}: {e}")
+        return CodexReviewState(lookup_error=str(e))
+
+    for comment in reversed(comments):
+        body = _comment_value(comment, "body", "")
+        user = _comment_value(comment, "user") or {}
+        login = _comment_value(user, "login", "")
+        if login != CODEX_REVIEW_BOT_LOGIN or not isinstance(body, str) or CODEX_REVIEW_SUMMARY_MARKER not in body:
+            continue
+
+        code_review_row = next((line for line in body.splitlines() if "Code Review" in line and line.lstrip().startswith("|")), "")
+        columns = [column.strip() for column in code_review_row.split("|")]
+        status_column = columns[2] if len(columns) > 2 else ""
+        return CodexReviewState(present=True, completed=bool(re.search(r"\bCompleted\b", status_column, re.IGNORECASE)))
+
+    return CodexReviewState()
+
+
+def _get_adversarial_validation_eligibility(github_client: Any, repo_name: str, pr_data: Dict[str, Any]) -> AdversarialValidationEligibility:
+    """Use the same verified Issue-oracle resolver as validation context."""
+    resolution = resolve_issue_oracles(github_client, repo_name, pr_data=pr_data)
+    if resolution.error:
+        logger.error(f"Failed to verify adversarial-validation eligibility: {resolution.error}")
+        return AdversarialValidationEligibility(lookup_error=resolution.error)
+    return AdversarialValidationEligibility(issue_numbers=tuple(issue.number for issue in resolution.issues))
 
 
 def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
@@ -200,6 +289,20 @@ def has_unresolved_review_threads(
     except Exception as e:
         logger.error(f"Error checking unresolved review threads for PR #{pr_number}: {e}")
         return False
+
+
+def _get_review_thread_gate_state(github_client: Any, repo_name: str, pr_number: int) -> ReviewThreadGateState:
+    """Fetch review threads strictly in production so lookup errors fail closed."""
+    try:
+        client = github_client or GitHubClient.get_instance()
+        strict_getter = getattr(type(client), "get_pr_review_threads_strict", None)
+        if callable(strict_getter):
+            threads = client.get_pr_review_threads_strict(repo_name, pr_number)
+            return ReviewThreadGateState(has_unresolved=any(not thread.is_resolved for thread in threads))
+        return ReviewThreadGateState(has_unresolved=has_unresolved_review_threads(client, repo_name, pr_number))
+    except Exception as e:
+        logger.error(f"Failed strict review-thread lookup for PR #{pr_number}: {e}")
+        return ReviewThreadGateState(lookup_error=str(e))
 
 
 def process_pull_request(
@@ -1016,7 +1119,11 @@ def _process_pr_for_merge(
             return processed_pr
 
         # Check for unresolved review threads
-        if has_unresolved_review_threads(github_client, repo_name, pr_data["number"]):
+        review_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_data["number"])
+        if review_thread_state.lookup_error:
+            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} because review threads could not be checked: {review_thread_state.lookup_error}")
+            return processed_pr
+        if review_thread_state.has_unresolved:
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
             return processed_pr
 
@@ -1400,6 +1507,56 @@ def _process_pr_jules_mode(
         return actions
 
 
+def _publish_adversarial_validation_result(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    result: AdversarialValidationResult,
+) -> str:
+    """Publish one structured validation comment per PR head commit."""
+    marker = adversarial_validation_comment_marker(head_sha)
+    rendered_comment = format_adversarial_validation_comment(result, head_sha)
+    try:
+        existing_comments = github_client.get_pr_comments(repo_name, pr_number)
+        for comment in existing_comments:
+            body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
+            if isinstance(body, str) and body.startswith(marker):
+                return f"Adversarial validation result for PR #{pr_number} at {head_sha[:8]} was already published"
+
+        github_client.add_comment_to_pr(repo_name, pr_number, rendered_comment)
+        return f"Published adversarial validation result to PR #{pr_number}"
+    except Exception as e:
+        logger.error(f"Failed to publish adversarial validation result to PR #{pr_number}: {e}")
+        return f"Failed to publish adversarial validation result to PR #{pr_number}: {e}"
+
+
+def _get_published_adversarial_validation_status(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read the immutable validation status already published for a head SHA."""
+    marker = adversarial_validation_comment_marker(head_sha)
+    try:
+        comments = github_client.get_pr_comments(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to check prior adversarial validation for PR #{pr_number}: {e}")
+        return None, str(e)
+
+    for comment in comments:
+        body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
+        if not isinstance(body, str) or not body.startswith(marker):
+            continue
+        match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
+        if match:
+            return match.group(1), None
+        return "ERROR", None
+
+    return None, None
+
+
 @contextlib.contextmanager
 def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional[str] = None):
     """Context manager that creates an isolated, detached git worktree at head_sha for side-effect-free validation.
@@ -1581,45 +1738,98 @@ def _handle_pr_merge(
                 return actions
 
             # Check for unresolved review threads
-            if has_unresolved_review_threads(github_client, repo_name, pr_number):
+            review_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+            if review_thread_state.lookup_error:
+                actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+                return actions
+            if review_thread_state.has_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
 
-            # Strong-model adversarial validation step
-            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
+            # Strong-model adversarial validation step. Issue-less PRs have no
+            # independent specification oracle, so validation is not applicable.
+            adversarial_validation_enabled = config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data)
+            adversarial_eligibility = AdversarialValidationEligibility()
+            if adversarial_validation_enabled:
+                adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
+                if adversarial_eligibility.lookup_error:
+                    actions.append(f"Could not verify adversarial-validation eligibility for PR #{pr_number}: {adversarial_eligibility.lookup_error}; merge not attempted")
+                    return actions
+
+            adversarial_validation_applicable = adversarial_eligibility.is_applicable
+            if adversarial_validation_enabled and not adversarial_validation_applicable:
+                actions.append(f"Skipped adversarial validation for PR #{pr_number}: no linked Issue specification oracle")
+                logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
+
+            if adversarial_validation_enabled and adversarial_validation_applicable:
+                codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
+                if codex_review.lookup_error:
+                    actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")
+                    return actions
+                if codex_review.present and not codex_review.completed:
+                    actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
+                    return actions
+                if codex_review.completed:
+                    post_codex_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+                    if post_codex_thread_state.lookup_error:
+                        actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
+                        return actions
+                    if post_codex_thread_state.has_unresolved:
+                        actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
+                        return actions
+
                 head_sha = pr_data.get("head", {}).get("sha", "")
-                pr_branch_name = pr_data.get("head", {}).get("ref", "")
 
                 if not head_sha:
                     actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                     logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                     return actions
 
-                try:
-                    with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
-                        actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                        val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
-                except Exception as e:
-                    logger.error(f"Failed during isolated adversarial validation for PR #{pr_number}: {e}")
-                    val_result = AdversarialValidationResult(
-                        result="BLOCKED",
-                        summary=f"Isolated validation environment creation failed: {e}",
+                published_status, lookup_error = _get_published_adversarial_validation_status(
+                    github_client,
+                    repo_name,
+                    pr_number,
+                    head_sha,
+                )
+                if lookup_error:
+                    actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
+                    return actions
+                if published_status:
+                    actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+                    if published_status != "PASS":
+                        actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
+                        return actions
+                else:
+                    try:
+                        with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
+                            actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                            val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                    except Exception as e:
+                        exception_preview = redact_string(str(e))[:2000]
+                        logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
+                        val_result = AdversarialValidationResult(
+                            result="BLOCKED",
+                            summary="Adversarial validation execution failed; see the structured interaction log for details",
+                            diagnostic_category="validation_execution_error",
+                            diagnostic_reason=type(e).__name__,
+                        )
+
+                    actions.append(
+                        _publish_adversarial_validation_result(
+                            github_client,
+                            repo_name,
+                            pr_number,
+                            head_sha,
+                            val_result,
+                        )
                     )
 
-                if val_result.needs_fix:
+                if published_status == "PASS":
+                    pass
+                elif val_result.needs_fix:
                     actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
                     logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
-
-                    # Transition to implementation/fix phase on the actual PR branch
-                    prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
-                    if not prepare_ok:
-                        actions.append(f"Failed to prepare PR #{pr_number} branch for adversarial fix")
-                        return actions
-
-                    with BranchManager(pr_branch_name) as manager:
-                        actions.append(f"Checked out PR #{pr_number} branch for adversarial regression fix")
-                        fix_actions = apply_adversarial_fix(repo_name, pr_data, config, val_result, github_client=github_client)
-                        actions.extend(fix_actions)
+                    actions.append(f"Awaiting PR author changes for PR #{pr_number}; no automatic adversarial fix was attempted")
                     return actions
 
                 elif not val_result.is_pass:
@@ -2961,8 +3171,10 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         if github_client:
             comment_body = f"🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
             try:
-                github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
-                actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
+                if _add_unique_pr_comment(github_client, repo_name, pr_number, comment_body):
+                    actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
+                else:
+                    actions.append(f"Skipped duplicate Jules fix-request comment on PR #{pr_number}")
             except Exception as e:
                 error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
                 try:
@@ -3054,8 +3266,10 @@ def _send_codex_cloud_error_feedback(
             if github_client:
                 comment_body = "🤖 Auto-Coder: CI checks failed. I've requested continuation from Codex Cloud to resolve the failures. Please wait for updates."
                 try:
-                    github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
-                    actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Codex Cloud")
+                    if _add_unique_pr_comment(github_client, repo_name, pr_number, comment_body):
+                        actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Codex Cloud")
+                    else:
+                        actions.append(f"Skipped duplicate Codex Cloud fix-request comment on PR #{pr_number}")
                 except Exception as e:
                     error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
                     logger.error(error_msg)
@@ -3094,7 +3308,12 @@ def _merge_pr(
         from auto_coder.util.gh_cache import get_ghapi_client
 
         client = github_client or GitHubClient.get_instance()
-        if has_unresolved_review_threads(client, repo_name, pr_number):
+        review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number)
+        if review_thread_state.lookup_error:
+            logger.info(f"PR #{pr_number} review threads could not be checked. Skipping merge.")
+            log_action(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+            return False
+        if review_thread_state.has_unresolved:
             logger.info(f"PR #{pr_number} has unresolved review threads. Skipping merge.")
             log_action(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
             return False

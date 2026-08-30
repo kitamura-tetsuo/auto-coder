@@ -715,6 +715,19 @@ class BackendManager(LLMBackendManagerBase):
                 model = None
         return backend, model
 
+    def get_last_interaction_log_path(self) -> Optional[str]:
+        """Return the structured interaction log path for the last backend."""
+        backend, _ = self.get_last_backend_and_model()
+        if not backend:
+            return None
+
+        client = self._clients.get(backend)
+        output_logger = getattr(client, "output_logger", None)
+        log_path = getattr(output_logger, "log_path", None)
+        if log_path is None:
+            return None
+        return str(log_path)
+
     def get_last_backend_provider_and_model(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
         Return the backend/provider/model used for the most recent execution.
