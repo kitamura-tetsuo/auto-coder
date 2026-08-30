@@ -296,6 +296,7 @@ def build_backend_manager(
     use_noedit_options: bool = False,
     allow_isolated_noedit_sandbox_fallback: bool = False,
     capture_codex_final_message: bool = False,
+    automatic_session_resume: bool = True,
 ) -> BackendManager:
     # Handle legacy "gemini" backend name translation
     selected_backends = ["antigravity" if b == "gemini" else b for b in selected_backends]
@@ -310,6 +311,8 @@ def build_backend_manager(
         an unavailable Linux sandbox only inside a disposable worktree.
     capture_codex_final_message: Use Codex's dedicated final-message output for
         structured no-edit review responses.
+    automatic_session_resume: Continue the last implementation session when the
+        same backend is used consecutively.
     """
     config = get_llm_config()
 
@@ -506,6 +509,7 @@ def build_backend_manager(
         default_client=default_client,
         factories=selected_factories,
         order=selected_backends,
+        automatic_session_resume=automatic_session_resume,
     )
 
 
@@ -1000,6 +1004,7 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
                 use_noedit_options=True,
                 allow_isolated_noedit_sandbox_fallback=True,
                 capture_codex_final_message=True,
+                automatic_session_resume=False,
             )
         return build_backend_manager(
             selected_backends=selected_backends,
@@ -1007,6 +1012,7 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
             models=models,
             use_noedit_options=True,
             capture_codex_final_message=True,
+            automatic_session_resume=False,
         )
     except Exception as e:
         from .logger_config import get_logger

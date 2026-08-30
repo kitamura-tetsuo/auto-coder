@@ -16,6 +16,34 @@ class TestClaudeClient:
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_explicit_resume_usage_limit_is_not_retried_without_resume(self, mock_cmd_exec, mock_run, mock_get_config):
+        """A resume usage limit must reach BackendManager failover unchanged."""
+        from src.auto_coder.exceptions import AutoCoderUsageLimitError
+
+        mock_run.return_value.returncode = 0
+        backend = MagicMock()
+        backend.model = "sonnet"
+        backend.settings = None
+        backend.options = ["--print"]
+        backend.options_for_noedit = ["--print"]
+        backend.usage_markers = ["usage limit"]
+        backend.replace_placeholders.return_value = {"options": ["--print"], "options_for_noedit": ["--print"]}
+        config = MagicMock()
+        config.get_backend_config.return_value = backend
+        mock_get_config.return_value = config
+        failed = MagicMock(returncode=1, stdout="", stderr="usage limit")
+        mock_cmd_exec.return_value = failed
+        client = ClaudeClient()
+
+        with pytest.raises(AutoCoderUsageLimitError):
+            client.continue_session("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "review", is_noedit=True)
+
+        assert mock_cmd_exec.call_count == 1
+        assert "--resume" in mock_cmd_exec.call_args.args[0]
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
     def test_init_checks_cli(self, mock_run, mock_get_config):
         """ClaudeClient should check claude --version at init."""
         mock_run.return_value.returncode = 0

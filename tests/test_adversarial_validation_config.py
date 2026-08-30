@@ -139,6 +139,7 @@ class TestCreateAdversarialValidationBackendManager:
             models={"claude": "model-claude"},
             use_noedit_options=True,
             capture_codex_final_message=True,
+            automatic_session_resume=False,
         )
 
     @patch("auto_coder.cli_helpers.get_llm_config")
@@ -163,6 +164,7 @@ class TestCreateAdversarialValidationBackendManager:
             use_noedit_options=True,
             allow_isolated_noedit_sandbox_fallback=True,
             capture_codex_final_message=True,
+            automatic_session_resume=False,
         )
         assert mgr is mock_build.return_value
 

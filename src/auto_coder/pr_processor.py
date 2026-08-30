@@ -46,6 +46,7 @@ from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
+from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
@@ -55,6 +56,15 @@ from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_acti
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> None:
+    """Best-effort removal of every backend's reviewer association for a closed PR."""
+    try:
+        ReviewerSessionRegistry().remove_pr(repo_name, pr_number)
+    except OSError as exc:
+        logger.warning(f"Failed to remove reviewer sessions for closed PR #{pr_number}: {exc}")
+
 
 # Track active monitors to prevent duplicate execution within the same process
 _active_monitors: set[int] = set()
@@ -716,6 +726,7 @@ def _close_empty_pr(
 
     try:
         if pr_data.get("state") == "closed":
+            _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
             logger.debug(f"PR #{pr_number} is already closed, skipping empty PR check")
             return result
 
@@ -730,6 +741,7 @@ def _close_empty_pr(
         close_comment = f"Auto-Coder: Closing PR #{pr_number} because it has no effective diff against the base branch. " "The linked issue(s) will be retried with an incremented attempt count."
         client = github_client or GitHubClient.get_instance()
         client.close_pr(repo_name, pr_number, close_comment)
+        _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
         result.closed = True
         result.actions.append(f"Closed empty PR #{pr_number} (zero effective diff)")
         get_trace_logger().log(
@@ -816,6 +828,7 @@ def _close_stale_jules_pr(
             return result
 
         if pr_data.get("state") == "closed":
+            _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
             logger.debug(f"PR #{pr_number} is already closed, skipping Jules staleness check")
             return result
 
@@ -863,6 +876,7 @@ def _close_stale_jules_pr(
         close_comment = f"Auto-Coder: Closing this PR because Jules did not get CI to pass within {config.JULES_PR_CI_TIMEOUT_HOURS} hours after the PR was created. The linked issue(s) will be retried with an incremented attempt count."
         client = github_client or GitHubClient.get_instance()
         client.close_pr(repo_name, pr_number, close_comment)
+        _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
         result.closed = True
         result.actions.append(f"Closed stale Jules PR #{pr_number} (no passing CI within {config.JULES_PR_CI_TIMEOUT_HOURS}h)")
         get_trace_logger().log(
@@ -1044,6 +1058,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
                 client = GitHubClient.get_instance()
                 close_comment = "Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
                 client.close_pr(repo_name, pr_number, close_comment)
+                _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
                 actions.append(f"Closed PR #{pr_number} without merging due to quality degradation risk")
 
                 # Checkout main branch after closing PR
@@ -1924,9 +1939,7 @@ def _handle_pr_merge(
             )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
-                from .reviewer_session_registry import ReviewerSessionRegistry
-
-                ReviewerSessionRegistry().remove_pr(repo_name, pr_number)
+                _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
 
                 # Clean up old PRs if this is a Jules PR with a session ID
                 try:
@@ -2071,6 +2084,7 @@ def _handle_pr_merge(
                         client = GitHubClient.get_instance()
                         close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
                         client.close_pr(repo_name, pr_number, close_comment)
+                        _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
                         actions.append(f"Closed PR #{pr_number} without merging")
 
                         # BranchManager handles return to original branch

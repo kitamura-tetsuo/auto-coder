@@ -432,7 +432,7 @@ class ClaudeClient(LLMClientBase):
 
             result, full_output, low, usage_limit_detected = run_cli(cmd)
 
-            if result.returncode != 0 and extra_args:
+            if result.returncode != 0 and extra_args and not getattr(self, "_explicit_continuation", False) and not usage_limit_detected:
                 logger.info("claude CLI failed with extra args; retrying without them")
                 retry_cmd = base_cmd + [escaped_prompt]
                 result, full_output, low, usage_limit_detected = run_cli(retry_cmd)
@@ -577,7 +577,11 @@ class ClaudeClient(LLMClientBase):
         if not session_id or not self._is_valid_uuid(session_id):
             raise ValueError("A valid explicit Claude session ID is required")
         self.set_extra_args(["--resume", session_id])
-        return self._run_llm_cli(prompt, is_noedit=is_noedit)
+        self._explicit_continuation = True
+        try:
+            return self._run_llm_cli(prompt, is_noedit=is_noedit)
+        finally:
+            self._explicit_continuation = False
 
     def _is_valid_uuid(self, session_id: str) -> bool:
         """Validate that a string is a valid UUID format.

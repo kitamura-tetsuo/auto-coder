@@ -183,6 +183,7 @@ class BackendManager(LLMBackendManagerBase):
         factories: Dict[str, Callable[[], Any]],
         order: Optional[List[str]] = None,
         provider_manager: Optional[BackendProviderManager] = None,
+        automatic_session_resume: bool = True,
     ) -> None:
         # Backend order (circular)
         self._all_backends = order[:] if order else list(factories.keys())
@@ -198,6 +199,7 @@ class BackendManager(LLMBackendManagerBase):
         self._clients[default_backend] = default_client
         self._current_idx = 0
         self._default_backend = default_backend
+        self._automatic_session_resume = automatic_session_resume
 
         # Track recent prompt/model/backend for apply_workspace_test_fix
         self._last_prompt: Optional[str] = None
@@ -510,13 +512,33 @@ class BackendManager(LLMBackendManagerBase):
                 continue
 
             try:
-                result = self._execute_backend_with_providers(
-                    backend_name=backend_name,
-                    cli=cli,
-                    prompt=prompt,
-                    backend_attempt_number=attempts + 1,
-                    temp_env_cls=TemporaryEnvironment,
-                )
+                should_resume = self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
+                try:
+                    result = self._execute_backend_with_providers(
+                        backend_name=backend_name,
+                        cli=cli,
+                        prompt=prompt,
+                        backend_attempt_number=attempts + 1,
+                        temp_env_cls=TemporaryEnvironment,
+                        session_id=self._last_session_id if should_resume else None,
+                    )
+                except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
+                    raise
+                except (ValueError, RuntimeError, NotImplementedError) as exc:
+                    if not should_resume:
+                        raise
+                    logger.warning("Could not resume implementation session on backend '%s'; starting fresh: %s", backend_name, exc)
+                    self._last_session_id = None
+                    self._save_session_state(backend_name, None)
+                    if hasattr(cli, "clear_last_session_id"):
+                        cli.clear_last_session_id()
+                    result = self._execute_backend_with_providers(
+                        backend_name=backend_name,
+                        cli=cli,
+                        prompt=prompt,
+                        backend_attempt_number=attempts + 1,
+                        temp_env_cls=TemporaryEnvironment,
+                    )
                 # Check if we should switch to next backend after successful execution
                 backend_config = get_llm_config().get_backend_config(backend_name)
                 if backend_config and backend_config.always_switch_after_execution:
@@ -577,11 +599,15 @@ class BackendManager(LLMBackendManagerBase):
             self._last_model = getattr(client, "model_name", None)
             self._last_session_id = client.get_last_session_id() or session_id
             return str(output)
-        except AutoCoderUsageLimitError:
+        except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self.switch_to_next_backend()
             return self._run_llm_cli(prompt)
         except (ValueError, RuntimeError, NotImplementedError) as exc:
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
+            self._last_session_id = None
+            self._save_session_state(backend_name, None)
+            if hasattr(client, "clear_last_session_id"):
+                client.clear_last_session_id()
             return self._run_llm_cli(prompt)
 
     def run_prompt(self, prompt: str) -> str:
@@ -598,6 +624,7 @@ class BackendManager(LLMBackendManagerBase):
         prompt: str,
         backend_attempt_number: int,
         temp_env_cls: Callable[[Dict[str, str]], Any],
+        session_id: Optional[str] = None,
     ) -> str:
         """
         Execute a backend client while honoring provider rotation rules.
@@ -627,7 +654,10 @@ class BackendManager(LLMBackendManagerBase):
                 try:
                     # Determine if this is a no-edit operation
                     is_noedit = getattr(self, "_is_noedit", False)
-                    out: str = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                    if session_id:
+                        out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                    else:
+                        out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
