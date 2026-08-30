@@ -156,9 +156,11 @@ class CodexClient(LLMClientBase):
             #   --dangerously-bypass-approvals-and-sandbox, --yolo, --full-auto, -y, --yes,
             #   --approve-for-me, --not-so-yolo, --danger-full-access
             # - Remove conflicting --ask-for-approval / -a <value> pairs, --ask-for-approval=..., -a=..., and -a<value>
-            # - Remove any conflicting runtime config overrides for approvals_reviewer (-c / --config, -c=..., --config=..., -c<value>)
+            # - Remove any conflicting runtime config overrides for approvals_reviewer, approval_policy,
+            #   and sandbox_mode (-c / --config, -c=..., --config=..., -c<value>)
             # - Force exactly --sandbox read-only, --ask-for-approval never, and -c approvals_reviewer="user"
             if is_noedit:
+                unsafe_config_keys = ("approvals_reviewer", "approval_reviewer", "approval_policy", "sandbox_mode")
                 sanitized_cmd = []
                 i = 0
                 while i < len(cmd):
@@ -179,14 +181,14 @@ class CodexClient(LLMClientBase):
                     if opt_str.startswith("--ask-for-approval=") or (opt_str.startswith("-a") and not opt_str.startswith("--")):
                         i += 1
                         continue
-                    # Handle config override flags for approvals_reviewer (-c <val>, --config <val>, -c=..., --config=..., -c<val>)
-                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and "approvals_reviewer" in str(cmd[i + 1]):
+                    # Handle config override flags for permission keys (-c <val>, --config <val>, -c=..., --config=..., -c<val>)
+                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and any(k in str(cmd[i + 1]) for k in unsafe_config_keys):
                         i += 2
                         continue
-                    if (opt_str.startswith(("--config=", "--config")) or (opt_str.startswith("-c") and not opt_str.startswith("--"))) and "approvals_reviewer" in opt_str:
+                    if (opt_str.startswith(("--config=", "--config")) or (opt_str.startswith("-c") and not opt_str.startswith("--"))) and any(k in opt_str for k in unsafe_config_keys):
                         i += 1
                         continue
-                    if opt_str.startswith("approvals_reviewer="):
+                    if any(opt_str.startswith(f"{k}=") for k in unsafe_config_keys):
                         i += 1
                         continue
                     # Handle standalone dangerous bypass and YOLO flags
