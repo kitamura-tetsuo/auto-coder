@@ -67,7 +67,7 @@ def resolve_config_path(config_path: Optional[str] = None) -> str:
 
 def resolve_repo_override_path(
     repo_name: Optional[str],
-    base_config_path: Optional[str] = None,
+    override_root_dir: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve the repository-specific configuration override file path.
 
@@ -76,11 +76,12 @@ def resolve_repo_override_path(
 
     Repository overrides must be selected using the GitHub 'owner/name' identity
     and mapped directly to the directory hierarchy under ~/.auto-coder.
+    The override location is independent of where the base configuration was loaded from.
 
     Args:
         repo_name: GitHub repository in 'owner/repo' format. If None, empty, or
                    not in 'owner/repo' format, returns None.
-        base_config_path: Optional base configuration file path to resolve base directory from.
+        override_root_dir: Optional override root directory (defaults to ~/.auto-coder).
 
     Returns:
         Absolute path to the repository override configuration file, or None if invalid repo_name.
@@ -113,8 +114,8 @@ def resolve_repo_override_path(
     if owner in (".", "..") or repo in (".", ".."):
         return None
 
-    if base_config_path is not None:
-        base_dir = os.path.dirname(os.path.abspath(os.path.expanduser(base_config_path)))
+    if override_root_dir is not None:
+        base_dir = os.path.expanduser(override_root_dir)
     else:
         base_dir = os.path.expanduser("~/.auto-coder")
 
@@ -443,7 +444,7 @@ class LLMBackendConfiguration:
 
         # If repo_name is provided, check for repository-specific override
         if repo_name:
-            override_path = resolve_repo_override_path(repo_name, base_config_path=config_path)
+            override_path = resolve_repo_override_path(repo_name)
             if override_path and os.path.exists(override_path):
                 try:
                     with open(override_path, "rb") as f:

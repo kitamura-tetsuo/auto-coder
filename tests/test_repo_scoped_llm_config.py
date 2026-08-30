@@ -26,20 +26,24 @@ from auto_coder.utils import CommandResult
 class TestResolveRepoOverridePath:
     """Test resolution of repository override TOML paths."""
 
-    def test_valid_owner_repo(self):
-        base_path = "/tmp/test_dir/llm_config.toml"
-        result = resolve_repo_override_path("kitamura-tetsuo/auto-coder", base_config_path=base_path)
-        assert result == "/tmp/test_dir/kitamura-tetsuo/auto-coder/llm_config.toml"
-
-    def test_valid_owner_repo_with_git_suffix(self):
-        base_path = "/tmp/test_dir/llm_config.toml"
-        result = resolve_repo_override_path("kitamura-tetsuo/auto-coder.git", base_config_path=base_path)
-        assert result == "/tmp/test_dir/kitamura-tetsuo/auto-coder/llm_config.toml"
-
     def test_default_base_path(self):
         result = resolve_repo_override_path("owner/repo")
         expected_dir = os.path.expanduser("~/.auto-coder")
         assert result == os.path.join(expected_dir, "owner", "repo", "llm_config.toml")
+
+    def test_valid_owner_repo(self):
+        result = resolve_repo_override_path("kitamura-tetsuo/auto-coder")
+        expected_dir = os.path.expanduser("~/.auto-coder")
+        assert result == os.path.join(expected_dir, "kitamura-tetsuo", "auto-coder", "llm_config.toml")
+
+    def test_valid_owner_repo_with_git_suffix(self):
+        result = resolve_repo_override_path("kitamura-tetsuo/auto-coder.git")
+        expected_dir = os.path.expanduser("~/.auto-coder")
+        assert result == os.path.join(expected_dir, "kitamura-tetsuo", "auto-coder", "llm_config.toml")
+
+    def test_explicit_override_root_dir(self):
+        result = resolve_repo_override_path("owner/repo", override_root_dir="/custom/dir")
+        assert result == "/custom/dir/owner/repo/llm_config.toml"
 
     def test_invalid_short_repo_name(self):
         assert resolve_repo_override_path("auto-coder") is None
@@ -53,14 +57,14 @@ class TestResolveRepoOverridePath:
         assert resolve_repo_override_path("owner/repo/extra") is None
 
     def test_reject_path_traversal_components(self):
-        base_path = "/tmp/test_dir/llm_config.toml"
-        assert resolve_repo_override_path("../something", base_config_path=base_path) is None
-        assert resolve_repo_override_path("owner/..", base_config_path=base_path) is None
-        assert resolve_repo_override_path("../..", base_config_path=base_path) is None
-        assert resolve_repo_override_path("owner/../other", base_config_path=base_path) is None
-        assert resolve_repo_override_path("../../etc/passwd", base_config_path=base_path) is None
-        assert resolve_repo_override_path("./repo", base_config_path=base_path) is None
-        assert resolve_repo_override_path("owner/.", base_config_path=base_path) is None
+        assert resolve_repo_override_path("../something") is None
+        assert resolve_repo_override_path("owner/..") is None
+        assert resolve_repo_override_path("../..") is None
+        assert resolve_repo_override_path("owner/../other") is None
+        assert resolve_repo_override_path("../../etc/passwd") is None
+        assert resolve_repo_override_path("./repo") is None
+        assert resolve_repo_override_path("owner/.") is None
+        assert resolve_repo_override_path("owner/../other", override_root_dir="/custom") is None
 
 
 class TestDeepMergeConfigDict:
@@ -152,10 +156,15 @@ class TestRepoScopedLLMBackendConfiguration:
         reset_llm_config()
         set_active_repo_name(None)
 
-    def test_load_from_file_with_repo_override(self):
+    def test_load_from_file_with_repo_override(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_config_path = os.path.join(tmpdir, "llm_config.toml")
-            repo_override_dir = os.path.join(tmpdir, "kitamura-tetsuo", "auto-coder")
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_dir = os.path.join(tmpdir, "custom_base_dir")
+            os.makedirs(base_dir, exist_ok=True)
+            base_config_path = os.path.join(base_dir, "llm_config.toml")
+
+            repo_override_dir = os.path.join(tmpdir, ".auto-coder", "kitamura-tetsuo", "auto-coder")
             os.makedirs(repo_override_dir, exist_ok=True)
             repo_override_path = os.path.join(repo_override_dir, "llm_config.toml")
 
@@ -215,10 +224,202 @@ url = "https://custom.routine.anthropic.com"
             assert claude_repo is not None
             assert claude_repo.url == "https://custom.routine.anthropic.com"
 
-    def test_load_from_file_invalid_toml_override_raises_value_error(self):
+    def test_explicit_base_path_does_not_relocate_override(self, monkeypatch):
+        """Oracle test: Explicit base path must not relocate override.
+
+        Base is loaded from /tmp/config/llm_config.toml.
+        Override must be loaded from ~/.auto-coder/kitamura-tetsuo/auto-coder/llm_config.toml.
+        Must NOT look under /tmp/config/kitamura-tetsuo/auto-coder/.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_config_path = os.path.join(tmpdir, "llm_config.toml")
-            repo_override_dir = os.path.join(tmpdir, "owner", "bad-repo")
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_dir = os.path.join(tmpdir, "custom_config")
+            os.makedirs(base_dir, exist_ok=True)
+            base_config_path = os.path.join(base_dir, "llm_config.toml")
+
+            # Decoy override placed next to base config (must be ignored)
+            decoy_dir = os.path.join(base_dir, "kitamura-tetsuo", "auto-coder")
+            os.makedirs(decoy_dir, exist_ok=True)
+            with open(os.path.join(decoy_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "decoy-env-should-not-be-used"
+attempts = 99
+"""
+                )
+
+            # Real repo override in ~/.auto-coder/<owner>/<repo>/llm_config.toml
+            real_override_dir = os.path.join(tmpdir, ".auto-coder", "kitamura-tetsuo", "auto-coder")
+            os.makedirs(real_override_dir, exist_ok=True)
+            with open(os.path.join(real_override_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "real-repo-env"
+attempts = 3
+"""
+                )
+
+            with open(base_config_path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+model = "base-model"
+environment = "base-env"
+attempts = 1
+"""
+                )
+
+            loaded = LLMBackendConfiguration.load_from_file(
+                config_path=base_config_path,
+                repo_name="kitamura-tetsuo/auto-coder",
+            )
+            codex_cfg = loaded.get_backend_config("codex_cloud")
+            assert codex_cfg is not None
+            assert codex_cfg.model == "base-model"
+            assert codex_cfg.environment == "real-repo-env"
+            assert codex_cfg.attempts == 3
+
+    def test_env_var_base_path_does_not_relocate_override(self, monkeypatch):
+        """Oracle test: Environment-variable base path must not relocate override."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("HOME", tmpdir)
+
+            env_base_dir = os.path.join(tmpdir, "env_config")
+            os.makedirs(env_base_dir, exist_ok=True)
+            base_config_path = os.path.join(env_base_dir, "llm_config.toml")
+
+            # Decoy next to env base config
+            decoy_dir = os.path.join(env_base_dir, "owner", "repo")
+            os.makedirs(decoy_dir, exist_ok=True)
+            with open(os.path.join(decoy_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "decoy-env"
+"""
+                )
+
+            # Real repo override in ~/.auto-coder/owner/repo/llm_config.toml
+            real_dir = os.path.join(tmpdir, ".auto-coder", "owner", "repo")
+            os.makedirs(real_dir, exist_ok=True)
+            with open(os.path.join(real_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "real-env"
+"""
+                )
+
+            with open(base_config_path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+model = "env-base-model"
+environment = "env-base-env"
+"""
+                )
+
+            monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", base_config_path)
+
+            cfg = get_llm_config(repo_name="owner/repo")
+            codex_cfg = cfg.get_backend_config("codex_cloud")
+            assert codex_cfg is not None
+            assert codex_cfg.model == "env-base-model"
+            assert codex_cfg.environment == "real-env"
+
+    def test_local_base_config_does_not_relocate_override(self, monkeypatch):
+        """Oracle test: Local base config (./.auto-coder/llm_config.toml) must not relocate override."""
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as project_dir:
+            monkeypatch.setenv("HOME", home_dir)
+            monkeypatch.delenv("AUTO_CODER_CONFIG_PATH", raising=False)
+            monkeypatch.delenv("AUTO_CODER_LLM_CONFIG_PATH", raising=False)
+
+            # Local project config
+            local_auto_coder = os.path.join(project_dir, ".auto-coder")
+            os.makedirs(local_auto_coder, exist_ok=True)
+            local_config_path = os.path.join(local_auto_coder, "llm_config.toml")
+            with open(local_config_path, "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+model = "local-base-model"
+environment = "local-base-env"
+"""
+                )
+
+            # Decoy inside project's .auto-coder/<owner>/<repo>/
+            decoy_dir = os.path.join(local_auto_coder, "owner", "repo")
+            os.makedirs(decoy_dir, exist_ok=True)
+            with open(os.path.join(decoy_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "decoy-local-env"
+"""
+                )
+
+            # Real override in ~/.auto-coder/owner/repo/llm_config.toml
+            real_dir = os.path.join(home_dir, ".auto-coder", "owner", "repo")
+            os.makedirs(real_dir, exist_ok=True)
+            with open(os.path.join(real_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "real-home-env"
+"""
+                )
+
+            monkeypatch.chdir(project_dir)
+
+            cfg = get_llm_config(repo_name="owner/repo")
+            codex_cfg = cfg.get_backend_config("codex_cloud")
+            assert codex_cfg is not None
+            assert codex_cfg.model == "local-base-model"
+            assert codex_cfg.environment == "real-home-env"
+
+    def test_default_base_path_and_override(self, monkeypatch):
+        """Oracle test: Default base and override paths under ~/.auto-coder."""
+        with tempfile.TemporaryDirectory() as home_dir:
+            monkeypatch.setenv("HOME", home_dir)
+            monkeypatch.delenv("AUTO_CODER_CONFIG_PATH", raising=False)
+            monkeypatch.delenv("AUTO_CODER_LLM_CONFIG_PATH", raising=False)
+
+            home_auto_coder = os.path.join(home_dir, ".auto-coder")
+            os.makedirs(home_auto_coder, exist_ok=True)
+            with open(os.path.join(home_auto_coder, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+model = "home-base-model"
+environment = "home-base-env"
+"""
+                )
+
+            repo_dir = os.path.join(home_auto_coder, "owner", "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            with open(os.path.join(repo_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
+                f.write(
+                    """
+[backends.codex_cloud]
+environment = "home-override-env"
+"""
+                )
+
+            cfg = get_llm_config(repo_name="owner/repo")
+            codex_cfg = cfg.get_backend_config("codex_cloud")
+            assert codex_cfg is not None
+            assert codex_cfg.model == "home-base-model"
+            assert codex_cfg.environment == "home-override-env"
+
+    def test_load_from_file_invalid_toml_override_raises_value_error(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_config_path = os.path.join(tmpdir, "base_llm_config.toml")
+            repo_override_dir = os.path.join(tmpdir, ".auto-coder", "owner", "bad-repo")
             os.makedirs(repo_override_dir, exist_ok=True)
             repo_override_path = os.path.join(repo_override_dir, "llm_config.toml")
 
@@ -260,11 +461,15 @@ class TestGetLLMConfigAndIsolation:
         reset_llm_config()
         set_active_repo_name(None)
 
-    def test_repo_isolation_sequential(self):
+    def test_repo_isolation_sequential(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_config_path = os.path.join(tmpdir, "llm_config.toml")
-            repo_a_dir = os.path.join(tmpdir, "org", "repo-a")
-            repo_b_dir = os.path.join(tmpdir, "org", "repo-b")
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_config_path = os.path.join(tmpdir, "base_dir", "llm_config.toml")
+            os.makedirs(os.path.dirname(base_config_path), exist_ok=True)
+
+            repo_a_dir = os.path.join(tmpdir, ".auto-coder", "org", "repo-a")
+            repo_b_dir = os.path.join(tmpdir, ".auto-coder", "org", "repo-b")
             os.makedirs(repo_a_dir, exist_ok=True)
             os.makedirs(repo_b_dir, exist_ok=True)
 
@@ -335,8 +540,11 @@ class TestCloudClientsRepoScoping:
 
     def test_codex_cloud_client_repo_scoped_environment(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_config_path = os.path.join(tmpdir, "llm_config.toml")
-            repo_dir = os.path.join(tmpdir, "kitamura-tetsuo", "auto-coder")
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_config_path = os.path.join(tmpdir, "custom_base", "llm_config.toml")
+            os.makedirs(os.path.dirname(base_config_path), exist_ok=True)
+            repo_dir = os.path.join(tmpdir, ".auto-coder", "kitamura-tetsuo", "auto-coder")
             os.makedirs(repo_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
@@ -371,8 +579,11 @@ attempts = 3
 
     def test_claude_routine_client_repo_scoped(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_config_path = os.path.join(tmpdir, "llm_config.toml")
-            repo_dir = os.path.join(tmpdir, "kitamura-tetsuo", "auto-coder")
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_config_path = os.path.join(tmpdir, "custom_base", "llm_config.toml")
+            os.makedirs(os.path.dirname(base_config_path), exist_ok=True)
+            repo_dir = os.path.join(tmpdir, ".auto-coder", "kitamura-tetsuo", "auto-coder")
             os.makedirs(repo_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
@@ -406,8 +617,11 @@ url = "https://autocoder.url"
     def test_codex_cloud_start_task_initial_request_receives_repo_override_env(self, monkeypatch):
         """Boundary test: assert that start_task initial CLI execution uses the repository override environment."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            base_config_path = os.path.join(tmpdir, "llm_config.toml")
-            repo_dir = os.path.join(tmpdir, "kitamura-tetsuo", "auto-coder")
+            monkeypatch.setenv("HOME", tmpdir)
+
+            base_config_path = os.path.join(tmpdir, "custom_base", "llm_config.toml")
+            os.makedirs(os.path.dirname(base_config_path), exist_ok=True)
+            repo_dir = os.path.join(tmpdir, ".auto-coder", "kitamura-tetsuo", "auto-coder")
             os.makedirs(repo_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
