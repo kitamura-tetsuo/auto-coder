@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 
 ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
+FILE_EVIDENCE_HEADER_RESERVE = 96
 
 
 @dataclass
@@ -43,7 +44,7 @@ class AdversarialValidationResult:
 
     Fail-closed design:
     - Only 'PASS' with 0 findings evaluates to is_pass=True.
-    - Any findings or 'NEEDS_FIX' evaluates to needs_fix=True.
+    - Parsed concrete findings normalize the aggregate result to 'NEEDS_FIX'.
     - Empty, malformed, 'BLOCKED', 'INCONCLUSIVE', or 'ERROR' evaluates to is_blocked=True.
     """
 
@@ -84,6 +85,22 @@ class AdversarialValidationContext:
     changed_tests: List[str] = field(default_factory=list)
     issue_context: str = ""
     is_diff_truncated: bool = False
+    unverified_files: List[str] = field(default_factory=list)
+
+    @property
+    def has_complete_file_coverage(self) -> bool:
+        """Return whether every changed file has complete patch evidence."""
+        return not self.unverified_files
+
+
+@dataclass
+class FileDiffEvidence:
+    """Bounded patch evidence and coverage state for one changed file."""
+
+    path: str = ""
+    patch: str = ""
+    original_size: int = 0
+    is_complete: bool = False
 
 
 def adversarial_validation_comment_marker(head_sha: str) -> str:
@@ -187,6 +204,105 @@ def extract_changed_test_files(pr_diff: str) -> List[str]:
     return [f for f in all_files if is_test_file(f)]
 
 
+def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
+    """Split a unified Git diff into ordered per-file patches."""
+    matches = list(re.finditer(r"^diff --git\s+a/.*?\s+b/(.*)$", pr_diff, re.MULTILINE))
+    evidence: List[FileDiffEvidence] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(pr_diff)
+        patch = pr_diff[match.start() : end].rstrip()
+        path = match.group(1).strip()
+        evidence.append(FileDiffEvidence(path=path, patch=patch, original_size=len(patch)))
+    return evidence
+
+
+def _allocate_file_evidence_budget(file_patches: List[FileDiffEvidence], budget: int) -> List[int]:
+    """Water-fill a total patch budget so small late files remain fully visible."""
+    allocations = [0] * len(file_patches)
+    remaining = max(0, budget)
+    if not file_patches or remaining <= 0:
+        return allocations
+
+    # Give every file a small deterministic excerpt first. Coverage metadata is
+    # always emitted separately even when the patch budget is exceptionally low.
+    base_allocation = min(32, remaining // len(file_patches))
+    for index, file_patch in enumerate(file_patches):
+        allocations[index] = min(base_allocation, file_patch.original_size)
+        remaining -= allocations[index]
+
+    pending = [index for index, file_patch in enumerate(file_patches) if allocations[index] < file_patch.original_size]
+
+    # Complete the smallest patches next. This is what prevents a huge early
+    # generated file from hiding a later focused implementation or security test.
+    for index in sorted(pending, key=lambda item: file_patches[item].original_size - allocations[item]):
+        additional = file_patches[index].original_size - allocations[index]
+        if additional <= remaining:
+            allocations[index] += additional
+            remaining -= additional
+
+    pending = [index for index in pending if allocations[index] < file_patches[index].original_size]
+
+    while pending and remaining > 0:
+        fair_share = remaining // len(pending)
+        if fair_share <= 0:
+            for index in pending[:remaining]:
+                allocations[index] += 1
+            break
+        for offset, index in enumerate(pending):
+            allocations[index] += fair_share + (1 if offset < remaining % len(pending) else 0)
+        break
+
+    return allocations
+
+
+def _bounded_file_patch(patch: str, allocation: int) -> str:
+    """Represent one oversized patch with bounded beginning and ending evidence."""
+    if allocation <= 0:
+        return ""
+    if len(patch) <= allocation:
+        return patch
+    marker = "\n... [per-file patch evidence omitted] ...\n"
+    if allocation <= len(marker):
+        return patch[:allocation]
+
+    content_budget = max(0, allocation - len(marker))
+    prefix_size = (content_budget + 1) // 2
+    suffix_size = content_budget // 2
+    return patch[:prefix_size] + marker + (patch[-suffix_size:] if suffix_size else "")
+
+
+def build_file_aware_diff(pr_diff: str, max_evidence_size: int) -> tuple[str, List[str]]:
+    """Build bounded, per-file diff evidence without allowing early files to starve later ones.
+
+    Every file receives an independent coverage record. Small patches are included
+    completely before the remaining budget is shared across oversized patches.
+    Files without complete patches are explicitly returned as unverified so a
+    downstream PASS can be rejected deterministically.
+    """
+    file_patches = _split_diff_by_file(pr_diff)
+    if not file_patches:
+        if len(pr_diff) <= max_evidence_size:
+            return pr_diff, []
+        return _bounded_file_patch(pr_diff, max_evidence_size), ["<unparsed unified diff>"]
+
+    patch_budget = max(0, max_evidence_size - FILE_EVIDENCE_HEADER_RESERVE * len(file_patches))
+    allocations = _allocate_file_evidence_budget(file_patches, patch_budget)
+    rendered: List[str] = []
+    unverified_files: List[str] = []
+
+    for file_patch, allocation in zip(file_patches, allocations):
+        file_patch.is_complete = allocation >= file_patch.original_size
+        file_patch.patch = _bounded_file_patch(file_patch.patch, allocation)
+        coverage = "COMPLETE" if file_patch.is_complete else "PARTIAL / UNVERIFIED"
+        rendered.append(f"### Changed file: {file_patch.path}\n" f"Coverage: {coverage} ({len(file_patch.patch)}/{file_patch.original_size} patch characters supplied)\n" f"{file_patch.patch or '[No patch content fits within the bounded evidence budget.]'}")
+        if not file_patch.is_complete:
+            unverified_files.append(file_patch.path)
+
+    if unverified_files:
+        rendered.append("## COVERAGE INCOMPLETE\n" "The following material changed files have partial or unavailable patch evidence. " "A PASS verdict is forbidden unless their irrelevance to every Issue requirement is explicitly established: " + ", ".join(unverified_files))
+    return "\n\n".join(rendered), unverified_files
+
+
 def build_adversarial_validation_context(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -196,7 +312,8 @@ def build_adversarial_validation_context(
     """Compile issue specification, PR diff, and changed tests for validation.
 
     Recovers oracle/specification from PR body, title, branch name, and session.
-    Guarantees that truncation warning and full changed-file list are never stripped.
+    Uses a bounded, file-aware budget so an early oversized patch cannot hide
+    later implementation or test files.
 
     Args:
         repo_name: Repository name in 'owner/repo' format
@@ -222,26 +339,16 @@ def build_adversarial_validation_context(
     pr_diff = ""
     is_diff_truncated = False
     all_changed_files: List[str] = []
+    unverified_files: List[str] = []
 
     if client:
         try:
             raw_diff = client.get_pr_diff(repo_name, pr_number)
             if raw_diff:
                 all_changed_files = extract_all_changed_files(raw_diff)
-                max_diff_bytes = config.MAX_PR_DIFF_SIZE * 3
-
-                if len(raw_diff) > max_diff_bytes:
-                    is_diff_truncated = True
-                    file_list_str = ", ".join(all_changed_files)
-                    truncation_warning = (
-                        f"\n\n[WARNING: PR Diff was truncated to first {max_diff_bytes} bytes due to size limit.\n"
-                        f"Complete list of changed files in this PR ({len(all_changed_files)} files): {file_list_str}\n"
-                        f"IMPORTANT: If requirements or implementation details cannot be verified because critical files were omitted, "
-                        f"you MUST output result: 'INCONCLUSIVE' rather than 'PASS'.]"
-                    )
-                    pr_diff = raw_diff[:max_diff_bytes] + truncation_warning
-                else:
-                    pr_diff = raw_diff
+                max_diff_size = config.MAX_PR_DIFF_SIZE * 3
+                pr_diff, unverified_files = build_file_aware_diff(raw_diff, max_diff_size)
+                is_diff_truncated = bool(unverified_files)
         except Exception as e:
             logger.warning(f"Could not retrieve diff for PR #{pr_number}: {e}")
 
@@ -261,6 +368,7 @@ def build_adversarial_validation_context(
         changed_tests=changed_tests,
         issue_context=issue_context,
         is_diff_truncated=is_diff_truncated,
+        unverified_files=unverified_files,
     )
 
 
@@ -427,7 +535,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     Fail-closed policy:
     - Entire response schema must be strictly valid and consistent.
     - PASS requires raw_result == "PASS" and findings to be strictly empty ([] or None).
-    - Any non-empty findings on PASS, or malformed/empty elements in findings, fail closed to ERROR.
+    - Valid concrete findings override PASS/INCONCLUSIVE/BLOCKED labels and normalize to NEEDS_FIX.
+    - Malformed or empty finding elements fail closed to ERROR.
     - NEEDS_FIX requires at least one finding with a concrete counterexample; missing counterexamples are never synthesized.
     - Malformed or unparseable schemas fail closed to ERROR.
 
@@ -534,15 +643,9 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                 # Determine result - enforce consistency and fail-closed
                 if raw_result == "PASS":
-                    if findings or (raw_findings is not None and len(raw_findings) > 0):
-                        # Contradictory: PASS claimed but findings present -> fail closed to ERROR
-                        return _parse_error(
-                            raw_response,
-                            "contradictory_response",
-                            "Contradictory validator response: PASS claimed with non-empty findings",
-                            "PASS requires findings to be empty",
-                        )
-                    result_val = "PASS"
+                    # Valid concrete findings outrank the contradictory top-level
+                    # label. Malformed findings have already failed schema parsing.
+                    result_val = "NEEDS_FIX" if findings else "PASS"
                 elif raw_result == "NEEDS_FIX":
                     if not findings:
                         # NEEDS_FIX claimed but no valid counterexample findings provided -> fail closed to ERROR
@@ -554,7 +657,9 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         )
                     result_val = "NEEDS_FIX"
                 elif raw_result in ("INCONCLUSIVE", "BLOCKED"):
-                    result_val = raw_result
+                    # A proven counterexample outranks uncertainty or an
+                    # infrastructure diagnostic. Never discard concrete findings.
+                    result_val = "NEEDS_FIX" if findings else raw_result
                 else:
                     return _parse_error(
                         raw_response,
@@ -623,13 +728,26 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*PASS", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        # If RESULT: PASS is accompanied by defect markers, fail closed to ERROR
         if has_text_findings:
-            return _parse_error(
-                raw_response,
-                "contradictory_response",
-                "Contradictory validator output (PASS with defect markers); failing closed to ERROR",
-                "PASS response contains defect markers",
+            if not counterexample:
+                return _parse_error(
+                    raw_response,
+                    "schema_error",
+                    "Reviewer reported a defect without a concrete behavioral counterexample",
+                    "PASS response contains defect markers but no COUNTEREXAMPLE",
+                )
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Concrete specification violation overrides contradictory PASS label",
+                findings=[
+                    AdversarialValidationFinding(
+                        violated_requirement=violated_req or "Specification requirement violated",
+                        counterexample=counterexample,
+                        test_gap=test_gap or "Existing tests do not assert this condition",
+                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                    )
+                ],
+                raw_response=raw_response,
             )
         return AdversarialValidationResult(
             result="PASS",
@@ -639,6 +757,20 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*INCONCLUSIVE", cleaned_response, re.MULTILINE | re.IGNORECASE):
+        if counterexample:
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Specification violation proven despite incomplete review coverage",
+                findings=[
+                    AdversarialValidationFinding(
+                        violated_requirement=violated_req or "Specification requirement violated",
+                        counterexample=counterexample,
+                        test_gap=test_gap or "Existing tests do not assert this condition",
+                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                    )
+                ],
+                raw_response=raw_response,
+            )
         return AdversarialValidationResult(
             result="INCONCLUSIVE",
             summary="Validation inconclusive",
@@ -660,6 +792,29 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         "Unparseable validator response; validation incomplete",
         "response contained neither a JSON object nor a recognized RESULT marker",
     )
+
+
+def _apply_coverage_and_verdict_precedence(
+    result: AdversarialValidationResult,
+    context: AdversarialValidationContext,
+) -> AdversarialValidationResult:
+    """Apply deterministic finding-first and complete-coverage verdict rules."""
+    if result.findings:
+        result.result = "NEEDS_FIX"
+        if context.unverified_files:
+            coverage_note = f"Review coverage also remains incomplete for: {', '.join(context.unverified_files)}"
+            result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
+            result.diagnostic_category = result.diagnostic_category or "incomplete_evidence_coverage"
+            result.diagnostic_reason = result.diagnostic_reason or coverage_note
+        return result
+
+    if result.result.strip().upper() == "PASS" and not context.has_complete_file_coverage:
+        reason = f"Material changed-file evidence was incomplete for: {', '.join(context.unverified_files)}"
+        result.result = "INCONCLUSIVE"
+        result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
+        result.diagnostic_category = "incomplete_evidence_coverage"
+        result.diagnostic_reason = reason
+    return result
 
 
 def run_adversarial_validation(
@@ -726,8 +881,11 @@ def run_adversarial_validation(
             summary="No strong adversarial validation backend configured or available",
         )
 
-    # 3. Render adversarial validation prompt (context.pr_diff already includes truncation warning if applicable)
+    # 3. Render adversarial validation prompt with complete manifests and
+    # deterministic file-evidence coverage metadata.
     changed_tests_str = "\n".join(f"- {t}" for t in context.changed_tests) if context.changed_tests else "(No test files detected in diff)"
+    changed_files_str = "\n".join(f"- {path}" for path in context.all_changed_files) if context.all_changed_files else "(No changed files detected)"
+    coverage_status = "COMPLETE: every changed file has complete patch evidence." if context.has_complete_file_coverage else "INCOMPLETE: PASS is forbidden because these files have partial/unavailable evidence: " + ", ".join(context.unverified_files)
     prompt = render_prompt(
         "pr.adversarial_validation",
         repo_name=repo_name,
@@ -737,6 +895,8 @@ def run_adversarial_validation(
         pr_diff=context.pr_diff,
         linked_issues_context=context.issue_context,
         changed_tests=changed_tests_str,
+        changed_files=changed_files_str,
+        coverage_status=coverage_status,
     )
 
     # 4. Invoke the strong model
@@ -746,9 +906,10 @@ def run_adversarial_validation(
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
+    result = _apply_coverage_and_verdict_precedence(result, context)
 
     # 6. Dynamic validation on suspicion (if requested)
-    if result.dynamic_check_requested and result.dynamic_check_requested.strip():
+    if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix:
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
         try:
@@ -794,12 +955,15 @@ def run_adversarial_validation(
                 followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager, is_noedit=True)
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
+            result = _apply_coverage_and_verdict_precedence(result, context)
 
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
             # Inability to complete a requested check must be treated as non-pass (fail-closed)
             result.result = "BLOCKED"
             result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
+
+    result = _apply_coverage_and_verdict_precedence(result, context)
 
     get_trace_logger().log(
         "Adversarial Validation Result",

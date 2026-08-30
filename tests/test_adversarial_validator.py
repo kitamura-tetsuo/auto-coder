@@ -11,6 +11,7 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     build_adversarial_validation_context,
+    build_file_aware_diff,
     extract_all_changed_files,
     extract_changed_test_files,
     is_test_file,
@@ -98,14 +99,34 @@ class TestParseAdversarialValidationResponse:
         assert "assert both calls happen" in finding.test_gap
         assert "strictly before" in finding.suggested_regression_scenario
 
+    def test_inconclusive_with_concrete_finding_is_normalized_to_needs_fix(self):
+        response = """{
+  "result": "INCONCLUSIVE",
+  "summary": "One file was unavailable, but a required test category is absent",
+  "findings": [
+    {
+      "violated_requirement": "The Issue requires an HTTP-level regression test",
+      "counterexample": "Given the complete test manifest, when coverage is inspected, then the specification requires an HTTP test, but only a service test exists, and current tests pass because they never cross the HTTP boundary",
+      "test_gap": "No changed HTTP or E2E test is present",
+      "suggested_regression_scenario": "Exercise diagnosis and apply through the HTTP connector"
+    }
+  ]
+}"""
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "NEEDS_FIX"
+        assert result.needs_fix
+        assert len(result.findings) == 1
+
     def test_parse_bare_json(self):
         json_resp = '{"result": "PASS", "summary": "Looks good", "findings": []}'
         result = parse_adversarial_validation_response(json_resp)
         assert result.is_pass
         assert result.summary == "Looks good"
 
-    def test_parse_contradictory_pass_with_findings_fails_closed_to_error(self):
-        """Contradictory output (result: PASS but findings present) must fail closed to ERROR."""
+    def test_parse_concrete_findings_override_contradictory_pass_label(self):
+        """A valid counterexample must survive a contradictory top-level PASS."""
         json_resp = """{
   "result": "PASS",
   "summary": "Says pass but listed a bug",
@@ -120,9 +141,9 @@ class TestParseAdversarialValidationResponse:
 }"""
         result = parse_adversarial_validation_response(json_resp)
         assert not result.is_pass
-        assert result.is_blocked
-        assert result.result == "ERROR"
-        assert result.diagnostic_category == "contradictory_response"
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
+        assert len(result.findings) == 1
         assert result.raw_response == json_resp
 
     def test_parse_malformed_findings_with_empty_dict_fails_closed_to_error(self):
@@ -173,16 +194,16 @@ SUGGESTED_REGRESSION_SCENARIO: Assert token expiration with timezone offset diff
         assert "User session must expire" in result.findings[0].violated_requirement
         assert "Given state S" in result.findings[0].counterexample
 
-    def test_parse_text_contradictory_pass_with_defect_markers_fails_closed_to_error(self):
-        """Text response with RESULT: PASS and defect markers must fail closed to ERROR."""
+    def test_parse_text_concrete_finding_overrides_pass(self):
+        """Structured text counterexamples also receive finding-first precedence."""
         text_resp = """RESULT: PASS
 VIOLATED_REQUIREMENT: User session must expire after 2 hours
 COUNTEREXAMPLE: Given state S, produces invalid token
 """
         result = parse_adversarial_validation_response(text_resp)
         assert not result.is_pass
-        assert result.is_blocked
-        assert result.result == "ERROR"
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
 
     def test_parse_empty_response_fails_closed_to_error(self):
         """Empty response must fail closed to ERROR and block merge."""
@@ -317,7 +338,7 @@ class TestBuildAdversarialValidationContext:
         assert "Linked Issue #10" in context.issue_context
         assert not context.is_diff_truncated
 
-    def test_build_context_with_truncation_warning(self):
+    def test_build_context_uses_file_aware_evidence_for_large_diff(self):
         mock_client = MagicMock()
         huge_diff = "diff --git a/file1.py b/file1.py\n+++ b/file1.py\n" + ("+" + "a" * 100 + "\n") * 500 + "diff --git a/file_late.py b/file_late.py\n+++ b/file_late.py\n"
         mock_client.get_pr_diff.return_value = huge_diff
@@ -333,11 +354,13 @@ class TestBuildAdversarialValidationContext:
 
         context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
         assert context.is_diff_truncated
-        assert "WARNING: PR Diff was truncated" in context.pr_diff
+        assert "Coverage: PARTIAL / UNVERIFIED" in context.pr_diff
+        assert "### Changed file: file_late.py" in context.pr_diff
         assert "file_late.py" in context.all_changed_files
+        assert "file1.py" in context.unverified_files
 
-    def test_rendered_prompt_preserves_truncation_warning_and_late_filename(self):
-        """Rendered prompt must contain truncation warning and late filenames for large diffs."""
+    def test_rendered_prompt_preserves_late_file_patch_and_complete_manifests(self):
+        """A large early patch must not hide a later material file from the prompt."""
         mock_client = MagicMock()
         diff_prefix = "diff --git a/src/early.py b/src/early.py\n+++ b/src/early.py\n" + ("+early_line\n" * 200)
         diff_suffix = "diff --git a/src/late_secret_feature.py b/src/late_secret_feature.py\n+++ b/src/late_secret_feature.py\n+late_line\n"
@@ -366,10 +389,37 @@ class TestBuildAdversarialValidationContext:
             pr_diff=context.pr_diff,
             linked_issues_context=context.issue_context,
             changed_tests=changed_tests_str,
+            changed_files="\n".join(f"- {path}" for path in context.all_changed_files),
+            coverage_status="INCOMPLETE",
         )
 
-        assert "WARNING: PR Diff was truncated" in rendered_prompt
+        assert "Complete Changed-File Manifest" in rendered_prompt
         assert "src/late_secret_feature.py" in rendered_prompt
+        assert "+late_line" in rendered_prompt
+        assert "Coverage: COMPLETE" in rendered_prompt
+
+    def test_oversized_first_file_does_not_starve_later_security_and_test_files(self):
+        huge_patch = "diff --git a/generated.txt b/generated.txt\n+++ b/generated.txt\n" + "+generated\n" * 1000
+        security_patch = "diff --git a/src/security.py b/src/security.py\n+++ b/src/security.py\n+reject_unsafe_input()\n"
+        test_patch = "diff --git a/tests/test_security.py b/tests/test_security.py\n+++ b/tests/test_security.py\n+assert_rejected()\n"
+
+        evidence, unverified = build_file_aware_diff(huge_patch + security_patch + test_patch, 700)
+
+        assert "generated.txt" in unverified
+        assert "### Changed file: src/security.py" in evidence
+        assert "+reject_unsafe_input()" in evidence
+        assert "### Changed file: tests/test_security.py" in evidence
+        assert "+assert_rejected()" in evidence
+
+    @pytest.mark.parametrize("late_file_first", [False, True])
+    def test_violating_file_evidence_is_order_independent(self, late_file_first):
+        huge_patch = "diff --git a/generated.txt b/generated.txt\n+++ b/generated.txt\n" + "+generated\n" * 1000
+        violation_patch = "diff --git a/src/violation.py b/src/violation.py\n+++ b/src/violation.py\n+allow_forbidden_state()\n"
+        raw_diff = violation_patch + huge_patch if late_file_first else huge_patch + violation_patch
+
+        evidence, _ = build_file_aware_diff(raw_diff, 500)
+
+        assert "+allow_forbidden_state()" in evidence
 
     def test_hierarchical_oracle_selection_prefers_explicit_linking_keyword(self):
         """When explicit linking keywords exist in body, other reference issues are NOT included."""
@@ -403,8 +453,8 @@ class TestBuildAdversarialValidationContext:
         assert "Linked Issue #100" in context.issue_context
         assert "Linked Issue #200" not in context.issue_context
 
-    def test_inconclusive_with_findings_has_needs_fix_false_and_is_blocked_true(self):
-        """INCONCLUSIVE with findings must NOT have needs_fix=True, must be is_blocked=True."""
+    def test_unaggregated_inconclusive_result_remains_blocked_until_precedence_is_applied(self):
+        """Direct result construction remains fail-closed; parsed results apply precedence."""
         finding = AdversarialValidationFinding(
             violated_requirement="Spec invariant",
             counterexample="Given state S, action A produces X",
@@ -878,8 +928,8 @@ class TestRunAdversarialValidation:
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
-    def test_run_adversarial_validation_dynamic_check_reads_output_and_errors_and_preserves_findings(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
-        """Dynamic check follow-up must consume run_local_tests output/errors shape and preserve original counterexample."""
+    def test_concrete_finding_prevents_later_dynamic_uncertainty_from_erasing_it(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """A concrete finding wins immediately and is not downgraded by a later check."""
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -916,15 +966,73 @@ class TestRunAdversarialValidation:
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
-        assert result.is_pass
-        assert result.result == "PASS"
-        assert mock_run_prompt.call_count == 2
+        assert result.needs_fix
+        assert result.result == "NEEDS_FIX"
+        assert mock_run_prompt.call_count == 1
+        mock_run_tests.assert_not_called()
 
-        # Verify the second prompt (followup) received the real test output and preserved the original counterexample
-        followup_call_prompt = mock_run_prompt.call_args_list[1][0][0]
-        assert "PASSED tests/test_feature.py::test_reload_scenario" in followup_call_prompt
-        assert "DeprecationWarning" in followup_call_prompt
-        assert "Given state S, when reload occurs, then persisted timestamp is lost" in followup_call_prompt
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_pass_is_rejected_when_material_file_evidence_is_incomplete(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Large change",
+            pr_diff="bounded evidence",
+            all_changed_files=["src/huge.py", "tests/test_feature.py"],
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification",
+            is_diff_truncated=True,
+            unverified_files=["src/huge.py"],
+        )
+        mock_run_prompt.return_value = '{"result": "PASS", "summary": "Looks correct", "findings": []}'
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Large change"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "INCONCLUSIVE"
+        assert result.is_blocked
+        assert result.diagnostic_category == "incomplete_evidence_coverage"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_finding_wins_while_incomplete_coverage_remains_diagnostic(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Large change",
+            pr_diff="bounded evidence",
+            all_changed_files=["src/huge.py", "tests/service_test.py"],
+            changed_tests=["tests/service_test.py"],
+            issue_context="Issue requires service and HTTP tests",
+            unverified_files=["src/huge.py"],
+        )
+        mock_run_prompt.return_value = """{
+  "result": "INCONCLUSIVE",
+  "summary": "Implementation file is partial, but required HTTP coverage is absent",
+  "findings": [{
+    "violated_requirement": "HTTP-level tests are required",
+    "counterexample": "Given the complete test manifest, when required categories are compared, then an HTTP test is required, but only a service test exists, and CI passes because no HTTP test runs",
+    "test_gap": "The changed-test manifest has no HTTP test",
+    "suggested_regression_scenario": "Add an HTTP connector regression test"
+  }]
+}"""
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Large change"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "NEEDS_FIX"
+        assert result.needs_fix
+        assert result.diagnostic_category == "incomplete_evidence_coverage"
+        assert "src/huge.py" in (result.diagnostic_reason or "")
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
