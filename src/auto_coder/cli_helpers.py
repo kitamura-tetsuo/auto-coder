@@ -295,6 +295,7 @@ def build_backend_manager(
     models: dict[str, str],
     use_noedit_options: bool = False,
     allow_isolated_noedit_sandbox_fallback: bool = False,
+    capture_codex_final_message: bool = False,
     automatic_session_resume: bool = True,
 ) -> BackendManager:
     # Handle legacy "gemini" backend name translation
@@ -308,6 +309,10 @@ def build_backend_manager(
     use_noedit_options: If True, use options_for_noedit instead of options for clients.
     allow_isolated_noedit_sandbox_fallback: Allow Codex review execution to bypass
         an unavailable Linux sandbox only inside a disposable worktree.
+    capture_codex_final_message: Use Codex's dedicated final-message output for
+        structured no-edit review responses.
+    automatic_session_resume: Continue the last implementation session when the
+        same backend is used consecutively.
     """
     config = get_llm_config()
 
@@ -368,6 +373,17 @@ def build_backend_manager(
 
         backend_config = config.get_backend_config(backend_name)
         if allow_isolated_noedit_sandbox_fallback:
+            if capture_codex_final_message:
+                return CodexClient(
+                    backend_name=backend_name,
+                    api_key=backend_config.api_key if backend_config else None,
+                    base_url=backend_config.base_url if backend_config else None,
+                    openai_api_key=backend_config.openai_api_key if backend_config else None,
+                    openai_base_url=backend_config.openai_base_url if backend_config else None,
+                    use_noedit_options=use_noedit_options,
+                    allow_isolated_noedit_sandbox_fallback=True,
+                    capture_final_message=True,
+                )
             return CodexClient(
                 backend_name=backend_name,
                 api_key=backend_config.api_key if backend_config else None,
@@ -376,6 +392,16 @@ def build_backend_manager(
                 openai_base_url=backend_config.openai_base_url if backend_config else None,
                 use_noedit_options=use_noedit_options,
                 allow_isolated_noedit_sandbox_fallback=True,
+            )
+        if capture_codex_final_message:
+            return CodexClient(
+                backend_name=backend_name,
+                api_key=backend_config.api_key if backend_config else None,
+                base_url=backend_config.base_url if backend_config else None,
+                openai_api_key=backend_config.openai_api_key if backend_config else None,
+                openai_base_url=backend_config.openai_base_url if backend_config else None,
+                use_noedit_options=use_noedit_options,
+                capture_final_message=True,
             )
         return CodexClient(
             backend_name=backend_name,
@@ -977,6 +1003,7 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
                 models=models,
                 use_noedit_options=True,
                 allow_isolated_noedit_sandbox_fallback=True,
+                capture_codex_final_message=True,
                 automatic_session_resume=False,
             )
         return build_backend_manager(
@@ -984,6 +1011,7 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
             primary_backend=primary_backend,
             models=models,
             use_noedit_options=True,
+            capture_codex_final_message=True,
             automatic_session_resume=False,
         )
     except Exception as e:

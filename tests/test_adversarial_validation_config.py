@@ -98,6 +98,7 @@ class TestCreateAdversarialValidationBackendManager:
         assert call_kwargs["selected_backends"] == ["claude", "codex"]
         assert call_kwargs["primary_backend"] == "claude"
         assert call_kwargs["use_noedit_options"] is True
+        assert call_kwargs["capture_codex_final_message"] is True
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=None)
@@ -130,14 +131,42 @@ class TestCreateAdversarialValidationBackendManager:
 
         mock_rank.return_value = ["claude"]
 
-        mgr = create_adversarial_validation_backend_manager()
+        with patch("pathlib.Path.is_file", return_value=False):
+            mgr = create_adversarial_validation_backend_manager()
         mock_build.assert_called_once_with(
             selected_backends=["claude"],
             primary_backend="claude",
             models={"claude": "model-claude"},
             use_noedit_options=True,
+            capture_codex_final_message=True,
             automatic_session_resume=False,
         )
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_isolated_worktree_enables_codex_sandbox_fallback(self, mock_build, mock_rank, mock_get_config):
+        mock_config = MagicMock()
+        mock_config.get_adversarial_validation_backend_order.return_value = ["codex-review"]
+        mock_config.get_backend_adversarial_validation.return_value = None
+        mock_config.get_backend_config.return_value = MagicMock(backend_type="codex")
+        mock_config.get_model_for_backend.return_value = "gpt-review"
+        mock_get_config.return_value = mock_config
+        mock_rank.return_value = ["codex-review"]
+
+        with patch("pathlib.Path.is_file", return_value=True):
+            mgr = create_adversarial_validation_backend_manager()
+
+        mock_build.assert_called_once_with(
+            selected_backends=["codex-review"],
+            primary_backend="codex-review",
+            models={"codex-review": "gpt-review"},
+            use_noedit_options=True,
+            allow_isolated_noedit_sandbox_fallback=True,
+            capture_codex_final_message=True,
+            automatic_session_resume=False,
+        )
+        assert mgr is mock_build.return_value
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     def test_returns_none_when_no_strong_backend_configured(self, mock_get_config):

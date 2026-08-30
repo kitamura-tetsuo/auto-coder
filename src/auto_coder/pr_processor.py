@@ -27,6 +27,7 @@ from auto_coder.util.github_action import DetailedChecksResult, _check_github_ac
 
 from .adversarial_validator import (
     AdversarialValidationResult,
+    adversarial_validation_codex_feedback_marker,
     adversarial_validation_comment_marker,
     format_adversarial_validation_comment,
     run_adversarial_validation,
@@ -1572,6 +1573,27 @@ def _get_published_adversarial_validation_status(
     return None, None
 
 
+def _get_published_adversarial_validation_comment(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return the durable validation report for one PR head SHA."""
+    marker = adversarial_validation_comment_marker(head_sha)
+    try:
+        comments = github_client.get_pr_comments(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to read adversarial validation report for PR #{pr_number}: {e}")
+        return None, str(e)
+
+    for comment in comments:
+        body = _comment_value(comment, "body", "")
+        if isinstance(body, str) and body.startswith(marker):
+            return body, None
+    return None, None
+
+
 @contextlib.contextmanager
 def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional[str] = None):
     """Context manager that creates an isolated, detached git worktree at head_sha for side-effect-free validation.
@@ -1813,6 +1835,25 @@ def _handle_pr_merge(
                     actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                     if published_status != "PASS":
                         actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
+                        if published_status == "NEEDS_FIX":
+                            published_report, report_error = _get_published_adversarial_validation_comment(
+                                github_client,
+                                repo_name,
+                                pr_number,
+                                head_sha,
+                            )
+                            if report_error:
+                                actions.append(f"Could not read the published adversarial report for Codex Cloud: {report_error}")
+                            elif published_report:
+                                actions.extend(
+                                    _send_adversarial_validation_feedback_to_codex_cloud(
+                                        repo_name,
+                                        pr_data,
+                                        head_sha,
+                                        published_report,
+                                        github_client,
+                                    )
+                                )
                         return actions
                 else:
                     try:
@@ -1844,7 +1885,16 @@ def _handle_pr_merge(
                 elif val_result.needs_fix:
                     actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
                     logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
-                    actions.append(f"Awaiting PR author changes for PR #{pr_number}; no automatic adversarial fix was attempted")
+                    actions.extend(
+                        _send_adversarial_validation_feedback_to_codex_cloud(
+                            repo_name,
+                            pr_data,
+                            head_sha,
+                            format_adversarial_validation_comment(val_result, head_sha),
+                            github_client,
+                        )
+                    )
+                    actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
                     return actions
 
                 elif not val_result.is_pass:
@@ -1889,7 +1939,7 @@ def _handle_pr_merge(
             )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
-                ReviewerSessionRegistry().remove_pr(repo_name, pr_number)
+                _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
 
                 # Clean up old PRs if this is a Jules PR with a session ID
                 try:
@@ -3210,6 +3260,36 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
     return actions
 
 
+def _resolve_codex_cloud_task_id(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+) -> Optional[str]:
+    """Resolve the Codex Cloud task associated with a pull request."""
+    task_id = pr_data.get("_codex_task_id")
+    pr_body = pr_data.get("body", "") or ""
+
+    if not task_id:
+        direct_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", pr_body)
+        if direct_match:
+            task_id = direct_match.group(1)
+
+    if not task_id:
+        for issue_num in extract_linked_issues_from_pr_body(pr_body):
+            found_url = _find_codex_cloud_task_for_issue(repo_name, issue_num, github_client)
+            if found_url:
+                task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", found_url)
+                if task_match:
+                    task_id = task_match.group(1)
+                    break
+
+    if isinstance(task_id, str):
+        task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", task_id)
+        if task_match:
+            return task_match.group(1)
+    return None
+
+
 def _send_codex_cloud_error_feedback(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -3233,29 +3313,8 @@ def _send_codex_cloud_error_feedback(
     pr_number = pr_data["number"]
 
     try:
-        # Resolve task ID from PR data
-        task_id = pr_data.get("_codex_task_id")
+        task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
         if not task_id:
-            task_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
-
-        if not task_id:
-            # Check CloudManager / linked issues
-            linked_issues = extract_linked_issues_from_pr_body(pr_data.get("body", ""))
-            for issue_num in linked_issues:
-                found_url = _find_codex_cloud_task_for_issue(repo_name, issue_num, github_client)
-                if found_url:
-                    m = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", found_url)
-                    if m:
-                        task_id = m.group(1)
-                        break
-
-        # If task_id is a full URL, extract the token
-        if task_id and "codex/tasks/" in task_id:
-            m = re.search(r"/tasks/(task_[a-zA-Z0-9_-]+)", task_id)
-            if m:
-                task_id = m.group(1)
-
-        if not task_id or not task_id.startswith("task_"):
             actions.append(f"Cannot resume Codex Cloud task for PR #{pr_number}: no valid Codex task ID found")
             logger.warning(f"No valid Codex task ID found in PR #{pr_number} data for continuation")
             return actions
@@ -3298,6 +3357,75 @@ def _send_codex_cloud_error_feedback(
         logger.error(error_msg)
         actions.append(error_msg)
 
+    return actions
+
+
+def _send_adversarial_validation_feedback_to_codex_cloud(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    head_sha: str,
+    validation_report: str,
+    github_client: Optional[Any] = None,
+) -> List[str]:
+    """Send a NEEDS_FIX validation report to the PR's existing Codex Cloud task."""
+    pr_number = pr_data["number"]
+    feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
+    if github_client:
+        try:
+            comments = github_client.get_pr_comments(repo_name, pr_number)
+        except Exception as e:
+            logger.error(f"Failed to check prior Codex Cloud adversarial feedback for PR #{pr_number}: {e}")
+            return [f"Could not check prior Codex Cloud adversarial feedback for PR #{pr_number}: {e}"]
+        for comment in comments:
+            body = _comment_value(comment, "body", "")
+            if isinstance(body, str) and body.startswith(feedback_marker):
+                return [f"Skipped duplicate adversarial feedback to Codex Cloud for PR #{pr_number} at {head_sha[:8]}"]
+
+    task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
+    if not task_id:
+        return [f"Cannot send adversarial feedback to Codex Cloud for PR #{pr_number}: no valid Codex task ID found"]
+
+    prompt = render_prompt(
+        "pr.adversarial_validation_fix",
+        repo_name=repo_name,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        validation_report=validation_report,
+    )
+
+    try:
+        from .codex_cloud_client import CodexCloudClient
+
+        client = CodexCloudClient(repo_name=repo_name)
+        resumed = client.continue_if_paused(task_id, prompt=prompt)
+    except Exception as e:
+        logger.error(f"Error sending adversarial feedback to Codex Cloud for PR #{pr_number}: {e}")
+        return [f"Error sending adversarial feedback to Codex Cloud for PR #{pr_number}: {e}"]
+
+    if not resumed:
+        return [f"Codex Cloud task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
+
+    get_trace_logger().log(
+        "Codex Cloud Adversarial Feedback",
+        f"Sent NEEDS_FIX report to Codex Cloud task '{task_id}' for PR #{pr_number}",
+        item_type="pr",
+        item_number=pr_number,
+        details={"task_id": task_id, "head_sha": head_sha},
+    )
+    actions = [f"Sent adversarial NEEDS_FIX report to Codex Cloud task '{task_id}' for PR #{pr_number}"]
+    if github_client:
+        comment_body = "\n".join(
+            [
+                feedback_marker,
+                "🤖 Auto-Coder: I sent the adversarial validation findings to the existing Codex Cloud task and requested a fix.",
+            ]
+        )
+        try:
+            github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
+            actions.append(f"Recorded Codex Cloud adversarial feedback delivery on PR #{pr_number}")
+        except Exception as e:
+            logger.error(f"Failed to record Codex Cloud adversarial feedback delivery on PR #{pr_number}: {e}")
+            actions.append(f"Failed to record Codex Cloud adversarial feedback delivery on PR #{pr_number}: {e}")
     return actions
 
 

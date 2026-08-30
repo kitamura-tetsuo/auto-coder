@@ -78,6 +78,63 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("builtins.print")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_noedit_json_returns_dedicated_final_message(self, mock_get_config, mock_print, mock_run_command, mock_run):
+        """No-edit JSON runs must not expose a contaminated event stream to callers."""
+        mock_run.return_value.returncode = 0
+        final_message = '{"result":"PASS","summary":"Verified","findings":[]}'
+
+        def run_command(cmd, **kwargs):
+            output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+            output_path.write_text(final_message, encoding="utf-8")
+            return CommandResult(
+                True,
+                '{"type":"thread.started"}\nincidental non-JSON output\n',
+                "stderr diagnostic",
+                0,
+            )
+
+        mock_run_command.side_effect = run_command
+        mock_backend = BackendConfig(
+            name="codex",
+            model="codex",
+            options=["exec", "--json"],
+            options_for_noedit=["exec", "--json"],
+        )
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
+        client = CodexClient(use_noedit_options=True, capture_final_message=True)
+        output = client._run_llm_cli("review this", is_noedit=True)
+
+        assert output == final_message
+        called_cmd = mock_run_command.call_args.args[0]
+        output_path = Path(called_cmd[called_cmd.index("--output-last-message") + 1])
+        assert not output_path.exists()
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("builtins.print")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_noedit_json_empty_final_message_falls_back_to_stdout(self, mock_get_config, mock_print, mock_run_command, mock_run):
+        """An absent final payload must retain strict JSONL fallback handling."""
+        mock_run.return_value.returncode = 0
+        stdout = '{"type":"turn.completed"}'
+        mock_run_command.return_value = CommandResult(True, stdout, "", 0)
+        mock_backend = BackendConfig(
+            name="codex",
+            model="codex",
+            options=["exec", "--json"],
+            options_for_noedit=["exec", "--json"],
+        )
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
+        client = CodexClient(use_noedit_options=True, capture_final_message=True)
+
+        assert client._run_llm_cli("review this", is_noedit=True) == stdout
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_success_falls_back_to_stderr_when_stdout_is_empty(self, mock_run_command, mock_run):
         """Preserve clients that emit their successful response only on stderr."""
         mock_run.return_value.returncode = 0
@@ -86,6 +143,64 @@ class TestCodexClient:
         client = CodexClient()
 
         assert client._run_llm_cli("hello world") == "plain response"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_successful_jsonl_does_not_treat_reviewed_usage_limit_text_as_provider_limit(self, mock_run_command, mock_run):
+        """Source and command evidence inside successful item events is not a provider diagnostic."""
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"raise AutoCoderUsageLimitError if usage limit is reached"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"The rate limit handling is correct."}}',
+                '{"type":"turn.completed","usage":{"input_tokens":100}}',
+            ]
+        )
+        mock_run_command.return_value = CommandResult(True, stdout, "", 0)
+
+        client = CodexClient()
+
+        assert client._run_llm_cli("review usage detection") == stdout
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_successful_jsonl_still_detects_top_level_provider_limit_error(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"error","message":"usage limit exceeded; retry later"}',
+            ]
+        )
+        mock_run_command.return_value = CommandResult(True, stdout, "", 0)
+
+        client = CodexClient()
+
+        with pytest.raises(AutoCoderUsageLimitError):
+            client._run_llm_cli("review this")
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_continue_session_builds_single_exec_resume_command(self, mock_get_config, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, '{"type":"turn.completed"}', "", 0)
+        backend = BackendConfig(
+            name="codex-review",
+            backend_type="codex",
+            options=["exec", "--json"],
+            options_for_noedit=["exec", "--json"],
+        )
+        mock_get_config.return_value.get_backend_config.return_value = backend
+        client = CodexClient(backend_name="codex-review", use_noedit_options=True)
+
+        client.continue_session("session-123", "review current head", is_noedit=True)
+
+        called_cmd = mock_run_command.call_args.args[0]
+        assert called_cmd.count("exec") == 1
+        assert called_cmd.index("resume") == called_cmd.index("exec") + 1
+        assert called_cmd[-2:] == ["session-123", "review current head"]
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
