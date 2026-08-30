@@ -55,20 +55,22 @@ def _save_claude_routine_state(state: Dict[str, Dict[str, Any]], state_file: Opt
 class ClaudeRoutineClient(CloudTaskClientBase):
     """Claude Routine HTTP API client for asynchronous cloud routine execution."""
 
-    def __init__(self, backend_name: Optional[str] = None) -> None:
+    def __init__(self, backend_name: Optional[str] = None, repo_name: Optional[str] = None) -> None:
         """Initialize Claude Routine HTTP API client.
 
         Args:
             backend_name: Backend name to use for configuration lookup (optional).
+            repo_name: Repository name to resolve repository-specific overrides (optional).
         """
         self.backend_name = backend_name or "claude-routine"
+        self.repo_name = repo_name
         self.timeout = 30
         self.active_sessions: Dict[str, str] = {}  # session_id -> prompt
         self.token: Optional[str] = None
         self.url: Optional[str] = None
 
         # Load configuration for this backend
-        config = get_llm_config()
+        config = get_llm_config(repo_name=self.repo_name)
         config_backend = config.get_backend_config(self.backend_name)
 
         self.options = (config_backend and config_backend.options) or []

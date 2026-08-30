@@ -21,7 +21,7 @@ from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
-from .llm_backend_config import get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
+from .llm_backend_config import active_repo_context, get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
@@ -276,58 +276,53 @@ class AutomationEngine:
 
     async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
         """Worker loop that processes candidates from the queue."""
-        logger.info(f"Worker {worker_id} started")
-        get_trace_logger().log("System", f"Worker {worker_id} started")
+        with active_repo_context(repo_name):
+            logger.info(f"Worker {worker_id} started")
+            get_trace_logger().log("System", f"Worker {worker_id} started")
 
-        while True:
-            heartbeat(f"worker-{worker_id}:idle", f"queue={self.queue.qsize()}")
-            candidate = await self.queue.get()
-            item_number = candidate.data.get("number", "N/A")
+            while True:
+                heartbeat(f"worker-{worker_id}:idle", f"queue={self.queue.qsize()}")
+                candidate = await self.queue.get()
+                item_number = candidate.data.get("number", "N/A")
 
-            try:
-                self.active_workers[worker_id] = candidate
-                logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
-                heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
+                try:
+                    self.active_workers[worker_id] = candidate
+                    logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
+                    heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
 
-                # Check if the item is already closed before processing
-                if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
-                    logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
-                    if candidate.type == "pr":
+                    # Check if the item is already closed before processing
+                    if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
+                        logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
+                        if candidate.type == "pr":
+                            self.notify_pr_merged_or_closed()
+                        continue
+
+                    get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
+
+                    # Process candidate
+                    result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+
+                    if result.error:
+                        logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
+                        get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
+                    else:
+                        logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{item_number}")
+                        get_trace_logger().log("Worker", f"Worker {worker_id} successfully processed {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
+
+                    # Check if PR was merged or closed during candidate processing
+                    if self._check_if_pr_merged_or_closed(candidate, result):
                         self.notify_pr_merged_or_closed()
-                    continue
 
-                get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
-
-                # Process candidate
-                result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
-
-                if result.error:
-                    logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
-                    get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
-                else:
-                    logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{item_number}")
-                    get_trace_logger().log("Worker", f"Worker {worker_id} successfully processed {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
-
-                # Check if PR was merged or closed during candidate processing
-                if self._check_if_pr_merged_or_closed(candidate, result):
-                    self.notify_pr_merged_or_closed()
-
-                # Save report after each processing (optional, but good for tracking)
-                # Converting result to the dict format expected by _save_report is annoying here
-                # because _save_report expects a full results dict.
-                # Maybe skip saving report per item for now, rely on logs.
-                # Or create a minimal report.
-
-            except asyncio.CancelledError:
-                logger.info(f"Worker {worker_id} cancelled")
-                get_health_monitor().record_event("worker_exit", f"worker {worker_id} cancelled", f"{candidate.type} #{item_number}")
-                raise
-            except Exception as e:
-                logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
-                get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
-            finally:
-                self.active_workers[worker_id] = None
-                self.queue.task_done()
+                except asyncio.CancelledError:
+                    logger.info(f"Worker {worker_id} cancelled")
+                    get_health_monitor().record_event("worker_exit", f"worker {worker_id} cancelled", f"{candidate.type} #{item_number}")
+                    raise
+                except Exception as e:
+                    logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
+                    get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
+                finally:
+                    self.active_workers[worker_id] = None
+                    self.queue.task_done()
 
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the automation engine."""
@@ -1366,143 +1361,133 @@ class AutomationEngine:
         Returns:
             Dictionary with processing results
         """
-        os.environ["REPO_NAME"] = repo_name
-        self.config.repo_name = repo_name
-        # Check if Jules mode should be used based on configuration
-        # Check if Jules mode should be used based on configuration
-        from .llm_backend_config import is_jules_mode_enabled
+        with active_repo_context(repo_name):
+            os.environ["REPO_NAME"] = repo_name
+            self.config.repo_name = repo_name
+            # Check if Jules mode should be used based on configuration
+            from .llm_backend_config import is_jules_mode_enabled
 
-        # Both must be true for Jules mode to be enabled
-        # jules_mode parameter is requested state, and is_jules_mode_enabled checks config
-        jules_mode = jules_mode and is_jules_mode_enabled()
-        from datetime import datetime
+            # Both must be true for Jules mode to be enabled
+            # jules_mode parameter is requested state, and is_jules_mode_enabled checks config
+            jules_mode = jules_mode and is_jules_mode_enabled()
+            from datetime import datetime
 
-        with ProgressStage("Processing single PR/IS"):
-            # Check if current branch corresponds to a closed PR/Issue
-            if not self._check_and_handle_closed_branch(repo_name):
-                # check_and_handle_closed_state will handle branch switching and exit
-                # This line should not be reached, but just in case
-                return {
-                    "repository": repo_name,
-                    "timestamp": datetime.now().isoformat(),
-                    "issues_processed": [],
-                    "prs_processed": [],
-                    "errors": ["Exited due to closed item on current branch"],
-                }
-
-            logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-            result = ProcessResult(
-                repository=repo_name,
-                timestamp=datetime.now().isoformat(),
-            )
-
-            try:
-                # Create a Candidate from the single item
-                candidate = self._create_candidate_from_single(repo_name, target_type, number)
-                if not candidate:
+            with ProgressStage("Processing single PR/IS"):
+                # Check if current branch corresponds to a closed PR/Issue
+                if not self._check_and_handle_closed_branch(repo_name):
+                    # check_and_handle_closed_state will handle branch switching and exit
+                    # This line should not be reached, but just in case
                     return {
-                        "repository": result.repository,
-                        "timestamp": result.timestamp,
-                        "issues_processed": result.issues_processed,
-                        "prs_processed": result.prs_processed,
-                        "errors": result.errors,
+                        "repository": repo_name,
+                        "timestamp": datetime.now().isoformat(),
+                        "issues_processed": [],
+                        "prs_processed": [],
+                        "errors": ["Exited due to closed item on current branch"],
                     }
 
-                # Use unified processing function
-                processing_result = self._process_single_candidate_unified(
-                    repo_name,
-                    candidate,
-                    self.config,
-                    jules_mode,
+                logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
+                result = ProcessResult(
+                    repository=repo_name,
+                    timestamp=datetime.now().isoformat(),
                 )
 
-                # Only add to processed list if there was no error and processing succeeded
-                if processing_result.error:
-                    # Add error to errors list instead of processed list
-                    error_msg = f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {processing_result.error}"
-                    result.errors.append(error_msg)
-                elif processing_result.success:
-                    # Convert to the format expected by process_single
-                    if candidate.type == "issue":
-                        processed_item = {
-                            "issue_data": candidate.data,
-                            "actions_taken": processing_result.actions,
-                        }
-                        result.issues_processed.append(processed_item)
-                    elif candidate.type == "pr":
-                        processed_item = {
-                            "pr_data": candidate.data,
-                            "actions_taken": processing_result.actions,
-                        }
-                        result.prs_processed.append(processed_item)
-
-                # After processing, check if the single PR/issue is now closed
                 try:
-                    if result.issues_processed or result.prs_processed:
-                        # Get the processed item
-                        first_processed_item: Dict[str, Any]
-                        item_number = None
-                        item_type = None
+                    # Create a Candidate from the single item
+                    candidate = self._create_candidate_from_single(repo_name, target_type, number)
+                    if not candidate:
+                        return {
+                            "repository": result.repository,
+                            "timestamp": result.timestamp,
+                            "issues_processed": result.issues_processed,
+                            "prs_processed": result.prs_processed,
+                            "errors": result.errors,
+                        }
 
-                        if result.issues_processed:
-                            first_processed_item = result.issues_processed[0]
-                            issue_data: Dict[str, Any] = first_processed_item.get("issue_data", {})
-                            item_number = issue_data.get("number")
-                            item_type = "issue"
-                        elif result.prs_processed:
-                            first_processed_item = result.prs_processed[0]
-                            pr_data: Dict[str, Any] = first_processed_item.get("pr_data", {})
-                            item_number = pr_data.get("number")
-                            item_type = "pr"
+                    # Use unified processing function
+                    processing_result = self._process_single_candidate_unified(
+                        repo_name,
+                        candidate,
+                        self.config,
+                        jules_mode,
+                    )
 
-                        if item_number and item_type:
-                            # Check the current state of the item
-                            from .util.github_action import check_and_handle_closed_state
+                    # Only add to processed list if there was no error and processing succeeded
+                    if processing_result.error:
+                        # Add error to errors list instead of processed list
+                        error_msg = f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {processing_result.error}"
+                        result.errors.append(error_msg)
+                    elif processing_result.success:
+                        # Convert to the format expected by process_single
+                        if candidate.type == "issue":
+                            processed_item = {
+                                "issue_data": candidate.data,
+                                "actions_taken": processing_result.actions,
+                            }
+                            result.issues_processed.append(processed_item)
+                        elif candidate.type == "pr":
+                            processed_item = {
+                                "pr_data": candidate.data,
+                                "actions_taken": processing_result.actions,
+                            }
+                            result.prs_processed.append(processed_item)
 
-                            with ProgressStage("Checking final status"):
-                                # repo = self.github.get_repository(repo_name)
-                                if item_type == "issue":
-                                    issue = self.github.get_issue(repo_name, item_number)
-                                    current_item = self.github.get_issue_details(issue)
-                                else:
-                                    pr = self.github.get_pull_request(repo_name, item_number)
-                                    current_item = self.github.get_pr_details(pr)
+                    # After processing, check if the single PR/issue is now closed
+                    try:
+                        if result.issues_processed or result.prs_processed:
+                            # Get the processed item
+                            first_processed_item: Dict[str, Any]
+                            item_number = None
+                            item_type = None
 
-                                # Check if item is closed and handle state
+                            if result.issues_processed:
+                                first_processed_item = result.issues_processed[0]
+                                issue_data: Dict[str, Any] = first_processed_item.get("issue_data", {})
+                                item_number = issue_data.get("number")
+                                item_type = "issue"
+                            elif result.prs_processed:
+                                first_processed_item = result.prs_processed[0]
+                                pr_data: Dict[str, Any] = first_processed_item.get("pr_data", {})
+                                item_number = pr_data.get("number")
+                                item_type = "pr"
+
+                            if item_number and item_type:
+                                # Check the current state of the item
+                                from .util.github_action import check_and_handle_closed_state
+
                                 check_and_handle_closed_state(
                                     repo_name,
                                     item_type,
                                     item_number,
                                     self.config,
-                                    self.github,  # type: ignore[arg-type]
-                                    current_item=current_item,
+                                    self.github,
                                 )
+                    except Exception as e:
+                        logger.warning(f"Failed to check/handle closed item state: {e}")
+
                 except Exception as e:
-                    logger.warning(f"Failed to check/handle closed item state: {e}")
+                    msg = f"Error in process_single: {e}"
+                    logger.error(msg)
+                    result.errors.append(msg)
 
-            except Exception as e:
-                msg = f"Error in process_single: {e}"
-                logger.error(msg)
-                result.errors.append(msg)
-
-        # Convert dataclass to dict for backward compatibility with existing code
-        return {
-            "repository": result.repository,
-            "timestamp": result.timestamp,
-            "issues_processed": result.issues_processed,
-            "prs_processed": result.prs_processed,
-            "errors": result.errors,
-        }
+            # Convert dataclass to dict for backward compatibility with existing code
+            return {
+                "repository": result.repository,
+                "timestamp": result.timestamp,
+                "issues_processed": result.issues_processed,
+                "prs_processed": result.prs_processed,
+                "errors": result.errors,
+            }
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
-        os.environ["REPO_NAME"] = repo_name
-        self.config.repo_name = repo_name
-        return create_feature_issues(
-            self.github,
-            self.config,
-            repo_name,
-        )
+        with active_repo_context(repo_name):
+            os.environ["REPO_NAME"] = repo_name
+            self.config.repo_name = repo_name
+            return create_feature_issues(
+                self.github,
+                self.config,
+                repo_name,
+            )
 
     def fix_to_pass_tests(
         self,

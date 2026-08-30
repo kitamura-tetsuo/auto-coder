@@ -257,7 +257,7 @@ def _process_issue_claude_routine_mode(
     try:
         from .claude_routine_client import ClaudeRoutineClient
 
-        routine_client = ClaudeRoutineClient(backend_name=backend_name)
+        routine_client = ClaudeRoutineClient(backend_name=backend_name, repo_name=repo_name)
 
         issue_labels_list = []
         for label in issue_data.get("labels", []):
@@ -364,7 +364,7 @@ def _process_issue_codex_cloud_mode(
         is_jules=True,
     )
 
-    client = CodexCloudClient(backend_name=backend_name)
+    client = CodexCloudClient(backend_name=backend_name, repo_name=repo_name)
     task_id = client.start_task(
         prompt,
         repo_name=repo_name,
@@ -414,7 +414,7 @@ def _process_issue_high_score_cloud(
     """
     from .llm_backend_config import get_llm_config
 
-    llm_config = get_llm_config()
+    llm_config = get_llm_config(repo_name=repo_name)
     high_score_cloud_order = llm_config.backend_with_high_score_cloud_order
     high_score_cloud_config = llm_config.get_backend_with_high_score_cloud()
 
@@ -506,7 +506,7 @@ def _process_issue_cloud_backend(
     """
     from .llm_backend_config import get_llm_config
 
-    llm_config = get_llm_config()
+    llm_config = get_llm_config(repo_name=repo_name)
     cloud_order = llm_config.backend_cloud_order
     cloud_config = llm_config.get_backend_cloud()
 

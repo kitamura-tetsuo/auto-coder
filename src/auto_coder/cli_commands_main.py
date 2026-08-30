@@ -13,7 +13,7 @@ from .cli_helpers import build_backend_manager_from_config, build_message_backen
 from .cli_ui import Spinner, create_terminal_link, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .health_monitor import get_health_monitor, start_health_monitoring
-from .llm_backend_config import get_llm_config
+from .llm_backend_config import get_llm_config, set_active_repo_name
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
 from .util.gh_cache import GitHubClient
@@ -103,7 +103,11 @@ def process_issues(
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
-    config = get_llm_config()
+    # Get repository name (from parameter or auto-detect)
+    repo_name = get_repo_or_detect(repo)
+    set_active_repo_name(repo_name)
+
+    config = get_llm_config(repo_name=repo_name)
 
     active_backends = config.get_active_backends()
     ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
@@ -131,9 +135,6 @@ def process_issues(
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
-
-    # Get repository name (from parameter or auto-detect)
-    repo_name = get_repo_or_detect(repo)
 
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
@@ -434,7 +435,11 @@ def create_feature_issues(
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
 
-    config = get_llm_config()
+    # Get repository name (from parameter or auto-detect)
+    repo_name = get_repo_or_detect(repo)
+    set_active_repo_name(repo_name)
+
+    config = get_llm_config(repo_name=repo_name)
 
     active_backends = config.get_active_backends()
     ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
@@ -457,9 +462,6 @@ def create_feature_issues(
     github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
     check_github_sub_issue_or_setup()
-
-    # Get repository name (from parameter or auto-detect)
-    repo_name = get_repo_or_detect(repo)
 
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
@@ -576,7 +578,10 @@ def fix_to_pass_tests_command(
 
     If the LLM makes no edits in an iteration, error and stop.
     """
-    config = get_llm_config()
+    repo_name = get_repo_or_detect(None)
+    set_active_repo_name(repo_name)
+
+    config = get_llm_config(repo_name=repo_name)
 
     active_backends = config.get_active_backends()
     ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
@@ -758,7 +763,11 @@ def serve(
 ) -> None:
     """Run Auto-Coder in daemon mode with FastAPI server."""
 
-    config = get_llm_config()
+    # Get repository name (from parameter or auto-detect)
+    repo_name = get_repo_or_detect(repo)
+    set_active_repo_name(repo_name)
+
+    config = get_llm_config(repo_name=repo_name)
 
     active_backends = config.get_active_backends()
     ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
@@ -784,9 +793,6 @@ def serve(
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
-
-    # Get repository name (from parameter or auto-detect)
-    repo_name = get_repo_or_detect(repo)
 
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()

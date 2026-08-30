@@ -3034,7 +3034,7 @@ def _send_codex_cloud_error_feedback(
         from .codex_cloud_client import CodexCloudClient
 
         logger.info(f"Triggering continue_if_paused for Codex Cloud task '{task_id}' on PR #{pr_number}")
-        client = CodexCloudClient()
+        client = CodexCloudClient(repo_name=repo_name)
         resumed = client.continue_if_paused(task_id)
 
         if resumed:

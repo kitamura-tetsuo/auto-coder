@@ -2,8 +2,11 @@
 Configuration management for LLM backends using TOML files.
 """
 
+import contextvars
+import copy
 import os
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -32,8 +35,9 @@ def resolve_config_path(config_path: Optional[str] = None) -> str:
 
     Priority (highest to lowest):
     1. Explicitly provided config_path argument
-    2. .auto-coder/llm_config.toml in current directory
-    3. ~/.auto-coder/llm_config.toml in home directory
+    2. Environment variable AUTO_CODER_CONFIG_PATH or AUTO_CODER_LLM_CONFIG_PATH
+    3. .auto-coder/llm_config.toml in current directory
+    4. ~/.auto-coder/llm_config.toml in home directory
 
     Args:
         config_path: Optional explicit path to configuration file
@@ -46,14 +50,137 @@ def resolve_config_path(config_path: Optional[str] = None) -> str:
         expanded_path = os.path.expanduser(config_path)
         return os.path.abspath(expanded_path)
 
-    # Priority 2: Local .auto-coder/llm_config.toml
+    # Priority 2: Environment variable override
+    env_config = os.environ.get("AUTO_CODER_CONFIG_PATH") or os.environ.get("AUTO_CODER_LLM_CONFIG_PATH")
+    if env_config:
+        return os.path.abspath(os.path.expanduser(env_config))
+
+    # Priority 3: Local .auto-coder/llm_config.toml
     local_config = os.path.join(os.getcwd(), ".auto-coder", "llm_config.toml")
     if os.path.exists(local_config):
         return os.path.abspath(local_config)
 
-    # Priority 3: Home directory ~/.auto-coder/llm_config.toml
+    # Priority 4: Home directory ~/.auto-coder/llm_config.toml
     home_config = os.path.expanduser("~/.auto-coder/llm_config.toml")
     return os.path.abspath(home_config)
+
+
+def resolve_repo_override_path(
+    repo_name: Optional[str],
+    base_config_path: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve the repository-specific configuration override file path.
+
+    The path convention is:
+        ~/.auto-coder/<owner>/<repo>/llm_config.toml
+
+    Repository overrides must be selected using the GitHub 'owner/name' identity
+    and mapped directly to the directory hierarchy under ~/.auto-coder.
+
+    Args:
+        repo_name: GitHub repository in 'owner/repo' format. If None, empty, or
+                   not in 'owner/repo' format, returns None.
+        base_config_path: Optional base configuration file path to resolve base directory from.
+
+    Returns:
+        Absolute path to the repository override configuration file, or None if invalid repo_name.
+    """
+    if not repo_name or not isinstance(repo_name, str):
+        return None
+
+    cleaned_repo = repo_name.strip().strip("/")
+    if "/" not in cleaned_repo:
+        # Repository matching must not depend only on the short repository name
+        return None
+
+    parts = cleaned_repo.split("/")
+    if len(parts) != 2:
+        return None
+
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+
+    if not owner or not repo:
+        return None
+
+    if base_config_path is not None:
+        base_dir = os.path.dirname(os.path.abspath(os.path.expanduser(base_config_path)))
+    else:
+        base_dir = os.path.expanduser("~/.auto-coder")
+
+    override_path = os.path.join(base_dir, owner, repo, "llm_config.toml")
+    return os.path.abspath(override_path)
+
+
+def deep_merge_config_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge repository override dictionary into base configuration dictionary.
+
+    Merge semantics:
+    - Scalar values: a repository override replaces the base value.
+    - Tables/objects: merge recursively so that sibling values not mentioned by the
+      override remain inherited from the base configuration.
+    - Arrays/lists: if an override specifies the value, replace the entire base array
+      rather than concatenating or partially merging it.
+    - Missing override keys: inherit from the base configuration.
+    - If incompatible override data is supplied (e.g., dict vs non-dict), fails with ValueError.
+
+    Args:
+        base: Base configuration dictionary.
+        override: Repository override configuration dictionary.
+
+    Returns:
+        New merged configuration dictionary without mutating the original inputs.
+
+    Raises:
+        ValueError: If invalid or incompatible override data is supplied.
+    """
+    if not isinstance(base, dict):
+        raise ValueError(f"Base configuration must be a dictionary, got {type(base).__name__}")
+    if not isinstance(override, dict):
+        raise ValueError(f"Override configuration must be a dictionary, got {type(override).__name__}")
+
+    merged: Dict[str, Any] = copy.deepcopy(base)
+
+    for key, override_val in override.items():
+        if key not in merged:
+            merged[key] = copy.deepcopy(override_val)
+        else:
+            base_val = merged[key]
+            if isinstance(base_val, dict) and isinstance(override_val, dict):
+                merged[key] = deep_merge_config_dict(base_val, override_val)
+            elif isinstance(base_val, dict) != isinstance(override_val, dict):
+                raise ValueError(f"Incompatible override type for key '{key}': base is {type(base_val).__name__}, " f"override is {type(override_val).__name__}")
+            elif isinstance(base_val, list) and not isinstance(override_val, list) and override_val is not None:
+                raise ValueError(f"Incompatible override type for key '{key}': base is list, " f"override is {type(override_val).__name__}")
+            elif not isinstance(base_val, list) and isinstance(override_val, list):
+                raise ValueError(f"Incompatible override type for key '{key}': base is {type(base_val).__name__}, " f"override is list")
+            else:
+                # Replace scalars or arrays as whole values
+                merged[key] = copy.deepcopy(override_val)
+
+    return merged
+
+
+def _normalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize aliases in configuration dictionary."""
+    if not isinstance(data, dict):
+        return data
+
+    result: Dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            sub_dict = _normalize_config_dict(value)
+            # Normalize environment and env_id aliases in backend tables
+            if "environment" in sub_dict:
+                sub_dict["environment_id"] = sub_dict.pop("environment")
+            if "env_id" in sub_dict:
+                sub_dict["environment_id"] = sub_dict.pop("env_id")
+
+            result[key] = sub_dict
+        else:
+            result[key] = value
+    return result
 
 
 @dataclass
@@ -86,7 +213,7 @@ class BackendConfig:
     environment_id: Optional[str] = None
     attempts: int = 1
     # For custom configurations
-    extra_args: Dict[str, str] = field(default_factory=dict)
+    extra_args: Dict[str, Any] = field(default_factory=dict)
     # List of provider names available for this backend
     # Schema: [backends.qwen].providers = ["qwen-open-router", ...]
     providers: List[str] = field(default_factory=list)
@@ -112,6 +239,24 @@ class BackendConfig:
     # Flags to track if options were explicitly set in configuration
     options_explicitly_set: bool = False
     options_for_noedit_explicitly_set: bool = False
+
+    @property
+    def environment(self) -> Optional[str]:
+        """Alias for environment_id."""
+        return self.environment_id
+
+    @environment.setter
+    def environment(self, value: Optional[str]) -> None:
+        self.environment_id = value
+
+    def __getattr__(self, name: str) -> Any:
+        """Allow accessing unrecognized table keys from extra_args."""
+        if name in ("extra_args", "__dataclass_fields__"):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        extra = self.__dict__.get("extra_args")
+        if isinstance(extra, dict) and name in extra:
+            return extra[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def validate_required_options(self) -> List[str]:
         """Validate that required options are configured.
@@ -232,34 +377,67 @@ class LLMBackendConfiguration:
                     self.backends[backend_name].options = list(required_options)
 
     @classmethod
-    def load_from_file(cls, config_path: Optional[str] = None) -> "LLMBackendConfiguration":
-        """Load configuration from TOML file."""
+    def load_from_file(
+        cls,
+        config_path: Optional[str] = None,
+        repo_name: Optional[str] = None,
+    ) -> "LLMBackendConfiguration":
+        """Load configuration from TOML file, optionally merging a repository override."""
         config_path = resolve_config_path(config_path)
 
         if not os.path.exists(config_path):
-            # Create a default configuration file if none exists
-            config = cls()
-            config.save_to_file(config_path)
-            return config
+            if repo_name is None:
+                # Create a default configuration file if none exists
+                config = cls()
+                config.save_to_file(config_path)
+                return config
+            base_data: Dict[str, Any] = {}
+        else:
+            try:
+                with open(config_path, "rb") as f:
+                    base_data = tomllib.load(f)
+            except Exception as e:
+                raise ValueError(f"Error loading configuration from {config_path}: {e}")
+
+        base_data = _normalize_config_dict(base_data)
+        effective_data = base_data
+
+        # If repo_name is provided, check for repository-specific override
+        if repo_name:
+            override_path = resolve_repo_override_path(repo_name, base_config_path=config_path)
+            if override_path and os.path.exists(override_path):
+                try:
+                    with open(override_path, "rb") as f:
+                        override_data = tomllib.load(f)
+                except Exception as e:
+                    raise ValueError(f"Error loading repository configuration override from {override_path}: {e}")
+
+                if not isinstance(override_data, dict):
+                    raise ValueError(f"Repository configuration override at {override_path} must be a TOML table")
+
+                override_data = _normalize_config_dict(override_data)
+                effective_data = deep_merge_config_dict(base_data, override_data)
 
         try:
-            with open(config_path, "rb") as f:
-                data = tomllib.load(f)
-            return cls._load_from_data(data, config_path=config_path)
+            return cls._load_from_data(effective_data, config_path=config_path)
         except Exception as e:
-            raise ValueError(f"Error loading configuration from {config_path}: {e}")
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"Error loading configuration: {e}")
 
     @classmethod
     def load_from_dict(cls, data: Dict[str, Any]) -> "LLMBackendConfiguration":
         """Load configuration directly from a dictionary of configuration data."""
 
         try:
-            return cls._load_from_data(data, config_path="<dict>")
+            return cls._load_from_data(_normalize_config_dict(data), config_path="<dict>")
         except Exception as e:
             raise ValueError(f"Error loading configuration from dict: {e}")
 
     @classmethod
     def _load_from_data(cls, data: Dict[str, Any], config_path: Optional[str] = None) -> "LLMBackendConfiguration":
+        data = _normalize_config_dict(data)
+
         # Handle legacy "gemini" backend name translation
         def _translate_backend(val: Any) -> Any:
             if isinstance(val, str) and val == "gemini":
@@ -292,6 +470,48 @@ class LLMBackendConfiguration:
             options_explicitly_set = "options" in config_data
             options_for_noedit_explicitly_set = "options_for_noedit" in config_data
 
+            known_keys = {
+                "name",
+                "enabled",
+                "model",
+                "api_key",
+                "base_url",
+                "temperature",
+                "timeout",
+                "max_retries",
+                "openai_api_key",
+                "openai_base_url",
+                "openrouter_api_key",
+                "openrouter_base_url",
+                "claude_code_oauth_token",
+                "claude_code_routine_token",
+                "url",
+                "environment_id",
+                "environment",
+                "env_id",
+                "attempts",
+                "extra_args",
+                "providers",
+                "usage_limit_retry_count",
+                "usage_limit_retry_wait_seconds",
+                "options",
+                "backend_type",
+                "model_provider",
+                "always_switch_after_execution",
+                "settings",
+                "usage_markers",
+                "options_for_noedit",
+                "options_for_resume",
+                "options_explicitly_set",
+                "options_for_noedit_explicitly_set",
+            }
+
+            raw_extra_args = config_data.get("extra_args", {})
+            extra_args = dict(raw_extra_args) if isinstance(raw_extra_args, dict) else {}
+            for k, v in config_data.items():
+                if k not in known_keys:
+                    extra_args[k] = v
+
             return BackendConfig(
                 name=name,
                 enabled=config_data.get("enabled", True),
@@ -308,9 +528,9 @@ class LLMBackendConfiguration:
                 claude_code_oauth_token=config_data.get("claude_code_oauth_token"),
                 claude_code_routine_token=config_data.get("claude_code_routine_token"),
                 url=config_data.get("url"),
-                environment_id=config_data.get("environment_id") or config_data.get("env_id"),
+                environment_id=config_data.get("environment_id") or config_data.get("environment") or config_data.get("env_id"),
                 attempts=config_data.get("attempts", 1),
-                extra_args=config_data.get("extra_args", {}),
+                extra_args=extra_args,
                 providers=config_data.get("providers", []),
                 usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
                 usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
@@ -330,8 +550,19 @@ class LLMBackendConfiguration:
         # Track which backends were explicitly configured
         explicitly_configured_backends = set()
         for name, config_data in backends_data.items():
-            backends[name] = parse_backend_config(name, config_data)
-            explicitly_configured_backends.add(name)
+            if isinstance(config_data, dict):
+                backends[name] = parse_backend_config(name, config_data)
+                explicitly_configured_backends.add(name)
+
+        # Parse nested backends in [backend] section (e.g. [backend.codex_cloud])
+        backend_table = data.get("backend", {})
+        if isinstance(backend_table, dict):
+            for name, config_data in backend_table.items():
+                if name not in ("order", "default") and isinstance(config_data, dict):
+                    backends[name] = parse_backend_config(name, config_data)
+                    explicitly_configured_backends.add(name)
+                    backends[f"backend.{name}"] = parse_backend_config(f"backend.{name}", config_data)
+                    explicitly_configured_backends.add(f"backend.{name}")
 
         # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
         # This handles cases where TOML parses dotted keys as nested dictionaries
@@ -774,13 +1005,32 @@ class LLMBackendConfiguration:
         config = self.backends.get(backend_name)
         if config:
             return config
-        if self.backend_cloud and self.backend_cloud.name == backend_name:
+        alt_name = backend_name.replace("-", "_") if "-" in backend_name else backend_name.replace("_", "-")
+        if alt_name in self.backends:
+            return self.backends[alt_name]
+        for prefix in ("backend.", "backends."):
+            if backend_name.startswith(prefix):
+                short = backend_name[len(prefix) :]
+                if short in self.backends:
+                    return self.backends[short]
+                alt_short = short.replace("-", "_") if "-" in short else short.replace("_", "-")
+                if alt_short in self.backends:
+                    return self.backends[alt_short]
+            else:
+                prefixed = f"{prefix}{backend_name}"
+                if prefixed in self.backends:
+                    return self.backends[prefixed]
+                alt_prefixed = f"{prefix}{alt_name}"
+                if alt_prefixed in self.backends:
+                    return self.backends[alt_prefixed]
+
+        if self.backend_cloud and self.backend_cloud.name in (backend_name, alt_name):
             return self.backend_cloud
-        if self.backend_with_high_score and self.backend_with_high_score.name == backend_name:
+        if self.backend_with_high_score and self.backend_with_high_score.name in (backend_name, alt_name):
             return self.backend_with_high_score
-        if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name == backend_name:
+        if self.backend_with_high_score_cloud and self.backend_with_high_score_cloud.name in (backend_name, alt_name):
             return self.backend_with_high_score_cloud
-        if self.backend_adversarial_validation and self.backend_adversarial_validation.name == backend_name:
+        if self.backend_adversarial_validation and self.backend_adversarial_validation.name in (backend_name, alt_name):
             return self.backend_adversarial_validation
         return None
 
@@ -954,13 +1204,63 @@ class LLMBackendConfiguration:
                 logger.warning("Environment variable AUTO_CODER_MESSAGE_DEFAULT_BACKEND is deprecated. " "Use AUTO_CODER_NOEDIT_DEFAULT_BACKEND instead.")
 
 
-# Global instance to be used throughout the application
+_active_repo_name: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("active_repo_name", default=None)
+
+
+def set_active_repo_name(repo_name: Optional[str]) -> None:
+    """Set the active repository name in the current context."""
+    _active_repo_name.set(repo_name)
+
+
+def get_active_repo_name() -> Optional[str]:
+    """Get the active repository name in the current context."""
+    return _active_repo_name.get()
+
+
+@contextmanager
+def active_repo_context(repo_name: Optional[str]):
+    """Context manager to set the active repository for LLM configuration resolution."""
+    token = _active_repo_name.set(repo_name)
+    try:
+        yield
+    finally:
+        _active_repo_name.reset(token)
+
+
+# Global base instance to be used throughout the application
 _llm_config: Optional[LLMBackendConfiguration] = None
 
 
-def get_llm_config() -> LLMBackendConfiguration:
-    """Get the global LLM backend configuration instance."""
+def get_llm_config(
+    repo_name: Optional[str] = None,
+    config_path: Optional[str] = None,
+) -> LLMBackendConfiguration:
+    """Get the effective LLM backend configuration.
+
+    If repo_name is provided or set via active_repo_context, resolves the effective
+    configuration by loading the base configuration and merging the repository-specific
+    override at ~/.auto-coder/<owner>/<repo>/llm_config.toml.
+
+    Args:
+        repo_name: Optional GitHub repository ('owner/repo')
+        config_path: Optional explicit configuration file path
+
+    Returns:
+        LLMBackendConfiguration instance with effective configuration
+    """
+    effective_repo = repo_name if repo_name is not None else get_active_repo_name()
+
+    if effective_repo:
+        config = LLMBackendConfiguration.load_from_file(config_path=config_path, repo_name=effective_repo)
+        config.apply_env_overrides()
+        return config
+
     global _llm_config
+    if config_path is not None:
+        config = LLMBackendConfiguration.load_from_file(config_path=config_path)
+        config.apply_env_overrides()
+        return config
+
     if _llm_config is None:
         _llm_config = LLMBackendConfiguration.load_from_file()
         _llm_config.apply_env_overrides()
@@ -971,6 +1271,7 @@ def reset_llm_config() -> None:
     """Reset the global configuration instance (for testing)."""
     global _llm_config
     _llm_config = None
+    _active_repo_name.set(None)
 
 
 def _get_config_value(

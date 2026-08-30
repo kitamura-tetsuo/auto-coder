@@ -26,18 +26,20 @@ logger = get_logger(__name__)
 class CodexCloudClient(CloudTaskClientBase):
     """Codex Cloud client for asynchronous cloud task execution and lifecycle management."""
 
-    def __init__(self, backend_name: Optional[str] = None) -> None:
+    def __init__(self, backend_name: Optional[str] = None, repo_name: Optional[str] = None) -> None:
         """Initialize Codex Cloud client.
 
         Args:
             backend_name: Backend name to use for configuration lookup (optional).
+            repo_name: Repository name to resolve repository-specific overrides (optional).
         """
         super().__init__()
         self.backend_name = backend_name or "codex-cloud"
+        self.repo_name = repo_name
         self.active_tasks: Dict[str, str] = {}  # task_id -> prompt
         self.task_urls: Dict[str, str] = {}  # task_id -> url
 
-        config = get_llm_config()
+        config = get_llm_config(repo_name=self.repo_name)
         self.config_backend = config.get_backend_config(self.backend_name)
         self.model_name = self.config_backend and self.config_backend.model
         self.options = (self.config_backend and self.config_backend.options) or []
@@ -47,7 +49,7 @@ class CodexCloudClient(CloudTaskClientBase):
         self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
 
         # Optional environment ID for Codex Cloud executions
-        self.environment_id: Optional[str] = (self.config_backend and self.config_backend.environment_id) or os.environ.get("CODEX_CLOUD_ENV_ID") or os.environ.get("CODEX_ENVIRONMENT_ID")
+        self.environment_id: Optional[str] = (self.config_backend and (self.config_backend.environment_id or getattr(self.config_backend, "environment", None))) or os.environ.get("CODEX_CLOUD_ENV_ID") or os.environ.get("CODEX_ENVIRONMENT_ID")
         self.attempts = (self.config_backend and self.config_backend.attempts) or 1
         self.wham_client: Optional[CodexWhamClient] = None
         self.last_continued_at: Dict[str, float] = {}
@@ -125,6 +127,25 @@ class CodexCloudClient(CloudTaskClientBase):
             The created Task ID.
         """
         logger.info(f"Starting Codex Cloud task (title={title or 'N/A'}, branch={base_branch or 'N/A'})")
+
+        effective_repo = repo_name or self.repo_name
+        if effective_repo:
+            config = get_llm_config(repo_name=effective_repo)
+            backend_cfg = config.get_backend_config(self.backend_name)
+            if backend_cfg:
+                env_id = backend_cfg.environment_id or getattr(backend_cfg, "environment", None)
+                if env_id:
+                    self.environment_id = env_id
+                if backend_cfg.model:
+                    self.model_name = backend_cfg.model
+                if backend_cfg.options:
+                    self.options = backend_cfg.options
+                if backend_cfg.api_key:
+                    self.api_key = backend_cfg.api_key
+                if backend_cfg.base_url:
+                    self.base_url = backend_cfg.base_url
+                if backend_cfg.attempts:
+                    self.attempts = backend_cfg.attempts
 
         if not codex_cloud_quota_allows_task():
             raise AutoCoderUsageLimitError("Codex weekly quota is unavailable or below the required threshold")
