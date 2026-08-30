@@ -39,7 +39,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
+from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
@@ -83,6 +83,14 @@ class AdversarialValidationEligibility:
         return bool(self.issue_numbers)
 
 
+@dataclass(frozen=True)
+class ReviewThreadGateState:
+    """Tri-state review-thread result used by merge gates."""
+
+    has_unresolved: bool = False
+    lookup_error: Optional[str] = None
+
+
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
     """Read a field from either a REST dictionary or a GhApi object."""
     return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
@@ -116,38 +124,12 @@ def _get_codex_review_state(github_client: Any, repo_name: str, pr_number: int) 
 
 
 def _get_adversarial_validation_eligibility(github_client: Any, repo_name: str, pr_data: Dict[str, Any]) -> AdversarialValidationEligibility:
-    """Verify explicit closing references resolve to real Issues, never PRs."""
-    issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body", "") or "")
-    if not issue_numbers:
-        return AdversarialValidationEligibility()
-
-    verified_issue_numbers = []
-    strict_getter = getattr(type(github_client), "get_issue_strict", None)
-    for issue_number in issue_numbers:
-        try:
-            if callable(strict_getter):
-                issue = github_client.get_issue_strict(repo_name, issue_number)
-            else:
-                issue = github_client.get_issue(repo_name, issue_number)
-        except Exception as e:
-            status_code = getattr(getattr(e, "response", None), "status_code", None)
-            if status_code in (404, 410):
-                continue
-            logger.error(f"Failed to verify linked Issue #{issue_number} for adversarial validation: {e}")
-            return AdversarialValidationEligibility(lookup_error=str(e))
-
-        if not issue:
-            continue
-        if isinstance(issue, dict):
-            if issue.get("pull_request") is not None:
-                continue
-        else:
-            raw_data = getattr(issue, "_rawData", None)
-            if isinstance(raw_data, dict) and raw_data.get("pull_request") is not None:
-                continue
-        verified_issue_numbers.append(issue_number)
-
-    return AdversarialValidationEligibility(issue_numbers=tuple(verified_issue_numbers))
+    """Use the same verified Issue-oracle resolver as validation context."""
+    resolution = resolve_issue_oracles(github_client, repo_name, pr_data=pr_data)
+    if resolution.error:
+        logger.error(f"Failed to verify adversarial-validation eligibility: {resolution.error}")
+        return AdversarialValidationEligibility(lookup_error=resolution.error)
+    return AdversarialValidationEligibility(issue_numbers=tuple(issue.number for issue in resolution.issues))
 
 
 def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
@@ -292,6 +274,20 @@ def has_unresolved_review_threads(
     except Exception as e:
         logger.error(f"Error checking unresolved review threads for PR #{pr_number}: {e}")
         return False
+
+
+def _get_review_thread_gate_state(github_client: Any, repo_name: str, pr_number: int) -> ReviewThreadGateState:
+    """Fetch review threads strictly in production so lookup errors fail closed."""
+    try:
+        client = github_client or GitHubClient.get_instance()
+        strict_getter = getattr(type(client), "get_pr_review_threads_strict", None)
+        if callable(strict_getter):
+            threads = client.get_pr_review_threads_strict(repo_name, pr_number)
+            return ReviewThreadGateState(has_unresolved=any(not thread.is_resolved for thread in threads))
+        return ReviewThreadGateState(has_unresolved=has_unresolved_review_threads(client, repo_name, pr_number))
+    except Exception as e:
+        logger.error(f"Failed strict review-thread lookup for PR #{pr_number}: {e}")
+        return ReviewThreadGateState(lookup_error=str(e))
 
 
 def process_pull_request(
@@ -1108,7 +1104,11 @@ def _process_pr_for_merge(
             return processed_pr
 
         # Check for unresolved review threads
-        if has_unresolved_review_threads(github_client, repo_name, pr_data["number"]):
+        review_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_data["number"])
+        if review_thread_state.lookup_error:
+            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} because review threads could not be checked: {review_thread_state.lookup_error}")
+            return processed_pr
+        if review_thread_state.has_unresolved:
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
             return processed_pr
 
@@ -1723,7 +1723,11 @@ def _handle_pr_merge(
                 return actions
 
             # Check for unresolved review threads
-            if has_unresolved_review_threads(github_client, repo_name, pr_number):
+            review_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+            if review_thread_state.lookup_error:
+                actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+                return actions
+            if review_thread_state.has_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
 
@@ -3271,7 +3275,12 @@ def _merge_pr(
         from auto_coder.util.gh_cache import get_ghapi_client
 
         client = github_client or GitHubClient.get_instance()
-        if has_unresolved_review_threads(client, repo_name, pr_number):
+        review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number)
+        if review_thread_state.lookup_error:
+            logger.info(f"PR #{pr_number} review threads could not be checked. Skipping merge.")
+            log_action(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+            return False
+        if review_thread_state.has_unresolved:
             logger.info(f"PR #{pr_number} has unresolved review threads. Skipping merge.")
             log_action(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
             return False

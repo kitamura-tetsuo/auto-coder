@@ -102,6 +102,7 @@ class TestAdversarialValidationEligibility:
 
         assert eligibility.is_applicable is False
         assert eligibility.issue_numbers == ()
+        assert eligibility.lookup_error is not None
         client.get_issue.assert_called_once_with("owner/repo", 42)
 
     def test_verified_linked_issue_makes_validation_applicable(self):
@@ -114,6 +115,16 @@ class TestAdversarialValidationEligibility:
         assert eligibility.is_applicable is True
         assert eligibility.issue_numbers == (42,)
         assert eligibility.lookup_error is None
+
+    def test_title_inferred_issue_uses_same_verified_oracle_resolution(self):
+        client = MagicMock()
+        client.get_issue.return_value = {"number": 42, "title": "Behavioral contract", "body": "Required behavior"}
+        pr_data = {"number": 100, "title": "Implement issue #42", "body": "Implementation details"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is True
+        assert eligibility.issue_numbers == (42,)
 
 
 class TestAdversarialValidationPRComment:
@@ -761,6 +772,39 @@ class TestAdversarialValidationPRFlow:
         mock_merge_pr.assert_called_once()
         assert any("no linked Issue specification oracle" in action for action in actions)
         assert not any("BLOCKED" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_unresolved_explicit_issue_reference_fails_closed(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        pr_data = {"number": 100, "body": "Fixes #42", "labels": [], "head": {"ref": "feature-branch", "sha": "current-head"}}
+        client = MagicMock()
+        client.get_issue.return_value = None
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Could not verify adversarial-validation eligibility" in action for action in actions)
+        assert not any("no linked Issue specification oracle" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

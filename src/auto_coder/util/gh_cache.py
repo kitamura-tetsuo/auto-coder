@@ -1013,8 +1013,19 @@ class GitHubClient:
             List of ReviewThread dataclass instances.
         """
         try:
-            owner, repo = repo_name.split("/")
-            query = """
+            return self._get_pr_review_threads(repo_name, pr_number)
+        except Exception as e:
+            logger.error(f"Failed to get review threads for PR #{pr_number}: {e}")
+            return []
+
+    def get_pr_review_threads_strict(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
+        """Get review threads while preserving lookup failures for merge gates."""
+        return self._get_pr_review_threads(repo_name, pr_number)
+
+    def _get_pr_review_threads(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
+        """Fetch all review-thread pages and let callers decide error handling."""
+        owner, repo = repo_name.split("/")
+        query = """
             query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
@@ -1032,49 +1043,45 @@ class GitHubClient:
                 }
               }
             }
-            """
+        """
 
-            threads: List[ReviewThread] = []
-            cursor: Optional[str] = None
+        threads: List[ReviewThread] = []
+        cursor: Optional[str] = None
 
-            while True:
-                variables: Dict[str, Any] = {"owner": owner, "name": repo, "number": pr_number, "cursor": cursor}
-                response = self.graphql_query(query, variables)
+        while True:
+            variables: Dict[str, Any] = {"owner": owner, "name": repo, "number": pr_number, "cursor": cursor}
+            response = self.graphql_query(query, variables)
 
-                if not response or "data" not in response:
-                    break
+            if not response or "data" not in response:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} did not contain data")
 
-                pr_data = response.get("data", {}).get("repository", {}).get("pullRequest")
-                if not pr_data:
-                    break
+            pr_data = response.get("data", {}).get("repository", {}).get("pullRequest")
+            if not pr_data:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} did not contain the pull request")
 
-                review_threads_data = pr_data.get("reviewThreads")
-                if not review_threads_data:
-                    break
+            review_threads_data = pr_data.get("reviewThreads")
+            if review_threads_data is None:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} did not contain reviewThreads")
 
-                nodes = review_threads_data.get("nodes") or []
-                for node in nodes:
-                    if node:
-                        threads.append(
-                            ReviewThread(
-                                id=node.get("id", ""),
-                                is_resolved=bool(node.get("isResolved", False)),
-                                is_outdated=bool(node.get("isOutdated", False)),
-                            )
+            nodes = review_threads_data.get("nodes") or []
+            for node in nodes:
+                if node:
+                    threads.append(
+                        ReviewThread(
+                            id=node.get("id", ""),
+                            is_resolved=bool(node.get("isResolved", False)),
+                            is_outdated=bool(node.get("isOutdated", False)),
                         )
+                    )
 
-                page_info = review_threads_data.get("pageInfo") or {}
-                if not page_info.get("hasNextPage"):
-                    break
-                cursor = page_info.get("endCursor")
-                if not cursor:
-                    break
+            page_info = review_threads_data.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                raise RuntimeError(f"Review-thread response for PR #{pr_number} omitted the next-page cursor")
 
-            return threads
-
-        except Exception as e:
-            logger.error(f"Failed to get review threads for PR #{pr_number}: {e}")
-            return []
+        return threads
 
     def has_unresolved_review_threads(self, repo_name: str, pr_number: int) -> bool:
         """Check if a pull request has any unresolved review threads.
