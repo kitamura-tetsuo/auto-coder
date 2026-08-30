@@ -16,6 +16,16 @@ The auto-coder system supports multiple LLM backends:
           QWEN_API_KEY = "your-api-key"
 ```
 
+#### Codex No-Edit Execution Policy
+
+No-edit Codex backends do not require
+`--dangerously-bypass-approvals-and-sandbox`. Editable Codex backends must use
+an unattended policy: that bypass flag, `--full-auto`, or explicit
+`--sandbox workspace-write` with `--ask-for-approval never`. For every no-edit
+invocation, including custom `backend_type = "codex"` aliases, auto-coder
+removes dangerous/YOLO flags and enforces `--sandbox read-only`,
+`--ask-for-approval never`, and the configured safe approval reviewer override.
+
 #### Repository-Scoped Partial Configuration Overrides
 
 Auto-Coder supports repository-scoped partial overrides for `llm_config.toml` settings. When processing a task for a repository (e.g. `kitamura-tetsuo/auto-coder`), settings from a repository-specific configuration file are merged recursively on top of the base configuration.
@@ -935,4 +945,3 @@ Recent configuration schema changes that require migration:
         - "Instructs the implementation agent to add a focused regression test reproducing the counterexample and fix the code."
         - "Stages, commits, and pushes changes to GitHub to trigger a new CI run."
         - "Re-runs adversarial validation once CI is green again; only merges after validation returns PASS."
-
