@@ -151,38 +151,39 @@ class CodexClient(LLMClientBase):
             # When is_noedit is True, enforce Codex read-only sandboxing client-level invariant
             # against the final combined command (including configured options and extra args):
             # - Remove conflicting --sandbox / -s <value> pairs and --sandbox=... / -s=...
+            # - Remove conflicting --sandbox / -s <value> pairs, --sandbox=..., -s=..., and -s<value>
             # - Remove dangerous approval, YOLO, and sandbox bypass flags:
             #   --dangerously-bypass-approvals-and-sandbox, --yolo, --full-auto, -y, --yes,
             #   --approve-for-me, --not-so-yolo, --danger-full-access
-            # - Remove conflicting --ask-for-approval / -a <value> pairs and --ask-for-approval=... / -a=...
-            # - Remove any conflicting runtime config overrides for approvals_reviewer (-c / --config)
+            # - Remove conflicting --ask-for-approval / -a <value> pairs, --ask-for-approval=..., -a=..., and -a<value>
+            # - Remove any conflicting runtime config overrides for approvals_reviewer (-c / --config, -c=..., --config=..., -c<value>)
             # - Force exactly --sandbox read-only, --ask-for-approval never, and -c approvals_reviewer="user"
             if is_noedit:
                 sanitized_cmd = []
                 i = 0
                 while i < len(cmd):
                     opt_str = str(cmd[i])
-                    # Handle sandbox flags
+                    # Handle sandbox flags (--sandbox <val>, -s <val>, --sandbox=<val>, -s=<val>, -s<val>)
                     if opt_str in ("--sandbox", "-s"):
                         # Skip flag and its subsequent value
                         i += 2
                         continue
-                    if opt_str.startswith(("--sandbox=", "-s=")):
+                    if opt_str.startswith("--sandbox=") or (opt_str.startswith("-s") and not opt_str.startswith("--")):
                         i += 1
                         continue
-                    # Handle ask-for-approval flags
+                    # Handle ask-for-approval flags (--ask-for-approval <val>, -a <val>, --ask-for-approval=<val>, -a=<val>, -a<val>)
                     if opt_str in ("--ask-for-approval", "-a"):
                         # Skip flag and its subsequent value
                         i += 2
                         continue
-                    if opt_str.startswith(("--ask-for-approval=", "-a=")):
+                    if opt_str.startswith("--ask-for-approval=") or (opt_str.startswith("-a") and not opt_str.startswith("--")):
                         i += 1
                         continue
-                    # Handle config override flags for approvals_reviewer
+                    # Handle config override flags for approvals_reviewer (-c <val>, --config <val>, -c=..., --config=..., -c<val>)
                     if opt_str in ("-c", "--config") and i + 1 < len(cmd) and "approvals_reviewer" in str(cmd[i + 1]):
                         i += 2
                         continue
-                    if (opt_str.startswith("-c=") or opt_str.startswith("--config=")) and "approvals_reviewer" in opt_str:
+                    if (opt_str.startswith(("--config=", "--config")) or (opt_str.startswith("-c") and not opt_str.startswith("--"))) and "approvals_reviewer" in opt_str:
                         i += 1
                         continue
                     if opt_str.startswith("approvals_reviewer="):
