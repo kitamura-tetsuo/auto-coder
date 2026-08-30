@@ -106,6 +106,8 @@ class AdversarialValidationContext:
     is_diff_truncated: bool = False
     unverified_files: List[str] = field(default_factory=list)
     issue_requirements: List[IssueRequirement] = field(default_factory=list)
+    evidence_retrieval_error: Optional[str] = None
+    requires_human_review: bool = False
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -449,22 +451,40 @@ def build_adversarial_validation_context(
         except Exception:
             client = None
 
-    # Retrieve PR diff
+    # Retrieve bounded diff evidence and the authoritative changed-file count through
+    # independent endpoints so GitHub's raw-diff limit cannot authorize a large PR.
     pr_diff = ""
     is_diff_truncated = False
     all_changed_files: List[str] = []
     unverified_files: List[str] = []
+    evidence_retrieval_error: Optional[str] = None
+    requires_human_review = False
 
     if client:
+        raw_diff = ""
+        diff_changed_files: List[str] = []
         try:
             raw_diff = client.get_pr_diff(repo_name, pr_number)
             if raw_diff:
-                all_changed_files = extract_all_changed_files(raw_diff)
+                diff_changed_files = extract_all_changed_files(raw_diff)
                 max_diff_size = config.MAX_PR_DIFF_SIZE * 3
                 pr_diff, unverified_files = build_file_aware_diff(raw_diff, max_diff_size)
-                is_diff_truncated = bool(unverified_files)
         except Exception as e:
             logger.warning(f"Could not retrieve diff for PR #{pr_number}: {e}")
+
+        all_changed_files = diff_changed_files
+        try:
+            changed_file_count = client.get_pr_changed_file_count(repo_name, pr_number)
+            if changed_file_count > 300:
+                requires_human_review = True
+            elif changed_file_count > len(diff_changed_files):
+                missing_count = changed_file_count - len(diff_changed_files)
+                unverified_files.append(f"<{missing_count} changed file(s) unavailable in raw diff>")
+        except Exception as e:
+            evidence_retrieval_error = f"Authoritative changed-file count retrieval failed: {e}"
+            logger.warning(f"Could not retrieve authoritative changed-file count for PR #{pr_number}: {e}")
+
+        is_diff_truncated = bool(unverified_files)
 
     # Extract linked issues context (from body, title, branch name, session)
     issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data)
@@ -485,6 +505,8 @@ def build_adversarial_validation_context(
         is_diff_truncated=is_diff_truncated,
         unverified_files=unverified_files,
         issue_requirements=issue_requirements,
+        evidence_retrieval_error=evidence_retrieval_error,
+        requires_human_review=requires_human_review,
     )
 
 
@@ -1087,6 +1109,25 @@ def run_adversarial_validation(
         return AdversarialValidationResult(
             result="BLOCKED",
             summary=f"Oracle acquisition failed for PR #{pr_number}: no linked issue specification found to falsify against",
+        )
+
+    if context.evidence_retrieval_error:
+        logger.warning(f"PR #{pr_number} evidence retrieval failed. Blocking merge: {context.evidence_retrieval_error}")
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary=context.evidence_retrieval_error,
+            diagnostic_category="evidence_retrieval_failure",
+            diagnostic_reason=context.evidence_retrieval_error,
+        )
+
+    if context.requires_human_review:
+        reason = "PR has more than 300 changed files; automated adversarial validation cannot authorize merge and human review is required"
+        logger.warning(f"PR #{pr_number} exceeds the raw-diff coverage limit. Blocking automatic merge.")
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary=reason,
+            diagnostic_category="human_review_required",
+            diagnostic_reason=reason,
         )
 
     # Diff accessibility check: If PR diff could not be retrieved, fail closed

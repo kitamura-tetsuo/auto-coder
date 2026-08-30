@@ -348,6 +348,7 @@ class TestBuildAdversarialValidationContext:
     def test_build_context(self):
         mock_client = MagicMock()
         mock_client.get_pr_diff.return_value = "diff --git a/tests/test_x.py b/tests/test_x.py\n+++ b/tests/test_x.py"
+        mock_client.get_pr_changed_file_count.return_value = 1
         mock_issue = MagicMock(spec=["title", "body"])
         mock_issue.title = "Add rate limiting"
         mock_issue.body = "Specification: Limit to 100 req/min. Acceptance Criteria: Return 429 when exceeded."
@@ -372,6 +373,7 @@ class TestBuildAdversarialValidationContext:
         mock_client = MagicMock()
         huge_diff = "diff --git a/file1.py b/file1.py\n+++ b/file1.py\n" + ("+" + "a" * 100 + "\n") * 500 + "diff --git a/file_late.py b/file_late.py\n+++ b/file_late.py\n"
         mock_client.get_pr_diff.return_value = huge_diff
+        mock_client.get_pr_changed_file_count.return_value = 2
         mock_issue = MagicMock(spec=["title", "body"])
         mock_issue.title = "Big change"
         mock_issue.body = "Spec details"
@@ -397,6 +399,7 @@ class TestBuildAdversarialValidationContext:
         huge_diff = diff_prefix + diff_suffix
 
         mock_client.get_pr_diff.return_value = huge_diff
+        mock_client.get_pr_changed_file_count.return_value = 2
         mock_issue = MagicMock(spec=["title", "body"])
         mock_issue.title = "Complex feature"
         mock_issue.body = "Spec: Must handle late secret feature."
@@ -465,6 +468,48 @@ class TestBuildAdversarialValidationContext:
         assert "COVERAGE INCOMPLETE" in evidence
         assert "Unverified manifest SHA-256:" in evidence
 
+    def test_authoritative_301_file_count_requires_human_review(self):
+        mock_client = MagicMock()
+        visible_files = [f"src/file_{index:03d}.py" for index in range(300)]
+        raw_diff = "".join(f"diff --git a/{path} b/{path}\n+++ b/{path}\n+changed = True\n" for path in visible_files)
+        mock_client.get_pr_diff.return_value = raw_diff
+        mock_client.get_pr_changed_file_count.return_value = 301
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Large PR requirement"
+        mock_issue.body = "The hidden test file is material."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+
+        context = build_adversarial_validation_context(
+            "owner/repo",
+            {"number": 301, "title": "Large PR", "body": "Fixes #10"},
+            AutomationConfig(),
+            github_client=mock_client,
+        )
+
+        assert len(context.all_changed_files) == 300
+        assert context.requires_human_review
+
+    def test_authoritative_changed_file_count_failure_is_recorded(self):
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py\n+changed = True\n"
+        mock_client.get_pr_changed_file_count.side_effect = RuntimeError("count unavailable")
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Count requirement"
+        mock_issue.body = "The changed-file count must be authoritative."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+
+        context = build_adversarial_validation_context(
+            "owner/repo",
+            {"number": 302, "title": "Count failure", "body": "Fixes #10"},
+            AutomationConfig(),
+            github_client=mock_client,
+        )
+
+        assert context.evidence_retrieval_error == "Authoritative changed-file count retrieval failed: count unavailable"
+        assert not context.requires_human_review
+
     @pytest.mark.parametrize("late_file_first", [False, True])
     def test_violating_file_evidence_is_order_independent(self, late_file_first):
         huge_patch = "diff --git a/generated.txt b/generated.txt\n+++ b/generated.txt\n" + "+generated\n" * 1000
@@ -479,6 +524,7 @@ class TestBuildAdversarialValidationContext:
         """When explicit linking keywords exist in body, other reference issues are NOT included."""
         mock_client = MagicMock()
         mock_client.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py"
+        mock_client.get_pr_changed_file_count.return_value = 1
 
         def get_issue_side_effect(repo, issue_num):
             m = MagicMock(spec=["title", "body"])
@@ -526,6 +572,7 @@ class TestBuildAdversarialValidationContext:
         """Parent issue context includes explicit SCOPE BOUNDARY NOTICE ensuring sub-issue PR scope is preserved."""
         mock_client = MagicMock()
         mock_client.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py"
+        mock_client.get_pr_changed_file_count.return_value = 1
         mock_issue = MagicMock(spec=["title", "body"])
         mock_issue.title = "Sub-issue A"
         mock_issue.body = "Specification: Implement feature A only."
@@ -795,6 +842,7 @@ class TestBuildAdversarialValidationContext:
         """Issue specification is recovered from PR title when body omits linking phrase."""
         mock_client = MagicMock()
         mock_client.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py"
+        mock_client.get_pr_changed_file_count.return_value = 1
         mock_issue = MagicMock(spec=["title", "body"])
         mock_issue.title = "Implement rate limiting"
         mock_issue.body = "Spec: Limit to 100 req/min"
@@ -961,6 +1009,57 @@ class TestRunAdversarialValidation:
         assert result.is_blocked
         assert result.result == "BLOCKED"
         assert "Diff retrieval failed" in result.summary
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_run_adversarial_validation_301_files_requires_human_review(self, mock_run_prompt, mock_build_ctx):
+        """A model cannot authorize merge from a raw diff capped at 300 files."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=301,
+            pr_title="Large PR",
+            pr_body="Fixes #1",
+            pr_diff="diff content for the first 300 files",
+            issue_context="Issue specification: Must do X.",
+            requires_human_review=True,
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 301, "title": "Large PR", "body": "Fixes #1"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "BLOCKED"
+        assert result.is_blocked
+        assert result.diagnostic_category == "human_review_required"
+        assert "human review is required" in result.summary
+        mock_run_prompt.assert_not_called()
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_run_adversarial_validation_missing_authoritative_count_blocks(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=302,
+            pr_title="Count unavailable",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            issue_context="Issue specification: Must do X.",
+            evidence_retrieval_error="Authoritative changed-file count retrieval failed: unavailable",
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 302, "title": "Count unavailable", "body": "Fixes #1"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "BLOCKED"
+        assert result.diagnostic_category == "evidence_retrieval_failure"
+        mock_run_prompt.assert_not_called()
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.cli_helpers.create_adversarial_validation_backend_manager", return_value=None)
