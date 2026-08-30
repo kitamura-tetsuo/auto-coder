@@ -1,4 +1,4 @@
-vulture==2.14
+vulture==2.16
 libcst==1.8.6
 loguru==0.7.3
 ruff==0.16.3
