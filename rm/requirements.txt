@@ -2,5 +2,5 @@ vulture==2.16
 libcst==1.8.6
 loguru==0.7.3
 ruff==0.16.3
-pytest==9.0.2
+pytest==9.1.1
 coverage==7.15.4
