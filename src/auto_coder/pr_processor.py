@@ -39,7 +39,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .issue_context import extract_associated_issue_numbers, extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
+from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
@@ -71,6 +71,18 @@ class CodexReviewState:
     lookup_error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class AdversarialValidationEligibility:
+    """Verified Issue-oracle eligibility for adversarial validation."""
+
+    issue_numbers: Tuple[int, ...] = ()
+    lookup_error: Optional[str] = None
+
+    @property
+    def is_applicable(self) -> bool:
+        return bool(self.issue_numbers)
+
+
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
     """Read a field from either a REST dictionary or a GhApi object."""
     return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
@@ -79,7 +91,11 @@ def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
 def _get_codex_review_state(github_client: Any, repo_name: str, pr_number: int) -> CodexReviewState:
     """Return Codex review presence/completion without tying it to a reviewed SHA."""
     try:
-        comments = github_client.get_pr_comments(repo_name, pr_number)
+        strict_getter = getattr(type(github_client), "get_pr_comments_strict", None)
+        if callable(strict_getter):
+            comments = github_client.get_pr_comments_strict(repo_name, pr_number)
+        else:
+            comments = github_client.get_pr_comments(repo_name, pr_number)
     except Exception as e:
         logger.error(f"Failed to inspect Codex review state for PR #{pr_number}: {e}")
         return CodexReviewState(lookup_error=str(e))
@@ -99,9 +115,39 @@ def _get_codex_review_state(github_client: Any, repo_name: str, pr_number: int) 
     return CodexReviewState()
 
 
-def _has_adversarial_validation_oracle(pr_data: Dict[str, Any]) -> bool:
-    """Return whether PR metadata identifies an Issue specification oracle."""
-    return bool(extract_associated_issue_numbers(pr_data=pr_data))
+def _get_adversarial_validation_eligibility(github_client: Any, repo_name: str, pr_data: Dict[str, Any]) -> AdversarialValidationEligibility:
+    """Verify explicit closing references resolve to real Issues, never PRs."""
+    issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body", "") or "")
+    if not issue_numbers:
+        return AdversarialValidationEligibility()
+
+    verified_issue_numbers = []
+    strict_getter = getattr(type(github_client), "get_issue_strict", None)
+    for issue_number in issue_numbers:
+        try:
+            if callable(strict_getter):
+                issue = github_client.get_issue_strict(repo_name, issue_number)
+            else:
+                issue = github_client.get_issue(repo_name, issue_number)
+        except Exception as e:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code in (404, 410):
+                continue
+            logger.error(f"Failed to verify linked Issue #{issue_number} for adversarial validation: {e}")
+            return AdversarialValidationEligibility(lookup_error=str(e))
+
+        if not issue:
+            continue
+        if isinstance(issue, dict):
+            if issue.get("pull_request") is not None:
+                continue
+        else:
+            raw_data = getattr(issue, "_rawData", None)
+            if isinstance(raw_data, dict) and raw_data.get("pull_request") is not None:
+                continue
+        verified_issue_numbers.append(issue_number)
+
+    return AdversarialValidationEligibility(issue_numbers=tuple(verified_issue_numbers))
 
 
 def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
@@ -1683,12 +1729,20 @@ def _handle_pr_merge(
 
             # Strong-model adversarial validation step. Issue-less PRs have no
             # independent specification oracle, so validation is not applicable.
-            adversarial_validation_applicable = _has_adversarial_validation_oracle(pr_data)
-            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data) and not adversarial_validation_applicable:
+            adversarial_validation_enabled = config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data)
+            adversarial_eligibility = AdversarialValidationEligibility()
+            if adversarial_validation_enabled:
+                adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
+                if adversarial_eligibility.lookup_error:
+                    actions.append(f"Could not verify adversarial-validation eligibility for PR #{pr_number}: {adversarial_eligibility.lookup_error}; merge not attempted")
+                    return actions
+
+            adversarial_validation_applicable = adversarial_eligibility.is_applicable
+            if adversarial_validation_enabled and not adversarial_validation_applicable:
                 actions.append(f"Skipped adversarial validation for PR #{pr_number}: no linked Issue specification oracle")
                 logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
 
-            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data) and adversarial_validation_applicable:
+            if adversarial_validation_enabled and adversarial_validation_applicable:
                 codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
                 if codex_review.lookup_error:
                     actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")

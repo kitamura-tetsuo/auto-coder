@@ -924,7 +924,7 @@ Recent configuration schema changes that require migration:
       run_adversarial_validation, parse_adversarial_validation_response,
       build_adversarial_validation_context, extract_changed_test_files,
       format_adversarial_validation_comment in src/auto_coder/adversarial_validator.py,
-      _handle_pr_merge, _has_adversarial_validation_oracle,
+      _handle_pr_merge, _get_adversarial_validation_eligibility,
       _get_codex_review_state in src/auto_coder/pr_processor.py,
       create_adversarial_validation_backend_manager in src/auto_coder/cli_helpers.py,
       backend_adversarial_validation in src/auto_coder/llm_backend_config.py
@@ -933,8 +933,8 @@ Recent configuration schema changes that require migration:
       - "ENABLE_ADVERSARIAL_VALIDATION (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var)."
     behavior:
       - "Runs after normal CI / GitHub Actions checks are green and before merge eligibility."
-      - "Issue Eligibility: PRs without an associated Issue are outside the validation scope. They do not invoke the reviewer or publish a validation result, and continue through the other normal merge requirements."
-      - "Codex Review Ordering: For Issue-backed PRs, a Codex GitHub review summary from chatgpt-codex-connector[bot] must reach Code Review / Completed before adversarial validation starts. A summary that is still running defers the PR to a later processing iteration without a fixed delay."
+      - "Issue Eligibility: Only explicit closing references that resolve through GitHub REST to an existing Issue (not another PR) are specification oracles. PRs without a verified Issue are outside the validation scope: they do not invoke the reviewer or publish a validation result, and continue through the other normal merge requirements."
+      - "Codex Review Ordering: For Issue-backed PRs, a Codex GitHub review summary from chatgpt-codex-connector[bot] must reach Code Review / Completed before adversarial validation starts. A summary that is still running defers the PR to a later processing iteration without a fixed delay. Comment lookup uses a strict REST path so API failures cannot be mistaken for an absent Codex review."
       - "Optional Codex Stage: If no Codex review summary exists, adversarial validation runs normally. A Completed summary is sufficient even without a +1 reaction and regardless of whether its reviewed commit differs from the current head."
       - "Review Feedback Ordering: Existing unresolved review-thread checks prevent adversarial validation and merge until actionable feedback is resolved; the subsequent adversarial validation remains pinned to the current PR head."
       - "Fail-Closed Design: PASS is only produced for an explicitly parsed, internally consistent PASS with 0 blocking findings; all empty, malformed, contradictory, or inconclusive responses block PR merge."

@@ -12,11 +12,13 @@ from auto_coder.adversarial_validator import (
 )
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.pr_processor import (
+    _get_adversarial_validation_eligibility,
     _get_codex_review_state,
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
     _publish_adversarial_validation_result,
 )
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
@@ -58,6 +60,60 @@ class TestCodexReviewState:
 
         assert state.present is False
         assert state.completed is False
+
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_real_client_comment_api_failure_is_not_treated_as_codex_absence(self, mock_get_api):
+        mock_api = Mock()
+        mock_api.issues.list_comments.side_effect = RuntimeError("comment API unavailable")
+        mock_get_api.return_value = mock_api
+        client = GitHubClient("test-token")
+
+        assert client.get_pr_comments("owner/repo", 100) == []
+
+        state = _get_codex_review_state(client, "owner/repo", 100)
+
+        assert state.present is False
+        assert state.completed is False
+        assert state.lookup_error == "comment API unavailable"
+
+
+class TestAdversarialValidationEligibility:
+    def test_issue_less_pr_mentioning_another_pr_is_not_eligible(self):
+        client = MagicMock()
+        pr_data = {"number": 100, "body": "Maintenance update; see PR #42 for background"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is False
+        assert eligibility.issue_numbers == ()
+        assert eligibility.lookup_error is None
+        client.get_issue.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [None, {"number": 42, "pull_request": {"url": "https://api.github.test/pulls/42"}}],
+    )
+    def test_nonexistent_or_pull_request_candidate_is_not_an_oracle(self, candidate):
+        client = MagicMock()
+        client.get_issue.return_value = candidate
+        pr_data = {"number": 100, "body": "Fixes #42"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is False
+        assert eligibility.issue_numbers == ()
+        client.get_issue.assert_called_once_with("owner/repo", 42)
+
+    def test_verified_linked_issue_makes_validation_applicable(self):
+        client = MagicMock()
+        client.get_issue.return_value = {"number": 42, "title": "Behavioral contract"}
+        pr_data = {"number": 100, "body": "Fixes #42"}
+
+        eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
+
+        assert eligibility.is_applicable is True
+        assert eligibility.issue_numbers == (42,)
+        assert eligibility.lookup_error is None
 
 
 class TestAdversarialValidationPRComment:

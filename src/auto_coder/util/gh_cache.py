@@ -761,6 +761,13 @@ class GitHubClient:
             logger.warning(f"Failed to get issue #{issue_number} from {repo_name}: {e}")
             return None
 
+    @retry_with_backoff()
+    def get_issue_strict(self, repo_name: str, issue_number: int) -> Any:
+        """Get an issue while preserving REST lookup failures for merge gates."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        return api.issues.get(owner, repo, issue_number)
+
     def get_issue_details(self, issue: Any) -> Dict[str, Any]:
         """Extract detailed information from an issue.
 
@@ -1481,6 +1488,10 @@ class GitHubClient:
         """
         return self.get_issue_comments(repo_name, pr_number)
 
+    def get_pr_comments_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Get PR conversation comments while preserving REST lookup failures."""
+        return self._get_issue_comments(repo_name, pr_number)
+
     def get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Get all comments for an issue (or PR conversation).
 
@@ -1489,36 +1500,39 @@ class GitHubClient:
         callers (e.g. attempt tracking) read a stale state.
         """
         try:
-            owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
-
-            per_page = 100
-            result = []
-            page = 1
-            while page <= COMMENTS_MAX_PAGES:
-                comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
-                if not comments:
-                    break
-
-                for comment in comments:
-                    user = comment.get("user")
-                    created_at = comment.get("created_at")
-                    # GhApi returns strings for dates, pass through
-                    if hasattr(created_at, "isoformat"):
-                        created_at = created_at.isoformat()
-
-                    result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
-
-                if len(comments) < per_page:
-                    break
-                page += 1
-            else:
-                logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
-
-            return result
+            return self._get_issue_comments(repo_name, issue_number)
         except Exception as e:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")
             return []
+
+    def _get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        """Fetch every comment page and let callers decide how to handle errors."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+
+        per_page = 100
+        result = []
+        page = 1
+        while page <= COMMENTS_MAX_PAGES:
+            comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
+            if not comments:
+                break
+
+            for comment in comments:
+                user = comment.get("user")
+                created_at = comment.get("created_at")
+                if hasattr(created_at, "isoformat"):
+                    created_at = created_at.isoformat()
+
+                result.append({"body": comment.get("body"), "created_at": created_at, "user": {"login": user.get("login")} if user else None, "id": comment.get("id")})
+
+            if len(comments) < per_page:
+                break
+            page += 1
+        else:
+            logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
+
+        return result
 
     def update_comment_for_issue(self, repo_name: str, comment_id: int, body: str) -> None:
         """Update an existing comment."""
