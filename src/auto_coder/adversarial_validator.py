@@ -989,6 +989,15 @@ def _apply_coverage_and_verdict_precedence(
     missing_requirement_ids = sorted(expected_requirement_ids - coverage_by_id.keys())
     unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
     incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
+    violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
+
+    if violated_requirement_ids and not result.findings:
+        reason = f"VIOLATED requirement coverage lacks a concrete counterexample finding: {', '.join(violated_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Contradictory validator response: violated requirements were reported without concrete findings"
+        result.diagnostic_category = "violated_requirement_without_finding"
+        result.diagnostic_reason = reason
+        return result
 
     if result.findings:
         result.result = "NEEDS_FIX"

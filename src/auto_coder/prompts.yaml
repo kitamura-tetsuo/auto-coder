@@ -516,6 +516,7 @@ pr:
     and the current tests would still pass because ...
 
     A finding without a plausible behavioral counterexample must not block the PR.
+    Every VIOLATED requirement coverage entry MUST have a corresponding concrete finding. Reporting VIOLATED without a finding is a schema error and fails closed.
 
     OUTPUT FORMAT:
     Respond with a JSON object in the following format:

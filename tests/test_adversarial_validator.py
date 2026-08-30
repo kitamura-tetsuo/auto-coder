@@ -1120,6 +1120,45 @@ class TestRunAdversarialValidation:
         assert result.result == "INCONCLUSIVE"
         assert "REQ-002-r2" in (result.diagnostic_reason or "")
 
+    @pytest.mark.parametrize("top_level_result", ["PASS", "INCONCLUSIVE"])
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_violated_coverage_without_finding_fails_closed_to_error(self, mock_run_prompt, mock_build_ctx, top_level_result):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Two requirements",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="R1: persist state. R2: emit an audit event.",
+            issue_requirements=[
+                IssueRequirement(requirement_id="REQ-001-r1", text="R1: persist state"),
+                IssueRequirement(requirement_id="REQ-002-r2", text="R2: emit an audit event"),
+            ],
+        )
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": top_level_result,
+                "summary": "R2 is violated but no finding was emitted",
+                "requirement_coverage": [
+                    {"requirement_id": "REQ-001-r1", "status": "VERIFIED", "evidence": "R1 patch inspected"},
+                    {"requirement_id": "REQ-002-r2", "status": "VIOLATED", "evidence": "Audit event is dropped"},
+                ],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Two requirements"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "violated_requirement_without_finding"
+        assert "REQ-002-r2" in (result.diagnostic_reason or "")
+
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
