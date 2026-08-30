@@ -65,6 +65,7 @@ class TestCodexReviewState:
     def test_real_client_comment_api_failure_is_not_treated_as_codex_absence(self, mock_get_api):
         mock_api = Mock()
         mock_api.issues.list_comments.side_effect = RuntimeError("comment API unavailable")
+        mock_api.side_effect = RuntimeError("comment API unavailable")
         mock_get_api.return_value = mock_api
         client = GitHubClient("test-token")
 
@@ -837,6 +838,40 @@ class TestAdversarialValidationPRFlow:
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
         assert any("Waiting for Codex GitHub review to complete" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", side_effect=[False, True])
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_codex_completion_rechecks_threads_before_validation(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
+        client = MagicMock()
+        client.get_issue.return_value = {"number": 99, "title": "Specification"}
+        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert mock_threads.call_count == 2
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("Codex review completed" in action and "unresolved review threads" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

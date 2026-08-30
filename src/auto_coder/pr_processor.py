@@ -1754,6 +1754,14 @@ def _handle_pr_merge(
                 if codex_review.present and not codex_review.completed:
                     actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
                     return actions
+                if codex_review.completed:
+                    post_codex_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+                    if post_codex_thread_state.lookup_error:
+                        actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
+                        return actions
+                    if post_codex_thread_state.has_unresolved:
+                        actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
+                        return actions
 
                 head_sha = pr_data.get("head", {}).get("sha", "")
 

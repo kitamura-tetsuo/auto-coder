@@ -1497,7 +1497,7 @@ class GitHubClient:
 
     def get_pr_comments_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get PR conversation comments while preserving REST lookup failures."""
-        return self._get_issue_comments(repo_name, pr_number)
+        return self._get_issue_comments(repo_name, pr_number, fresh=True)
 
     def get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Get all comments for an issue (or PR conversation).
@@ -1512,7 +1512,7 @@ class GitHubClient:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")
             return []
 
-    def _get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+    def _get_issue_comments(self, repo_name: str, issue_number: int, fresh: bool = False) -> List[Dict[str, Any]]:
         """Fetch every comment page and let callers decide how to handle errors."""
         owner, repo = repo_name.split("/")
         api = get_ghapi_client(self.token)
@@ -1521,7 +1521,15 @@ class GitHubClient:
         result = []
         page = 1
         while page <= COMMENTS_MAX_PAGES:
-            comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
+            if fresh:
+                comments = api(
+                    f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                    verb="GET",
+                    headers={"Cache-Control": "no-cache"},
+                    query={"per_page": per_page, "page": page},
+                )
+            else:
+                comments = api.issues.list_comments(owner, repo, issue_number, per_page=per_page, page=page)
             if not comments:
                 break
 
