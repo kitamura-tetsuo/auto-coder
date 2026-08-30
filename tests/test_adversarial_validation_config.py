@@ -98,6 +98,7 @@ class TestCreateAdversarialValidationBackendManager:
         assert call_kwargs["selected_backends"] == ["claude", "codex"]
         assert call_kwargs["primary_backend"] == "claude"
         assert call_kwargs["use_noedit_options"] is True
+        assert call_kwargs["capture_codex_final_message"] is True
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=None)
@@ -136,6 +137,7 @@ class TestCreateAdversarialValidationBackendManager:
             primary_backend="claude",
             models={"claude": "model-claude"},
             use_noedit_options=True,
+            capture_codex_final_message=True,
         )
 
     @patch("auto_coder.cli_helpers.get_llm_config")
