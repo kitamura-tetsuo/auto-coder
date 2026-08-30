@@ -109,6 +109,14 @@ class LLMClientBase(ABC):
         """
         return None
 
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        """Explicitly continue an opaque provider session.
+
+        Clients supporting continuation must override this method and own the
+        provider-specific command shape.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support explicit session continuation")
+
     def set_extra_args(self, args: List[str]) -> None:
         """Store extra arguments to be used in the next execution.
 

@@ -4,6 +4,7 @@ Codex CLI client for Auto-Coder.
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -95,6 +96,7 @@ class CodexClient(LLMClientBase):
 
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
+        self._last_session_id: Optional[str] = None
 
         # Check if codex CLI is available
         try:
@@ -244,6 +246,7 @@ class CodexClient(LLMClientBase):
             combined_parts = [part for part in (stdout, stderr) if part]
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
+            self._extract_session_id(full_output)
             low = full_output.lower()
 
             # Check for timeout (returncode -1 and "timed out" in stderr)
@@ -303,6 +306,32 @@ class CodexClient(LLMClientBase):
             if error_message:
                 print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
             print("=" * 60 + "\n")
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self._last_session_id
+
+    def _extract_session_id(self, output: str) -> None:
+        """Extract Codex thread/session IDs from JSONL or diagnostic output."""
+        for line in output.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                value = None
+            if isinstance(value, dict):
+                candidate = value.get("thread_id") or value.get("session_id")
+                if isinstance(candidate, str) and candidate.strip():
+                    self._last_session_id = candidate.strip()
+                    return
+        match = re.search(r"(?:thread|session)[ _-]?id\s*[:=]\s*([A-Za-z0-9._-]+)", output, re.IGNORECASE)
+        if match:
+            self._last_session_id = match.group(1)
+
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        """Continue a specific Codex session using Codex's resume subcommand."""
+        if not session_id or session_id.startswith("-"):
+            raise ValueError("A valid explicit Codex session ID is required")
+        self.set_extra_args(["exec", "resume", session_id])
+        return self._run_llm_cli(prompt, is_noedit=is_noedit)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Codex CLI.

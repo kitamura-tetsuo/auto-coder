@@ -2,6 +2,17 @@
 
 This file documents the client-facing features and tools provided by auto-coder.
 
+## Persistent Adversarial Reviewer Sessions
+
+Adversarial validation keeps a dedicated reviewer conversation for each
+repository, pull request, backend alias/type, and model. Later CI-green heads
+explicitly resume that provider session and independently re-falsify the new
+head against the original issue. Reviewer associations are separate from
+implementation sessions, survive process restarts, never use an implicit
+"last session", and are removed after a successful merge. Claude and Codex
+clients own their respective explicit continuation command syntax and enforce
+the same read-only policy on fresh and resumed reviews.
+
 ## Configuration
 
 #### Backend Configuration
@@ -935,4 +946,3 @@ Recent configuration schema changes that require migration:
         - "Instructs the implementation agent to add a focused regression test reproducing the counterexample and fix the code."
         - "Stages, commits, and pushes changes to GitHub to trigger a new CI run."
         - "Re-runs adversarial validation once CI is green again; only merges after validation returns PASS."
-

@@ -665,7 +665,10 @@ class TestRunAdversarialValidation:
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": ""}
 
-        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = '{"result": "PASS", "summary": "Reviewer confirmed reload output satisfies spec", "findings": []}'
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
         assert not result.is_pass
         assert result.is_blocked
         assert result.result == "BLOCKED"
@@ -756,13 +759,16 @@ class TestRunAdversarialValidation:
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
 
-        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = '{"result": "PASS", "summary": "Reviewer confirmed reload output satisfies spec", "findings": []}'
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
         assert result.is_pass
         assert result.result == "PASS"
-        assert mock_run_prompt.call_count == 2
+        assert mock_run_prompt.call_count == 1
 
         # Verify the second prompt (followup) received the real test output and preserved the original counterexample
-        followup_call_prompt = mock_run_prompt.call_args_list[1][0][0]
+        followup_call_prompt = manager.continue_session.call_args[0][1]
         assert "PASSED tests/test_feature.py::test_reload_scenario" in followup_call_prompt
         assert "DeprecationWarning" in followup_call_prompt
         assert "Given state S, when reload occurs, then persisted timestamp is lost" in followup_call_prompt
@@ -810,11 +816,23 @@ class TestRunAdversarialValidation:
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
 
-        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "NEEDS_FIX",
+  "summary": "Test failure confirmed the suspected specification violation",
+  "findings": [{
+    "violated_requirement": "State reload invariant",
+    "counterexample": "Given state S, produces X",
+    "test_gap": "Test failed on reload",
+    "suggested_regression_scenario": "Fix reload logic"
+  }]
+}"""
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
         assert result.needs_fix
         assert result.result == "NEEDS_FIX"
         assert len(result.findings) == 1
-        assert mock_run_prompt.call_count == 2
+        assert mock_run_prompt.call_count == 1
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

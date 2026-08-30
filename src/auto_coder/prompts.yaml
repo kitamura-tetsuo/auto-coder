@@ -554,6 +554,21 @@ pr:
     PR Changes (Diff):
     $pr_diff
 
+  adversarial_validation_rereview: |-
+    Previous reviewed head: $previous_head_sha
+    Current head: $current_head_sha
+
+    Re-review the current PR head against the original issue specification.
+    Previous findings and conclusions are context only, not the correctness oracle.
+    First verify whether previous findings are actually fixed, then independently
+    try to find new plausible incorrect implementations or test-oracle gaps that
+    would still pass the current tests.
+
+    The original issue specification remains the source of truth.
+    Do not assume that fixing all previous findings means the PR is correct.
+
+    $review_prompt
+
     Changed/Added Tests:
     $changed_tests
 
@@ -1513,5 +1528,4 @@ jules:
 codex_cloud:
   continuation: |-
     Review the current pull request status and continue working on it. If CI checks are failing, review the latest failure logs, fix the issues, push the fixes to the existing pull request, and continue until all CI checks pass. Also address any valid unresolved review comments.
-
 

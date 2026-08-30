@@ -552,6 +552,13 @@ class ClaudeClient(LLMClientBase):
         """
         return self._last_session_id
 
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        """Continue a specific Claude Code session without implicit-last semantics."""
+        if not session_id or not self._is_valid_uuid(session_id):
+            raise ValueError("A valid explicit Claude session ID is required")
+        self.set_extra_args(["--resume", session_id])
+        return self._run_llm_cli(prompt, is_noedit=is_noedit)
+
     def _is_valid_uuid(self, session_id: str) -> bool:
         """Validate that a string is a valid UUID format.
 
