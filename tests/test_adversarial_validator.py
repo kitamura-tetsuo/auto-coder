@@ -1,10 +1,12 @@
 """Tests for the adversarial validation module."""
 
+import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from auto_coder.adversarial_validator import (
+    ADVERSARIAL_RESPONSE_PREVIEW_LIMIT,
     AdversarialValidationContext,
     AdversarialValidationFinding,
     AdversarialValidationResult,
@@ -18,6 +20,7 @@ from auto_coder.adversarial_validator import (
 )
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.prompt_loader import render_prompt
+from auto_coder.trace_logger import get_trace_logger
 
 
 class TestExtractChangedTestFiles:
@@ -120,6 +123,8 @@ class TestParseAdversarialValidationResponse:
         assert not result.is_pass
         assert result.is_blocked
         assert result.result == "ERROR"
+        assert result.diagnostic_category == "contradictory_response"
+        assert result.raw_response == json_resp
 
     def test_parse_malformed_findings_with_empty_dict_fails_closed_to_error(self):
         """Malformed findings containing empty dict must fail closed to ERROR."""
@@ -186,6 +191,9 @@ COUNTEREXAMPLE: Given state S, produces invalid token
         assert not result.is_pass
         assert result.is_blocked
         assert result.result == "ERROR"
+        assert result.diagnostic_category == "empty_response"
+        assert "no non-whitespace content" in (result.diagnostic_reason or "")
+        assert result.raw_response == ""
 
     def test_parse_malformed_response_fails_closed_to_error(self):
         """Unparseable/corrupted response must fail closed to ERROR."""
@@ -193,6 +201,95 @@ COUNTEREXAMPLE: Given state S, produces invalid token
         assert not result.is_pass
         assert result.is_blocked
         assert result.result == "ERROR"
+        assert result.diagnostic_category == "unrecognized_format"
+        assert result.raw_response == "Just random chatter with no valid JSON or RESULT header."
+
+    def test_parse_invalid_json_reports_syntax_location_and_fails_closed(self):
+        response = '{"result": "PASS", "findings": [}'
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "ERROR"
+        assert result.is_blocked
+        assert result.diagnostic_category == "json_parse_error"
+        assert "line 1" in (result.diagnostic_reason or "")
+        assert result.raw_response == response
+
+    def test_parse_valid_json_with_invalid_schema_reports_schema_reason(self):
+        response = '{"result": "PASS", "findings": "none"}'
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "ERROR"
+        assert result.is_blocked
+        assert result.diagnostic_category == "schema_error"
+        assert result.diagnostic_reason == "findings must be a list, got str"
+        assert result.raw_response == response
+
+    def test_parse_codex_jsonl_uses_final_agent_message_and_preserves_event_stream(self):
+        final_message = '{"result":"PASS","summary":"All requirements verified","findings":[]}'
+        response = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thread-1"}',
+                '{"type":"turn.started"}',
+                '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Reviewing the change."}}',
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"id": "item_1", "type": "agent_message", "text": final_message},
+                    }
+                ),
+                '{"type":"turn.completed"}',
+            ]
+        )
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.is_pass
+        assert result.summary == "All requirements verified"
+        assert result.raw_response == response
+
+    def test_parse_codex_jsonl_with_non_json_contamination_fails_closed(self):
+        response = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thread-1"}',
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_0",
+                            "type": "agent_message",
+                            "text": '{"result":"PASS","findings":[]}',
+                        },
+                    }
+                ),
+                "unexpected stderr warning",
+            ]
+        )
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "ERROR"
+        assert result.is_blocked
+        assert result.diagnostic_category == "cli_event_stream_error"
+        assert "non-JSON content" in (result.diagnostic_reason or "")
+        assert result.raw_response == response
+
+    @pytest.mark.parametrize(
+        ("event_line", "expected_reason"),
+        [
+            ('{"type":"turn.completed"}', "no completed agent message"),
+            ('{"type":"turn.failed","error":{"message":"sandbox unavailable"}}', "turn.failed"),
+        ],
+    )
+    def test_parse_incomplete_or_failed_codex_jsonl_fails_closed(self, event_line, expected_reason):
+        response = "\n".join(['{"type":"thread.started","thread_id":"thread-1"}', event_line])
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "ERROR"
+        assert result.is_blocked
+        assert result.diagnostic_category == "cli_event_stream_error"
+        assert expected_reason in (result.diagnostic_reason or "")
+        assert result.raw_response == response
 
 
 class TestBuildAdversarialValidationContext:
@@ -669,6 +766,48 @@ class TestRunAdversarialValidation:
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert result.needs_fix
         assert len(result.findings) == 1
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_parse_failure_trace_is_correlated_bounded_and_references_full_log(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=1582,
+            pr_title="Diagnose malformed response",
+            pr_body="Fixes #1582",
+            pr_diff="diff content",
+            issue_context="Malformed validation responses must remain blocked.",
+        )
+        response = "unexpected validator prose " + ("x" * (ADVERSARIAL_RESPONSE_PREVIEW_LIMIT + 500))
+        mock_run_prompt.return_value = response
+        backend_manager = MagicMock()
+        backend_manager.get_last_backend_and_model.return_value = ("codex", "gpt-5.6")
+        backend_manager.get_last_interaction_log_path.return_value = "/tmp/llm_output.jsonl"
+        trace_logger = get_trace_logger()
+        trace_logger.clear()
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1582, "title": "Diagnose malformed response", "body": "Fixes #1582"},
+            AutomationConfig(),
+            backend_manager=backend_manager,
+        )
+
+        assert result.result == "ERROR"
+        assert result.is_blocked
+        assert result.raw_response == response
+        parse_entries = [entry for entry in trace_logger.get_logs(item_type="pr", item_number=1582) if entry["category"] == "Adversarial Validation Parse Failure"]
+        assert len(parse_entries) == 1
+        details = parse_entries[0]["details"]
+        assert details["attempt"] == "initial"
+        assert details["backend"] == "codex"
+        assert details["model"] == "gpt-5.6"
+        assert details["response_state"] == "non-empty"
+        assert details["response_length"] == len(response)
+        assert details["diagnostic_category"] == "unrecognized_format"
+        assert details["interaction_log"] == "/tmp/llm_output.jsonl"
+        assert len(details["response_preview"]) <= ADVERSARIAL_RESPONSE_PREVIEW_LIMIT + 50
+        assert "characters omitted" in details["response_preview"]
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     def test_run_adversarial_validation_no_issue_context_fails_closed_to_blocked(self, mock_build_ctx):

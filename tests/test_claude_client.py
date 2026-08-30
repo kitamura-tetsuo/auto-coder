@@ -389,16 +389,23 @@ class TestClaudeClient:
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "Test output\nSession ID: 11111111-2222-3333-4444-555555555555"
-        mock_result.stderr = ""
+        mock_result.stderr = "CLI warning"
         mock_cmd_exec.return_value = mock_result
 
         client = ClaudeClient()
+        client.output_logger = MagicMock()
 
         # Set extra args
         client.set_extra_args(["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
 
         # Run LLM
         client._run_llm_cli("test prompt")
+
+        logged_interaction = client.output_logger.log_interaction.call_args.kwargs
+        assert logged_interaction["backend"] == "claude"
+        assert logged_interaction["model"] == "sonnet"
+        assert logged_interaction["response"] == ("Test output\nSession ID: 11111111-2222-3333-4444-555555555555\nCLI warning")
+        assert logged_interaction["status"] == "success"
 
         # Check that replace_placeholders was called
         mock_backend.replace_placeholders.assert_called_once_with(model_name="sonnet", settings=None)

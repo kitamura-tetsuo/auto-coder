@@ -933,6 +933,9 @@ Recent configuration schema changes that require migration:
     behavior:
       - "Runs after normal CI / GitHub Actions checks are green and before merge eligibility."
       - "Fail-Closed Design: PASS is only produced for an explicitly parsed, internally consistent PASS with 0 blocking findings; all empty, malformed, contradictory, or inconclusive responses block PR merge."
+      - "Parse Failure Diagnostics: Empty responses, invalid JSON, schema violations, contradictions, and unrecognized formats remain fail-closed and are logged with PR/attempt/backend/model context, a redacted 2,000-character preview, and the structured LLM interaction-log path."
+      - "Full Effective Response Retention: The structured LLM interaction log retains the redacted combined CLI response (stdout and stderr), while normal operational and trace logs remain bounded."
+      - "Codex JSONL Handling: For `codex --json` reviewers, parses only the final completed agent message while retaining the full event stream; failed, incomplete, or non-JSON-contaminated streams remain blocked."
       - "Oracle Acquisition Required: Fails closed (BLOCKED) if the linked issue specification or acceptance criteria cannot be acquired."
       - "Backend Independence: Uses independently configured strong model without silently falling back to the general implementation backend."
       - "Diff Truncation Transparency: Alerts the reviewer when diffs exceed limits and provides complete changed-file lists so partial review is never misrepresented as complete coverage."

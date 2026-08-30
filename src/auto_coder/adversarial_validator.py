@@ -19,12 +19,15 @@ from .issue_context import get_linked_issues_context
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .security_utils import redact_string
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 
 
 @dataclass
@@ -52,6 +55,8 @@ class AdversarialValidationResult:
     findings: List[AdversarialValidationFinding] = field(default_factory=list)
     raw_response: str = ""
     dynamic_check_requested: Optional[str] = None
+    diagnostic_category: Optional[str] = None
+    diagnostic_reason: Optional[str] = None
 
     @property
     def is_pass(self) -> bool:
@@ -228,6 +233,146 @@ def _extract_finding_from_dict(f: Dict[str, Any]) -> Optional[AdversarialValidat
     return None
 
 
+def _bounded_response_preview(response: str) -> str:
+    """Return a redacted, bounded response preview suitable for normal logs."""
+    redacted = redact_string(response)
+    if len(redacted) <= ADVERSARIAL_RESPONSE_PREVIEW_LIMIT:
+        return redacted
+    omitted = len(redacted) - ADVERSARIAL_RESPONSE_PREVIEW_LIMIT
+    return f"{redacted[:ADVERSARIAL_RESPONSE_PREVIEW_LIMIT]}... [{omitted} characters omitted]"
+
+
+def _extract_codex_jsonl_message(response: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Extract the final assistant message from a Codex ``--json`` event stream.
+
+    Returns ``(detected, message, error)``. Once a Codex JSONL envelope is
+    detected, malformed lines and failed events are reported instead of being
+    ignored so stderr contamination cannot turn an invalid response into PASS.
+    """
+    lines = [line for line in response.splitlines() if line.strip()]
+    if not lines:
+        return False, None, None
+
+    try:
+        first_event = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return False, None, None
+
+    if not isinstance(first_event, dict):
+        return False, None, None
+    first_type = first_event.get("type")
+    if not isinstance(first_type, str) or not first_type.startswith(("thread.", "turn.", "item.")):
+        return False, None, None
+
+    messages: List[str] = []
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            reason = f"non-JSON content in Codex event stream at line {line_number}: {exc.msg}"
+            return True, None, reason
+        if not isinstance(event, dict):
+            return True, None, f"Codex event at line {line_number} is not an object"
+
+        event_type = event.get("type")
+        if event_type in ("turn.failed", "error"):
+            return True, None, f"Codex emitted failure event {event_type} at line {line_number}"
+
+        item = event.get("item")
+        if event_type == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                messages.append(text)
+
+    if not messages:
+        return True, None, "Codex event stream contained no completed agent message"
+    return True, messages[-1], None
+
+
+def _parse_error(response: str, category: str, summary: str, reason: str) -> AdversarialValidationResult:
+    """Create and diagnose a fail-closed adversarial parse result."""
+    response_length = len(response)
+    state = "empty" if not response.strip() else "non-empty"
+    preview = _bounded_response_preview(response) if response else "<empty>"
+    logger.warning(
+        "Adversarial validator response failed parsing: category={}, reason={}, " "response_state={}, response_length={}, preview={!r}; failing closed to ERROR",
+        category,
+        reason,
+        state,
+        response_length,
+        preview,
+    )
+    return AdversarialValidationResult(
+        result="ERROR",
+        summary=summary,
+        raw_response=response,
+        diagnostic_category=category,
+        diagnostic_reason=reason,
+    )
+
+
+def _log_contextual_parse_diagnostics(
+    result: AdversarialValidationResult,
+    response: str,
+    backend_manager: BackendManager,
+    pr_number: int,
+    attempt: str,
+) -> None:
+    """Log a bounded parse diagnostic correlated to a validation attempt."""
+    if result.result != "ERROR" or not result.diagnostic_category:
+        return
+
+    backend: Optional[str] = None
+    model: Optional[str] = None
+    interaction_log: Optional[str] = None
+    try:
+        backend_value, model_value = backend_manager.get_last_backend_and_model()
+        backend = backend_value if isinstance(backend_value, str) else None
+        model = model_value if isinstance(model_value, str) else None
+    except Exception:
+        pass
+    try:
+        log_path = backend_manager.get_last_interaction_log_path()
+        interaction_log = log_path if isinstance(log_path, str) else None
+    except Exception:
+        pass
+
+    response_state = "empty" if not response.strip() else "non-empty"
+    preview = _bounded_response_preview(response) if response else "<empty>"
+    details = {
+        "result": result.result,
+        "attempt": attempt,
+        "backend": backend or "unknown",
+        "model": model or "unknown",
+        "response_state": response_state,
+        "response_length": len(response),
+        "response_preview": preview,
+        "diagnostic_category": result.diagnostic_category,
+        "diagnostic_reason": result.diagnostic_reason or result.summary,
+        "interaction_log": interaction_log or "unavailable",
+    }
+    logger.warning(
+        "Adversarial validation parse failure for PR #{} (attempt={}, backend={}, model={}): " "category={}, reason={}, response_state={}, response_length={}, preview={!r}, " "full_response_log={}",
+        pr_number,
+        attempt,
+        details["backend"],
+        details["model"],
+        details["diagnostic_category"],
+        details["diagnostic_reason"],
+        response_state,
+        len(response),
+        preview,
+        details["interaction_log"],
+    )
+    get_trace_logger().log(
+        "Adversarial Validation Parse Failure",
+        f"Validator response parsing failed for PR #{pr_number} ({attempt})",
+        item_type="pr",
+        item_number=pr_number,
+        details=details,
+    )
+
+
 def parse_adversarial_validation_response(response: str) -> AdversarialValidationResult:
     """Parse the strong model's adversarial validation output.
 
@@ -245,14 +390,24 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         Parsed AdversarialValidationResult
     """
     if not response or not response.strip():
-        logger.warning("Empty response received from adversarial validator; failing closed to ERROR")
-        return AdversarialValidationResult(
-            result="ERROR",
-            summary="Empty response received from validator; validation incomplete",
-            raw_response=response or "",
+        return _parse_error(
+            response or "",
+            "empty_response",
+            "Empty response received from validator; validation incomplete",
+            "validator returned no non-whitespace content",
         )
 
-    cleaned_response = response.strip()
+    raw_response = response
+    jsonl_detected, extracted_message, jsonl_error = _extract_codex_jsonl_message(raw_response)
+    if jsonl_detected and jsonl_error:
+        return _parse_error(
+            raw_response,
+            "cli_event_stream_error",
+            f"Invalid Codex validator event stream: {jsonl_error}",
+            jsonl_error,
+        )
+    effective_response = extracted_message if jsonl_detected and extracted_message is not None else raw_response
+    cleaned_response = effective_response.strip()
 
     # 1. Try parsing JSON block from markdown codeblock or direct JSON
     json_str = ""
@@ -264,6 +419,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         if bare_match:
             json_str = bare_match.group(1)
 
+    json_failure_reason: Optional[str] = None
     if json_str:
         try:
             parsed = json.loads(json_str)
@@ -279,41 +435,40 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                 if raw_findings is not None:
                     if not isinstance(raw_findings, list):
-                        # Findings must be a list; non-list types are malformed schema
-                        logger.warning("Malformed adversarial validation schema: findings is not a list; failing closed to ERROR")
-                        return AdversarialValidationResult(
-                            result="ERROR",
-                            summary="Malformed validator schema: findings must be a list",
-                            raw_response=response,
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Malformed validator schema: findings must be a list",
+                            f"findings must be a list, got {type(raw_findings).__name__}",
                         )
 
                     for item in raw_findings:
                         if not isinstance(item, dict):
                             # Non-dict item in findings list is malformed schema
-                            logger.warning(f"Malformed finding item (not a dict): {item}; failing closed to ERROR")
-                            return AdversarialValidationResult(
-                                result="ERROR",
-                                summary="Malformed finding entry in validator response",
-                                raw_response=response,
+                            return _parse_error(
+                                raw_response,
+                                "schema_error",
+                                "Malformed finding entry in validator response",
+                                f"finding entry must be an object, got {type(item).__name__}",
                             )
 
                         if not item:
                             # Empty dict in findings is malformed
-                            logger.warning("Malformed empty finding dict in validator response; failing closed to ERROR")
-                            return AdversarialValidationResult(
-                                result="ERROR",
-                                summary="Malformed empty finding entry in validator response",
-                                raw_response=response,
+                            return _parse_error(
+                                raw_response,
+                                "schema_error",
+                                "Malformed empty finding entry in validator response",
+                                "finding entry must not be empty",
                             )
 
                         ce = str(item.get("counterexample", "")).strip()
                         if not ce:
                             # Counterexample is mandatory for a valid finding. Do NOT synthesize fake counterexamples.
-                            logger.warning("Finding missing mandatory counterexample; failing closed to ERROR")
-                            return AdversarialValidationResult(
-                                result="ERROR",
-                                summary="Reviewer reported a defect without providing the required concrete counterexample",
-                                raw_response=response,
+                            return _parse_error(
+                                raw_response,
+                                "schema_error",
+                                "Reviewer reported a defect without providing the required concrete counterexample",
+                                "finding entry is missing a non-empty counterexample",
                             )
 
                         req = str(item.get("violated_requirement", "")).strip() or "Specification requirement violated"
@@ -333,38 +488,49 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if raw_result == "PASS":
                     if findings or (raw_findings is not None and len(raw_findings) > 0):
                         # Contradictory: PASS claimed but findings present -> fail closed to ERROR
-                        logger.warning("Contradictory validator response: PASS claimed with non-empty findings; failing closed to ERROR")
-                        return AdversarialValidationResult(
-                            result="ERROR",
-                            summary="Contradictory validator response: PASS claimed with non-empty findings",
-                            raw_response=response,
+                        return _parse_error(
+                            raw_response,
+                            "contradictory_response",
+                            "Contradictory validator response: PASS claimed with non-empty findings",
+                            "PASS requires findings to be empty",
                         )
                     result_val = "PASS"
                 elif raw_result == "NEEDS_FIX":
                     if not findings:
                         # NEEDS_FIX claimed but no valid counterexample findings provided -> fail closed to ERROR
-                        logger.warning("NEEDS_FIX claimed without valid counterexample findings; failing closed to ERROR")
-                        return AdversarialValidationResult(
-                            result="ERROR",
-                            summary="Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexamples",
-                            raw_response=response,
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexamples",
+                            "NEEDS_FIX requires at least one valid finding",
                         )
                     result_val = "NEEDS_FIX"
                 elif raw_result in ("INCONCLUSIVE", "BLOCKED"):
                     result_val = raw_result
                 else:
-                    # Unrecognized result tag -> fail-closed to ERROR
-                    result_val = "ERROR"
+                    return _parse_error(
+                        raw_response,
+                        "schema_error",
+                        f"Unrecognized validator result: {raw_result or '<missing>'}",
+                        "result must be PASS, NEEDS_FIX, INCONCLUSIVE, or BLOCKED",
+                    )
 
                 return AdversarialValidationResult(
                     result=result_val,
                     summary=summary or ("Validation passed" if result_val == "PASS" else f"Validation status: {result_val}"),
                     findings=findings,
-                    raw_response=response,
+                    raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
                 )
-        except Exception as exc:
-            logger.debug(f"JSON parsing failed for adversarial response: {exc}")
+            else:
+                return _parse_error(
+                    raw_response,
+                    "schema_error",
+                    "Malformed validator schema: JSON root must be an object",
+                    f"JSON root must be an object, got {type(parsed).__name__}",
+                )
+        except json.JSONDecodeError as exc:
+            json_failure_reason = f"{exc.msg} at line {exc.lineno}, column {exc.colno}"
 
     # 2. Fallback: Parse structured text markers
     violated_req = ""
@@ -387,11 +553,11 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
     if re.search(r"^\s*RESULT\s*:\s*NEEDS_FIX", cleaned_response, re.MULTILINE | re.IGNORECASE):
         if not counterexample:
-            logger.warning("Text NEEDS_FIX missing COUNTEREXAMPLE; failing closed to ERROR")
-            return AdversarialValidationResult(
-                result="ERROR",
-                summary="Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexample",
-                raw_response=response,
+            return _parse_error(
+                raw_response,
+                "schema_error",
+                "Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexample",
+                "text NEEDS_FIX response is missing COUNTEREXAMPLE",
             )
         findings_list = [
             AdversarialValidationFinding(
@@ -405,22 +571,23 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
             result="NEEDS_FIX",
             summary="Specification violations found",
             findings=findings_list,
-            raw_response=response,
+            raw_response=raw_response,
         )
 
     if re.search(r"^\s*RESULT\s*:\s*PASS", cleaned_response, re.MULTILINE | re.IGNORECASE):
         # If RESULT: PASS is accompanied by defect markers, fail closed to ERROR
         if has_text_findings:
-            return AdversarialValidationResult(
-                result="ERROR",
-                summary="Contradictory validator output (PASS with defect markers); failing closed to ERROR",
-                raw_response=response,
+            return _parse_error(
+                raw_response,
+                "contradictory_response",
+                "Contradictory validator output (PASS with defect markers); failing closed to ERROR",
+                "PASS response contains defect markers",
             )
         return AdversarialValidationResult(
             result="PASS",
             summary="Validation passed",
             findings=[],
-            raw_response=response,
+            raw_response=raw_response,
         )
 
     if re.search(r"^\s*RESULT\s*:\s*INCONCLUSIVE", cleaned_response, re.MULTILINE | re.IGNORECASE):
@@ -428,15 +595,22 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
             result="INCONCLUSIVE",
             summary="Validation inconclusive",
             findings=[],
-            raw_response=response,
+            raw_response=raw_response,
         )
 
-    # If format is unparseable, fail closed to ERROR
-    logger.warning("Unparseable response received from adversarial validator; failing closed to ERROR")
-    return AdversarialValidationResult(
-        result="ERROR",
-        summary="Unparseable validator response; validation incomplete",
-        raw_response=response,
+    if json_failure_reason:
+        return _parse_error(
+            raw_response,
+            "json_parse_error",
+            f"Invalid JSON in validator response: {json_failure_reason}",
+            json_failure_reason,
+        )
+
+    return _parse_error(
+        raw_response,
+        "unrecognized_format",
+        "Unparseable validator response; validation incomplete",
+        "response contained neither a JSON object nor a recognized RESULT marker",
     )
 
 
@@ -523,6 +697,7 @@ def run_adversarial_validation(
 
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
+    _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
 
     # 6. Dynamic validation on suspicion (if requested)
     if result.dynamic_check_requested and result.dynamic_check_requested.strip():
@@ -570,6 +745,7 @@ def run_adversarial_validation(
             with ProgressStage("Adversarial dynamic check follow-up"):
                 followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager, is_noedit=True)
             result = parse_adversarial_validation_response(followup_response)
+            _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
 
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")

@@ -952,6 +952,7 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
             selected_backends=selected_backends,
             primary_backend=primary_backend,
             models=models,
+            use_noedit_options=True,
         )
     except Exception as e:
         from .logger_config import get_logger

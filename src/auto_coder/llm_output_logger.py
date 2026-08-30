@@ -255,6 +255,7 @@ class LLMOutputLogger:
 
         if response is not None:
             data["response_length"] = len(response)
+            data["response"] = redact_string(response)
         elif response_length is not None:
             data["response_length"] = response_length
 
@@ -310,6 +311,7 @@ class LLMOutputLogger:
 
         if response is not None:
             data["response_length"] = len(response)
+            data["response"] = redact_string(response)
 
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
