@@ -161,6 +161,27 @@ class CodexClient(LLMClientBase):
             # - Force exactly --sandbox read-only, --ask-for-approval never, and -c approvals_reviewer="user"
             if is_noedit:
                 unsafe_config_keys = ("approvals_reviewer", "approval_reviewer", "approval_policy", "sandbox_mode")
+
+                def _is_unsafe_config_override(override: str) -> bool:
+                    """Return True if a Codex ``-c``/``--config`` override targets a protected key.
+
+                    The comparison is performed against the override key (the left-hand
+                    side before ``=``) only, so safe overrides whose *value* merely
+                    contains a protected name (e.g. ``model="sandbox_mode"``) are kept.
+                    """
+                    key = override.split("=", 1)[0].strip()
+                    return key in unsafe_config_keys
+
+                def _extract_config_override(token: str) -> str:
+                    """Extract the ``KEY=VALUE`` payload from a concatenated config flag token."""
+                    if token.startswith("--config="):
+                        return token[len("--config=") :]
+                    if token.startswith("-c="):
+                        return token[len("-c=") :]
+                    if token.startswith("-c") and not token.startswith("--"):
+                        return token[len("-c") :]
+                    return ""
+
                 sanitized_cmd = []
                 i = 0
                 while i < len(cmd):
@@ -182,13 +203,10 @@ class CodexClient(LLMClientBase):
                         i += 1
                         continue
                     # Handle config override flags for permission keys (-c <val>, --config <val>, -c=..., --config=..., -c<val>)
-                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and any(k in str(cmd[i + 1]) for k in unsafe_config_keys):
+                    if opt_str in ("-c", "--config") and i + 1 < len(cmd) and _is_unsafe_config_override(str(cmd[i + 1])):
                         i += 2
                         continue
-                    if (opt_str.startswith(("--config=", "--config")) or (opt_str.startswith("-c") and not opt_str.startswith("--"))) and any(k in opt_str for k in unsafe_config_keys):
-                        i += 1
-                        continue
-                    if any(opt_str.startswith(f"{k}=") for k in unsafe_config_keys):
+                    if (opt_str.startswith("--config=") or (opt_str.startswith("-c") and not opt_str.startswith("--") and opt_str != "-c")) and _is_unsafe_config_override(_extract_config_override(opt_str)):
                         i += 1
                         continue
                     # Handle standalone dangerous bypass and YOLO flags

@@ -1187,35 +1187,32 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_noedit_removes_sandbox_mode_and_approval_policy_config_overrides_in_options(self, mock_run_command, mock_run):
-        """CodexClient must strip sandbox_mode and approval_policy config overrides in options when is_noedit=True."""
+    def test_noedit_preserves_safe_config_overrides_whose_values_contain_protected_keys(self, mock_run_command, mock_run):
+        """CodexClient must strip -c overrides only when the KEY equals a protected key, not when the VALUE contains it."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        configured = [
+            "-c",
+            'model="sandbox_mode"',
+            "--config",
+            'some_setting="approval_policy"',
+            "-c",
+            'sandbox_mode="workspace-write"',
+            "-c",
+            'approval_policy="on-request"',
+            "exec",
+            "--json",
+        ]
 
         mock_config = MagicMock()
         mock_backend_config = MagicMock()
         mock_backend_config.model = "custom-model"
-        mock_backend_config.options = [
-            "-c",
-            'sandbox_mode="workspace-write"',
-            "-c",
-            'approval_policy="on-request"',
-            '--config=sandbox_mode="danger-full-access"',
-            "exec",
-            "--json",
-        ]
-        mock_backend_config.options_for_noedit = [
-            "-c",
-            'sandbox_mode="workspace-write"',
-            "-c",
-            'approval_policy="on-request"',
-            '--config=sandbox_mode="danger-full-access"',
-            "exec",
-            "--json",
-        ]
+        mock_backend_config.options = list(configured)
+        mock_backend_config.options_for_noedit = list(configured)
         mock_backend_config.replace_placeholders.return_value = {
-            "options": mock_backend_config.options,
-            "options_for_noedit": mock_backend_config.options_for_noedit,
+            "options": list(configured),
+            "options_for_noedit": list(configured),
             "options_for_resume": [],
         }
         mock_config.get_backend_config.return_value = mock_backend_config
@@ -1235,6 +1232,10 @@ class TestCodexClient:
                 "never",
                 "-c",
                 'approvals_reviewer="user"',
+                "-c",
+                'model="sandbox_mode"',
+                "--config",
+                'some_setting="approval_policy"',
                 "exec",
                 "--json",
                 "test prompt",
@@ -1243,8 +1244,8 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_noedit_removes_sandbox_mode_and_approval_policy_config_overrides_in_extra_args(self, mock_run_command, mock_run):
-        """CodexClient must strip sandbox_mode and approval_policy config overrides in extra_args when is_noedit=True."""
+    def test_noedit_preserves_safe_config_overrides_in_extra_args(self, mock_run_command, mock_run):
+        """Key-based sanitization of -c overrides must also apply to one-time extra args."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
@@ -1264,12 +1265,10 @@ class TestCodexClient:
             client = CodexClient(backend_name="codex")
             client.set_extra_args(
                 [
-                    "-c",
-                    'sandbox_mode="workspace-write"',
-                    "-c",
-                    'approval_policy="on-request"',
-                    '-csandbox_mode="danger-full-access"',
-                    '-capproval_policy="always"',
+                    '-cmodel="sandbox_mode"',
+                    '--config=other="approval_policy"',
+                    '-csandbox_mode="workspace-write"',
+                    '--config=approval_policy="on-request"',
                 ]
             )
             client._run_llm_cli("test prompt", is_noedit=True)
@@ -1287,6 +1286,8 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
+                '-cmodel="sandbox_mode"',
+                '--config=other="approval_policy"',
                 "test prompt",
             ]
             assert called_cmd == expected_cmd
