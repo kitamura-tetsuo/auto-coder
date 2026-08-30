@@ -1161,6 +1161,45 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_unknown_violated_requirement_id_cannot_disappear_into_pass(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Two requirements",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="R1: persist state. R2: emit an audit event.",
+            issue_requirements=[
+                IssueRequirement(requirement_id="REQ-001-r1", text="R1: persist state"),
+                IssueRequirement(requirement_id="REQ-002-r2", text="R2: emit an audit event"),
+            ],
+        )
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Expected IDs are covered but a typo ID reports a violation",
+                "requirement_coverage": [
+                    {"requirement_id": "REQ-001-r1", "status": "VERIFIED", "evidence": "R1 inspected"},
+                    {"requirement_id": "REQ-002-r2", "status": "VERIFIED", "evidence": "R2 inspected"},
+                    {"requirement_id": "REQ-002-typo", "status": "VIOLATED", "evidence": "Audit event is dropped"},
+                ],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Two requirements"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "unknown_requirement_coverage_id"
+        assert "REQ-002-typo" in (result.diagnostic_reason or "")
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",

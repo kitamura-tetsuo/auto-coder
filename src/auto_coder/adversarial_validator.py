@@ -986,10 +986,19 @@ def _apply_coverage_and_verdict_precedence(
     """Apply deterministic finding-first and complete-coverage verdict rules."""
     expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
     coverage_by_id = {entry.requirement_id: entry for entry in result.requirement_coverage}
+    unknown_requirement_ids = sorted(coverage_by_id.keys() - expected_requirement_ids)
     missing_requirement_ids = sorted(expected_requirement_ids - coverage_by_id.keys())
     unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
     incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
     violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
+
+    if unknown_requirement_ids and not result.findings:
+        reason = f"Requirement coverage contains IDs outside the deterministic manifest: {', '.join(unknown_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: requirement coverage referenced unknown stable IDs"
+        result.diagnostic_category = "unknown_requirement_coverage_id"
+        result.diagnostic_reason = reason
+        return result
 
     if violated_requirement_ids and not result.findings:
         reason = f"VIOLATED requirement coverage lacks a concrete counterexample finding: {', '.join(violated_requirement_ids)}"
@@ -1008,6 +1017,8 @@ def _apply_coverage_and_verdict_precedence(
             incomplete_coverage.append("Issue requirement manifest was empty")
         elif incomplete_requirement_ids:
             incomplete_coverage.append(f"Issue requirement IDs: {', '.join(incomplete_requirement_ids)}")
+        if unknown_requirement_ids:
+            incomplete_coverage.append(f"unknown requirement IDs: {', '.join(unknown_requirement_ids)}")
         if incomplete_coverage:
             coverage_note = f"Review coverage also remains incomplete for {'; '.join(incomplete_coverage)}"
             result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
