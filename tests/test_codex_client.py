@@ -11,6 +11,7 @@ import pytest
 
 from src.auto_coder.codex_client import CodexClient
 from src.auto_coder.exceptions import AutoCoderUsageLimitError
+from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.utils import CommandResult
 
 
@@ -48,6 +49,46 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("builtins.print")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_success_returns_stdout_without_stderr_contamination(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
+        """Successful machine-readable output must exclude stderr diagnostics."""
+        mock_run.return_value.returncode = 0
+        stdout = '{"type":"turn.completed"}'
+        stderr = "WARNING: failed to clean up temporary directory"
+        mock_run_command.return_value = CommandResult(True, stdout, stderr, 0)
+
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = ["exec", "--json"]
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
+        log_file = tmp_path / "test_log.jsonl"
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
+
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
+
+        output = client._run_llm_cli("review this")
+
+        assert output == stdout
+        logged = json.loads(log_file.read_text(encoding="utf-8"))
+        assert logged["response_length"] == len(f"{stdout}\n{stderr}")
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_success_falls_back_to_stderr_when_stdout_is_empty(self, mock_run_command, mock_run):
+        """Preserve clients that emit their successful response only on stderr."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "", "plain response", 0)
+
+        client = CodexClient()
+
+        assert client._run_llm_cli("hello world") == "plain response"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_includes_extra_args(self, mock_run_command, mock_run):
         """Extra args (e.g., resume flags) should be passed to codex CLI."""
         mock_run.return_value.returncode = 0
@@ -61,6 +102,55 @@ class TestCodexClient:
         called_cmd = mock_run_command.call_args[0][0]
         assert called_cmd[-1] == "hello world"
         assert called_cmd[-3:-1] == ["--resume", "abc123"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.logger.warning")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_custom_codex_alias_noedit_is_safe_without_dangerous_bypass_option(self, mock_get_config, mock_run_command, mock_warning, mock_run):
+        """A custom Codex reviewer has no false warning and remains safely no-edit."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok", "", 0)
+        backend = BackendConfig(
+            name="codex-review",
+            backend_type="codex",
+            options=["exec", "--json"],
+            options_for_noedit=["exec", "--json"],
+        )
+        mock_get_config.return_value.get_backend_config.return_value = backend
+
+        client = CodexClient(backend_name="codex-review", use_noedit_options=True)
+        mock_warning.assert_not_called()
+
+        client._run_llm_cli("review this", is_noedit=True)
+        noedit_cmd = mock_run_command.call_args.args[0]
+        assert noedit_cmd == [
+            "codex",
+            "--sandbox",
+            "read-only",
+            "--ask-for-approval",
+            "never",
+            "-c",
+            'approvals_reviewer="user"',
+            "exec",
+            "--json",
+            "review this",
+        ]
+        assert "--dangerously-bypass-approvals-and-sandbox" not in noedit_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.logger.warning")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_custom_codex_alias_editable_requires_unattended_policy(self, mock_get_config, mock_warning, mock_run):
+        """A custom Codex alias warns when an editable policy would be interactive."""
+        mock_run.return_value.returncode = 0
+        backend = BackendConfig(name="codex-review", backend_type="codex", options=["exec", "--json"])
+        mock_get_config.return_value.get_backend_config.return_value = backend
+
+        CodexClient(backend_name="codex-review")
+
+        warning = mock_warning.call_args.args[0]
+        assert "missing an unattended editable Codex execution policy" in warning
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -785,3 +875,548 @@ class TestCodexClient:
             assert "--dangerously-bypass-approvals-and-sandbox" in cmd
             # Command should not contain "exec" subcommand
             assert "exec" not in cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_global_options_precede_exec_subcommand(self, mock_run_command, mock_run):
+        """CodexClient must place enforced global options before exec subcommand when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("src.auto_coder.codex_client.subprocess.run")
+    def test_isolated_noedit_falls_back_when_bwrap_preflight_fails(self, mock_run, mock_run_command):
+        """A disposable validation worktree remains usable when nested bwrap cannot start."""
+        version_result = MagicMock(returncode=0, stdout="codex-cli 1.0", stderr="")
+        probe_result = MagicMock(returncode=1, stdout="", stderr="bwrap: Failed to make / slave: Permission denied")
+        mock_run.side_effect = [version_result, probe_result]
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex", allow_isolated_noedit_sandbox_fallback=True)
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+        assert mock_run.call_args_list[1].args[0] == ["codex", "sandbox", "linux", "--", "true"]
+        assert mock_run_command.call_args.args[0] == [
+            "codex",
+            "--sandbox",
+            "danger-full-access",
+            "--ask-for-approval",
+            "never",
+            "-c",
+            'approvals_reviewer="user"',
+            "exec",
+            "--json",
+            "test prompt",
+        ]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_conflicting_options_and_places_enforced_flags_before_exec(self, mock_run_command, mock_run):
+        """CodexClient must strip conflicting writable/approval options before and after exec."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["--sandbox", "workspace-write", "exec", "--ask-for-approval", "always", "--sandbox", "danger-full-access"]
+        mock_backend_config.options_for_noedit = ["--sandbox", "workspace-write", "exec", "--ask-for-approval", "always", "--sandbox", "danger-full-access"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["--sandbox", "workspace-write", "exec", "--ask-for-approval", "always", "--sandbox", "danger-full-access"],
+            "options_for_noedit": ["--sandbox", "workspace-write", "exec", "--ask-for-approval", "always", "--sandbox", "danger-full-access"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_conflicting_extra_args_and_preserves_ordering(self, mock_run_command, mock_run):
+        """CodexClient must strip dangerous bypass and conflicting flags from extra_args."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client.set_extra_args(["--dangerously-bypass-approvals-and-sandbox", "--yolo", "--sandbox", "danger-full-access", "-c", 'approvals_reviewer="auto"'])
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_editable_execution_does_not_inject_noedit_restrictions(self, mock_run_command, mock_run):
+        """Editable execution (is_noedit=False) must not inject no-edit restrictions."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=False)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            assert "--sandbox" not in called_cmd
+            assert "--ask-for-approval" not in called_cmd
+            assert 'approvals_reviewer="user"' not in called_cmd
+            assert called_cmd == ["codex", "exec", "--json", "test prompt"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_preserves_exec_specific_options_after_exec(self, mock_run_command, mock_run):
+        """Valid exec-specific options remain associated with the exec subcommand and appear after exec."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["--model", "custom-model", "exec", "--json", "--profile", "custom-profile"]
+        mock_backend_config.options_for_noedit = ["--model", "custom-model", "exec", "--json", "--profile", "custom-profile"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["--model", "custom-model", "exec", "--json", "--profile", "custom-profile"],
+            "options_for_noedit": ["--model", "custom-model", "exec", "--json", "--profile", "custom-profile"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "--model",
+                "custom-model",
+                "exec",
+                "--json",
+                "--profile",
+                "custom-profile",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_when_exec_is_option_value_before_subcommand(self, mock_run_command, mock_run):
+        """CodexClient correctly handles 'exec' appearing as a global option value before the exec subcommand."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "exec"
+        mock_backend_config.options = ["--model", "exec", "exec", "--json"]
+        mock_backend_config.options_for_noedit = ["--model", "exec", "exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["--model", "exec", "exec", "--json"],
+            "options_for_noedit": ["--model", "exec", "exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "--model",
+                "exec",
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_short_alias_ask_for_approval_in_options(self, mock_run_command, mock_run):
+        """CodexClient must strip -a <value> and -a=<value> short alias in options when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["-a", "on-request", "exec", "--json"]
+        mock_backend_config.options_for_noedit = ["-a", "on-request", "exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["-a", "on-request", "exec", "--json"],
+            "options_for_noedit": ["-a", "on-request", "exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_short_alias_ask_for_approval_in_extra_args(self, mock_run_command, mock_run):
+        """CodexClient must strip -a <value> and -a=<value> short alias in extra_args when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client.set_extra_args(["-a", "always", "-a=untrusted"])
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_concatenated_short_options_in_options(self, mock_run_command, mock_run):
+        """CodexClient must strip concatenated short options -s<val>, -a<val>, -capprovals_reviewer=... in options when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["-sworkspace-write", "-aon-request", '-capprovals_reviewer="auto_review"', "exec", "--json"]
+        mock_backend_config.options_for_noedit = ["-sworkspace-write", "-aon-request", '-capprovals_reviewer="auto_review"', "exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["-sworkspace-write", "-aon-request", '-capprovals_reviewer="auto_review"', "exec", "--json"],
+            "options_for_noedit": ["-sworkspace-write", "-aon-request", '-capprovals_reviewer="auto_review"', "exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_concatenated_short_options_in_extra_args(self, mock_run_command, mock_run):
+        """CodexClient must strip concatenated short options in extra_args when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client.set_extra_args(["-sdanger-full-access", "-aalways", '-capprovals_reviewer="auto"'])
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_preserves_safe_config_overrides_whose_values_contain_protected_keys(self, mock_run_command, mock_run):
+        """CodexClient must strip -c overrides only when the KEY equals a protected key, not when the VALUE contains it."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        configured = [
+            "-c",
+            'model="sandbox_mode"',
+            "--config",
+            'some_setting="approval_policy"',
+            "-c",
+            'sandbox_mode="workspace-write"',
+            "-c",
+            'approval_policy="on-request"',
+            "exec",
+            "--json",
+        ]
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = list(configured)
+        mock_backend_config.options_for_noedit = list(configured)
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": list(configured),
+            "options_for_noedit": list(configured),
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "-c",
+                'model="sandbox_mode"',
+                "--config",
+                'some_setting="approval_policy"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_preserves_safe_config_overrides_in_extra_args(self, mock_run_command, mock_run):
+        """Key-based sanitization of -c overrides must also apply to one-time extra args."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client.set_extra_args(
+                [
+                    '-cmodel="sandbox_mode"',
+                    '--config=other="approval_policy"',
+                    '-csandbox_mode="workspace-write"',
+                    '--config=approval_policy="on-request"',
+                ]
+            )
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                '-cmodel="sandbox_mode"',
+                '--config=other="approval_policy"',
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd

@@ -6,6 +6,8 @@ stale attempt number and post the same attempt comment on every cycle.
 
 from unittest.mock import Mock, patch
 
+import pytest
+
 from src.auto_coder.util.gh_cache import COMMENTS_MAX_PAGES, GitHubClient
 
 
@@ -87,3 +89,16 @@ class TestGetIssueCommentsPagination:
         client = _make_client()
 
         assert client.get_issue_comments("owner/repo", 4787) == []
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_strict_pr_comment_lookup_propagates_api_error(self, mock_get_api):
+        mock_api = Mock()
+        mock_api.side_effect = RuntimeError("API error")
+        mock_get_api.return_value = mock_api
+
+        client = _make_client()
+
+        with pytest.raises(RuntimeError, match="API error"):
+            client.get_pr_comments_strict("owner/repo", 4787)
+
+        assert mock_api.call_args.kwargs["headers"] == {"Cache-Control": "no-cache"}

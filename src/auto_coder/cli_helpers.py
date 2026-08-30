@@ -294,6 +294,8 @@ def build_backend_manager(
     primary_backend: str,
     models: dict[str, str],
     use_noedit_options: bool = False,
+    allow_isolated_noedit_sandbox_fallback: bool = False,
+    automatic_session_resume: bool = True,
 ) -> BackendManager:
     # Handle legacy "gemini" backend name translation
     selected_backends = ["antigravity" if b == "gemini" else b for b in selected_backends]
@@ -304,6 +306,8 @@ def build_backend_manager(
 
     models: mapping backend -> model_name (all backends respect this configuration).
     use_noedit_options: If True, use options_for_noedit instead of options for clients.
+    allow_isolated_noedit_sandbox_fallback: Allow Codex review execution to bypass
+        an unavailable Linux sandbox only inside a disposable worktree.
     """
     config = get_llm_config()
 
@@ -363,6 +367,16 @@ def build_backend_manager(
         from .codex_client import CodexClient
 
         backend_config = config.get_backend_config(backend_name)
+        if allow_isolated_noedit_sandbox_fallback:
+            return CodexClient(
+                backend_name=backend_name,
+                api_key=backend_config.api_key if backend_config else None,
+                base_url=backend_config.base_url if backend_config else None,
+                openai_api_key=backend_config.openai_api_key if backend_config else None,
+                openai_base_url=backend_config.openai_base_url if backend_config else None,
+                use_noedit_options=use_noedit_options,
+                allow_isolated_noedit_sandbox_fallback=True,
+            )
         return CodexClient(
             backend_name=backend_name,
             api_key=backend_config.api_key if backend_config else None,
@@ -469,6 +483,7 @@ def build_backend_manager(
         default_client=default_client,
         factories=selected_factories,
         order=selected_backends,
+        automatic_session_resume=automatic_session_resume,
     )
 
 
@@ -947,11 +962,29 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
     for backend_name in selected_backends:
         models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
 
+    # A linked worktree uses a .git pointer file rather than the primary
+    # repository's .git directory. Only that disposable validation context may
+    # opt in to the container sandbox fallback.
+    from pathlib import Path
+
+    is_isolated_worktree = Path(".git").is_file()
+
     try:
+        if is_isolated_worktree:
+            return build_backend_manager(
+                selected_backends=selected_backends,
+                primary_backend=primary_backend,
+                models=models,
+                use_noedit_options=True,
+                allow_isolated_noedit_sandbox_fallback=True,
+                automatic_session_resume=False,
+            )
         return build_backend_manager(
             selected_backends=selected_backends,
             primary_backend=primary_backend,
             models=models,
+            use_noedit_options=True,
+            automatic_session_resume=False,
         )
     except Exception as e:
         from .logger_config import get_logger

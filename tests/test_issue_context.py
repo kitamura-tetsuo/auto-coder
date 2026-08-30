@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context
+from auto_coder.issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles
 
 
 def test_extract_linked_issues():
@@ -58,3 +58,18 @@ def test_get_linked_issues_context_fetch_error():
 
     context = get_linked_issues_context(mock_client, "repo", "Fixes #123")
     assert context == ""  # Should handle exception gracefully and return empty or partial
+
+
+def test_title_inferred_issue_is_shared_by_resolution_and_context():
+    mock_client = MagicMock()
+    mock_client.get_issue.return_value = {"number": 42, "title": "Behavioral contract", "body": "Required behavior"}
+    mock_client.get_parent_issue_details.return_value = None
+    pr_data = {"number": 100, "title": "Implement issue #42", "body": "Implementation details"}
+
+    resolution = resolve_issue_oracles(mock_client, "owner/repo", pr_data=pr_data)
+    context = get_linked_issues_context(mock_client, "owner/repo", pr_data=pr_data)
+
+    assert resolution.error is None
+    assert tuple(issue.number for issue in resolution.issues) == (42,)
+    assert "Linked Issue #42: Behavioral contract" in context
+    assert "Issue Description:\nRequired behavior" in context

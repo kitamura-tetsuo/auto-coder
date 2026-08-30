@@ -27,8 +27,9 @@ def _jules_pr_data(hours_old: float) -> dict:
 class TestCloseStaleJulesPR:
     """Test cases for _close_stale_jules_pr."""
 
+    @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_closes_pr_and_increments_attempt_after_timeout(self, mock_increment):
+    def test_closes_pr_and_increments_attempt_after_timeout(self, mock_increment, mock_remove_sessions):
         github_client = Mock()
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
@@ -40,6 +41,7 @@ class TestCloseStaleJulesPR:
         actions = result.actions
 
         github_client.close_pr.assert_called_once()
+        mock_remove_sessions.assert_called_once_with("owner/repo", 4643)
         close_args = github_client.close_pr.call_args[0]
         assert close_args[0] == "owner/repo"
         assert close_args[1] == 4643

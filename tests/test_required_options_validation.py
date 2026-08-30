@@ -22,23 +22,32 @@ class TestRequiredOptionsValidation:
         assert "jules" in REQUIRED_OPTIONS_BY_BACKEND
         assert "codex-mcp" in REQUIRED_OPTIONS_BY_BACKEND
 
-    def test_backend_config_validate_required_options_no_errors(self):
-        """Test validation passes when all required options are present."""
-        # Test codex backend with required option
-        config = BackendConfig(name="codex")
-        config.options = ["--dangerously-bypass-approvals-and-sandbox"]
-        errors = config.validate_required_options()
+    def test_default_codex_config_does_not_inject_dangerous_bypass_option(self):
+        """Codex's editable policy must not become a dangerous configuration default."""
+        config = LLMBackendConfiguration()
+
+        assert "--dangerously-bypass-approvals-and-sandbox" not in config.backends["codex"].options
+
+    def test_codex_noedit_backend_does_not_require_dangerous_bypass_option(self):
+        """No-edit Codex execution uses its enforced client-side safety policy."""
+        config = BackendConfig(name="codex-review", backend_type="codex")
+        config.options = []
+        errors = config.validate_required_options(is_noedit=True)
         assert errors == []
 
-    def test_backend_config_validate_required_options_missing_option(self):
-        """Test validation fails when required option is missing."""
-        # Test codex backend without required option
-        config = BackendConfig(name="codex")
-        config.options = []  # Missing required option
+    def test_codex_editable_backend_requires_unattended_policy(self):
+        """Editable Codex runs may not silently fall back to interactive approval."""
+        config = BackendConfig(name="codex-review", backend_type="codex")
+        config.options = []
         errors = config.validate_required_options()
         assert len(errors) == 1
-        assert "missing required option: --dangerously-bypass-approvals-and-sandbox" in errors[0]
-        assert "Add to [backends.codex].options" in errors[0]
+        assert "missing an unattended editable Codex execution policy" in errors[0]
+
+    def test_codex_editable_backend_accepts_explicit_noninteractive_policy(self):
+        """Editable Codex validation accepts a safe alternative to the bypass flag."""
+        config = BackendConfig(name="codex-review", backend_type="codex")
+        config.options = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+        assert config.validate_required_options() == []
 
     def test_backend_config_validate_required_options_uses_backend_type(self):
         """Test validation uses backend_type when available."""
@@ -109,12 +118,12 @@ class TestRequiredOptionsValidation:
         from src.auto_coder.cli_commands_config import config_validate
 
         config = LLMBackendConfiguration()
-        # Set up a backend with missing required option
+        # The default Codex backend is editable and therefore needs an unattended policy.
         config.get_backend_config("codex").options = []
 
         errors = config_validate(config)
-        assert len(errors) > 0
-        assert any("missing required option: --dangerously-bypass-approvals-and-sandbox" in err for err in errors)
+        assert len(errors) == 1
+        assert "missing an unattended editable Codex execution policy" in errors[0]
 
     def test_config_validate_passes_with_all_required_options(self):
         """Test that config_validate passes when all required options are present."""
@@ -135,19 +144,21 @@ class TestRequiredOptionsValidation:
 class TestConfigValidateCommand:
     """Test cases for config validate CLI command."""
 
-    def test_config_validate_detects_missing_required_options(self, tmp_path):
-        """Test that config validate command detects missing required options."""
+    def test_config_validate_allows_codex_without_dangerous_bypass_option(self, tmp_path):
+        """Codex aliases may be configured for safe no-edit execution."""
         import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
-            "backend": {"default": "codex", "order": ["codex"]},
+            "backend": {"default": "qwen", "order": ["qwen"]},
+            "backend_for_noedit": {"default": "codex", "order": ["codex"]},
             "backends": {
                 "codex": {
                     "enabled": True,
                     "model": "codex",
-                    "options": [],  # Missing required option
-                }
+                    "options": [],
+                },
+                "qwen": {"enabled": True, "options": ["-y"]},
             },
         }
         with open(config_file, "wb") as fh:
@@ -156,8 +167,7 @@ class TestConfigValidateCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
         assert result.exit_code == 0
-        assert "Configuration validation errors found" in result.output
-        assert "missing required option: --dangerously-bypass-approvals-and-sandbox" in result.output
+        assert "Configuration is valid" in result.output
 
     def test_config_validate_passes_with_required_options(self, tmp_path):
         """Test that config validate command passes with all required options."""
@@ -274,19 +284,21 @@ class TestConfigValidateCommand:
         assert "Configuration is valid" in result.output
 
     def test_config_validate_custom_backend_with_backend_type(self, tmp_path):
-        """Test validation with custom backend using backend_type."""
+        """A custom Codex alias used only for no-edit work needs no bypass flag."""
         import tomli_w
 
         config_file = tmp_path / "llm_config.toml"
         data = {
-            "backend": {"default": "my-custom-codex", "order": ["my-custom-codex"]},
+            "backend": {"default": "qwen", "order": ["qwen"]},
+            "backend_for_noedit": {"default": "my-custom-codex", "order": ["my-custom-codex"]},
             "backends": {
                 "my-custom-codex": {
                     "enabled": True,
                     "model": "custom-codex-model",
                     "backend_type": "codex",
-                    "options": [],  # Missing required option for codex
-                }
+                    "options": [],
+                },
+                "qwen": {"enabled": True, "options": ["-y"]},
             },
         }
         with open(config_file, "wb") as fh:
@@ -295,6 +307,4 @@ class TestConfigValidateCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
         assert result.exit_code == 0
-        assert "Configuration validation errors found" in result.output
-        assert "missing required option: --dangerously-bypass-approvals-and-sandbox" in result.output
-        assert "Add to [backends.my-custom-codex].options" in result.output
+        assert "Configuration is valid" in result.output
