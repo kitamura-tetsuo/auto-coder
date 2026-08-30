@@ -7,6 +7,7 @@ using a strong model to catch false-success PRs before merge.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -26,7 +27,6 @@ logger = get_logger(__name__)
 
 ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
-FILE_EVIDENCE_HEADER_RESERVE = 96
 
 
 @dataclass
@@ -56,6 +56,8 @@ class AdversarialValidationResult:
     dynamic_check_requested: Optional[str] = None
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
+    requirement_coverage_complete: Optional[bool] = None
+    unverified_requirements: List[str] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
@@ -129,6 +131,13 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
 
     if result.dynamic_check_requested:
         lines.extend(["", f"Dynamic check requested: `{result.dynamic_check_requested}`"])
+
+    if result.requirement_coverage_complete is not None:
+        coverage = "complete" if result.requirement_coverage_complete else "incomplete"
+        lines.extend(["", f"Issue requirement coverage: **{coverage}**"])
+    if result.unverified_requirements:
+        lines.extend(["", "Unverified Issue requirements:"])
+        lines.extend(f"- {requirement}" for requirement in result.unverified_requirements)
 
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
@@ -265,45 +274,6 @@ def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
     return evidence
 
 
-def _allocate_file_evidence_budget(file_patches: List[FileDiffEvidence], budget: int) -> List[int]:
-    """Water-fill a total patch budget so small late files remain fully visible."""
-    allocations = [0] * len(file_patches)
-    remaining = max(0, budget)
-    if not file_patches or remaining <= 0:
-        return allocations
-
-    # Give every file a small deterministic excerpt first. Coverage metadata is
-    # always emitted separately even when the patch budget is exceptionally low.
-    base_allocation = min(32, remaining // len(file_patches))
-    for index, file_patch in enumerate(file_patches):
-        allocations[index] = min(base_allocation, file_patch.original_size)
-        remaining -= allocations[index]
-
-    pending = [index for index, file_patch in enumerate(file_patches) if allocations[index] < file_patch.original_size]
-
-    # Complete the smallest patches next. This is what prevents a huge early
-    # generated file from hiding a later focused implementation or security test.
-    for index in sorted(pending, key=lambda item: file_patches[item].original_size - allocations[item]):
-        additional = file_patches[index].original_size - allocations[index]
-        if additional <= remaining:
-            allocations[index] += additional
-            remaining -= additional
-
-    pending = [index for index in pending if allocations[index] < file_patches[index].original_size]
-
-    while pending and remaining > 0:
-        fair_share = remaining // len(pending)
-        if fair_share <= 0:
-            for index in pending[:remaining]:
-                allocations[index] += 1
-            break
-        for offset, index in enumerate(pending):
-            allocations[index] += fair_share + (1 if offset < remaining % len(pending) else 0)
-        break
-
-    return allocations
-
-
 def _bounded_file_patch(patch: str, allocation: int) -> str:
     """Represent one oversized patch with bounded beginning and ending evidence."""
     if allocation <= 0:
@@ -320,6 +290,49 @@ def _bounded_file_patch(patch: str, allocation: int) -> str:
     return patch[:prefix_size] + marker + (patch[-suffix_size:] if suffix_size else "")
 
 
+def _render_complete_file_evidence(file_patch: FileDiffEvidence) -> str:
+    """Render one completely covered file patch."""
+    return f"### Changed file: {file_patch.path}\nCoverage: COMPLETE ({file_patch.original_size}/{file_patch.original_size} patch characters supplied)\n{file_patch.patch}"
+
+
+def _bounded_unverified_summary(paths: List[str], budget: int) -> str:
+    """Render a hard-bounded diagnostic for the complete unverified path set."""
+    if budget <= 0 or not paths:
+        return ""
+    manifest = "\0".join(paths)
+    digest = hashlib.sha256(manifest.encode("utf-8", errors="replace")).hexdigest()
+    summary = f"## COVERAGE INCOMPLETE\nUnverified changed files: {len(paths)}\nUnverified manifest SHA-256: {digest}\n"
+    if len(summary) >= budget:
+        return summary[:budget]
+
+    sample_prefix = "Bounded path sample: "
+    if len(summary) + len(sample_prefix) < budget:
+        summary += sample_prefix
+        for path in paths:
+            separator = ", " if not summary.endswith(sample_prefix) else ""
+            addition = separator + path
+            if len(summary) + len(addition) > budget:
+                break
+            summary += addition
+    return summary[:budget]
+
+
+def _bounded_path_manifest(paths: List[str], budget: int, empty_message: str) -> str:
+    """Format a path manifest without allowing metadata to bypass context limits."""
+    if not paths:
+        return empty_message[: max(0, budget)]
+    rendered = "\n".join(f"- {path}" for path in paths)
+    if len(rendered) <= budget:
+        return rendered
+
+    digest = hashlib.sha256("\0".join(paths).encode("utf-8", errors="replace")).hexdigest()
+    header = f"(Bounded manifest: {len(paths)} paths, SHA-256 {digest})\n"
+    if len(header) >= budget:
+        return header[: max(0, budget)]
+    sample_budget = budget - len(header)
+    return (header + rendered[:sample_budget])[:budget]
+
+
 def build_file_aware_diff(pr_diff: str, max_evidence_size: int) -> tuple[str, List[str]]:
     """Build bounded, per-file diff evidence without allowing early files to starve later ones.
 
@@ -334,22 +347,33 @@ def build_file_aware_diff(pr_diff: str, max_evidence_size: int) -> tuple[str, Li
             return pr_diff, []
         return _bounded_file_patch(pr_diff, max_evidence_size), ["<unparsed unified diff>"]
 
-    patch_budget = max(0, max_evidence_size - FILE_EVIDENCE_HEADER_RESERVE * len(file_patches))
-    allocations = _allocate_file_evidence_budget(file_patches, patch_budget)
-    rendered: List[str] = []
-    unverified_files: List[str] = []
+    limit = max(0, max_evidence_size)
+    complete_blocks = [_render_complete_file_evidence(file_patch) for file_patch in file_patches]
+    complete_rendering = "\n\n".join(complete_blocks)
+    if len(complete_rendering) <= limit:
+        return complete_rendering, []
 
-    for file_patch, allocation in zip(file_patches, allocations):
-        file_patch.is_complete = allocation >= file_patch.original_size
-        file_patch.patch = _bounded_file_patch(file_patch.patch, allocation)
-        coverage = "COMPLETE" if file_patch.is_complete else "PARTIAL / UNVERIFIED"
-        rendered.append(f"### Changed file: {file_patch.path}\n" f"Coverage: {coverage} ({len(file_patch.patch)}/{file_patch.original_size} patch characters supplied)\n" f"{file_patch.patch or '[No patch content fits within the bounded evidence budget.]'}")
-        if not file_patch.is_complete:
-            unverified_files.append(file_patch.path)
+    # Reserve a fixed amount for a count and digest of the complete unverified
+    # manifest, then fit the smallest full patches. This keeps the output under
+    # the hard limit and prevents a large early file from starving later files.
+    summary_reserve = min(limit, 128)
+    content_budget = max(0, limit - summary_reserve - 2)
+    selected_indexes: set[int] = set()
+    used = 0
+    for index in sorted(range(len(file_patches)), key=lambda item: len(complete_blocks[item])):
+        separator_size = 2 if selected_indexes else 0
+        block_size = len(complete_blocks[index]) + separator_size
+        if used + block_size <= content_budget:
+            selected_indexes.add(index)
+            used += block_size
 
-    if unverified_files:
-        rendered.append("## COVERAGE INCOMPLETE\n" "The following material changed files have partial or unavailable patch evidence. " "A PASS verdict is forbidden unless their irrelevance to every Issue requirement is explicitly established: " + ", ".join(unverified_files))
-    return "\n\n".join(rendered), unverified_files
+    rendered_blocks = [complete_blocks[index] for index in range(len(file_patches)) if index in selected_indexes]
+    unverified_files = [file_patch.path for index, file_patch in enumerate(file_patches) if index not in selected_indexes]
+    content = "\n\n".join(rendered_blocks)
+    separator = "\n\n" if content else ""
+    summary_budget = max(0, limit - len(content) - len(separator))
+    summary = _bounded_unverified_summary(unverified_files, summary_budget)
+    return (content + separator + summary)[:limit], unverified_files
 
 
 def build_adversarial_validation_context(
@@ -636,6 +660,31 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if dynamic_check:
                     dynamic_check = str(dynamic_check).strip()
 
+                requirement_coverage = parsed.get("requirement_coverage_complete")
+                if requirement_coverage is not None and not isinstance(requirement_coverage, bool):
+                    return _parse_error(
+                        raw_response,
+                        "schema_error",
+                        "Malformed validator schema: requirement_coverage_complete must be a boolean",
+                        f"requirement_coverage_complete must be a boolean, got {type(requirement_coverage).__name__}",
+                    )
+                raw_unverified_requirements = parsed.get("unverified_requirements", [])
+                if not isinstance(raw_unverified_requirements, list) or any(not isinstance(item, str) or not item.strip() for item in raw_unverified_requirements):
+                    return _parse_error(
+                        raw_response,
+                        "schema_error",
+                        "Malformed validator schema: unverified_requirements must be a list of non-empty strings",
+                        "unverified_requirements must be a list of non-empty strings",
+                    )
+                unverified_requirements = [item.strip() for item in raw_unverified_requirements]
+                if requirement_coverage is True and unverified_requirements:
+                    return _parse_error(
+                        raw_response,
+                        "contradictory_response",
+                        "Contradictory requirement coverage: complete claimed with unverified requirements",
+                        "requirement_coverage_complete=true requires unverified_requirements to be empty",
+                    )
+
                 raw_findings = parsed.get("findings")
                 findings: List[AdversarialValidationFinding] = []
 
@@ -723,6 +772,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     findings=findings,
                     raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
+                    requirement_coverage_complete=requirement_coverage,
+                    unverified_requirements=unverified_requirements,
                 )
             else:
                 return _parse_error(
@@ -850,8 +901,14 @@ def _apply_coverage_and_verdict_precedence(
     """Apply deterministic finding-first and complete-coverage verdict rules."""
     if result.findings:
         result.result = "NEEDS_FIX"
+        incomplete_coverage: List[str] = []
         if context.unverified_files:
-            coverage_note = f"Review coverage also remains incomplete for: {', '.join(context.unverified_files)}"
+            incomplete_coverage.append(f"changed files: {', '.join(context.unverified_files)}")
+        if result.requirement_coverage_complete is not True:
+            requirements = ", ".join(result.unverified_requirements) or "requirement coverage was not explicitly attested"
+            incomplete_coverage.append(f"Issue requirements: {requirements}")
+        if incomplete_coverage:
+            coverage_note = f"Review coverage also remains incomplete for {'; '.join(incomplete_coverage)}"
             result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
             result.diagnostic_category = result.diagnostic_category or "incomplete_evidence_coverage"
             result.diagnostic_reason = result.diagnostic_reason or coverage_note
@@ -862,6 +919,15 @@ def _apply_coverage_and_verdict_precedence(
         result.result = "INCONCLUSIVE"
         result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_evidence_coverage"
+        result.diagnostic_reason = reason
+        return result
+
+    if result.result.strip().upper() == "PASS" and result.requirement_coverage_complete is not True:
+        requirements = ", ".join(result.unverified_requirements) or "the reviewer did not provide a complete requirement-coverage attestation"
+        reason = f"Material Issue requirements remain unverified: {requirements}"
+        result.result = "INCONCLUSIVE"
+        result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
+        result.diagnostic_category = "incomplete_requirement_coverage"
         result.diagnostic_reason = reason
     return result
 
@@ -932,9 +998,18 @@ def run_adversarial_validation(
 
     # 3. Render adversarial validation prompt with complete manifests and
     # deterministic file-evidence coverage metadata.
-    changed_tests_str = "\n".join(f"- {t}" for t in context.changed_tests) if context.changed_tests else "(No test files detected in diff)"
-    changed_files_str = "\n".join(f"- {path}" for path in context.all_changed_files) if context.all_changed_files else "(No changed files detected)"
-    coverage_status = "COMPLETE: every changed file has complete patch evidence." if context.has_complete_file_coverage else "INCOMPLETE: PASS is forbidden because these files have partial/unavailable evidence: " + ", ".join(context.unverified_files)
+    manifest_budget = max(256, config.MAX_PR_DIFF_SIZE)
+    changed_tests_str = _bounded_path_manifest(context.changed_tests, manifest_budget, "(No test files detected in diff)")
+    changed_files_str = _bounded_path_manifest(context.all_changed_files, manifest_budget, "(No changed files detected)")
+    if context.has_complete_file_coverage:
+        coverage_status = "COMPLETE: every changed file has complete patch evidence."
+    else:
+        coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence:\n"
+        coverage_status = coverage_prefix + _bounded_path_manifest(
+            context.unverified_files,
+            max(0, manifest_budget - len(coverage_prefix)),
+            "(Unverified path metadata unavailable)",
+        )
     prompt = render_prompt(
         "pr.adversarial_validation",
         repo_name=repo_name,

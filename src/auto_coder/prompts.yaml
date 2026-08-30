@@ -525,6 +525,8 @@ pr:
       "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
       "summary": "<Clear explanation of determination>",
       "dynamic_check_requested": "<optional test file/path to execute if dynamic verification is required to confirm a suspected defect, or null>",
+      "requirement_coverage_complete": true | false,
+      "unverified_requirements": ["<exact material Issue requirement that could not be verified>"],
       "findings": [
         {
           "violated_requirement": "<The exact specification requirement or invariant violated>",
@@ -542,11 +544,13 @@ pr:
       "result": "PASS",
       "summary": "Implementation satisfies all specification requirements and test coverage is complete.",
       "dynamic_check_requested": null,
+      "requirement_coverage_complete": true,
+      "unverified_requirements": [],
       "findings": []
     }
     ```
 
-    If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list and explain the missing evidence in the summary.
+    If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list, set requirement_coverage_complete to false, enumerate every unverified Issue requirement, and explain the missing evidence in the summary. Omitting the requirement coverage fields makes PASS invalid.
 
     Context:
     Repository: $repo_name
@@ -607,6 +611,8 @@ pr:
     {
       "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
       "summary": "<Clear explanation of final determination>",
+      "requirement_coverage_complete": true | false,
+      "unverified_requirements": ["<exact material Issue requirement that could not be verified>"],
       "findings": [
         {
           "violated_requirement": "<Exact specification requirement or invariant violated>",

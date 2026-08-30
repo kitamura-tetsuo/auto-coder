@@ -359,7 +359,7 @@ class TestBuildAdversarialValidationContext:
 
         context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
         assert context.is_diff_truncated
-        assert "Coverage: PARTIAL / UNVERIFIED" in context.pr_diff
+        assert "COVERAGE INCOMPLETE" in context.pr_diff
         assert "### Changed file: file_late.py" in context.pr_diff
         assert "file_late.py" in context.all_changed_files
         assert "file1.py" in context.unverified_files
@@ -422,10 +422,22 @@ class TestBuildAdversarialValidationContext:
 
         evidence, unverified = build_file_aware_diff(quoted_patch + normal_patch, 300)
 
-        assert "### Changed file: src/日本.py" in evidence
         assert "### Changed file: src/normal.py" in evidence
         assert "src/日本.py" in unverified
-        assert "Coverage: PARTIAL / UNVERIFIED" in evidence
+        assert "COVERAGE INCOMPLETE" in evidence
+
+    def test_many_file_evidence_obeys_hard_size_bound(self):
+        patches = []
+        for index in range(100):
+            path = f"src/generated/component_{index:03d}_with_a_descriptive_name.py"
+            patches.append(f"diff --git a/{path} b/{path}\n+++ b/{path}\n+value_{index} = True\n")
+
+        evidence, unverified = build_file_aware_diff("".join(patches), 6000)
+
+        assert len(evidence) <= 6000
+        assert unverified
+        assert "COVERAGE INCOMPLETE" in evidence
+        assert "Unverified manifest SHA-256:" in evidence
 
     @pytest.mark.parametrize("late_file_first", [False, True])
     def test_violating_file_evidence_is_order_independent(self, late_file_first):
@@ -791,7 +803,7 @@ class TestRunAdversarialValidation:
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
         )
-        mock_run_prompt.return_value = '{"result": "PASS", "summary": "Valid implementation", "findings": []}'
+        mock_run_prompt.return_value = '{"result": "PASS", "summary": "Valid implementation", "requirement_coverage_complete": true, "unverified_requirements": [], "findings": []}'
 
         config = AutomationConfig()
         pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
@@ -969,7 +981,7 @@ class TestRunAdversarialValidation:
     }
   ]
 }""",
-            '{"result": "PASS", "summary": "Reviewer confirmed reload output satisfies spec", "findings": []}',
+            '{"result": "PASS", "summary": "Reviewer confirmed reload output satisfies spec", "requirement_coverage_complete": true, "unverified_requirements": [], "findings": []}',
         ]
         # run_local_tests returns dict with output and errors
         mock_run_tests.return_value = {
@@ -1013,6 +1025,58 @@ class TestRunAdversarialValidation:
         assert result.result == "INCONCLUSIVE"
         assert result.is_blocked
         assert result.diagnostic_category == "incomplete_evidence_coverage"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_pass_without_structured_requirement_coverage_is_rejected(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Two requirements",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="R1: persist state. R2: emit an audit event.",
+        )
+        mock_run_prompt.return_value = '{"result": "PASS", "summary": "Reviewed R1", "findings": []}'
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Two requirements"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "INCONCLUSIVE"
+        assert result.diagnostic_category == "incomplete_requirement_coverage"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Two requirements",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="R1: persist state. R2: emit an audit event.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "R1 was verified but R2 was not inspected",
+  "requirement_coverage_complete": false,
+  "unverified_requirements": ["R2: emit an audit event"],
+  "findings": []
+}"""
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "title": "Two requirements"},
+            AutomationConfig(),
+            backend_manager=MagicMock(),
+        )
+
+        assert result.result == "INCONCLUSIVE"
+        assert "R2: emit an audit event" in (result.diagnostic_reason or "")
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
