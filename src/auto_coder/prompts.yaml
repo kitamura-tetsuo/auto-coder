@@ -493,6 +493,10 @@ pr:
     - The implementation code and changed tests are evidence to inspect, NOT definitions of correct behavior.
     - Do NOT perform a general style review, cosmetic suggestions, or subjective refactoring review.
     - Focus strictly on behavioral correctness, invariant preservation, and specification coverage.
+    - Review the complete changed-file and changed-test manifests against every Issue requirement before judging the implementation patches.
+    - Patch evidence is grouped per file. A large early file must not cause you to ignore evidence for a later file.
+    - If coverage is INCOMPLETE and no violation is proven, return INCONCLUSIVE, never PASS.
+    - If any evidence proves a specification violation, return NEEDS_FIX even when other files or requirements remain unverified. Describe incomplete coverage in the summary without downgrading the concrete finding.
 
     INVESTIGATION QUESTIONS:
     1. Is there any requirement in the issue/spec that is not actually guaranteed by the implementation?
@@ -512,6 +516,8 @@ pr:
     and the current tests would still pass because ...
 
     A finding without a plausible behavioral counterexample must not block the PR.
+    Every VIOLATED requirement coverage entry MUST have a corresponding concrete finding. Reporting VIOLATED without a finding is a schema error and fails closed.
+    Use only exact requirement IDs from the supplied manifest. Any missing, duplicate, or unknown ID is a schema error and fails closed.
 
     OUTPUT FORMAT:
     Respond with a JSON object in the following format:
@@ -521,6 +527,13 @@ pr:
       "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
       "summary": "<Clear explanation of determination>",
       "dynamic_check_requested": "<optional test file/path to execute if dynamic verification is required to confirm a suspected defect, or null>",
+      "requirement_coverage": [
+        {
+          "requirement_id": "<exact stable ID from the requirement manifest>",
+          "status": "VERIFIED" | "VIOLATED" | "IRRELEVANT" | "UNVERIFIED",
+          "evidence": "<specific patch, manifest, or oracle evidence; IRRELEVANT requires a scope reason>"
+        }
+      ],
       "findings": [
         {
           "violated_requirement": "<The exact specification requirement or invariant violated>",
@@ -532,15 +545,24 @@ pr:
     }
     ```
 
-    If no concrete specification violation or meaningful missing oracle can be identified, return:
+    If every material changed file and Issue requirement is sufficiently covered and no concrete specification violation is identified, return:
     ```json
     {
       "result": "PASS",
       "summary": "Implementation satisfies all specification requirements and test coverage is complete.",
       "dynamic_check_requested": null,
+      "requirement_coverage": [
+        {
+          "requirement_id": "REQ-001-example",
+          "status": "VERIFIED",
+          "evidence": "The supplied patch and tests directly establish this requirement"
+        }
+      ],
       "findings": []
     }
     ```
+
+    If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list and mark the corresponding requirement IDs UNVERIFIED. PASS requires exactly one VERIFIED or justified IRRELEVANT coverage entry for every stable ID below; a boolean completeness claim cannot substitute for the entries.
 
     Context:
     Repository: $repo_name
@@ -551,7 +573,16 @@ pr:
 
     $linked_issues_context
 
-    PR Changes (Diff):
+    Stable Issue Requirement Manifest:
+    $requirement_manifest
+
+    Complete Changed-File Manifest:
+    $changed_files
+
+    Evidence Coverage Status:
+    $coverage_status
+
+    File-Aware PR Patch Evidence:
     $pr_diff
 
     Changed/Added Tests:
@@ -579,6 +610,9 @@ pr:
     PR #$pr_number: $pr_title
     $linked_issues_context
 
+    Stable Issue Requirement Manifest:
+    $requirement_manifest
+
     PR Changes (Diff):
     $pr_diff
 
@@ -595,6 +629,13 @@ pr:
     {
       "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
       "summary": "<Clear explanation of final determination>",
+      "requirement_coverage": [
+        {
+          "requirement_id": "<exact stable ID from the requirement manifest>",
+          "status": "VERIFIED" | "VIOLATED" | "IRRELEVANT" | "UNVERIFIED",
+          "evidence": "<specific dynamic-check or oracle evidence>"
+        }
+      ],
       "findings": [
         {
           "violated_requirement": "<Exact specification requirement or invariant violated>",
@@ -1485,4 +1526,3 @@ jules:
 codex_cloud:
   continuation: |-
     Review the current pull request status and continue working on it. If CI checks are failing, review the latest failure logs, fix the issues, push the fixes to the existing pull request, and continue until all CI checks pass. Also address any valid unresolved review comments.
-

@@ -1575,6 +1575,17 @@ class GitHubClient:
             logger.error(f"Failed to get PR diff for #{pr_number}: {e}")
             return ""
 
+    @retry_with_backoff()
+    def get_pr_changed_file_count(self, repo_name: str, pr_number: int) -> int:
+        """Fetch the authoritative changed-file count independently of raw diff."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        pr_data = api.pulls.get(owner, repo, pr_number)
+        changed_files = pr_data.get("changed_files")
+        if isinstance(changed_files, bool) or not isinstance(changed_files, int) or changed_files < 0:
+            raise ValueError(f"PR #{pr_number} response did not contain a valid changed_files count")
+        return changed_files
+
     def get_pr_commits(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get all commits for a pull request."""
         try:

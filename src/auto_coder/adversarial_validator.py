@@ -6,6 +6,8 @@ using a strong model to catch false-success PRs before merge.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -38,12 +40,29 @@ class AdversarialValidationFinding:
 
 
 @dataclass
+class IssueRequirement:
+    """Stable requirement unit extracted deterministically from the Issue oracle."""
+
+    requirement_id: str = ""
+    text: str = ""
+
+
+@dataclass
+class RequirementCoverageEntry:
+    """Reviewer's structured disposition for one stable Issue requirement."""
+
+    requirement_id: str = ""
+    status: str = "UNVERIFIED"
+    evidence: str = ""
+
+
+@dataclass
 class AdversarialValidationResult:
     """Outcome of adversarial PR validation against the specification oracle.
 
     Fail-closed design:
     - Only 'PASS' with 0 findings evaluates to is_pass=True.
-    - Any findings or 'NEEDS_FIX' evaluates to needs_fix=True.
+    - Parsed concrete findings normalize the aggregate result to 'NEEDS_FIX'.
     - Empty, malformed, 'BLOCKED', 'INCONCLUSIVE', or 'ERROR' evaluates to is_blocked=True.
     """
 
@@ -54,6 +73,7 @@ class AdversarialValidationResult:
     dynamic_check_requested: Optional[str] = None
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
+    requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
@@ -84,6 +104,25 @@ class AdversarialValidationContext:
     changed_tests: List[str] = field(default_factory=list)
     issue_context: str = ""
     is_diff_truncated: bool = False
+    unverified_files: List[str] = field(default_factory=list)
+    issue_requirements: List[IssueRequirement] = field(default_factory=list)
+    evidence_retrieval_error: Optional[str] = None
+    requires_human_review: bool = False
+
+    @property
+    def has_complete_file_coverage(self) -> bool:
+        """Return whether every changed file has complete patch evidence."""
+        return not self.unverified_files
+
+
+@dataclass
+class FileDiffEvidence:
+    """Bounded patch evidence and coverage state for one changed file."""
+
+    path: str = ""
+    patch: str = ""
+    original_size: int = 0
+    is_complete: bool = False
 
 
 def adversarial_validation_comment_marker(head_sha: str) -> str:
@@ -111,6 +150,12 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
 
     if result.dynamic_check_requested:
         lines.extend(["", f"Dynamic check requested: `{result.dynamic_check_requested}`"])
+
+    if result.requirement_coverage:
+        lines.extend(["", "Issue requirement coverage:"])
+        for entry in result.requirement_coverage:
+            detail = f" — {entry.evidence}" if entry.evidence else ""
+            lines.append(f"- `{entry.requirement_id}`: **{entry.status}**{detail}")
 
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
@@ -143,6 +188,59 @@ def is_test_file(file_path: str) -> bool:
     return path_lower.startswith("tests/") or path_lower.startswith("test/") or "/tests/" in path_lower or "/test/" in path_lower or path_lower.endswith("_test.py") or path_lower.endswith("test.py") or ".spec." in path_lower or ".test." in path_lower
 
 
+def _decode_git_path_token(token: str) -> str:
+    """Decode a pathname token emitted with Git's ``core.quotePath`` format."""
+    value = token.strip()
+    if not (value.startswith('"') and value.endswith('"')):
+        return value
+
+    try:
+        decoded = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        return value
+    if not isinstance(decoded, str):
+        return value
+
+    # Git writes non-ASCII UTF-8 bytes as C-style octal escapes. Python's
+    # string-literal decoder maps each byte to the same Latin-1 code point, so
+    # convert those code points back to bytes before decoding the pathname.
+    try:
+        return decoded.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return decoded
+
+
+def _extract_diff_header_path(line: str) -> Optional[str]:
+    """Extract the destination path from quoted or unquoted ``diff --git`` headers."""
+    prefix = "diff --git "
+    if not line.startswith(prefix):
+        return None
+    payload = line[len(prefix) :]
+
+    if payload.startswith('"'):
+        quoted_pair = re.fullmatch(r'("(?:\\.|[^"\\])*")\s+("(?:\\.|[^"\\])*")', payload)
+        if not quoted_pair:
+            return None
+        destination = _decode_git_path_token(quoted_pair.group(2))
+    else:
+        unquoted_pair = re.fullmatch(r"a/(.*)\s+b/(.*)", payload)
+        if not unquoted_pair:
+            return None
+        destination = f"b/{unquoted_pair.group(2)}"
+
+    return destination[2:] if destination.startswith("b/") else destination
+
+
+def _extract_marker_path(line: str) -> Optional[str]:
+    """Extract a path from a unified diff ``+++`` destination marker."""
+    if not line.startswith("+++ "):
+        return None
+    destination = _decode_git_path_token(line[4:])
+    if destination == "/dev/null":
+        return None
+    return destination[2:] if destination.startswith("b/") else destination
+
+
 def extract_all_changed_files(pr_diff: str) -> List[str]:
     """Extract all modified or added file paths from a unified diff string.
 
@@ -155,21 +253,15 @@ def extract_all_changed_files(pr_diff: str) -> List[str]:
     if not pr_diff:
         return []
 
-    files: List[str] = []
-    patterns = [
-        r"^\+\+\+\s+b/(.*)$",
-        r"^diff\s+--git\s+a/.*?\s+b/(.*)$",
-    ]
+    files = [file_patch.path for file_patch in _split_diff_by_file(pr_diff)]
+    if files:
+        return files
 
+    # Retain support for a bare unified patch without ``diff --git`` headers.
     for line in pr_diff.splitlines():
-        for pattern in patterns:
-            match = re.match(pattern, line)
-            if match:
-                path = match.group(1).strip()
-                if path.startswith("dev/null"):
-                    continue
-                if path not in files:
-                    files.append(path)
+        path = _extract_marker_path(line)
+        if path and path not in files:
+            files.append(path)
 
     return files
 
@@ -187,6 +279,146 @@ def extract_changed_test_files(pr_diff: str) -> List[str]:
     return [f for f in all_files if is_test_file(f)]
 
 
+def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
+    """Create stable, machine-checkable requirement units from the Issue oracle.
+
+    Every substantive oracle line is included, so a reviewer cannot silently omit
+    a requirement-bearing prose line. Non-requirement background may be marked
+    IRRELEVANT by the reviewer, but it still needs an explicit coverage entry.
+    """
+    requirements: List[IssueRequirement] = []
+    seen: set[str] = set()
+    ignored_labels = {"issue description:", "parent issue description:"}
+    for raw_line in issue_context.splitlines():
+        text = raw_line.strip()
+        if not text or text.lower() in ignored_labels:
+            continue
+        normalized = re.sub(r"^#{1,6}\s+", "", text)
+        normalized = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s+)", "", normalized).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        digest = hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:10]
+        requirement_id = f"REQ-{len(requirements) + 1:03d}-{digest}"
+        requirements.append(IssueRequirement(requirement_id=requirement_id, text=normalized))
+    return requirements
+
+
+def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
+    """Split a unified Git diff into ordered per-file patches."""
+    matches = list(re.finditer(r"^diff --git .*$", pr_diff, re.MULTILINE))
+    evidence: List[FileDiffEvidence] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(pr_diff)
+        patch = pr_diff[match.start() : end].rstrip()
+        path = next((_extract_marker_path(line) for line in patch.splitlines() if _extract_marker_path(line)), None)
+        path = path or _extract_diff_header_path(match.group(0)) or f"<unparsed diff header at character {match.start()}>"
+        evidence.append(FileDiffEvidence(path=path, patch=patch, original_size=len(patch)))
+    return evidence
+
+
+def _bounded_file_patch(patch: str, allocation: int) -> str:
+    """Represent one oversized patch with bounded beginning and ending evidence."""
+    if allocation <= 0:
+        return ""
+    if len(patch) <= allocation:
+        return patch
+    marker = "\n... [per-file patch evidence omitted] ...\n"
+    if allocation <= len(marker):
+        return patch[:allocation]
+
+    content_budget = max(0, allocation - len(marker))
+    prefix_size = (content_budget + 1) // 2
+    suffix_size = content_budget // 2
+    return patch[:prefix_size] + marker + (patch[-suffix_size:] if suffix_size else "")
+
+
+def _render_complete_file_evidence(file_patch: FileDiffEvidence) -> str:
+    """Render one completely covered file patch."""
+    return f"### Changed file: {file_patch.path}\nCoverage: COMPLETE ({file_patch.original_size}/{file_patch.original_size} patch characters supplied)\n{file_patch.patch}"
+
+
+def _bounded_unverified_summary(paths: List[str], budget: int) -> str:
+    """Render a hard-bounded diagnostic for the complete unverified path set."""
+    if budget <= 0 or not paths:
+        return ""
+    manifest = "\0".join(paths)
+    digest = hashlib.sha256(manifest.encode("utf-8", errors="replace")).hexdigest()
+    summary = f"## COVERAGE INCOMPLETE\nUnverified changed files: {len(paths)}\nUnverified manifest SHA-256: {digest}\n"
+    if len(summary) >= budget:
+        return summary[:budget]
+
+    sample_prefix = "Bounded path sample: "
+    if len(summary) + len(sample_prefix) < budget:
+        summary += sample_prefix
+        for path in paths:
+            separator = ", " if not summary.endswith(sample_prefix) else ""
+            addition = separator + path
+            if len(summary) + len(addition) > budget:
+                break
+            summary += addition
+    return summary[:budget]
+
+
+def _bounded_path_manifest(paths: List[str], budget: int, empty_message: str) -> str:
+    """Format a path manifest without allowing metadata to bypass context limits."""
+    if not paths:
+        return empty_message[: max(0, budget)]
+    rendered = "\n".join(f"- {path}" for path in paths)
+    if len(rendered) <= budget:
+        return rendered
+
+    digest = hashlib.sha256("\0".join(paths).encode("utf-8", errors="replace")).hexdigest()
+    header = f"(Bounded manifest: {len(paths)} paths, SHA-256 {digest})\n"
+    if len(header) >= budget:
+        return header[: max(0, budget)]
+    sample_budget = budget - len(header)
+    return (header + rendered[:sample_budget])[:budget]
+
+
+def build_file_aware_diff(pr_diff: str, max_evidence_size: int) -> tuple[str, List[str]]:
+    """Build bounded, per-file diff evidence without allowing early files to starve later ones.
+
+    Every file receives an independent coverage record. Small patches are included
+    completely before the remaining budget is shared across oversized patches.
+    Files without complete patches are explicitly returned as unverified so a
+    downstream PASS can be rejected deterministically.
+    """
+    file_patches = _split_diff_by_file(pr_diff)
+    if not file_patches:
+        if len(pr_diff) <= max_evidence_size:
+            return pr_diff, []
+        return _bounded_file_patch(pr_diff, max_evidence_size), ["<unparsed unified diff>"]
+
+    limit = max(0, max_evidence_size)
+    complete_blocks = [_render_complete_file_evidence(file_patch) for file_patch in file_patches]
+    complete_rendering = "\n\n".join(complete_blocks)
+    if len(complete_rendering) <= limit:
+        return complete_rendering, []
+
+    # Reserve a fixed amount for a count and digest of the complete unverified
+    # manifest, then fit the smallest full patches. This keeps the output under
+    # the hard limit and prevents a large early file from starving later files.
+    summary_reserve = min(limit, 128)
+    content_budget = max(0, limit - summary_reserve - 2)
+    selected_indexes: set[int] = set()
+    used = 0
+    for index in sorted(range(len(file_patches)), key=lambda item: len(complete_blocks[item])):
+        separator_size = 2 if selected_indexes else 0
+        block_size = len(complete_blocks[index]) + separator_size
+        if used + block_size <= content_budget:
+            selected_indexes.add(index)
+            used += block_size
+
+    rendered_blocks = [complete_blocks[index] for index in range(len(file_patches)) if index in selected_indexes]
+    unverified_files = [file_patch.path for index, file_patch in enumerate(file_patches) if index not in selected_indexes]
+    content = "\n\n".join(rendered_blocks)
+    separator = "\n\n" if content else ""
+    summary_budget = max(0, limit - len(content) - len(separator))
+    summary = _bounded_unverified_summary(unverified_files, summary_budget)
+    return (content + separator + summary)[:limit], unverified_files
+
+
 def build_adversarial_validation_context(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -196,7 +428,8 @@ def build_adversarial_validation_context(
     """Compile issue specification, PR diff, and changed tests for validation.
 
     Recovers oracle/specification from PR body, title, branch name, and session.
-    Guarantees that truncation warning and full changed-file list are never stripped.
+    Uses a bounded, file-aware budget so an early oversized patch cannot hide
+    later implementation or test files.
 
     Args:
         repo_name: Repository name in 'owner/repo' format
@@ -218,35 +451,44 @@ def build_adversarial_validation_context(
         except Exception:
             client = None
 
-    # Retrieve PR diff
+    # Retrieve bounded diff evidence and the authoritative changed-file count through
+    # independent endpoints so GitHub's raw-diff limit cannot authorize a large PR.
     pr_diff = ""
     is_diff_truncated = False
     all_changed_files: List[str] = []
+    unverified_files: List[str] = []
+    evidence_retrieval_error: Optional[str] = None
+    requires_human_review = False
 
     if client:
+        raw_diff = ""
+        diff_changed_files: List[str] = []
         try:
             raw_diff = client.get_pr_diff(repo_name, pr_number)
             if raw_diff:
-                all_changed_files = extract_all_changed_files(raw_diff)
-                max_diff_bytes = config.MAX_PR_DIFF_SIZE * 3
-
-                if len(raw_diff) > max_diff_bytes:
-                    is_diff_truncated = True
-                    file_list_str = ", ".join(all_changed_files)
-                    truncation_warning = (
-                        f"\n\n[WARNING: PR Diff was truncated to first {max_diff_bytes} bytes due to size limit.\n"
-                        f"Complete list of changed files in this PR ({len(all_changed_files)} files): {file_list_str}\n"
-                        f"IMPORTANT: If requirements or implementation details cannot be verified because critical files were omitted, "
-                        f"you MUST output result: 'INCONCLUSIVE' rather than 'PASS'.]"
-                    )
-                    pr_diff = raw_diff[:max_diff_bytes] + truncation_warning
-                else:
-                    pr_diff = raw_diff
+                diff_changed_files = extract_all_changed_files(raw_diff)
+                max_diff_size = config.MAX_PR_DIFF_SIZE * 3
+                pr_diff, unverified_files = build_file_aware_diff(raw_diff, max_diff_size)
         except Exception as e:
             logger.warning(f"Could not retrieve diff for PR #{pr_number}: {e}")
 
+        all_changed_files = diff_changed_files
+        try:
+            changed_file_count = client.get_pr_changed_file_count(repo_name, pr_number)
+            if changed_file_count > 300:
+                requires_human_review = True
+            elif changed_file_count > len(diff_changed_files):
+                missing_count = changed_file_count - len(diff_changed_files)
+                unverified_files.append(f"<{missing_count} changed file(s) unavailable in raw diff>")
+        except Exception as e:
+            evidence_retrieval_error = f"Authoritative changed-file count retrieval failed: {e}"
+            logger.warning(f"Could not retrieve authoritative changed-file count for PR #{pr_number}: {e}")
+
+        is_diff_truncated = bool(unverified_files)
+
     # Extract linked issues context (from body, title, branch name, session)
     issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data)
+    issue_requirements = extract_issue_requirements(issue_context)
 
     # Extract changed test files from diff or all_changed_files
     changed_tests = [f for f in all_changed_files if is_test_file(f)] if all_changed_files else extract_changed_test_files(pr_diff)
@@ -261,6 +503,10 @@ def build_adversarial_validation_context(
         changed_tests=changed_tests,
         issue_context=issue_context,
         is_diff_truncated=is_diff_truncated,
+        unverified_files=unverified_files,
+        issue_requirements=issue_requirements,
+        evidence_retrieval_error=evidence_retrieval_error,
+        requires_human_review=requires_human_review,
     )
 
 
@@ -427,7 +673,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     Fail-closed policy:
     - Entire response schema must be strictly valid and consistent.
     - PASS requires raw_result == "PASS" and findings to be strictly empty ([] or None).
-    - Any non-empty findings on PASS, or malformed/empty elements in findings, fail closed to ERROR.
+    - Valid concrete findings override PASS/INCONCLUSIVE/BLOCKED labels and normalize to NEEDS_FIX.
+    - Malformed or empty finding elements fail closed to ERROR.
     - NEEDS_FIX requires at least one finding with a concrete counterexample; missing counterexamples are never synthesized.
     - Malformed or unparseable schemas fail closed to ERROR.
 
@@ -477,6 +724,51 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 dynamic_check = parsed.get("dynamic_check_requested")
                 if dynamic_check:
                     dynamic_check = str(dynamic_check).strip()
+
+                raw_requirement_coverage = parsed.get("requirement_coverage", [])
+                if not isinstance(raw_requirement_coverage, list):
+                    return _parse_error(
+                        raw_response,
+                        "schema_error",
+                        "Malformed validator schema: requirement_coverage must be a list",
+                        f"requirement_coverage must be a list, got {type(raw_requirement_coverage).__name__}",
+                    )
+                requirement_coverage: List[RequirementCoverageEntry] = []
+                seen_requirement_ids: set[str] = set()
+                valid_coverage_statuses = {"VERIFIED", "VIOLATED", "IRRELEVANT", "UNVERIFIED"}
+                for item in raw_requirement_coverage:
+                    if not isinstance(item, dict):
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Malformed requirement coverage entry",
+                            "requirement coverage entries must be objects",
+                        )
+                    requirement_id = str(item.get("requirement_id", "")).strip()
+                    status = str(item.get("status", "")).strip().upper()
+                    evidence = str(item.get("evidence", "")).strip()
+                    if not requirement_id or status not in valid_coverage_statuses or not evidence:
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Malformed requirement coverage entry",
+                            "each coverage entry requires a unique requirement_id, valid status, and non-empty evidence",
+                        )
+                    if requirement_id in seen_requirement_ids:
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Duplicate requirement coverage entry",
+                            f"requirement_id {requirement_id} appears more than once",
+                        )
+                    seen_requirement_ids.add(requirement_id)
+                    requirement_coverage.append(
+                        RequirementCoverageEntry(
+                            requirement_id=requirement_id,
+                            status=status,
+                            evidence=evidence,
+                        )
+                    )
 
                 raw_findings = parsed.get("findings")
                 findings: List[AdversarialValidationFinding] = []
@@ -534,15 +826,9 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                 # Determine result - enforce consistency and fail-closed
                 if raw_result == "PASS":
-                    if findings or (raw_findings is not None and len(raw_findings) > 0):
-                        # Contradictory: PASS claimed but findings present -> fail closed to ERROR
-                        return _parse_error(
-                            raw_response,
-                            "contradictory_response",
-                            "Contradictory validator response: PASS claimed with non-empty findings",
-                            "PASS requires findings to be empty",
-                        )
-                    result_val = "PASS"
+                    # Valid concrete findings outrank the contradictory top-level
+                    # label. Malformed findings have already failed schema parsing.
+                    result_val = "NEEDS_FIX" if findings else "PASS"
                 elif raw_result == "NEEDS_FIX":
                     if not findings:
                         # NEEDS_FIX claimed but no valid counterexample findings provided -> fail closed to ERROR
@@ -554,7 +840,9 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         )
                     result_val = "NEEDS_FIX"
                 elif raw_result in ("INCONCLUSIVE", "BLOCKED"):
-                    result_val = raw_result
+                    # A proven counterexample outranks uncertainty or an
+                    # infrastructure diagnostic. Never discard concrete findings.
+                    result_val = "NEEDS_FIX" if findings else raw_result
                 else:
                     return _parse_error(
                         raw_response,
@@ -569,6 +857,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     findings=findings,
                     raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
+                    requirement_coverage=requirement_coverage,
                 )
             else:
                 return _parse_error(
@@ -623,13 +912,26 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*PASS", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        # If RESULT: PASS is accompanied by defect markers, fail closed to ERROR
         if has_text_findings:
-            return _parse_error(
-                raw_response,
-                "contradictory_response",
-                "Contradictory validator output (PASS with defect markers); failing closed to ERROR",
-                "PASS response contains defect markers",
+            if not counterexample:
+                return _parse_error(
+                    raw_response,
+                    "schema_error",
+                    "Reviewer reported a defect without a concrete behavioral counterexample",
+                    "PASS response contains defect markers but no COUNTEREXAMPLE",
+                )
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Concrete specification violation overrides contradictory PASS label",
+                findings=[
+                    AdversarialValidationFinding(
+                        violated_requirement=violated_req or "Specification requirement violated",
+                        counterexample=counterexample,
+                        test_gap=test_gap or "Existing tests do not assert this condition",
+                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                    )
+                ],
+                raw_response=raw_response,
             )
         return AdversarialValidationResult(
             result="PASS",
@@ -639,10 +941,47 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*INCONCLUSIVE", cleaned_response, re.MULTILINE | re.IGNORECASE):
+        if counterexample:
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Specification violation proven despite incomplete review coverage",
+                findings=[
+                    AdversarialValidationFinding(
+                        violated_requirement=violated_req or "Specification requirement violated",
+                        counterexample=counterexample,
+                        test_gap=test_gap or "Existing tests do not assert this condition",
+                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                    )
+                ],
+                raw_response=raw_response,
+            )
         return AdversarialValidationResult(
             result="INCONCLUSIVE",
             summary="Validation inconclusive",
             findings=[],
+            raw_response=raw_response,
+        )
+
+    if re.search(r"^\s*RESULT\s*:\s*BLOCKED", cleaned_response, re.MULTILINE | re.IGNORECASE):
+        if counterexample:
+            return AdversarialValidationResult(
+                result="NEEDS_FIX",
+                summary="Concrete specification violation overrides BLOCKED uncertainty",
+                findings=[
+                    AdversarialValidationFinding(
+                        violated_requirement=violated_req or "Specification requirement violated",
+                        counterexample=counterexample,
+                        test_gap=test_gap or "Existing tests do not assert this condition",
+                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
+                    )
+                ],
+                raw_response=raw_response,
+                diagnostic_category="blocked_with_concrete_finding",
+                diagnostic_reason="Infrastructure or evidence uncertainty coexists with a concrete finding",
+            )
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary="Validation blocked by infrastructure or evidence failure",
             raw_response=raw_response,
         )
 
@@ -660,6 +999,73 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         "Unparseable validator response; validation incomplete",
         "response contained neither a JSON object nor a recognized RESULT marker",
     )
+
+
+def _apply_coverage_and_verdict_precedence(
+    result: AdversarialValidationResult,
+    context: AdversarialValidationContext,
+) -> AdversarialValidationResult:
+    """Apply deterministic finding-first and complete-coverage verdict rules."""
+    expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
+    coverage_by_id = {entry.requirement_id: entry for entry in result.requirement_coverage}
+    unknown_requirement_ids = sorted(coverage_by_id.keys() - expected_requirement_ids)
+    missing_requirement_ids = sorted(expected_requirement_ids - coverage_by_id.keys())
+    unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
+    incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
+    violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
+
+    if unknown_requirement_ids and not result.findings:
+        reason = f"Requirement coverage contains IDs outside the deterministic manifest: {', '.join(unknown_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: requirement coverage referenced unknown stable IDs"
+        result.diagnostic_category = "unknown_requirement_coverage_id"
+        result.diagnostic_reason = reason
+        return result
+
+    if violated_requirement_ids and not result.findings:
+        reason = f"VIOLATED requirement coverage lacks a concrete counterexample finding: {', '.join(violated_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Contradictory validator response: violated requirements were reported without concrete findings"
+        result.diagnostic_category = "violated_requirement_without_finding"
+        result.diagnostic_reason = reason
+        return result
+
+    if result.findings:
+        result.result = "NEEDS_FIX"
+        incomplete_coverage: List[str] = []
+        if context.unverified_files:
+            incomplete_coverage.append(f"changed files: {', '.join(context.unverified_files)}")
+        if not expected_requirement_ids:
+            incomplete_coverage.append("Issue requirement manifest was empty")
+        elif incomplete_requirement_ids:
+            incomplete_coverage.append(f"Issue requirement IDs: {', '.join(incomplete_requirement_ids)}")
+        if unknown_requirement_ids:
+            incomplete_coverage.append(f"unknown requirement IDs: {', '.join(unknown_requirement_ids)}")
+        if incomplete_coverage:
+            coverage_note = f"Review coverage also remains incomplete for {'; '.join(incomplete_coverage)}"
+            result.summary = f"{result.summary.rstrip()} {coverage_note}".strip()
+            result.diagnostic_category = result.diagnostic_category or "incomplete_evidence_coverage"
+            result.diagnostic_reason = result.diagnostic_reason or coverage_note
+        return result
+
+    if result.result.strip().upper() == "PASS" and not context.has_complete_file_coverage:
+        reason = f"Material changed-file evidence was incomplete for: {', '.join(context.unverified_files)}"
+        result.result = "INCONCLUSIVE"
+        result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
+        result.diagnostic_category = "incomplete_evidence_coverage"
+        result.diagnostic_reason = reason
+        return result
+
+    if result.result.strip().upper() == "PASS" and (not expected_requirement_ids or incomplete_requirement_ids):
+        if not expected_requirement_ids:
+            reason = "The deterministic Issue requirement manifest was empty"
+        else:
+            reason = f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}"
+        result.result = "INCONCLUSIVE"
+        result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
+        result.diagnostic_category = "incomplete_requirement_coverage"
+        result.diagnostic_reason = reason
+    return result
 
 
 def run_adversarial_validation(
@@ -705,6 +1111,25 @@ def run_adversarial_validation(
             summary=f"Oracle acquisition failed for PR #{pr_number}: no linked issue specification found to falsify against",
         )
 
+    if context.evidence_retrieval_error:
+        logger.warning(f"PR #{pr_number} evidence retrieval failed. Blocking merge: {context.evidence_retrieval_error}")
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary=context.evidence_retrieval_error,
+            diagnostic_category="evidence_retrieval_failure",
+            diagnostic_reason=context.evidence_retrieval_error,
+        )
+
+    if context.requires_human_review:
+        reason = "PR has more than 300 changed files; automated adversarial validation cannot authorize merge and human review is required"
+        logger.warning(f"PR #{pr_number} exceeds the raw-diff coverage limit. Blocking automatic merge.")
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary=reason,
+            diagnostic_category="human_review_required",
+            diagnostic_reason=reason,
+        )
+
     # Diff accessibility check: If PR diff could not be retrieved, fail closed
     if not context.pr_diff or not context.pr_diff.strip():
         logger.warning(f"PR #{pr_number} has no accessible diff. Blocking merge.")
@@ -726,8 +1151,21 @@ def run_adversarial_validation(
             summary="No strong adversarial validation backend configured or available",
         )
 
-    # 3. Render adversarial validation prompt (context.pr_diff already includes truncation warning if applicable)
-    changed_tests_str = "\n".join(f"- {t}" for t in context.changed_tests) if context.changed_tests else "(No test files detected in diff)"
+    # 3. Render adversarial validation prompt with complete manifests and
+    # deterministic file-evidence coverage metadata.
+    manifest_budget = max(256, config.MAX_PR_DIFF_SIZE)
+    changed_tests_str = _bounded_path_manifest(context.changed_tests, manifest_budget, "(No test files detected in diff)")
+    changed_files_str = _bounded_path_manifest(context.all_changed_files, manifest_budget, "(No changed files detected)")
+    requirement_manifest = "\n".join(f"- {requirement.requirement_id}: {requirement.text}" for requirement in context.issue_requirements) if context.issue_requirements else "(Requirement manifest extraction failed; PASS is forbidden.)"
+    if context.has_complete_file_coverage:
+        coverage_status = "COMPLETE: every changed file has complete patch evidence."
+    else:
+        coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence:\n"
+        coverage_status = coverage_prefix + _bounded_path_manifest(
+            context.unverified_files,
+            max(0, manifest_budget - len(coverage_prefix)),
+            "(Unverified path metadata unavailable)",
+        )
     prompt = render_prompt(
         "pr.adversarial_validation",
         repo_name=repo_name,
@@ -737,6 +1175,9 @@ def run_adversarial_validation(
         pr_diff=context.pr_diff,
         linked_issues_context=context.issue_context,
         changed_tests=changed_tests_str,
+        changed_files=changed_files_str,
+        coverage_status=coverage_status,
+        requirement_manifest=requirement_manifest,
     )
 
     # 4. Invoke the strong model
@@ -746,9 +1187,10 @@ def run_adversarial_validation(
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
+    result = _apply_coverage_and_verdict_precedence(result, context)
 
     # 6. Dynamic validation on suspicion (if requested)
-    if result.dynamic_check_requested and result.dynamic_check_requested.strip():
+    if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix:
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
         try:
@@ -789,17 +1231,21 @@ def run_adversarial_validation(
                 original_findings=original_findings_str,
                 linked_issues_context=context.issue_context,
                 pr_diff=context.pr_diff,
+                requirement_manifest=requirement_manifest,
             )
             with ProgressStage("Adversarial dynamic check follow-up"):
                 followup_response = run_llm_prompt(followup_prompt, backend_manager=backend_manager, is_noedit=True)
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
+            result = _apply_coverage_and_verdict_precedence(result, context)
 
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
             # Inability to complete a requested check must be treated as non-pass (fail-closed)
             result.result = "BLOCKED"
             result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
+
+    result = _apply_coverage_and_verdict_precedence(result, context)
 
     get_trace_logger().log(
         "Adversarial Validation Result",
