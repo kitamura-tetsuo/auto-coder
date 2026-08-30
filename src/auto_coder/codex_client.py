@@ -154,7 +154,7 @@ class CodexClient(LLMClientBase):
             # - Remove dangerous approval, YOLO, and sandbox bypass flags:
             #   --dangerously-bypass-approvals-and-sandbox, --yolo, --full-auto, -y, --yes,
             #   --approve-for-me, --not-so-yolo, --danger-full-access
-            # - Remove conflicting --ask-for-approval <value> pairs and --ask-for-approval=...
+            # - Remove conflicting --ask-for-approval / -a <value> pairs and --ask-for-approval=... / -a=...
             # - Remove any conflicting runtime config overrides for approvals_reviewer (-c / --config)
             # - Force exactly --sandbox read-only, --ask-for-approval never, and -c approvals_reviewer="user"
             if is_noedit:
@@ -171,11 +171,11 @@ class CodexClient(LLMClientBase):
                         i += 1
                         continue
                     # Handle ask-for-approval flags
-                    if opt_str == "--ask-for-approval":
+                    if opt_str in ("--ask-for-approval", "-a"):
                         # Skip flag and its subsequent value
                         i += 2
                         continue
-                    if opt_str.startswith("--ask-for-approval="):
+                    if opt_str.startswith(("--ask-for-approval=", "-a=")):
                         i += 1
                         continue
                     # Handle config override flags for approvals_reviewer

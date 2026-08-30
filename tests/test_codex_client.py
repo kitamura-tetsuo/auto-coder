@@ -1022,3 +1022,84 @@ class TestCodexClient:
                 "test prompt",
             ]
             assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_short_alias_ask_for_approval_in_options(self, mock_run_command, mock_run):
+        """CodexClient must strip -a <value> and -a=<value> short alias in options when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["-a", "on-request", "exec", "--json"]
+        mock_backend_config.options_for_noedit = ["-a", "on-request", "exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["-a", "on-request", "exec", "--json"],
+            "options_for_noedit": ["-a", "on-request", "exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_noedit_removes_short_alias_ask_for_approval_in_extra_args(self, mock_run_command, mock_run):
+        """CodexClient must strip -a <value> and -a=<value> short alias in extra_args when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["exec", "--json"]
+        mock_backend_config.options_for_noedit = ["exec", "--json"]
+        mock_backend_config.replace_placeholders.return_value = {
+            "options": ["exec", "--json"],
+            "options_for_noedit": ["exec", "--json"],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            client.set_extra_args(["-a", "always", "-a=untrusted"])
+            client._run_llm_cli("test prompt", is_noedit=True)
+
+            assert mock_run_command.called
+            called_cmd = mock_run_command.call_args[0][0]
+
+            expected_cmd = [
+                "codex",
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "-c",
+                'approvals_reviewer="user"',
+                "exec",
+                "--json",
+                "test prompt",
+            ]
+            assert called_cmd == expected_cmd
