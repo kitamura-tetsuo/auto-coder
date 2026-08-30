@@ -274,13 +274,14 @@ def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_
 
     config = AutomationConfig()
     config.AUTO_MERGE = True
-    pr_data = {"number": 123, "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+    pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
 
     client = MagicMock()
     client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
     actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
     assert any("Successfully merged PR #123" in a for a in actions)
+    mock_adv_val.assert_called_once()
     mock_merge_pr.assert_called_once()
 
 

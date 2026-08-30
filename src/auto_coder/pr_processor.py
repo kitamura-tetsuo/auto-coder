@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,7 +39,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
+from .issue_context import extract_associated_issue_numbers, extract_linked_issues_from_pr_body, get_linked_issues_context, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
 from .progress_decorators import progress_stage
@@ -56,6 +57,51 @@ cmd = CommandExecutor()
 # Track active monitors to prevent duplicate execution within the same process
 _active_monitors: set[int] = set()
 _active_monitors_lock = threading.Lock()
+
+CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
+CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
+
+
+@dataclass(frozen=True)
+class CodexReviewState:
+    """State of the latest Codex GitHub review summary for a pull request."""
+
+    present: bool = False
+    completed: bool = False
+    lookup_error: Optional[str] = None
+
+
+def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either a REST dictionary or a GhApi object."""
+    return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
+
+
+def _get_codex_review_state(github_client: Any, repo_name: str, pr_number: int) -> CodexReviewState:
+    """Return Codex review presence/completion without tying it to a reviewed SHA."""
+    try:
+        comments = github_client.get_pr_comments(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to inspect Codex review state for PR #{pr_number}: {e}")
+        return CodexReviewState(lookup_error=str(e))
+
+    for comment in reversed(comments):
+        body = _comment_value(comment, "body", "")
+        user = _comment_value(comment, "user") or {}
+        login = _comment_value(user, "login", "")
+        if login != CODEX_REVIEW_BOT_LOGIN or not isinstance(body, str) or CODEX_REVIEW_SUMMARY_MARKER not in body:
+            continue
+
+        code_review_row = next((line for line in body.splitlines() if "Code Review" in line and line.lstrip().startswith("|")), "")
+        columns = [column.strip() for column in code_review_row.split("|")]
+        status_column = columns[2] if len(columns) > 2 else ""
+        return CodexReviewState(present=True, completed=bool(re.search(r"\bCompleted\b", status_column, re.IGNORECASE)))
+
+    return CodexReviewState()
+
+
+def _has_adversarial_validation_oracle(pr_data: Dict[str, Any]) -> bool:
+    """Return whether PR metadata identifies an Issue specification oracle."""
+    return bool(extract_associated_issue_numbers(pr_data=pr_data))
 
 
 def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
@@ -1635,8 +1681,22 @@ def _handle_pr_merge(
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
 
-            # Strong-model adversarial validation step
-            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
+            # Strong-model adversarial validation step. Issue-less PRs have no
+            # independent specification oracle, so validation is not applicable.
+            adversarial_validation_applicable = _has_adversarial_validation_oracle(pr_data)
+            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data) and not adversarial_validation_applicable:
+                actions.append(f"Skipped adversarial validation for PR #{pr_number}: no linked Issue specification oracle")
+                logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
+
+            if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data) and adversarial_validation_applicable:
+                codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
+                if codex_review.lookup_error:
+                    actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")
+                    return actions
+                if codex_review.present and not codex_review.completed:
+                    actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
+                    return actions
+
                 head_sha = pr_data.get("head", {}).get("sha", "")
 
                 if not head_sha:
