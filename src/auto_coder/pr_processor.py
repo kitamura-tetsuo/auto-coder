@@ -25,9 +25,9 @@ from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_clien
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .adversarial_validator import (
-    AdversarialValidationFinding,
     AdversarialValidationResult,
-    apply_adversarial_fix,
+    adversarial_validation_comment_marker,
+    format_adversarial_validation_comment,
     run_adversarial_validation,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
@@ -1400,6 +1400,56 @@ def _process_pr_jules_mode(
         return actions
 
 
+def _publish_adversarial_validation_result(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    result: AdversarialValidationResult,
+) -> str:
+    """Publish one structured validation comment per PR head commit."""
+    marker = adversarial_validation_comment_marker(head_sha)
+    rendered_comment = format_adversarial_validation_comment(result, head_sha)
+    try:
+        existing_comments = github_client.get_pr_comments(repo_name, pr_number)
+        for comment in existing_comments:
+            body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
+            if isinstance(body, str) and body.startswith(marker):
+                return f"Adversarial validation result for PR #{pr_number} at {head_sha[:8]} was already published"
+
+        github_client.add_comment_to_pr(repo_name, pr_number, rendered_comment)
+        return f"Published adversarial validation result to PR #{pr_number}"
+    except Exception as e:
+        logger.error(f"Failed to publish adversarial validation result to PR #{pr_number}: {e}")
+        return f"Failed to publish adversarial validation result to PR #{pr_number}: {e}"
+
+
+def _get_published_adversarial_validation_status(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read the immutable validation status already published for a head SHA."""
+    marker = adversarial_validation_comment_marker(head_sha)
+    try:
+        comments = github_client.get_pr_comments(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to check prior adversarial validation for PR #{pr_number}: {e}")
+        return None, str(e)
+
+    for comment in comments:
+        body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
+        if not isinstance(body, str) or not body.startswith(marker):
+            continue
+        match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
+        if match:
+            return match.group(1), None
+        return "ERROR", None
+
+    return None, None
+
+
 @contextlib.contextmanager
 def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional[str] = None):
     """Context manager that creates an isolated, detached git worktree at head_sha for side-effect-free validation.
@@ -1588,38 +1638,54 @@ def _handle_pr_merge(
             # Strong-model adversarial validation step
             if config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
                 head_sha = pr_data.get("head", {}).get("sha", "")
-                pr_branch_name = pr_data.get("head", {}).get("ref", "")
 
                 if not head_sha:
                     actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                     logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                     return actions
 
-                try:
-                    with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
-                        actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                        val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
-                except Exception as e:
-                    logger.error(f"Failed during isolated adversarial validation for PR #{pr_number}: {e}")
-                    val_result = AdversarialValidationResult(
-                        result="BLOCKED",
-                        summary=f"Isolated validation environment creation failed: {e}",
+                published_status, lookup_error = _get_published_adversarial_validation_status(
+                    github_client,
+                    repo_name,
+                    pr_number,
+                    head_sha,
+                )
+                if lookup_error:
+                    actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
+                    return actions
+                if published_status:
+                    actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+                    if published_status != "PASS":
+                        actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
+                        return actions
+                else:
+                    try:
+                        with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
+                            actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                            val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                    except Exception as e:
+                        logger.error(f"Failed during isolated adversarial validation for PR #{pr_number}: {e}")
+                        val_result = AdversarialValidationResult(
+                            result="BLOCKED",
+                            summary=f"Isolated validation environment creation failed: {e}",
+                        )
+
+                    actions.append(
+                        _publish_adversarial_validation_result(
+                            github_client,
+                            repo_name,
+                            pr_number,
+                            head_sha,
+                            val_result,
+                        )
                     )
 
-                if val_result.needs_fix:
+                if published_status == "PASS":
+                    pass
+                elif val_result.needs_fix:
                     actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
                     logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
-
-                    # Transition to implementation/fix phase on the actual PR branch
-                    prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
-                    if not prepare_ok:
-                        actions.append(f"Failed to prepare PR #{pr_number} branch for adversarial fix")
-                        return actions
-
-                    with BranchManager(pr_branch_name) as manager:
-                        actions.append(f"Checked out PR #{pr_number} branch for adversarial regression fix")
-                        fix_actions = apply_adversarial_fix(repo_name, pr_data, config, val_result, github_client=github_client)
-                        actions.extend(fix_actions)
+                    actions.append(f"Awaiting PR author changes for PR #{pr_number}; no automatic adversarial fix was attempted")
                     return actions
 
                 elif not val_result.is_pass:

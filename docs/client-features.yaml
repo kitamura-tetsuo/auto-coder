@@ -923,7 +923,7 @@ Recent configuration schema changes that require migration:
     implementation: |
       run_adversarial_validation, parse_adversarial_validation_response,
       build_adversarial_validation_context, extract_changed_test_files,
-      apply_adversarial_fix in src/auto_coder/adversarial_validator.py,
+      format_adversarial_validation_comment in src/auto_coder/adversarial_validator.py,
       _handle_pr_merge in src/auto_coder/pr_processor.py,
       create_adversarial_validation_backend_manager in src/auto_coder/cli_helpers.py,
       backend_adversarial_validation in src/auto_coder/llm_backend_config.py
@@ -935,16 +935,14 @@ Recent configuration schema changes that require migration:
       - "Fail-Closed Design: PASS is only produced for an explicitly parsed, internally consistent PASS with 0 blocking findings; all empty, malformed, contradictory, or inconclusive responses block PR merge."
       - "Parse Failure Diagnostics: Empty responses, invalid JSON, schema violations, contradictions, and unrecognized formats remain fail-closed and are logged with PR/attempt/backend/model context, a redacted 2,000-character preview, and the structured LLM interaction-log path."
       - "Full Effective Response Retention: The structured LLM interaction log retains the redacted combined CLI response (stdout and stderr), while normal operational and trace logs remain bounded."
+      - "PR Result Publishing and SHA Deduplication: Publishes the parsed validation status, summary, structured findings, requested dynamic check, and parse diagnostic to the PR conversation for the exact validated head SHA. Before invoking the reviewer, Auto-Coder reads that durable comment: the same SHA is never sent to the LLM again, a saved PASS proceeds to merge checks, and any saved non-PASS remains blocked until the PR head changes. Failure to read prior comments fails closed without invoking the LLM. Raw CLI event streams are excluded and oversized reports are bounded."
       - "Codex JSONL Handling: For `codex --json` reviewers, parses only the final completed agent message while retaining the full event stream; failed, incomplete, or non-JSON-contaminated streams remain blocked."
       - "Oracle Acquisition Required: Fails closed (BLOCKED) if the linked issue specification or acceptance criteria cannot be acquired."
       - "Backend Independence: Uses independently configured strong model without silently falling back to the general implementation backend."
       - "Diff Truncation Transparency: Alerts the reviewer when diffs exceed limits and provides complete changed-file lists so partial review is never misrepresented as complete coverage."
       - "Dynamic-on-Suspicion Contract: Supports dynamic test execution when requested by the reviewer; failure or inability to execute dynamic checks fails closed."
       - "Requires concrete behavioral counterexamples: `Given state S, when action A occurs, then specification requires R, but implementation produces X, and tests pass because ...`."
-      - "Regression Test Verification: When NEEDS_FIX is determined, verifies that a focused regression test file was added/modified before completing the corrective fix loop."
       - "When NEEDS_FIX is determined:"
         - "Blocks PR merge."
-        - "Checks out the PR branch and triggers a corrective fix prompt with the concrete counterexamples on the same PR / branch."
-        - "Instructs the implementation agent to add a focused regression test reproducing the counterexample and fix the code."
-        - "Stages, commits, and pushes changes to GitHub to trigger a new CI run."
-        - "Re-runs adversarial validation once CI is green again; only merges after validation returns PASS."
+        - "Publishes the concrete findings to the PR conversation and returns without checking out the PR branch, modifying files, invoking a fixing LLM, committing, or pushing."
+        - "The PR author or other recipient is responsible for applying the correction. After a new commit and green CI, Auto-Coder validates the new head SHA and only merges after PASS."

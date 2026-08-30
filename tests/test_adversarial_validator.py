@@ -10,7 +10,6 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationContext,
     AdversarialValidationFinding,
     AdversarialValidationResult,
-    apply_adversarial_fix,
     build_adversarial_validation_context,
     extract_all_changed_files,
     extract_changed_test_files,
@@ -1000,90 +999,3 @@ class TestRunAdversarialValidation:
         assert result.is_blocked
         assert result.result == "BLOCKED"
         assert "could not be completed" in result.summary
-
-
-class TestApplyAdversarialFix:
-    """Test applying regression test and fix on PR branch."""
-
-    @patch("auto_coder.adversarial_validator.cmd")
-    @patch("auto_coder.adversarial_validator.git_commit_with_retry")
-    @patch("auto_coder.adversarial_validator.git_push")
-    @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.adversarial_validator.get_commit_log")
-    def test_apply_adversarial_fix_with_regression_test(self, mock_commit_log, mock_run_prompt, mock_git_push, mock_git_commit, mock_cmd):
-        mock_commit_log.return_value = "commit log"
-        mock_run_prompt.return_value = "ACTION_SUMMARY: Added regression test and fixed validation error"
-        mock_cmd.run_command.return_value = MagicMock(success=True, stdout=" M src/code.py\n A tests/test_regression.py")
-        mock_git_commit.return_value = MagicMock(success=True)
-        mock_git_push.return_value = MagicMock(success=True)
-
-        config = AutomationConfig()
-        pr_data = {"number": 50, "title": "Feature PR", "body": "Fixes #5"}
-        val_result = AdversarialValidationResult(
-            result="NEEDS_FIX",
-            summary="Found violation",
-            findings=[
-                AdversarialValidationFinding(
-                    violated_requirement="Spec requires Y",
-                    counterexample="Given state S, when action A occurs, then R, but produces X, tests pass because Z",
-                    test_gap="Test did not verify boundary condition",
-                    suggested_regression_scenario="Add boundary test",
-                )
-            ],
-        )
-
-        actions = apply_adversarial_fix("owner/repo", pr_data, config, val_result)
-        assert any("Committed regression test (tests/test_regression.py)" in a for a in actions)
-        assert any("Pushed adversarial fixes" in a for a in actions)
-        mock_git_commit.assert_called_once()
-        mock_git_push.assert_called_once()
-
-    @patch("auto_coder.adversarial_validator.cmd")
-    @patch("auto_coder.adversarial_validator.git_commit_with_retry")
-    @patch("auto_coder.adversarial_validator.git_push")
-    @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.adversarial_validator.get_commit_log")
-    def test_apply_adversarial_fix_rejects_code_only_without_test_or_exemption(self, mock_commit_log, mock_run_prompt, mock_git_push, mock_git_commit, mock_cmd):
-        """Fix that only changes code and fails to provide test or NO_TEST_REASON must be rejected."""
-        mock_commit_log.return_value = "commit log"
-        mock_run_prompt.return_value = "ACTION_SUMMARY: Updated code only"
-        mock_cmd.run_command.return_value = MagicMock(success=True, stdout=" M src/code.py")
-
-        config = AutomationConfig()
-        pr_data = {"number": 50, "title": "Feature PR", "body": "Fixes #5"}
-        val_result = AdversarialValidationResult(
-            result="NEEDS_FIX",
-            summary="Found violation",
-            findings=[AdversarialValidationFinding(violated_requirement="Spec requires Y", counterexample="Given S...")],
-        )
-
-        actions = apply_adversarial_fix("owner/repo", pr_data, config, val_result)
-        assert any("Adversarial fix rejected" in a for a in actions)
-        mock_git_commit.assert_not_called()
-        mock_git_push.assert_not_called()
-
-    @patch("auto_coder.adversarial_validator.cmd")
-    @patch("auto_coder.adversarial_validator.git_commit_with_retry")
-    @patch("auto_coder.adversarial_validator.git_push")
-    @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.adversarial_validator.get_commit_log")
-    def test_apply_adversarial_fix_accepts_documented_test_exemption(self, mock_commit_log, mock_run_prompt, mock_git_push, mock_git_commit, mock_cmd):
-        """Fix that only changes code but provides NO_TEST_REASON is accepted with documented exemption."""
-        mock_commit_log.return_value = "commit log"
-        mock_run_prompt.return_value = "ACTION_SUMMARY: Fixed code\nNO_TEST_REASON: Hardware IO cannot be mocked in CI environment"
-        mock_cmd.run_command.return_value = MagicMock(success=True, stdout=" M src/code.py")
-        mock_git_commit.return_value = MagicMock(success=True)
-        mock_git_push.return_value = MagicMock(success=True)
-
-        config = AutomationConfig()
-        pr_data = {"number": 50, "title": "Feature PR", "body": "Fixes #5"}
-        val_result = AdversarialValidationResult(
-            result="NEEDS_FIX",
-            summary="Found violation",
-            findings=[AdversarialValidationFinding(violated_requirement="Spec requires Y", counterexample="Given S...")],
-        )
-
-        actions = apply_adversarial_fix("owner/repo", pr_data, config, val_result)
-        assert any("Committed adversarial fix with documented test exemption" in a for a in actions)
-        mock_git_commit.assert_called_once()
-        mock_git_push.assert_called_once()

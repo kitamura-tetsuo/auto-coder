@@ -13,8 +13,6 @@ from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
-from .git_info import get_commit_log
-from .git_utils import git_commit_with_retry, git_push
 from .issue_context import get_linked_issues_context
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
@@ -22,12 +20,11 @@ from .prompt_loader import render_prompt
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
-from .utils import CommandExecutor
 
 logger = get_logger(__name__)
-cmd = CommandExecutor()
 
 ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
+ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 
 
 @dataclass
@@ -87,6 +84,57 @@ class AdversarialValidationContext:
     changed_tests: List[str] = field(default_factory=list)
     issue_context: str = ""
     is_diff_truncated: bool = False
+
+
+def adversarial_validation_comment_marker(head_sha: str) -> str:
+    """Return the stable marker used to deduplicate validation comments."""
+    return f"<!-- auto-coder-adversarial-validation:{head_sha} -->"
+
+
+def format_adversarial_validation_comment(result: AdversarialValidationResult, head_sha: str) -> str:
+    """Render a bounded, human-readable PR comment for a validation result.
+
+    The raw CLI response is intentionally excluded because it can contain a very
+    large event stream.  The parsed summary and every structured finding retain
+    the actionable reviewer output while keeping the GitHub comment usable.
+    """
+    status = result.result.strip().upper() or "ERROR"
+    status_icon = "✅" if result.is_pass else "❌" if result.needs_fix else "⚠️"
+    lines = [
+        adversarial_validation_comment_marker(head_sha),
+        f"## {status_icon} Auto-Coder adversarial validation: {status}",
+        "",
+        f"Validated commit: `{head_sha}`",
+        "",
+        result.summary.strip() or "No validation summary was provided.",
+    ]
+
+    if result.dynamic_check_requested:
+        lines.extend(["", f"Dynamic check requested: `{result.dynamic_check_requested}`"])
+
+    if result.findings:
+        lines.extend(["", f"### Findings ({len(result.findings)})"])
+        for index, finding in enumerate(result.findings, start=1):
+            lines.extend(["", f"#### {index}. Violated requirement", finding.violated_requirement.strip() or "Not specified."])
+            if finding.counterexample.strip():
+                lines.extend(["", "**Counterexample**", "", finding.counterexample.strip()])
+            if finding.test_gap.strip():
+                lines.extend(["", "**Test gap**", "", finding.test_gap.strip()])
+            if finding.suggested_regression_scenario.strip():
+                lines.extend(["", "**Suggested regression scenario**", "", finding.suggested_regression_scenario.strip()])
+
+    if result.diagnostic_category or result.diagnostic_reason:
+        lines.extend(["", "### Diagnostic"])
+        if result.diagnostic_category:
+            lines.append(f"Category: `{result.diagnostic_category}`")
+        if result.diagnostic_reason:
+            lines.append(f"Reason: {result.diagnostic_reason}")
+
+    comment = "\n".join(lines)
+    if len(comment) > ADVERSARIAL_VALIDATION_COMMENT_LIMIT:
+        suffix = "\n\n_Comment truncated by Auto-Coder; the complete response remains in the structured LLM interaction log._"
+        comment = comment[: ADVERSARIAL_VALIDATION_COMMENT_LIMIT - len(suffix)].rstrip() + suffix
+    return comment
 
 
 def is_test_file(file_path: str) -> bool:
@@ -762,154 +810,3 @@ def run_adversarial_validation(
     )
 
     return result
-
-
-def _get_modified_files_from_status() -> List[str]:
-    """Get list of modified/added files from git status."""
-    status_res = cmd.run_command(["git", "status", "--porcelain"])
-    if not status_res.success or not status_res.stdout.strip():
-        return []
-
-    changed_files = []
-    for line in status_res.stdout.splitlines():
-        line_clean = line.strip()
-        if len(line_clean) >= 3:
-            # File path starts after status code (e.g., ' M file.py' -> 'file.py')
-            file_part = line_clean[2:].strip()
-            # Handle renames 'old -> new'
-            if " -> " in file_part:
-                file_part = file_part.split(" -> ")[1].strip()
-            if file_part:
-                changed_files.append(file_part)
-
-    return changed_files
-
-
-def apply_adversarial_fix(
-    repo_name: str,
-    pr_data: Dict[str, Any],
-    config: AutomationConfig,
-    validation_result: AdversarialValidationResult,
-    github_client: Optional[Any] = None,
-    backend_manager: Optional[BackendManager] = None,
-) -> List[str]:
-    """Apply corrective fix and regression tests on the same PR branch.
-
-    Instructs the implementation agent to:
-    1. Add a regression test exposing the counterexample.
-    2. Fix the implementation to satisfy the specification.
-    3. Verify regression test creation before pushing, requiring explicit exemption if impractical.
-
-    Args:
-        repo_name: Repository name ('owner/repo')
-        pr_data: PR data dictionary
-        config: AutomationConfig instance
-        validation_result: The failing AdversarialValidationResult
-        github_client: Optional GitHubClient instance
-        backend_manager: Optional BackendManager for implementation
-
-    Returns:
-        List of action strings describing results
-    """
-    actions: List[str] = []
-    pr_number = pr_data.get("number", 0)
-
-    try:
-        # Build findings summary for prompt
-        findings_text_blocks = []
-        for idx, finding in enumerate(validation_result.findings, start=1):
-            block = f"### Finding {idx}:\n" f"- **Violated Requirement**: {finding.violated_requirement}\n" f"- **Counterexample**: {finding.counterexample}\n" f"- **Test Gap**: {finding.test_gap}\n" f"- **Suggested Regression Scenario**: {finding.suggested_regression_scenario}\n"
-            findings_text_blocks.append(block)
-
-        findings_summary = "\n".join(findings_text_blocks) if findings_text_blocks else validation_result.summary
-
-        # Get commit log since branch creation
-        commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
-
-        # Extract linked issues context
-        client = github_client
-        if client is None:
-            try:
-                client = GitHubClient.get_instance()
-            except Exception:
-                client = None
-        linked_issues_context = get_linked_issues_context(client, repo_name, pr_body=pr_data.get("body", ""), pr_data=pr_data)
-
-        # Render adversarial fix prompt
-        fix_prompt = render_prompt(
-            "pr.adversarial_fix",
-            pr_number=pr_number,
-            repo_name=repo_name,
-            pr_title=pr_data.get("title", "Unknown"),
-            adversarial_findings=findings_summary,
-            commit_log=commit_log or "(No commit history)",
-            linked_issues_context=linked_issues_context,
-        )
-
-        with ProgressStage(f"Fixing adversarial violation (PR #{pr_number})"):
-            response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
-
-        if response:
-            preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
-            actions.append(f"Applied adversarial regression fix: {preview}...")
-        else:
-            actions.append("No response from LLM for adversarial fix")
-
-        # Inspect changed files
-        changed_files = _get_modified_files_from_status()
-        test_files_changed = [f for f in changed_files if is_test_file(f)]
-
-        # If code was changed but no regression test was created, prompt specifically for the missing test or justification
-        if changed_files and not test_files_changed:
-            logger.warning(f"Adversarial fix modified files ({changed_files}) but no regression test file was added/modified. Prompting for regression test or explicit exemption...")
-            retry_test_prompt = (
-                f"You modified implementation files ({', '.join(changed_files)}), but did NOT create or update any test files under tests/.\n"
-                f"You MUST either:\n"
-                f"1. Add a focused regression test file under tests/ (e.g. tests/test_*.py) reproducing this counterexample:\n"
-                f"{findings_summary}\n\n"
-                f"2. OR if an automated test is truly impossible/impractical to write, you MUST explicitly output: NO_TEST_REASON: <detailed justification>."
-            )
-            retry_resp = run_llm_prompt(retry_test_prompt, backend_manager=backend_manager)
-            if retry_resp:
-                response = f"{response}\n{retry_resp}"
-            changed_files = _get_modified_files_from_status()
-            test_files_changed = [f for f in changed_files if is_test_file(f)]
-
-        if changed_files:
-            # Check if exemption reason was provided if no test was created
-            no_test_match = re.search(r"NO_TEST_REASON:\s*(.+)", response or "", re.IGNORECASE)
-            no_test_reason = no_test_match.group(1).strip() if no_test_match else ""
-
-            if not test_files_changed and not no_test_reason:
-                actions.append("Adversarial fix rejected: implementation was modified but no regression test was created and no NO_TEST_REASON justification was provided.")
-                logger.warning("Adversarial fix rejected: code modified without regression test or exemption reason.")
-                return actions
-
-            cmd.run_command(["git", "add", "."])
-            if test_files_changed:
-                commit_msg = f"Auto-Coder: Add regression test and fix adversarial violation (PR #{pr_number})"
-            else:
-                commit_msg = f"Auto-Coder: Fix adversarial violation (test exemption: {no_test_reason}) (PR #{pr_number})"
-
-            c_res = git_commit_with_retry(commit_msg)
-            if c_res.success:
-                if test_files_changed:
-                    actions.append(f"Committed regression test ({', '.join(test_files_changed)}) and fix for adversarial violation")
-                else:
-                    actions.append(f"Committed adversarial fix with documented test exemption: {no_test_reason}")
-
-                p_res = git_push()
-                if p_res.success:
-                    actions.append("Pushed adversarial fixes to GitHub to trigger new CI run")
-                else:
-                    actions.append(f"Failed to push adversarial fixes: {p_res.stderr}")
-            else:
-                actions.append(f"Failed to commit adversarial fixes: {c_res.stderr}")
-        else:
-            actions.append("No changes generated by adversarial fix")
-
-    except Exception as e:
-        logger.error(f"Error applying adversarial fix for PR #{pr_number}: {e}")
-        actions.append(f"Error applying adversarial fix for PR #{pr_number}: {e}")
-
-    return actions
