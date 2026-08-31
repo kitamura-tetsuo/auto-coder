@@ -145,6 +145,12 @@ class TestParseAdversarialValidationResponse:
   "findings": [
     {
       "violated_requirement": "State must be persisted before event dispatch",
+      "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
+      "reachability": "The public save endpoint calls persist_state and then dispatch_event on this branch",
+      "required_behavior": "Persist state before dispatching the event",
+      "actual_behavior": "dispatch_event runs before persist_state",
+      "evidence": "The supplied service patch shows the calls in the conflicting order",
       "counterexample": "Given state S, when action A occurs, then specification requires R, but implementation produces X, and tests pass because mock ignores order",
       "test_gap": "Current unit tests assert both calls happen but not the order",
       "suggested_regression_scenario": "Test state persistence timestamp is strictly before dispatch timestamp"
@@ -163,13 +169,77 @@ class TestParseAdversarialValidationResponse:
         assert "assert both calls happen" in finding.test_gap
         assert "strictly before" in finding.suggested_regression_scenario
 
-    def test_inconclusive_with_concrete_finding_is_normalized_to_needs_fix(self):
+    def test_unverified_finding_cannot_be_repromoted_by_needs_fix_label(self):
+        response = """{
+  "result": "NEEDS_FIX",
+  "summary": "Caching may expose stale state if an assumed call path exists",
+  "dynamic_check_requested": "tests/test_cache.py::test_production_entry_point",
+  "findings": [
+    {
+      "violated_requirement": "REQ-001 requires fresh state",
+      "evidence_classification": "UNVERIFIED",
+      "counterexample": "A theoretical stale-cache path"
+    }
+  ]
+}"""
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "INCONCLUSIVE"
+        assert result.is_blocked
+        assert not result.needs_fix
+        assert result.findings == []
+        assert result.dynamic_check_requested == "tests/test_cache.py::test_production_entry_point"
+
+    def test_unverified_finding_prevents_contradictory_pass(self):
+        response = """{
+  "result": "PASS",
+  "summary": "The implementation appears correct, but one material path is unverified",
+  "findings": [{
+    "requirement_id": "REQ-001-test",
+    "violated_requirement": "REQ-001 requires fresh state",
+    "evidence_classification": "UNVERIFIED",
+    "counterexample": "A suspected stale-cache path"
+  }]
+}"""
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "INCONCLUSIVE"
+        assert result.findings == []
+        assert result.is_blocked
+
+    @pytest.mark.parametrize(
+        "missing_field",
+        ["reachability", "required_behavior", "actual_behavior", "evidence"],
+    )
+    def test_demonstrated_finding_requires_complete_reachability_evidence(self, missing_field):
+        finding = {
+            "violated_requirement": "REQ-001 requires rejection",
+            "requirement_id": "REQ-001-test",
+            "evidence_classification": "DEMONSTRATED",
+            "reachability": "POST /items reaches validate on input S",
+            "required_behavior": "Reject S",
+            "actual_behavior": "Return success for S",
+            "evidence": "The supplied branch returns True",
+            "counterexample": "Given S, POST /items must reject but returns success",
+        }
+        del finding[missing_field]
+
+        result = parse_adversarial_validation_response(json.dumps({"result": "NEEDS_FIX", "findings": [finding]}))
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "schema_error"
+        assert missing_field in (result.diagnostic_reason or "")
+
+    def test_inconclusive_test_gap_is_not_normalized_to_needs_fix(self):
         response = """{
   "result": "INCONCLUSIVE",
   "summary": "One file was unavailable, but a required test category is absent",
   "findings": [
     {
       "violated_requirement": "The Issue requires an HTTP-level regression test",
+      "evidence_classification": "UNVERIFIED",
       "counterexample": "Given the complete test manifest, when coverage is inspected, then the specification requires an HTTP test, but only a service test exists, and current tests pass because they never cross the HTTP boundary",
       "test_gap": "No changed HTTP or E2E test is present",
       "suggested_regression_scenario": "Exercise diagnosis and apply through the HTTP connector"
@@ -179,9 +249,9 @@ class TestParseAdversarialValidationResponse:
 
         result = parse_adversarial_validation_response(response)
 
-        assert result.result == "NEEDS_FIX"
-        assert result.needs_fix
-        assert len(result.findings) == 1
+        assert result.result == "INCONCLUSIVE"
+        assert not result.needs_fix
+        assert result.findings == []
 
     def test_parse_bare_json(self):
         json_resp = '{"result": "PASS", "summary": "Looks good", "findings": []}'
@@ -197,6 +267,12 @@ class TestParseAdversarialValidationResponse:
   "findings": [
     {
       "violated_requirement": "Spec requirement R",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
+          "reachability": "The public handler reaches branch B for state S",
+          "required_behavior": "Produce R",
+          "actual_behavior": "Produce X",
+          "evidence": "The supplied handler patch returns X from branch B",
       "counterexample": "Given state S, produces X",
       "test_gap": "Gap G",
       "suggested_regression_scenario": "Scenario T"
@@ -245,7 +321,7 @@ class TestParseAdversarialValidationResponse:
         assert result.is_blocked
         assert result.result == "ERROR"
 
-    def test_parse_text_fallback_needs_fix(self):
+    def test_parse_text_fallback_needs_fix_fails_closed_without_evidence_schema(self):
         text_resp = """RESULT: NEEDS_FIX
 VIOLATED_REQUIREMENT: User session must expire after 2 hours
 COUNTEREXAMPLE: Given state S, when token is 3 hours old, then specification requires logout, but current implementation accepts it because timestamp is checked against local time instead of UTC
@@ -253,21 +329,20 @@ TEST_GAP: Tests mock datetime.now() with UTC timezone directly
 SUGGESTED_REGRESSION_SCENARIO: Assert token expiration with timezone offset differences
 """
         result = parse_adversarial_validation_response(text_resp)
-        assert result.needs_fix
-        assert len(result.findings) == 1
-        assert "User session must expire" in result.findings[0].violated_requirement
-        assert "Given state S" in result.findings[0].counterexample
+        assert result.result == "ERROR"
+        assert not result.needs_fix
+        assert result.findings == []
 
     def test_parse_text_concrete_finding_overrides_pass(self):
-        """Structured text counterexamples also receive finding-first precedence."""
+        """Legacy text cannot assert the demonstrated fields required to block."""
         text_resp = """RESULT: PASS
 VIOLATED_REQUIREMENT: User session must expire after 2 hours
 COUNTEREXAMPLE: Given state S, produces invalid token
 """
         result = parse_adversarial_validation_response(text_resp)
         assert not result.is_pass
-        assert result.needs_fix
-        assert result.result == "NEEDS_FIX"
+        assert not result.needs_fix
+        assert result.result == "ERROR"
 
     def test_parse_text_concrete_finding_overrides_blocked(self):
         text_resp = """RESULT: BLOCKED
@@ -279,11 +354,9 @@ SUGGESTED_REGRESSION_SCENARIO: Persist an event while delivery is offline
 
         result = parse_adversarial_validation_response(text_resp)
 
-        assert result.result == "NEEDS_FIX"
-        assert result.needs_fix
-        assert len(result.findings) == 1
-        assert "delivery is mocked" in result.findings[0].counterexample
-        assert result.diagnostic_category == "blocked_with_concrete_finding"
+        assert result.result == "BLOCKED"
+        assert not result.needs_fix
+        assert result.findings == []
 
     def test_parse_empty_response_fails_closed_to_error(self):
         """Empty response must fail closed to ERROR and block merge."""
@@ -953,6 +1026,7 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-test", text="Must do X")],
         )
         mock_run_prompt.return_value = """{
   "result": "NEEDS_FIX",
@@ -960,6 +1034,12 @@ class TestRunAdversarialValidation:
   "findings": [
     {
       "violated_requirement": "Spec X",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
+          "reachability": "The public entry point reaches the shown branch for S",
+          "required_behavior": "Return R",
+          "actual_behavior": "Return X",
+          "evidence": "The supplied diff returns X on that branch",
       "counterexample": "Given state S, when A occurs, then R, but produces X, tests pass because Y",
       "test_gap": "Gap",
       "suggested_regression_scenario": "Scenario"
@@ -1147,6 +1227,7 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-test", text="Must do X")],
         )
         mock_run_prompt.side_effect = [
             """{
@@ -1156,6 +1237,12 @@ class TestRunAdversarialValidation:
   "findings": [
     {
       "violated_requirement": "State reload invariant",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
+          "reachability": "The focused reload test executes the production reload path",
+          "required_behavior": "Preserve reloaded state",
+          "actual_behavior": "Reload produces X",
+          "evidence": "The supplied path or focused dynamic check demonstrates X",
       "counterexample": "Given state S, when reload occurs, then persisted timestamp is lost",
       "test_gap": "Test does not check reload",
       "suggested_regression_scenario": "Test state reload"
@@ -1349,6 +1436,46 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_demonstrated_finding_for_unknown_requirement_cannot_block_as_needs_fix(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="One requirement",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="REQ-001: Persist state",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-r1", text="Persist state")],
+        )
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "NEEDS_FIX",
+                "summary": "An invented hardening invariant is violated",
+                "requirement_coverage": [{"requirement_id": "REQ-001-r1", "status": "VERIFIED", "evidence": "Persistence is correct"}],
+                "findings": [
+                    {
+                        "requirement_id": "REQ-999-invented",
+                        "violated_requirement": "All caches should have extra defensive guards",
+                        "evidence_classification": "DEMONSTRATED",
+                        "reachability": "The cache entry point accepts an empty key",
+                        "required_behavior": "Reject empty keys",
+                        "actual_behavior": "Accept an empty key",
+                        "evidence": "The implementation has no empty-key guard",
+                        "counterexample": "Given an empty key, the cache accepts it",
+                    }
+                ],
+            }
+        )
+
+        result = run_adversarial_validation("owner/repo", {"number": 100, "title": "One requirement"}, AutomationConfig(), backend_manager=MagicMock())
+
+        assert result.result == "ERROR"
+        assert not result.needs_fix
+        assert result.findings == []
+        assert result.diagnostic_category == "unknown_finding_requirement_id"
+        assert "REQ-999-invented" in (result.diagnostic_reason or "")
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
@@ -1400,6 +1527,7 @@ class TestRunAdversarialValidation:
   "summary": "Implementation file is partial, but required HTTP coverage is absent",
   "findings": [{
     "violated_requirement": "HTTP-level tests are required",
+    "evidence_classification": "UNVERIFIED",
     "counterexample": "Given the complete test manifest, when required categories are compared, then an HTTP test is required, but only a service test exists, and CI passes because no HTTP test runs",
     "test_gap": "The changed-test manifest has no HTTP test",
     "suggested_regression_scenario": "Add an HTTP connector regression test"
@@ -1413,11 +1541,9 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "NEEDS_FIX"
-        assert result.needs_fix
-        assert result.diagnostic_category == "incomplete_evidence_coverage"
-        assert "src/huge.py" in (result.diagnostic_reason or "")
-        assert result.summary.count("Review coverage also remains incomplete") == 1
+        assert result.result == "INCONCLUSIVE"
+        assert not result.needs_fix
+        assert result.findings == []
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -1432,6 +1558,7 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-test", text="Must do X")],
         )
         mock_run_prompt.side_effect = [
             """{
@@ -1446,6 +1573,12 @@ class TestRunAdversarialValidation:
   "findings": [
     {
       "violated_requirement": "State reload invariant",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
+          "reachability": "The focused reload test executes the production reload path",
+          "required_behavior": "Preserve reloaded state",
+          "actual_behavior": "Reload produces X",
+          "evidence": "The supplied path or focused dynamic check demonstrates X",
       "counterexample": "Given state S, produces X",
       "test_gap": "Test failed on reload",
       "suggested_regression_scenario": "Fix reload logic"
@@ -1469,6 +1602,12 @@ class TestRunAdversarialValidation:
   "summary": "Test failure confirmed the suspected specification violation",
   "findings": [{
     "violated_requirement": "State reload invariant",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
+          "reachability": "The focused reload test executes the production reload path",
+          "required_behavior": "Preserve reloaded state",
+          "actual_behavior": "Reload produces X",
+          "evidence": "The supplied path or focused dynamic check demonstrates X",
     "counterexample": "Given state S, produces X",
     "test_gap": "Test failed on reload",
     "suggested_regression_scenario": "Fix reload logic"

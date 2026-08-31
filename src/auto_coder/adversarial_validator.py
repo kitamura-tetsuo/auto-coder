@@ -30,14 +30,20 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v5"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v6"
 
 
 @dataclass
 class AdversarialValidationFinding:
-    """Individual specification violation or test gap identified during validation."""
+    """Demonstrated specification violation identified during validation."""
 
+    requirement_id: str = ""
     violated_requirement: str = ""
+    reachability: str = ""
+    required_behavior: str = ""
+    actual_behavior: str = ""
+    evidence: str = ""
+    evidence_classification: str = "DEMONSTRATED"
     counterexample: str = ""
     test_gap: str = ""
     suggested_regression_scenario: str = ""
@@ -75,7 +81,7 @@ class AdversarialValidationResult:
 
     Fail-closed design:
     - Only 'PASS' with 0 findings evaluates to is_pass=True.
-    - Parsed concrete findings normalize the aggregate result to 'NEEDS_FIX'.
+    - Only findings carrying demonstrated reachability evidence normalize to 'NEEDS_FIX'.
     - Empty, malformed, 'BLOCKED', 'INCONCLUSIVE', or 'ERROR' evaluates to is_blocked=True.
     """
 
@@ -226,9 +232,14 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
         for index, finding in enumerate(result.findings, start=1):
-            lines.extend(["", f"#### {index}. Violated requirement", _bounded_comment_field(finding.violated_requirement) or "Not specified."])
+            requirement_label = f"`{finding.requirement_id}`: " if finding.requirement_id else ""
+            lines.extend(["", f"#### {index}. Violated requirement", f"{requirement_label}{_bounded_comment_field(finding.violated_requirement) or 'Not specified.'}"])
             if finding.counterexample.strip():
                 lines.extend(["", "**Counterexample**", "", _bounded_comment_field(finding.counterexample)])
+            if finding.reachability.strip():
+                lines.extend(["", "**Reachable path**", "", _bounded_comment_field(finding.reachability)])
+            if finding.evidence.strip():
+                lines.extend(["", "**Demonstrating evidence**", "", _bounded_comment_field(finding.evidence)])
             if finding.test_gap.strip():
                 lines.extend(["", "**Test gap**", "", _bounded_comment_field(finding.test_gap)])
             if finding.suggested_regression_scenario.strip():
@@ -824,7 +835,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     Fail-closed policy:
     - Entire response schema must be strictly valid and consistent.
     - PASS requires raw_result == "PASS" and findings to be strictly empty ([] or None).
-    - Valid concrete findings override PASS/INCONCLUSIVE/BLOCKED labels and normalize to NEEDS_FIX.
+    - Demonstrated, reachable findings override labels and normalize to NEEDS_FIX.
+    - Explicitly unverified suspicions are discarded as findings and produce INCONCLUSIVE.
     - Malformed or empty finding elements fail closed to ERROR.
     - NEEDS_FIX requires at least one finding with a concrete counterexample; missing counterexamples are never synthesized.
     - Malformed or unparseable schemas fail closed to ERROR.
@@ -923,6 +935,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                 raw_findings = parsed.get("findings")
                 findings: List[AdversarialValidationFinding] = []
+                unverified_suspicion = False
 
                 if raw_findings is not None:
                     if not isinstance(raw_findings, list):
@@ -952,44 +965,81 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                                 "finding entry must not be empty",
                             )
 
-                        ce = str(item.get("counterexample", "")).strip()
-                        if not ce:
-                            # Counterexample is mandatory for a valid finding. Do NOT synthesize fake counterexamples.
+                        classification = str(item.get("evidence_classification", "")).strip().upper()
+                        if classification not in {"DEMONSTRATED", "UNVERIFIED"}:
                             return _parse_error(
                                 raw_response,
                                 "schema_error",
-                                "Reviewer reported a defect without providing the required concrete counterexample",
-                                "finding entry is missing a non-empty counterexample",
+                                "Reviewer finding lacks a valid evidence classification",
+                                "evidence_classification must be DEMONSTRATED or UNVERIFIED",
                             )
 
-                        req = str(item.get("violated_requirement", "")).strip() or "Specification requirement violated"
+                        if classification == "UNVERIFIED":
+                            unverified_suspicion = True
+                            continue
+
+                        required_fields = {
+                            "requirement_id": str(item.get("requirement_id", "")).strip(),
+                            "violated_requirement": str(item.get("violated_requirement", "")).strip(),
+                            "reachability": str(item.get("reachability", "")).strip(),
+                            "required_behavior": str(item.get("required_behavior", "")).strip(),
+                            "actual_behavior": str(item.get("actual_behavior", "")).strip(),
+                            "evidence": str(item.get("evidence", "")).strip(),
+                            "counterexample": str(item.get("counterexample", "")).strip(),
+                        }
+                        missing_fields = [name for name, value in required_fields.items() if not value]
+                        if missing_fields:
+                            return _parse_error(
+                                raw_response,
+                                "schema_error",
+                                "Reviewer reported a blocking defect without demonstrated reachability evidence",
+                                f"DEMONSTRATED finding is missing: {', '.join(missing_fields)}",
+                            )
+
+                        req = required_fields["violated_requirement"]
+                        ce = required_fields["counterexample"]
                         gap = str(item.get("test_gap", "")).strip() or "Existing tests do not assert this condition"
                         scen = str(item.get("suggested_regression_scenario", "")).strip() or "Add regression test covering counterexample"
 
                         findings.append(
                             AdversarialValidationFinding(
+                                requirement_id=required_fields["requirement_id"],
                                 violated_requirement=req,
+                                reachability=required_fields["reachability"],
+                                required_behavior=required_fields["required_behavior"],
+                                actual_behavior=required_fields["actual_behavior"],
+                                evidence=required_fields["evidence"],
+                                evidence_classification=classification,
                                 counterexample=ce,
                                 test_gap=gap,
                                 suggested_regression_scenario=scen,
                             )
                         )
 
+                if unverified_suspicion and not findings:
+                    for entry in requirement_coverage:
+                        if entry.status == "VIOLATED":
+                            entry.status = "UNVERIFIED"
+
                 # Determine result - enforce consistency and fail-closed
                 if raw_result == "PASS":
                     # Valid concrete findings outrank the contradictory top-level
                     # label. Malformed findings have already failed schema parsing.
-                    result_val = "NEEDS_FIX" if findings else "PASS"
+                    result_val = "NEEDS_FIX" if findings else "INCONCLUSIVE" if unverified_suspicion else "PASS"
                 elif raw_result == "NEEDS_FIX":
                     if not findings:
-                        # NEEDS_FIX claimed but no valid counterexample findings provided -> fail closed to ERROR
-                        return _parse_error(
-                            raw_response,
-                            "schema_error",
-                            "Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexamples",
-                            "NEEDS_FIX requires at least one valid finding",
-                        )
-                    result_val = "NEEDS_FIX"
+                        if unverified_suspicion:
+                            result_val = "INCONCLUSIVE"
+                        else:
+                            # A bare NEEDS_FIX remains malformed and fails closed.
+                            return _parse_error(
+                                raw_response,
+                                "schema_error",
+                                "Reviewer claimed NEEDS_FIX without supplying demonstrated behavioral counterexamples",
+                                "NEEDS_FIX requires at least one DEMONSTRATED finding",
+                            )
+                    else:
+                        result_val = "NEEDS_FIX"
                 elif raw_result in ("INCONCLUSIVE", "BLOCKED"):
                     # A proven counterexample outranks uncertainty or an
                     # infrastructure diagnostic. Never discard concrete findings.
@@ -1040,49 +1090,20 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     has_text_findings = bool(violated_req or counterexample or test_gap or suggested_reg)
 
     if re.search(r"^\s*RESULT\s*:\s*NEEDS_FIX", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        if not counterexample:
-            return _parse_error(
-                raw_response,
-                "schema_error",
-                "Reviewer claimed NEEDS_FIX without supplying concrete behavioral counterexample",
-                "text NEEDS_FIX response is missing COUNTEREXAMPLE",
-            )
-        findings_list = [
-            AdversarialValidationFinding(
-                violated_requirement=violated_req or "Specification requirement violated",
-                counterexample=counterexample,
-                test_gap=test_gap or "Existing tests do not assert this condition",
-                suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
-            )
-        ]
-        return AdversarialValidationResult(
-            result="NEEDS_FIX",
-            summary="Specification violations found",
-            findings=findings_list,
-            raw_response=raw_response,
+        return _parse_error(
+            raw_response,
+            "schema_error",
+            "Legacy text finding cannot demonstrate the required reachable counterexample evidence",
+            "blocking findings must use the structured JSON evidence schema",
         )
 
     if re.search(r"^\s*RESULT\s*:\s*PASS", cleaned_response, re.MULTILINE | re.IGNORECASE):
         if has_text_findings:
-            if not counterexample:
-                return _parse_error(
-                    raw_response,
-                    "schema_error",
-                    "Reviewer reported a defect without a concrete behavioral counterexample",
-                    "PASS response contains defect markers but no COUNTEREXAMPLE",
-                )
-            return AdversarialValidationResult(
-                result="NEEDS_FIX",
-                summary="Concrete specification violation overrides contradictory PASS label",
-                findings=[
-                    AdversarialValidationFinding(
-                        violated_requirement=violated_req or "Specification requirement violated",
-                        counterexample=counterexample,
-                        test_gap=test_gap or "Existing tests do not assert this condition",
-                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
-                    )
-                ],
-                raw_response=raw_response,
+            return _parse_error(
+                raw_response,
+                "schema_error",
+                "Legacy text finding cannot demonstrate the required reachable counterexample evidence",
+                "blocking findings must use the structured JSON evidence schema",
             )
         return AdversarialValidationResult(
             result="PASS",
@@ -1092,20 +1113,6 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*INCONCLUSIVE", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        if counterexample:
-            return AdversarialValidationResult(
-                result="NEEDS_FIX",
-                summary="Specification violation proven despite incomplete review coverage",
-                findings=[
-                    AdversarialValidationFinding(
-                        violated_requirement=violated_req or "Specification requirement violated",
-                        counterexample=counterexample,
-                        test_gap=test_gap or "Existing tests do not assert this condition",
-                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
-                    )
-                ],
-                raw_response=raw_response,
-            )
         return AdversarialValidationResult(
             result="INCONCLUSIVE",
             summary="Validation inconclusive",
@@ -1114,22 +1121,6 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
         )
 
     if re.search(r"^\s*RESULT\s*:\s*BLOCKED", cleaned_response, re.MULTILINE | re.IGNORECASE):
-        if counterexample:
-            return AdversarialValidationResult(
-                result="NEEDS_FIX",
-                summary="Concrete specification violation overrides BLOCKED uncertainty",
-                findings=[
-                    AdversarialValidationFinding(
-                        violated_requirement=violated_req or "Specification requirement violated",
-                        counterexample=counterexample,
-                        test_gap=test_gap or "Existing tests do not assert this condition",
-                        suggested_regression_scenario=suggested_reg or "Add regression test covering counterexample",
-                    )
-                ],
-                raw_response=raw_response,
-                diagnostic_category="blocked_with_concrete_finding",
-                diagnostic_reason="Infrastructure or evidence uncertainty coexists with a concrete finding",
-            )
         return AdversarialValidationResult(
             result="BLOCKED",
             summary="Validation blocked by infrastructure or evidence failure",
@@ -1164,6 +1155,17 @@ def _apply_coverage_and_verdict_precedence(
     unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
     incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
     violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
+    finding_requirement_ids = {finding.requirement_id for finding in result.findings}
+    unknown_finding_requirement_ids = sorted(finding_requirement_ids - expected_requirement_ids)
+
+    if unknown_finding_requirement_ids:
+        reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: findings referenced unknown stable requirement IDs"
+        result.findings = []
+        result.diagnostic_category = "unknown_finding_requirement_id"
+        result.diagnostic_reason = reason
+        return result
 
     if unknown_requirement_ids and not result.findings:
         reason = f"Requirement coverage contains IDs outside the deterministic manifest: {', '.join(unknown_requirement_ids)}"
