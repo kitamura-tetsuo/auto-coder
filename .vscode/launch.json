@@ -103,7 +103,7 @@
                 "process-issues",
                 // "--disable-graphrag",
                 // "--only",
-                // "https://github.com/kitamura-tetsuo/outliner/pull/5246", 
+                // "https://github.com/kitamura-tetsuo/outliner/pull/5246",
                 // "--force-reindex",
                 "--force",
                 "--port",

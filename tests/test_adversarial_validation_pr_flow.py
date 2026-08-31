@@ -13,6 +13,7 @@ from auto_coder.adversarial_validator import (
     format_adversarial_validation_comment,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
     _get_adversarial_validation_eligibility,
     _get_codex_review_state,
@@ -388,6 +389,15 @@ class TestAdversarialValidationCodexFeedback:
 
 class TestAdversarialValidationPRFlow:
     """Test adversarial validation integration into _handle_pr_merge."""
+
+    @pytest.fixture(autouse=True)
+    def dedicated_reviewer_publication(self):
+        """Keep flow tests focused while requiring successful App publication."""
+        with patch(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            return_value=ReviewPublicationResult(True, "APPROVE", ""),
+        ) as publisher:
+            yield publisher
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

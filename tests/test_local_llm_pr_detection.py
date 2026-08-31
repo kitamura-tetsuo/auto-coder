@@ -6,6 +6,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.issue_processor import _create_pr_for_issue
 from auto_coder.pr_processor import _handle_pr_merge, _is_local_llm_pr, is_local_llm_pr
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
@@ -154,9 +155,10 @@ class TestHandlePrMergeFixLimitation:
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True})
     @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
-    def test_clean_pr_merges_regardless_of_pr_type(self, mock_merge, mock_worktree, mock_val, mock_mergeable, mock_exit_check):
+    def test_clean_pr_merges_regardless_of_pr_type(self, mock_merge, mock_worktree, mock_publish, mock_val, mock_mergeable, mock_exit_check):
         from auto_coder.adversarial_validator import AdversarialValidationResult
 
         mock_val.return_value = AdversarialValidationResult(result="PASS", summary="Pass", findings=[])
