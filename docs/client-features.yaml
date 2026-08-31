@@ -849,6 +849,23 @@ Recent configuration schema changes that require migration:
       - "ClaudeClient and CodexClient remain focused on local/non-cloud execution only."
       - "The orchestration layer interacts with cloud providers uniformly through CloudTaskClientBase without embedding provider-specific state names."
 
+## Cloud Run Lifecycle Abstraction (non-Jules)
+
+  cloud_run_lifecycle:
+    description: "Durable, provider-agnostic lifecycle abstraction for a non-Jules cloud provider run of a single Issue attempt, separate from CloudTaskClientBase transport operations. Introduced as implementation step 1/3 for durable cloud-run tracking; not yet wired into production dispatch and does not change Jules behavior."
+    implementation: |
+      CloudRun, CloudRunRepository, CloudRunEvent, CloudRunPolicy, evaluate_new_attempt
+      in src/auto_coder/cloud_run.py
+    architecture:
+      - "CloudRun is a dataclass keyed by (repo_name, issue_number, attempt) that records provider identity, provider task/session id, and an ordered, de-duplicated list of associated pull request numbers (pull_request_numbers)."
+      - "CloudRun.add_pull_request() appends a new PR number while preserving every previously associated PR, so a single task/run can own zero, one, or multiple PRs."
+      - "CloudRunRepository persists CloudRun records as JSON under ~/.auto-coder/<repo>/cloud_runs.json (or a custom storage_path), keyed by '<issue_number>:<attempt>'. A freshly constructed CloudRunRepository instance recovers all runs from disk, independent of any in-memory state from a prior process."
+      - "CloudRunRepository.get_by_task_id() performs a reverse lookup from a provider task/session id to its CloudRun, intended for duplicate-dispatch protection."
+      - "CloudRunPolicy is an abstract base class with allow_new_attempt(event: CloudRunEvent) -> bool. Provider-specific retry/auto-transition rules are expressed as CloudRunPolicy implementations supplied by the caller."
+      - "evaluate_new_attempt(event, policy) is the single generic entry point for lifecycle code to ask whether an event may transition a run to a new attempt; it delegates entirely to the supplied policy and never branches on CloudRun.provider."
+      - "This module is independent of CloudTaskClientBase: CloudRunRepository and CloudRunPolicy operate only on CloudRun/CloudRunEvent data and never require a transport client instance. Provider clients (JulesClient, ClaudeRoutineClient, CodexCloudClient) remain unchanged and continue to own only transport operations (start/query/continue/follow-up/stop)."
+      - "Jules is explicitly out of scope: JulesClient and CloudManager (issue_number -> session_id CSV mapping) are untouched and are not migrated to CloudRun."
+
 ## PR Review Thread Merge Gate
 
   unresolved_review_threads_gate:
