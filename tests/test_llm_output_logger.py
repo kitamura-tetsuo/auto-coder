@@ -162,6 +162,7 @@ class TestLLMOutputLogger:
             assert data["model"] == "qwen-turbo"
             assert data["prompt_length"] == len("test prompt")
             assert data["response_length"] == len("test response")
+            assert data["response"] == "test response"
             assert data["duration_ms"] == 567
             assert data["status"] == "success"
 
@@ -409,6 +410,7 @@ class TestLLMOutputLogger:
 
             assert data["prompt_length"] == 10000
             assert data["response_length"] == 10000
+            assert data["response"] == long_response
 
     def test_log_file_permissions(self):
         """Test that the log file is created with secure permissions (0o600)."""

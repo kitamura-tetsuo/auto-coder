@@ -4,6 +4,17 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Configuration
 
+#### Dedicated adversarial reviewer GitHub App
+
+Adversarial validation verdicts are published as native pull-request reviews using
+the separately configured `auto-coder-reviewer` GitHub App. Configure its `app_id`
+and optional `client_id` under `[github-app-auto-coder-reviewer]` in
+`~/.auto-coder/config.toml`; keep the private key at
+`~/.auto-coder/auto-coder-reviewer.pem`. `PASS` maps to `APPROVE`, `NEEDS_FIX`
+maps to `REQUEST_CHANGES`, and other outcomes map deterministically to `COMMENT`.
+Publication is pinned to the validated head SHA and fails closed without falling
+back to the normal user credential.
+
 #### Backend Configuration
 
 The auto-coder system supports multiple LLM backends:
@@ -15,6 +26,16 @@ The auto-coder system supports multiple LLM backends:
           description = "Direct Qwen API access"
           QWEN_API_KEY = "your-api-key"
 ```
+
+#### Codex No-Edit Execution Policy
+
+No-edit Codex backends do not require
+`--dangerously-bypass-approvals-and-sandbox`. Editable Codex backends must use
+an unattended policy: that bypass flag, `--full-auto`, or explicit
+`--sandbox workspace-write` with `--ask-for-approval never`. For every no-edit
+invocation, including custom `backend_type = "codex"` aliases, auto-coder
+removes dangerous/YOLO flags and enforces `--sandbox read-only`,
+`--ask-for-approval never`, and the configured safe approval reviewer override.
 
 #### Repository-Scoped Partial Configuration Overrides
 
@@ -143,7 +164,7 @@ The system supports extensive backend configuration options. Key fields include:
   - Behavior:
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
     - Before creating a Codex Cloud task, weekly usage is fetched with ChatGPT OAuth credentials from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). The task starts only when the remaining percentage is at least `(days_until_reset + 1) * 5`; missing credentials, authentication errors, and malformed responses safely route to the next backend. OpenAI API keys are never used for this request.
-    - Codex Cloud supports `continue_if_paused()` via the internal WHAM backend API (`POST https://chatgpt.com/backend-api/wham/tasks`). When CI checks fail on a Codex Cloud-created PR, auto-coder resolves the latest assistant turn ID via WHAM turn APIs and sends a follow-up continuation prompt using Codex OAuth credentials (never the OpenAI API key), allowing Codex to resume and fix the PR without spawning new tasks.
+    - Codex Cloud supports `continue_if_paused()` via the internal WHAM backend API (`POST https://chatgpt.com/backend-api/wham/tasks`). When CI checks fail on a Codex Cloud-created PR, auto-coder resolves the latest assistant turn ID via WHAM turn APIs and sends a follow-up continuation prompt using Codex OAuth credentials (never the OpenAI API key), allowing Codex to resume and fix the PR without spawning new tasks. Repeated resumptions do not post duplicate informational PR comments; Jules fix-request notifications use the same deduplication rule.
     - When `model` is configured, it is forwarded to Codex Cloud as a CLI configuration override.
     - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
     - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.
@@ -914,8 +935,11 @@ Recent configuration schema changes that require migration:
     implementation: |
       run_adversarial_validation, parse_adversarial_validation_response,
       build_adversarial_validation_context, extract_changed_test_files,
-      apply_adversarial_fix in src/auto_coder/adversarial_validator.py,
-      _handle_pr_merge in src/auto_coder/pr_processor.py,
+      format_adversarial_validation_comment in src/auto_coder/adversarial_validator.py,
+      _handle_pr_merge, _get_adversarial_validation_eligibility,
+      _get_codex_review_state in src/auto_coder/pr_processor.py,
+      resolve_issue_oracles, get_linked_issues_context in src/auto_coder/issue_context.py,
+      get_pr_changed_file_count in src/auto_coder/util/gh_cache.py,
       create_adversarial_validation_backend_manager in src/auto_coder/cli_helpers.py,
       backend_adversarial_validation in src/auto_coder/llm_backend_config.py
     configuration:
@@ -923,16 +947,27 @@ Recent configuration schema changes that require migration:
       - "ENABLE_ADVERSARIAL_VALIDATION (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var)."
     behavior:
       - "Runs after normal CI / GitHub Actions checks are green and before merge eligibility."
+      - "Issue Eligibility: Eligibility and validation context share one verified-oracle resolver for candidates found in PR body, title, or branch metadata. A PR with no candidate Issue is outside validation scope and continues through other merge requirements without a validation result. A candidate that is missing, unavailable, or resolves to another PR fails closed instead of being treated as intentionally Issue-less."
+      - "Codex Review Ordering: For Issue-backed PRs, a Codex GitHub review summary from chatgpt-codex-connector[bot] must reach Code Review / Completed before adversarial validation starts. A summary that is still running defers the PR to a later processing iteration without a fixed delay. Comment lookup uses a strict, cache-revalidated REST path so API failures or stale cached summaries cannot be mistaken for absent/completed review activity."
+      - "Optional Codex Stage: If no Codex review summary exists, adversarial validation runs normally. A Completed summary is sufficient even without a +1 reaction and regardless of whether its reviewed commit differs from the current head."
+      - "Review Feedback Ordering: Strict tri-state review-thread checks prevent adversarial validation and merge until actionable feedback is resolved. A review-thread API error is distinct from an empty thread list and fails closed. After observing a Completed Codex summary, Auto-Coder performs a fresh second thread check before starting adversarial validation, closing the completion/finding TOCTOU window; validation remains pinned to the current PR head."
       - "Fail-Closed Design: PASS is only produced for an explicitly parsed, internally consistent PASS with 0 blocking findings; all empty, malformed, contradictory, or inconclusive responses block PR merge."
-      - "Oracle Acquisition Required: Fails closed (BLOCKED) if the linked issue specification or acceptance criteria cannot be acquired."
+      - "Parse Failure Diagnostics: Empty responses, invalid JSON, schema violations, contradictions, and unrecognized formats remain fail-closed and are logged with PR/attempt/backend/model context, a redacted 2,000-character preview, and the structured LLM interaction-log path."
+      - "Full Effective Response Retention: The structured LLM interaction log retains the redacted combined CLI response (stdout and stderr), while normal operational and trace logs remain bounded."
+      - "PR Result Publishing and Versioned SHA Deduplication: Publishes the parsed validation status, summary, structured findings, requested dynamic check, and parse diagnostic to the PR conversation for the exact validator version and validated head SHA. Before invoking the reviewer, Auto-Coder reads that durable comment: the same SHA is not sent to the same validator version again, a saved PASS proceeds to merge checks, and any saved non-PASS remains blocked until the PR head or validator version changes. Failure to read prior comments fails closed without invoking the LLM. Raw CLI event streams are excluded from every comment field, individual fields are bounded, requirement coverage is summarized by status with bounded non-passing IDs, and oversized reports are bounded globally. Codex uses its dedicated final-message output for the validator response, while compatibility JSONL parsing consumes stdout only. If a nested container cannot start Codex's read-only bwrap sandbox, a non-LLM preflight enables a no-approval fallback only inside the disposable detached validation worktree."
+      - "Dedicated GitHub App Review Publishing: Fresh validation verdicts are published as native reviews from the separately configured auto-coder-reviewer GitHub App, pinned to the validated head SHA. PASS maps to APPROVE, NEEDS_FIX maps to REQUEST_CHANGES, and other outcomes map to COMMENT. Authentication, head-race, or publication failures block further processing without falling back to the normal user credential."
+      - "Codex Structured Output Handling: For no-edit `codex --json` reviewers, requests the final assistant payload through Codex's dedicated `--output-last-message` file while retaining the JSONL stdout and stderr diagnostics in the full interaction log. If no final payload is written, strict JSONL parsing remains the compatibility fallback; failed, incomplete, or contaminated fallback streams remain blocked."
+      - "Codex Usage-Limit Diagnostics: Successful Codex JSONL item payloads are reviewer evidence and are excluded from usage-marker detection, preventing source code or command output containing phrases such as `usage limit` from causing false backend rotation. Explicit top-level error events and stderr diagnostics remain eligible limit signals."
+      - "Single-PR Metadata Completeness: REST PR normalization retains nested head/base refs and SHAs plus author identity, so `process-issues --only <PR>` uses the same merge and isolated-worktree validation inputs as normal candidate enumeration."
+      - "Oracle Acquisition Required for Eligible PRs: An Issue-backed PR fails closed (BLOCKED) if its linked specification or acceptance criteria cannot be acquired after validation starts; an intentionally Issue-less PR is skipped rather than assigned a validation status."
       - "Backend Independence: Uses independently configured strong model without silently falling back to the general implementation backend."
-      - "Diff Truncation Transparency: Alerts the reviewer when diffs exceed limits and provides complete changed-file lists so partial review is never misrepresented as complete coverage."
+      - "File-Aware Bounded Evidence: Fetches the authoritative changed-file count independently from raw diff evidence. PRs with more than 300 changed files require human review and are BLOCKED from automatic merge; a missing authoritative count also fails closed. For PRs within that limit, splits diffs by file, prioritizes complete small patches so an early large file cannot make later implementation or test files invisible, and enforces a hard evidence-size limit. A count mismatch remains explicit unverified evidence. The complete internal unverified-file set is represented in bounded prompts by its count, SHA-256 digest, and path sample. Git C-style quoted paths are decoded, while unparseable headers fail closed."
+      - "Coverage-Gated PASS: Every substantive Issue-oracle line receives a stable content-derived requirement ID. Reviewer output must provide a VERIFIED or justified IRRELEVANT coverage entry with evidence for every exact manifest ID; missing, duplicated, unknown, VIOLATED, or UNVERIFIED IDs prevent PASS regardless of any boolean completeness claim. Unknown IDs and VIOLATED entries without concrete findings fail closed as schema/contradiction ERRORs instead of being silently ignored or downgraded to finding-free INCONCLUSIVE. Every partial or unavailable per-file patch is also recorded explicitly, so a model PASS is deterministically converted to INCONCLUSIVE while any material file evidence or Issue requirement remains incomplete."
+      - "Finding-First Verdict Precedence: Any valid concrete counterexample is normalized to NEEDS_FIX even if the reviewer also reports INCONCLUSIVE/BLOCKED or other file evidence remains incomplete; coverage and infrastructure diagnostics coexist with rather than erase proven findings."
       - "Dynamic-on-Suspicion Contract: Supports dynamic test execution when requested by the reviewer; failure or inability to execute dynamic checks fails closed."
       - "Requires concrete behavioral counterexamples: `Given state S, when action A occurs, then specification requires R, but implementation produces X, and tests pass because ...`."
-      - "Regression Test Verification: When NEEDS_FIX is determined, verifies that a focused regression test file was added/modified before completing the corrective fix loop."
       - "When NEEDS_FIX is determined:"
         - "Blocks PR merge."
-        - "Checks out the PR branch and triggers a corrective fix prompt with the concrete counterexamples on the same PR / branch."
-        - "Instructs the implementation agent to add a focused regression test reproducing the counterexample and fix the code."
-        - "Stages, commits, and pushes changes to GitHub to trigger a new CI run."
-        - "Re-runs adversarial validation once CI is green again; only merges after validation returns PASS."
+        - "Publishes the concrete findings to the PR conversation without checking out or modifying the local PR branch."
+        - "For a PR associated with an existing Codex Cloud task, sends the complete bounded validation report to that task as a follow-up fix request. Delivery is recorded with a validator-version and head-SHA marker so a saved NEEDS_FIX result can be delivered after restart without being resent on every processing loop."
+        - "For other PRs, the PR author or other recipient remains responsible for applying the correction. After a new commit and green CI, Auto-Coder validates the new head SHA and only merges after PASS."

@@ -171,6 +171,9 @@ class TestGitHubClientAuthorIdExtraction:
         details = client.get_pr_details(raw_pr)
         assert details["author"] == "bob"
         assert details["author_id"] == 67890
+        assert details["user"] == {"login": "bob", "id": 67890}
+        assert details["head"] == {"ref": "feature", "sha": "abc"}
+        assert details["base"] == {"ref": "main", "sha": None}
 
 
 class TestAutomationEngineAllowlistFiltering:

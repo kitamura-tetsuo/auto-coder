@@ -3,7 +3,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    _get_review_thread_gate_state,
     _handle_pr_merge,
     _merge_pr,
     _process_pr_for_merge,
@@ -170,6 +172,15 @@ def test_get_pr_review_threads_api_error(mock_github_client):
     assert mock_github_client.has_unresolved_review_threads("owner/repo", 101) is False
 
 
+def test_strict_review_thread_gate_preserves_real_client_lookup_error(mock_github_client):
+    mock_github_client.graphql_query.side_effect = Exception("GraphQL Network Error")
+
+    state = _get_review_thread_gate_state(mock_github_client, "owner/repo", 101)
+
+    assert state.has_unresolved is False
+    assert state.lookup_error == "GraphQL Network Error"
+
+
 def test_has_unresolved_review_threads_helper(mock_github_client):
     mock_github_client.graphql_query.return_value = {
         "data": {
@@ -259,11 +270,31 @@ def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_un
 @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
 @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
 @patch("auto_coder.pr_processor._check_github_actions_status")
+@patch("auto_coder.pr_processor.run_adversarial_validation")
+@patch("auto_coder.pr_processor._merge_pr")
+def test_handle_pr_merge_fails_closed_when_real_review_thread_lookup_fails(mock_merge_pr, mock_validation, mock_checks, mock_mergeable, mock_exit_if_in_progress, mock_github_client):
+    mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+    mock_github_client.graphql_query.side_effect = Exception("reviewThreads API unavailable")
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-99", "sha": "current-head"}}
+
+    actions = _handle_pr_merge(mock_github_client, "owner/repo", pr_data, config, {})
+
+    assert any("review threads could not be checked" in action for action in actions)
+    mock_validation.assert_not_called()
+    mock_merge_pr.assert_not_called()
+
+
+@patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+@patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+@patch("auto_coder.pr_processor._check_github_actions_status")
 @patch("auto_coder.pr_processor.has_unresolved_review_threads")
 @patch("auto_coder.pr_processor.run_adversarial_validation")
+@patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
 @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
 @patch("auto_coder.pr_processor._merge_pr")
-def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_worktree, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
+def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_worktree, mock_publish, mock_adv_val, mock_has_unresolved, mock_checks, mock_mergeable, mock_exit_if_in_progress):
     mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
     mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
     mock_has_unresolved.return_value = False
@@ -274,13 +305,14 @@ def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_
 
     config = AutomationConfig()
     config.AUTO_MERGE = True
-    pr_data = {"number": 123, "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+    pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
 
     client = MagicMock()
     client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
     actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
     assert any("Successfully merged PR #123" in a for a in actions)
+    mock_adv_val.assert_called_once()
     mock_merge_pr.assert_called_once()
 
 
