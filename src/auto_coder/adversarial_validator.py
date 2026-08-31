@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
-from .issue_context import get_linked_issues_context
+from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
@@ -30,7 +30,7 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v4"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v5"
 
 
 @dataclass
@@ -49,6 +49,15 @@ class IssueRequirement:
 
     requirement_id: str = ""
     text: str = ""
+
+
+@dataclass
+class IssueRequirementManifest:
+    """Authoritative requirements and diagnostics derived from direct Issues."""
+
+    requirements: List[IssueRequirement] = field(default_factory=list)
+    mode: str = "legacy-extraction"
+    error: Optional[str] = None
 
 
 @dataclass
@@ -110,6 +119,8 @@ class AdversarialValidationContext:
     is_diff_truncated: bool = False
     unverified_files: List[str] = field(default_factory=list)
     issue_requirements: List[IssueRequirement] = field(default_factory=list)
+    requirement_manifest_mode: str = "legacy-extraction"
+    requirement_manifest_error: Optional[str] = None
     evidence_retrieval_error: Optional[str] = None
     requires_human_review: bool = False
 
@@ -359,6 +370,88 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
     return requirements
 
 
+_MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+_EXPLICIT_REQUIREMENT = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?(REQ-\d{3}):\s*(\S.*)$")
+
+
+def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
+    """Parse an exact Markdown Requirements section without interpreting other prose."""
+    section_lines: List[str] = []
+    in_section = False
+    found = False
+    for line in issue.body.splitlines():
+        heading = _MARKDOWN_HEADING.match(line)
+        if heading:
+            if in_section:
+                break
+            if heading.group(2) == "Requirements":
+                found = True
+                in_section = True
+            continue
+        if in_section:
+            section_lines.append(line)
+
+    if not found:
+        return False, [], None
+
+    entries: List[tuple[str, str]] = []
+    malformed: List[str] = []
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for raw_line in section_lines:
+        line = raw_line.strip()
+        if not line or line.startswith("<!--") or line.endswith("-->"):
+            continue
+        match = _EXPLICIT_REQUIREMENT.fullmatch(line)
+        if not match:
+            malformed.append(line)
+            continue
+        requirement_id, text = match.groups()
+        if requirement_id in seen:
+            duplicates.add(requirement_id)
+        seen.add(requirement_id)
+        entries.append((requirement_id, text.strip()))
+
+    if duplicates:
+        return True, [], f"Issue #{issue.number} Requirements section contains duplicate IDs: {', '.join(sorted(duplicates))}"
+    if malformed:
+        return True, [], f"Issue #{issue.number} Requirements section contains malformed entries: {malformed[0]}"
+    if not entries:
+        return True, [], f"Issue #{issue.number} Requirements section contains no valid REQ-NNN entries"
+    return True, entries, None
+
+
+def build_issue_requirement_manifest(resolution: IssueOracleResolution) -> IssueRequirementManifest:
+    """Build a contract from direct Issue bodies, using legacy extraction only when needed."""
+    parsed: List[tuple[VerifiedIssueOracle, bool, List[tuple[str, str]]]] = []
+    modes: set[str] = set()
+    for issue in resolution.issues:
+        explicit, entries, error = _explicit_requirements_section(issue)
+        if error:
+            return IssueRequirementManifest(mode="explicit-contract", error=error)
+        if explicit:
+            modes.add("explicit-contract")
+            parsed.append((issue, True, entries))
+        else:
+            modes.add("legacy-extraction")
+            legacy = [(requirement.requirement_id, requirement.text) for requirement in extract_issue_requirements(issue.body)]
+            parsed.append((issue, False, legacy))
+
+    explicit_id_counts: Dict[str, int] = {}
+    for _, explicit, entries in parsed:
+        if explicit:
+            for requirement_id, _ in entries:
+                explicit_id_counts[requirement_id] = explicit_id_counts.get(requirement_id, 0) + 1
+
+    requirements: List[IssueRequirement] = []
+    for issue, explicit, entries in parsed:
+        for requirement_id, requirement_text in entries:
+            validator_id = f"#{issue.number}/{requirement_id}" if explicit and explicit_id_counts[requirement_id] > 1 else requirement_id
+            requirements.append(IssueRequirement(requirement_id=validator_id, text=requirement_text))
+    mode = "mixed" if len(modes) > 1 else next(iter(modes), "legacy-extraction")
+    return IssueRequirementManifest(requirements=requirements, mode=mode)
+
+
 def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
     """Split a unified Git diff into ordered per-file patches."""
     matches = list(re.finditer(r"^diff --git .*$", pr_diff, re.MULTILINE))
@@ -542,8 +635,9 @@ def build_adversarial_validation_context(
         is_diff_truncated = bool(unverified_files)
 
     # Extract linked issues context (from body, title, branch name, session)
-    issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data)
-    issue_requirements = extract_issue_requirements(issue_context)
+    resolution = resolve_issue_oracles(client, repo_name, pr_data=pr_data, pr_body=pr_body)
+    issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data, resolution=resolution)
+    manifest = build_issue_requirement_manifest(resolution)
 
     # Extract changed test files from diff or all_changed_files
     changed_tests = [f for f in all_changed_files if is_test_file(f)] if all_changed_files else extract_changed_test_files(pr_diff)
@@ -559,7 +653,9 @@ def build_adversarial_validation_context(
         issue_context=issue_context,
         is_diff_truncated=is_diff_truncated,
         unverified_files=unverified_files,
-        issue_requirements=issue_requirements,
+        issue_requirements=manifest.requirements,
+        requirement_manifest_mode=manifest.mode,
+        requirement_manifest_error=manifest.error,
         evidence_retrieval_error=evidence_retrieval_error,
         requires_human_review=requires_human_review,
     )
@@ -1183,6 +1279,15 @@ def run_adversarial_validation(
             diagnostic_reason=context.evidence_retrieval_error,
         )
 
+    if context.requirement_manifest_error:
+        logger.warning(f"PR #{pr_number} has an invalid Issue requirement contract: {context.requirement_manifest_error}")
+        return AdversarialValidationResult(
+            result="BLOCKED",
+            summary=context.requirement_manifest_error,
+            diagnostic_category="invalid_requirement_contract",
+            diagnostic_reason=context.requirement_manifest_error,
+        )
+
     if context.requires_human_review:
         reason = "PR has more than 300 changed files; automated adversarial validation cannot authorize merge and human review is required"
         logger.warning(f"PR #{pr_number} exceeds the raw-diff coverage limit. Blocking automatic merge.")
@@ -1219,7 +1324,8 @@ def run_adversarial_validation(
     manifest_budget = max(256, config.MAX_PR_DIFF_SIZE)
     changed_tests_str = _bounded_path_manifest(context.changed_tests, manifest_budget, "(No test files detected in diff)")
     changed_files_str = _bounded_path_manifest(context.all_changed_files, manifest_budget, "(No changed files detected)")
-    requirement_manifest = "\n".join(f"- {requirement.requirement_id}: {requirement.text}" for requirement in context.issue_requirements) if context.issue_requirements else "(Requirement manifest extraction failed; PASS is forbidden.)"
+    requirement_entries = "\n".join(f"- {requirement.requirement_id}: {requirement.text}" for requirement in context.issue_requirements)
+    requirement_manifest = f"Manifest mode: {context.requirement_manifest_mode}\n{requirement_entries}" if requirement_entries else f"Manifest mode: {context.requirement_manifest_mode}\n(Requirement manifest extraction failed; PASS is forbidden.)"
     if context.has_complete_file_coverage:
         coverage_status = "COMPLETE: every changed file has complete patch evidence."
     else:
