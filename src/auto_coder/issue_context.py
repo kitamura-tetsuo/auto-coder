@@ -241,6 +241,7 @@ def get_linked_issues_context(
     repo_name: str,
     pr_body: str = "",
     pr_data: Optional[Dict[str, Any]] = None,
+    resolution: Optional[IssueOracleResolution] = None,
 ) -> str:
     """Extract linked issues from PR body/metadata and fetch their details (including parent issues)."""
     if not github_client:
@@ -248,7 +249,7 @@ def get_linked_issues_context(
 
     linked_issues_context = ""
     try:
-        resolution = resolve_issue_oracles(github_client, repo_name, pr_data=pr_data, pr_body=pr_body)
+        resolution = resolution or resolve_issue_oracles(github_client, repo_name, pr_data=pr_data, pr_body=pr_body)
         if resolution.error:
             logger.warning(f"Failed to resolve linked issue oracle: {resolution.error}")
             return ""
