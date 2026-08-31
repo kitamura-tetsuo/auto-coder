@@ -515,7 +515,8 @@ pr:
     but the current implementation can produce X,
     and the current tests would still pass because ...
 
-    A finding without a plausible behavioral counterexample must not block the PR.
+    A finding may block only when its counterexample and reachable production path are demonstrated from the supplied implementation evidence or confirmed by a focused dynamic check. Plausible, theoretical, assumption-dependent, test-gap-only, maintainability, robustness, and hardening concerns are not blocking findings.
+    If a material suspicion cannot be proven reachable, return INCONCLUSIVE with no finding and request a focused dynamic check where practical. Never guess missing reachability evidence.
     Every VIOLATED requirement coverage entry MUST have a corresponding concrete finding. Reporting VIOLATED without a finding is a schema error and fails closed.
     Use only exact requirement IDs from the supplied manifest. Any missing, duplicate, or unknown ID is a schema error and fails closed.
 
@@ -537,6 +538,11 @@ pr:
       "findings": [
         {
           "violated_requirement": "<The exact specification requirement or invariant violated>",
+          "evidence_classification": "DEMONSTRATED",
+          "reachability": "<Concrete state/action path, including entry point and branches, established by supplied code or dynamic execution>",
+          "required_behavior": "<Behavior explicitly required by the Issue requirement>",
+          "actual_behavior": "<Conflicting behavior the current implementation can actually produce>",
+          "evidence": "<Specific supplied patch/code path or focused dynamic-check result proving reachability and conflict>",
           "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
           "test_gap": "<Why the existing test suite fails to detect this defect>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
@@ -654,6 +660,11 @@ pr:
       "findings": [
         {
           "violated_requirement": "<Exact specification requirement or invariant violated>",
+          "evidence_classification": "DEMONSTRATED",
+          "reachability": "<State/action path confirmed by the dynamic execution or supplied implementation>",
+          "required_behavior": "<Behavior explicitly required by the Issue>",
+          "actual_behavior": "<Conflicting observed or demonstrably produced behavior>",
+          "evidence": "<Specific dynamic-check output or supplied code evidence proving the violation>",
           "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
           "test_gap": "<Why the test suite failed to catch this>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
