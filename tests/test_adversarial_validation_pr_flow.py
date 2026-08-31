@@ -152,7 +152,7 @@ class TestAdversarialValidationPRComment:
 
         comment = format_adversarial_validation_comment(result, "abc123")
 
-        assert comment.startswith("<!-- auto-coder-adversarial-validation:v4:abc123 -->")
+        assert comment.startswith("<!-- auto-coder-adversarial-validation:v5:abc123 -->")
         assert "adversarial validation: NEEDS_FIX" in comment
         assert "Summary" in comment
         assert "Required behavior" in comment

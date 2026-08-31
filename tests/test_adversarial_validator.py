@@ -13,6 +13,7 @@ from auto_coder.adversarial_validator import (
     IssueRequirement,
     build_adversarial_validation_context,
     build_file_aware_diff,
+    build_issue_requirement_manifest,
     extract_all_changed_files,
     extract_changed_test_files,
     extract_issue_requirements,
@@ -21,6 +22,7 @@ from auto_coder.adversarial_validator import (
     run_adversarial_validation,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.trace_logger import get_trace_logger
 
@@ -66,6 +68,54 @@ diff --git a/src/service_test.py b/src/service_test.py
         assert [requirement.text for requirement in requirements] == ["R1: Persist state.", "R2: Emit an audit event."]
         assert requirements[0].requirement_id.startswith("REQ-001-")
         assert requirements[1].requirement_id.startswith("REQ-002-")
+
+    def test_explicit_contract_uses_only_requirements_section(self):
+        issue = VerifiedIssueOracle(
+            number=1591,
+            body="## Context\nBackground only.\n### Requirements\n- REQ-001: Preserve IDs.\nREQ-002: Preserve Origin: #12/REQ-007\n## Acceptance Scenarios\nREQ-999: Not normative.",
+        )
+
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=(issue,)))
+
+        assert manifest.mode == "explicit-contract"
+        assert manifest.error is None
+        assert [(item.requirement_id, item.text) for item in manifest.requirements] == [
+            ("REQ-001", "Preserve IDs."),
+            ("REQ-002", "Preserve Origin: #12/REQ-007"),
+        ]
+
+    def test_duplicate_explicit_ids_across_issues_are_issue_qualified(self):
+        issues = (
+            VerifiedIssueOracle(number=101, body="## Requirements\nREQ-001: First contract."),
+            VerifiedIssueOracle(number=102, body="###### Requirements\n* REQ-001: Second contract."),
+        )
+
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=issues))
+
+        assert [item.requirement_id for item in manifest.requirements] == ["#101/REQ-001", "#102/REQ-001"]
+
+    @pytest.mark.parametrize(
+        "body, diagnostic",
+        [
+            ("## Requirements\nREQ-001: One.\nREQ-001: Again.", "duplicate IDs"),
+            ("## Requirements\nMust do something.", "malformed entries"),
+            ("## Requirements\n\n## Context\nNothing", "no valid REQ-NNN entries"),
+        ],
+    )
+    def test_invalid_explicit_contract_fails_closed_without_legacy_fallback(self, body, diagnostic):
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=7, body=body),)))
+
+        assert manifest.requirements == []
+        assert manifest.mode == "explicit-contract"
+        assert diagnostic in (manifest.error or "")
+
+    def test_legacy_manifest_extracts_direct_issue_body_only(self):
+        issue = VerifiedIssueOracle(number=8, body="Context line.\nRequired behavior.")
+
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=(issue,)))
+
+        assert manifest.mode == "legacy-extraction"
+        assert [item.text for item in manifest.requirements] == ["Context line.", "Required behavior."]
 
 
 class TestParseAdversarialValidationResponse:
