@@ -1513,7 +1513,7 @@ jules:
 
   issue:
     action: |-
-      Analyze the following GitHub issue and take appropriate actions:
+      Implement the following GitHub issue according to the directives below:
 
       Repository: $repo_name
       Issue #$issue_number: $issue_title
@@ -1555,33 +1555,16 @@ jules:
 
       $linked_issues_context
 
-      DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+      If this needs clarification, add a comment requesting more information
 
-      Please analyze this issue and determine the appropriate action:
-
-      1. If this needs clarification, add a comment requesting more information
-      2. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
-      3. If this is a valid bug report or feature request, provide analysis and implementation
-
-      For valid issues:
-      - Analyze the requirements
-      - Implement the necessary code changes
-      - Create or modify files as needed
       - Ensure the implementation follows best practices
       - Prefer the smart, reasonable and logically beautiful change that resolves issues.
       - Keep open the issue
       - All tests were passed in the main branch. If tests are failing, it is because of the changes.
-
-      For duplicate/invalid issues:
-      - Close the issue
-      - Add a polite comment explaining why it was closed
-
-      After taking action, respond with a summary of what you did.
+      - Commit code and open PR.
 
       This environment is a speculative execution (sandbox), so write your code to completion and run tests without fear of breaking changes or errors.
       Do not seek human confirmation or permission along the way. If you get stuck, try to overcome the problem by forming a hypothesis on your own, and only terminate after outputting the log up to that point if you absolutely cannot resolve the issue.
-
-      Please proceed with analyzing and taking action on this issue now.
 
 
 codex_cloud:
