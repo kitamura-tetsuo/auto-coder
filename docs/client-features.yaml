@@ -496,6 +496,11 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
       - "The source issue's attempt counter is incremented, and its @auto-coder label is removed."
       - "The issue is requeued through the normal issue-processing path so the next attempt-based routing/fallback model takes over."
       - "Non-empty PR behavior remains unchanged."
+    cloud_run_aware_handling:
+      - "Before incrementing the attempt or releasing the @auto-coder label, _close_empty_pr() (src/auto_coder/pr_processor.py) checks whether the source issue's current attempt owns a durable CloudRun (CloudRunRepository.get(issue_number, attempt)) and, if so, asks cloud_run_policies.get_policy_for_provider(run.provider) for the run's CloudRunPolicy."
+      - "If a policy is found and it denies the transition (CloudRunEvent(reason='empty_pr')), closing the PR stays a PR-local action: the Issue attempt is not incremented, the @auto-coder label is not released, and the issue is not requeued. The closed PR's number is still recorded on the CloudRun (CloudRunRepository.add_pull_request) without disturbing any other PR already associated with that run."
+      - "For Codex Cloud (provider='codex-cloud'), CodexCloudRunPolicy is manual-only, so an empty PR alone never authorizes a new attempt or a replacement Codex Cloud task, even when it is the only known PR for that run. This lets another valid PR from the same multi-PR CloudRun continue through ordinary PR processing unaffected."
+      - "When the issue's current attempt has no persisted CloudRun (e.g. Jules) or the provider has no registered policy, behavior is unchanged from the pre-#1607 attempt-increment/requeue flow described above."
 
 #### Jules PR Handling
 
@@ -852,12 +857,13 @@ Recent configuration schema changes that require migration:
 ## Cloud Run Lifecycle Abstraction (non-Jules)
 
   cloud_run_lifecycle:
-    description: "Durable, provider-agnostic lifecycle abstraction for a non-Jules cloud provider run of a single Issue attempt, separate from CloudTaskClientBase transport operations. Implementation step 1/3 added the abstraction; step 2/3 wired Codex Cloud Issue dispatch through it with a manual-only retry policy. Does not change Jules behavior."
+    description: "Durable, provider-agnostic lifecycle abstraction for a non-Jules cloud provider run of a single Issue attempt, separate from CloudTaskClientBase transport operations. Implementation step 1/3 added the abstraction; step 2/3 wired Codex Cloud Issue dispatch through it with a manual-only retry policy; step 3/3 made empty-PR recovery CloudRun-aware. Does not change Jules behavior."
     implementation: |
       CloudRun, CloudRunRepository, CloudRunEvent, CloudRunPolicy, evaluate_new_attempt
       in src/auto_coder/cloud_run.py
-      CodexCloudRunPolicy in src/auto_coder/cloud_run_policies.py
+      CodexCloudRunPolicy, get_policy_for_provider in src/auto_coder/cloud_run_policies.py
       Codex Cloud dispatch guard in _process_issue_codex_cloud_mode() in src/auto_coder/issue_processor.py
+      CloudRun-aware empty-PR gate in _is_cloud_run_retry_blocked() / _close_empty_pr() in src/auto_coder/pr_processor.py
     architecture:
       - "CloudRun is a dataclass keyed by (repo_name, issue_number, attempt) that records provider identity, provider task/session id, and an ordered, de-duplicated list of associated pull request numbers (pull_request_numbers)."
       - "CloudRun.add_pull_request() appends a new PR number while preserving every previously associated PR, so a single task/run can own zero, one, or multiple PRs."
@@ -869,7 +875,9 @@ Recent configuration schema changes that require migration:
       - "Jules is explicitly out of scope: JulesClient and CloudManager (issue_number -> session_id CSV mapping) are untouched and are not migrated to CloudRun."
       - "_process_issue_codex_cloud_mode() looks up the issue's current attempt (attempt_manager.get_current_attempt, parsed from 'Auto-Coder Attempt:' issue comments) and checks CloudRunRepository.get(issue_number, attempt) before dispatching. If a codex-cloud CloudRun already exists for that attempt, CodexCloudClient.start_task() is not called again; the existing task_id is reused and the @auto-coder label context is kept. This guard is independent of the @auto-coder label, so it remains effective across a process restart and when the label is missing, stale, or inconsistent."
       - "On a successful new dispatch, a CloudRun(provider='codex-cloud') is saved for (issue_number, attempt) before CloudManager.add_session() records the task id in cloud.csv, so the durable duplicate-dispatch guard is in place before the task-identifying issue comment is posted."
-      - "CodexCloudRunPolicy (src/auto_coder/cloud_run_policies.py) implements CloudRunPolicy with a manual-only retry rule: allow_new_attempt() returns True only for a CloudRunEvent whose reason is the MANUAL_RETRY_REASON ('manual') marker. RUNNING, PAUSED, FAILED, UNKNOWN, a stalled/no-progress timeout, or the absence of a PR must never by themselves authorize a new attempt or replacement Codex Cloud task; only an explicitly human-driven or otherwise separately authorized transition (reason='manual') is allowed through. Automatic unrecoverable-state detection for Codex Cloud remains a non-goal."
+      - "CodexCloudRunPolicy (src/auto_coder/cloud_run_policies.py) implements CloudRunPolicy with a manual-only retry rule: allow_new_attempt() returns True only for a CloudRunEvent whose reason is the MANUAL_RETRY_REASON ('manual') marker. RUNNING, PAUSED, FAILED, UNKNOWN, a stalled/no-progress timeout, an empty PR, or the absence of a PR must never by themselves authorize a new attempt or replacement Codex Cloud task; only an explicitly human-driven or otherwise separately authorized transition (reason='manual') is allowed through. Automatic unrecoverable-state detection for Codex Cloud remains a non-goal."
+      - "get_policy_for_provider(provider) (src/auto_coder/cloud_run_policies.py) is the single provider-name-to-CloudRunPolicy mapping (currently 'codex-cloud' -> CodexCloudRunPolicy()); generic Issue/PR processing code calls this instead of branching on provider name itself, so a future provider only needs a new policy entry here."
+      - "_is_cloud_run_retry_blocked() (src/auto_coder/pr_processor.py) is the CloudRun-aware gate used by _close_empty_pr(): for the issue's current attempt, it loads any persisted CloudRun, associates the PR being closed with that run via CloudRunRepository.add_pull_request() (preserving every other PR already associated with the run), and asks the run's policy (via get_policy_for_provider) whether a CloudRunEvent(reason='empty_pr') authorizes a new attempt. When the policy denies it (e.g. CodexCloudRunPolicy), _close_empty_pr() still closes the empty PR but skips incrementing the Issue's attempt counter and skips releasing the @auto-coder label, so no replacement Codex Cloud task is started or enqueued and any other PR owned by the same run continues through ordinary PR processing unaffected. When the issue's current attempt has no persisted CloudRun (e.g. Jules) or the provider has no registered policy, this returns False and the pre-existing attempt-increment/requeue behavior is unchanged."
 
 ## PR Review Thread Merge Gate
 

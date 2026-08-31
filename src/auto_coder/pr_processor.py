@@ -698,6 +698,50 @@ def _resolve_pr_issue_numbers(
     return []
 
 
+def _is_cloud_run_retry_blocked(
+    repo_name: str,
+    issue_number: int,
+    pr_number: int,
+    reason: str,
+) -> bool:
+    """Return True if a durable `CloudRun` policy forbids a new attempt.
+
+    Looks up the `CloudRun` (if any) persisted for the issue's current
+    attempt and, when one exists, associates `pr_number` with it and asks
+    its provider policy whether `reason` authorizes a new attempt. Issues
+    with no persisted `CloudRun` (e.g. Jules, or any other path not yet
+    migrated to this lifecycle) are unaffected and always return False so
+    their existing behavior is preserved (see issue #1607, REQ-006/REQ-007).
+
+    Centralizing this lookup keeps provider-name branching out of PR
+    processing call sites (REQ-008): the actual retry decision comes from
+    `cloud_run_policies.get_policy_for_provider()`.
+    """
+    try:
+        from .cloud_run import CloudRunEvent, CloudRunRepository
+        from .cloud_run_policies import get_policy_for_provider
+
+        attempt = get_current_attempt(repo_name, issue_number)
+        cloud_run_repo = CloudRunRepository(repo_name)
+        run = cloud_run_repo.get(issue_number, attempt)
+        if run is None:
+            return False
+
+        policy = get_policy_for_provider(run.provider)
+        if policy is None:
+            return False
+
+        # Preserve this PR's association with the run without disturbing any
+        # other PR already associated with it.
+        cloud_run_repo.add_pull_request(issue_number, attempt, pr_number)
+
+        event = CloudRunEvent(run=run, reason=reason, proposed_attempt=attempt + 1)
+        return not policy.allow_new_attempt(event)
+    except Exception as e:
+        logger.error(f"Failed to evaluate CloudRun retry policy for issue #{issue_number}: {e}")
+        return False
+
+
 def _close_empty_pr(
     github_client: Any,
     repo_name: str,
@@ -763,6 +807,16 @@ def _close_empty_pr(
             return result
 
         for issue_number in issue_numbers:
+            if _is_cloud_run_retry_blocked(repo_name, issue_number, pr_number, reason="empty_pr"):
+                # The PR belongs to a durable CloudRun (e.g. Codex Cloud) whose
+                # policy does not authorize an automatic new attempt from an
+                # empty PR alone. Closing the PR must stay a PR-local action:
+                # the Issue attempt is not incremented, the @auto-coder label
+                # is not released, and no replacement task is enqueued (see
+                # issue #1607).
+                result.actions.append(f"Preserved issue #{issue_number} at its current attempt (CloudRun manual-only retry policy; empty PR #{pr_number} closed)")
+                continue
+
             # Reopen the source issue if it was closed
             try:
                 issue_obj = client.get_issue(repo_name, issue_number)
