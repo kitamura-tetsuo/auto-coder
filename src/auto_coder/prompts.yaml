@@ -539,7 +539,11 @@ pr:
           "evidence": "<Specific supplied patch/code path or focused dynamic-check result proving reachability and conflict>",
           "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
           "test_gap": "<Why the existing test suite fails to detect this defect>",
-          "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
+          "suggested_regression_scenario": "<Specific test scenario to expose this bug>",
+          "anchor_path": "<Exact path of a changed file that this finding concerns>",
+          "anchor_line": "<Optional changed line number, or null for a file-level thread>",
+          "anchor_side": "RIGHT or LEFT",
+          "anchor_start_line": "<Optional start of a changed line range, or null>"
         }
       ],
       "specification_gaps": [
@@ -717,7 +721,11 @@ pr:
           "evidence": "<Specific dynamic-check output or supplied code evidence proving the violation>",
           "counterexample": "Given state S, when action A occurs, then the specification requires R, but the current implementation can produce X, and the current tests would still pass because ...",
           "test_gap": "<Why the test suite failed to catch this>",
-          "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
+          "suggested_regression_scenario": "<Specific test scenario to expose this bug>",
+          "anchor_path": "<Exact path of a changed file that this finding concerns>",
+          "anchor_line": "<Optional changed line number, or null for a file-level thread>",
+          "anchor_side": "RIGHT or LEFT",
+          "anchor_start_line": "<Optional start of a changed line range, or null>"
         }
       ]
     }

@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, format_adversarial_validation_comment
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 
 
@@ -77,7 +77,7 @@ def test_load_reviewer_app_config_with_repo_override(tmp_path: Path) -> None:
             AdversarialValidationResult(
                 result="NEEDS_FIX",
                 summary="Violation",
-                findings=[AdversarialValidationFinding("Requirement", "Counterexample", "Missing test", "Regression")],
+                findings=[AdversarialValidationFinding(violated_requirement="Requirement", counterexample="Counterexample", test_gap="Missing test", suggested_regression_scenario="Regression", anchor_path="src/example.py")],
             ),
             "REQUEST_CHANGES",
         ),
@@ -86,6 +86,8 @@ def test_load_reviewer_app_config_with_repo_override(tmp_path: Path) -> None:
 )
 def test_publishes_native_review_with_installation_token_and_exact_sha(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: AdversarialValidationResult, event: str) -> None:
     client = RecordingClient(auth_responses())
+    if result.needs_fix:
+        client.responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
     publication = reviewer.publish("owner/repo", 42, "sha-a", result)
@@ -95,7 +97,12 @@ def test_publishes_native_review_with_installation_token_and_exact_sha(tmp_path:
     review_call = client.calls[-1]
     assert review_call[0] == "POST"
     assert review_call[1].endswith("/repos/owner/repo/pulls/42/reviews")
-    assert review_call[2]["json"] == {"body": format_adversarial_validation_comment(result, "sha-a"), "event": event, "commit_id": "sha-a"}
+    payload = review_call[2]["json"]
+    assert payload["event"] == event
+    assert payload["commit_id"] == "sha-a"
+    assert "Validated commit: `sha-a`" in payload["body"]
+    if result.needs_fix:
+        assert payload["comments"][0]["subject_type"] == "file"
     assert review_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
 
 
@@ -108,6 +115,71 @@ def test_head_race_fails_closed_without_review(tmp_path: Path, monkeypatch: pyte
     assert publication.success is False
     assert publication.event == "APPROVE"
     assert len(client.calls) == 3
+    assert all(not call[1].endswith("/reviews") for call in client.calls)
+
+
+def test_each_finding_is_an_independent_review_comment_with_safe_anchors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    findings = [
+        AdversarialValidationFinding(
+            requirement_id="REQ-001",
+            violated_requirement="Preserve the value",
+            required_behavior="Return the saved value",
+            actual_behavior="Returns zero",
+            counterexample="Saving one returns zero",
+            evidence="The return statement is changed",
+            test_gap="No reload assertion",
+            suggested_regression_scenario="Reload after saving one",
+            anchor_path="src/example.py",
+            anchor_line=11,
+        ),
+        AdversarialValidationFinding(
+            requirement_id="REQ-002",
+            violated_requirement="Validate the complete file",
+            counterexample="An invalid footer is accepted",
+            anchor_path="src/example.py",
+        ),
+    ]
+    responses = auth_responses()
+    responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -10,2 +10,2 @@\n context\n-old\n+new"}]))
+    client = RecordingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="NEEDS_FIX", findings=findings))
+
+    assert publication.success is True
+    payload = client.calls[-1][2]["json"]
+    assert len(payload["comments"]) == 2
+    assert payload["comments"][0]["line"] == 11
+    assert payload["comments"][0]["side"] == "RIGHT"
+    assert "REQ-001" in payload["comments"][0]["body"]
+    assert "Suggested regression scenario" in payload["comments"][0]["body"]
+    assert payload["comments"][1]["subject_type"] == "file"
+    assert "Preserve the value" not in payload["body"]
+
+
+def test_invalid_line_falls_back_to_file_level_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = auth_responses()
+    responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
+    reviewer = configured_reviewer(tmp_path, RecordingClient(responses), monkeypatch)
+    finding = AdversarialValidationFinding(violated_requirement="Requirement", anchor_path="src/example.py", anchor_line=999)
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="NEEDS_FIX", findings=[finding]))
+
+    assert publication.success is True
+    comment = reviewer._client.calls[-1][2]["json"]["comments"][0]  # type: ignore[attr-defined,index]
+    assert comment == {"path": "src/example.py", "body": "### Auto-Coder adversarial finding\n\n**Violated requirement**\n\nRequirement", "subject_type": "file"}
+
+
+def test_missing_changed_file_anchor_fails_without_submitting_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = auth_responses()[:-1]
+    responses.append(response(200, [{"filename": "src/other.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
+    client = RecordingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    finding = AdversarialValidationFinding(violated_requirement="Requirement", anchor_path="src/missing.py")
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="NEEDS_FIX", findings=[finding]))
+
+    assert publication.success is False
     assert all(not call[1].endswith("/reviews") for call in client.calls)
 
 

@@ -169,7 +169,8 @@ class TestParseAdversarialValidationResponse:
       "evidence": "The supplied service patch shows the calls in the conflicting order",
       "counterexample": "Given state S, when action A occurs, then specification requires R, but implementation produces X, and tests pass because mock ignores order",
       "test_gap": "Current unit tests assert both calls happen but not the order",
-      "suggested_regression_scenario": "Test state persistence timestamp is strictly before dispatch timestamp"
+      "suggested_regression_scenario": "Test state persistence timestamp is strictly before dispatch timestamp",
+      "anchor_path": "src/state.py"
     }
   ]
 }
@@ -184,6 +185,9 @@ class TestParseAdversarialValidationResponse:
         assert "Given state S" in finding.counterexample
         assert "assert both calls happen" in finding.test_gap
         assert "strictly before" in finding.suggested_regression_scenario
+        assert finding.anchor_path == "src/state.py"
+        assert finding.anchor_line is None
+        assert finding.anchor_side == "RIGHT"
 
     def test_unverified_finding_cannot_be_repromoted_by_needs_fix_label(self):
         response = """{
@@ -291,7 +295,8 @@ class TestParseAdversarialValidationResponse:
           "evidence": "The supplied handler patch returns X from branch B",
       "counterexample": "Given state S, produces X",
       "test_gap": "Gap G",
-      "suggested_regression_scenario": "Scenario T"
+      "suggested_regression_scenario": "Scenario T",
+      "anchor_path": "src/feature.py"
     }
   ]
 }"""
@@ -1109,7 +1114,8 @@ class TestRunAdversarialValidation:
           "evidence": "The supplied diff returns X on that branch",
       "counterexample": "Given state S, when A occurs, then R, but produces X, tests pass because Y",
       "test_gap": "Gap",
-      "suggested_regression_scenario": "Scenario"
+      "suggested_regression_scenario": "Scenario",
+      "anchor_path": "src/feature.py"
     }
   ]
 }"""
@@ -1312,7 +1318,8 @@ class TestRunAdversarialValidation:
           "evidence": "The supplied path or focused dynamic check demonstrates X",
       "counterexample": "Given state S, when reload occurs, then persisted timestamp is lost",
       "test_gap": "Test does not check reload",
-      "suggested_regression_scenario": "Test state reload"
+      "suggested_regression_scenario": "Test state reload",
+      "anchor_path": "src/feature.py"
     }
   ]
 }""",
@@ -1528,6 +1535,7 @@ class TestRunAdversarialValidation:
                         "actual_behavior": "Accept an empty key",
                         "evidence": "The implementation has no empty-key guard",
                         "counterexample": "Given an empty key, the cache accepts it",
+                        "anchor_path": "src/feature.py",
                     }
                 ],
             }
@@ -1648,7 +1656,8 @@ class TestRunAdversarialValidation:
           "evidence": "The supplied path or focused dynamic check demonstrates X",
       "counterexample": "Given state S, produces X",
       "test_gap": "Test failed on reload",
-      "suggested_regression_scenario": "Fix reload logic"
+        "suggested_regression_scenario": "Fix reload logic",
+        "anchor_path": "src/feature.py"
     }
   ]
 }""",
@@ -1677,7 +1686,8 @@ class TestRunAdversarialValidation:
           "evidence": "The supplied path or focused dynamic check demonstrates X",
     "counterexample": "Given state S, produces X",
     "test_gap": "Test failed on reload",
-    "suggested_regression_scenario": "Fix reload logic"
+    "suggested_regression_scenario": "Fix reload logic",
+    "anchor_path": "src/feature.py"
   }]
 }"""
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)

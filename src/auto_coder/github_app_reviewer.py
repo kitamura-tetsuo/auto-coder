@@ -13,7 +13,12 @@ from typing import Callable, Optional
 import httpx
 import jwt
 
-from .adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
+from .adversarial_validator import (
+    AdversarialValidationFinding,
+    AdversarialValidationResult,
+    format_adversarial_finding_comment,
+    format_adversarial_review_summary,
+)
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
 
@@ -194,11 +199,29 @@ class GitHubAppReviewer:
             current_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else None
             if not validated_head_sha or current_sha != validated_head_sha:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
+            comments: list[dict[str, object]] = []
+            if result.needs_fix:
+                changed_files: dict[str, object] = {}
+                page = 1
+                while True:
+                    files_response = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/files?per_page=100&page={page}", token).json()
+                    if not isinstance(files_response, list):
+                        raise RuntimeError("GitHub did not return changed files")
+                    changed_files.update({item["filename"]: item.get("patch", "") for item in files_response if isinstance(item, dict) and isinstance(item.get("filename"), str)})
+                    if len(files_response) < 100:
+                        break
+                    page += 1
+                comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
             self._request(
                 "POST",
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",
                 token,
-                json={"body": format_adversarial_validation_comment(result, validated_head_sha), "event": event, "commit_id": validated_head_sha},
+                json={
+                    "body": format_adversarial_review_summary(result, validated_head_sha),
+                    "event": event,
+                    "commit_id": validated_head_sha,
+                    **({"comments": comments} if comments else {}),
+                },
             )
             return ReviewPublicationResult(True, event, "")
         except Exception:
@@ -206,6 +229,51 @@ class GitHubAppReviewer:
             # include credential-bearing request details.
             logger.error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
+
+    @staticmethod
+    def _finding_comment(finding: AdversarialValidationFinding, changed_files: dict[str, object]) -> dict[str, object]:
+        """Build one review comment, safely degrading invalid lines to file level."""
+        if not finding.anchor_path or finding.anchor_path not in changed_files:
+            raise ValueError("Every actionable finding must anchor to a changed file")
+        comment: dict[str, object] = {
+            "path": finding.anchor_path,
+            "body": format_adversarial_finding_comment(finding),
+        }
+        side = finding.anchor_side.strip().upper()
+        patch = changed_files[finding.anchor_path]
+        valid_lines = _diff_lines(patch if isinstance(patch, str) else "", side)
+        if side in {"LEFT", "RIGHT"} and finding.anchor_line in valid_lines:
+            comment.update({"line": finding.anchor_line, "side": side})
+            if finding.anchor_start_line in valid_lines and finding.anchor_start_line != finding.anchor_line and finding.anchor_start_line < finding.anchor_line:
+                comment.update({"start_line": finding.anchor_start_line, "start_side": side})
+        else:
+            comment["subject_type"] = "file"
+        return comment
+
+
+def _diff_lines(patch: str, side: str) -> set[int]:
+    """Return line numbers represented on one side of a unified diff patch."""
+    import re
+
+    represented: set[int] = set()
+    old_line = new_line = 0
+    for raw_line in patch.splitlines():
+        match = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw_line)
+        if match:
+            old_line, new_line = int(match.group(1)), int(match.group(2))
+            continue
+        if raw_line.startswith("\\") or not raw_line or raw_line.startswith(("---", "+++")):
+            continue
+        prefix = raw_line[0]
+        if prefix != "+":
+            if side == "LEFT":
+                represented.add(old_line)
+            old_line += 1
+        if prefix != "-":
+            if side == "RIGHT":
+                represented.add(new_line)
+            new_line += 1
+    return represented
 
 
 def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
