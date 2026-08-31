@@ -114,3 +114,14 @@ class CloudTaskClientBase(LLMClientBase):
             True if successfully stopped, False otherwise.
         """
         return False
+
+    def send_followup(self, task_id: str, message: str) -> bool:
+        """Assign follow-up work to an existing cloud task or session.
+
+        This optional capability is deliberately separate from
+        :meth:`continue_if_paused`: follow-up work can be assigned after a task
+        has produced a pull request, even when ordinary lifecycle recovery is
+        no longer applicable. Providers that do not support follow-up work
+        cleanly opt out by retaining this default implementation.
+        """
+        return False

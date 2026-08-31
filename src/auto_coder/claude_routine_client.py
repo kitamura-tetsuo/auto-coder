@@ -397,6 +397,25 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             logger.warning(f"Error sending continuation to Claude Routine session {task_id}: {e}")
             return False
 
+    def send_followup(self, task_id: str, message: str) -> bool:
+        """Assign work to an existing Claude cloud session, including post-PR work."""
+        if not task_id or not message:
+            return False
+        cmd = ["claude", "-p", f"--cloud={task_id}", message]
+        env = os.environ.copy()
+        if self.token:
+            env["CLAUDE_CODE_ROUTINE_TOKEN"] = self.token
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.token
+        try:
+            result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
+            if result.returncode == 0:
+                self.active_sessions[task_id] = message
+                return True
+            logger.warning(f"Failed to send follow-up to Claude session {task_id}: {result.stderr or result.stdout}")
+        except Exception as exc:
+            logger.warning(f"Error sending follow-up to Claude session {task_id}: {exc}")
+        return False
+
     def list_tasks(self, repo_name: Optional[str] = None) -> List[CloudTask]:
         """List active or recent Claude Routine sessions."""
         tasks: List[CloudTask] = []
