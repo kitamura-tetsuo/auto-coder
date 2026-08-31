@@ -1744,3 +1744,44 @@ def get_pr_allowlist_from_config(
         except (ValueError, TypeError):
             pass
     return result
+
+
+def get_adversarial_validation_max_reviews_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Optional[int]:
+    """Get the maximum number of adversarial review executions from config.toml.
+
+    Looks for max_reviews in [adversarial_validation] section in config.toml
+    (or fallback keys: max_validations, max_attempts, max_count).
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
+
+    Returns:
+        Maximum review executions (int) or None if not configured.
+    """
+    for key in ("max_reviews", "max_validations", "max_attempts", "max_count"):
+        val = _get_config_value(
+            section="adversarial_validation",
+            key=key,
+            default=None,
+            config_path=config_path,
+            value_type=int,
+            repo_name=repo_name,
+        )
+        if val is not None:
+            return val
+    for key in ("max_reviews", "max_validations", "max_attempts"):
+        val = _get_config_value(
+            section="backend_adversarial_validation",
+            key=key,
+            default=None,
+            config_path=config_path,
+            value_type=int,
+            repo_name=repo_name,
+        )
+        if val is not None:
+            return val
+    return None

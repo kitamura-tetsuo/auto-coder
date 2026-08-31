@@ -181,6 +181,8 @@ class AutomationConfig:
         pr_allowlist: Optional[List[int]] = None,
         repo_name: Optional[str] = None,
         max_open_prs_for_issues: Optional[int] = None,
+        max_adversarial_validations: Optional[int] = None,
+        max_adversarial_reviews: Optional[int] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -194,6 +196,8 @@ class AutomationConfig:
             pr_allowlist: Optional custom PR author allowlist (numeric user IDs)
             repo_name: Optional GitHub repository in 'owner/repo' format for repo-scoped config.
             max_open_prs_for_issues: Optional maximum number of open PRs allowed when collecting issues.
+            max_adversarial_validations: Optional maximum number of adversarial reviews to perform.
+            max_adversarial_reviews: Optional alias for max_adversarial_validations.
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -218,6 +222,7 @@ class AutomationConfig:
         # Load Jules and other settings from config with repo scoping
         from .llm_backend_config import (
             get_active_repo_name,
+            get_adversarial_validation_max_reviews_from_config,
             get_github_action_log_max_length_from_config,
             get_isolate_single_test_on_failure_from_config,
             get_issue_allowlist_from_config,
@@ -239,6 +244,14 @@ class AutomationConfig:
         configured_max_open_prs = max_open_prs_for_issues if max_open_prs_for_issues is not None else get_process_issues_max_open_prs_for_issues_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_OPEN_PRS_FOR_ISSUES", configured_max_open_prs)
         object.__setattr__(self, "max_open_prs_for_issues", configured_max_open_prs)
+
+        configured_max_adv_reviews = max_adversarial_validations if max_adversarial_validations is not None else max_adversarial_reviews if max_adversarial_reviews is not None else get_adversarial_validation_max_reviews_from_config(repo_name=effective_repo)
+        object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATIONS", configured_max_adv_reviews)
+        object.__setattr__(self, "max_adversarial_validations", configured_max_adv_reviews)
+        object.__setattr__(self, "MAX_ADVERSARIAL_REVIEWS", configured_max_adv_reviews)
+        object.__setattr__(self, "max_adversarial_reviews", configured_max_adv_reviews)
+        object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATION_ATTEMPTS", configured_max_adv_reviews)
+        object.__setattr__(self, "max_adversarial_validation_attempts", configured_max_adv_reviews)
 
         # Load GitHub author allowlists (numeric user IDs)
         configured_issue_allowlist = issue_allowlist if issue_allowlist is not None else get_issue_allowlist_from_config(repo_name=effective_repo)
@@ -539,6 +552,21 @@ class AutomationConfig:
             object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", enabled)
             logger.info(f"Loaded ENABLE_ADVERSARIAL_VALIDATION={enabled} from environment")
 
+        # Max adversarial validation executions override
+        max_adv_val_env = os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_REVIEWS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATION_ATTEMPTS")
+        if max_adv_val_env is not None:
+            try:
+                val = int(max_adv_val_env)
+                object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATIONS", val)
+                object.__setattr__(self, "max_adversarial_validations", val)
+                object.__setattr__(self, "MAX_ADVERSARIAL_REVIEWS", val)
+                object.__setattr__(self, "max_adversarial_reviews", val)
+                object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATION_ATTEMPTS", val)
+                object.__setattr__(self, "max_adversarial_validation_attempts", val)
+                logger.info(f"Loaded MAX_ADVERSARIAL_VALIDATIONS={val} from environment")
+            except ValueError as e:
+                logger.error(f"Failed to parse AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS: {e}")
+
         # Max open PRs for issue processing override
         max_open_prs_env = os.environ.get("AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES") or os.environ.get("AUTO_CODER_MAX_OPEN_PRS")
         if max_open_prs_env is not None:
@@ -687,6 +715,15 @@ class AutomationConfig:
     # Enable/disable strong-model adversarial validation step before merge
     # Default: True (adversarial validation enabled)
     ENABLE_ADVERSARIAL_VALIDATION: bool = True
+
+    # Maximum number of adversarial review executions for a PR before bypassing to merge
+    # None means unlimited (default)
+    MAX_ADVERSARIAL_VALIDATIONS: Optional[int] = None
+    max_adversarial_validations: Optional[int] = None
+    MAX_ADVERSARIAL_REVIEWS: Optional[int] = None
+    max_adversarial_reviews: Optional[int] = None
+    MAX_ADVERSARIAL_VALIDATION_ATTEMPTS: Optional[int] = None
+    max_adversarial_validation_attempts: Optional[int] = None
 
     # Enable/disable auto-merge for Dependabot PRs
     # When IGNORE_DEPENDABOT_PRS is False and this is True:

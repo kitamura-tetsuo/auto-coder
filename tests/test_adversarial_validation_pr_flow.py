@@ -1170,3 +1170,182 @@ class TestAtomicMergeSHAPrecondition:
         assert result is False
         mock_close_issues.assert_not_called()
         mock_archive.assert_not_called()
+
+
+class TestMaxAdversarialValidationsGating:
+    """Tests for MAX_ADVERSARIAL_VALIDATIONS limit enforcement."""
+
+    @pytest.fixture(autouse=True)
+    def dedicated_reviewer_publication(self):
+        """Keep flow tests focused while requiring successful App publication."""
+        with patch(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            return_value=ReviewPublicationResult(True, "APPROVE", ""),
+        ) as publisher:
+            yield publisher
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_max_adversarial_validations_zero_skips_validation_and_merges_green_pr(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = 0
+
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_called_once()
+        assert any("reached maximum adversarial review limit (0)" in action for action in actions)
+        assert any("Successfully merged PR #100" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_max_adversarial_validations_reached_with_prior_comments_skips_and_merges(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "newcommit1234"
+        client = MagicMock()
+        client.get_pr_comments.return_value = [
+            {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+            {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha2 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+        ]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = 2
+
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_called_once()
+        assert any("reached maximum adversarial review limit (2)" in action for action in actions)
+        assert any("Successfully merged PR #100" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_max_adversarial_validations_not_reached_executes_validation(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="All specifications verified",
+            findings=[],
+        )
+
+        head_sha = "newcommit1234"
+        client = MagicMock()
+        client.get_pr_comments.return_value = [
+            {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+        ]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = 2
+
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_called_once()
+        mock_worktree.assert_called_once()
+        mock_merge_pr.assert_called_once()
+        assert any("Adversarial validation passed" in action for action in actions)
+        assert any("Successfully merged PR #100" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_max_adversarial_validations_reached_with_needs_fix_on_current_sha_merges_green_pr(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        client = MagicMock()
+        client.get_pr_comments.return_value = [
+            {"body": f"<!-- auto-coder-adversarial-validation:v4:{head_sha} -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+        ]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = 1
+
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_called_once()
+        assert any("reached maximum adversarial review limit (1)" in action for action in actions)
+        assert any("Successfully merged PR #100" in action for action in actions)

@@ -29,6 +29,7 @@ from .adversarial_validator import (
     AdversarialValidationResult,
     adversarial_validation_codex_feedback_marker,
     adversarial_validation_comment_marker,
+    count_adversarial_validation_comments,
     format_adversarial_validation_comment,
     run_adversarial_validation,
 )
@@ -1800,118 +1801,138 @@ def _handle_pr_merge(
                 logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
 
             if adversarial_validation_enabled and adversarial_validation_applicable:
-                codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
-                if codex_review.lookup_error:
-                    actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")
-                    return actions
-                if codex_review.present and not codex_review.completed:
-                    actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
-                    return actions
-                if codex_review.completed:
-                    post_codex_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
-                    if post_codex_thread_state.lookup_error:
-                        actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
-                        return actions
-                    if post_codex_thread_state.has_unresolved:
-                        actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
+                max_adv_reviews = config.MAX_ADVERSARIAL_VALIDATIONS if config.MAX_ADVERSARIAL_VALIDATIONS is not None else config.MAX_ADVERSARIAL_REVIEWS
+                if max_adv_reviews is not None and max_adv_reviews >= 0:
+                    try:
+                        existing_pr_comments = github_client.get_pr_comments(repo_name, pr_number) if github_client else []
+                        adv_review_count = count_adversarial_validation_comments(existing_pr_comments)
+                    except Exception as e:
+                        logger.error(f"Failed to check adversarial validation count for PR #{pr_number}: {e}")
+                        actions.append(f"Could not check prior adversarial validation count for PR #{pr_number}: {e}; validation not started")
                         return actions
 
-                head_sha = pr_data.get("head", {}).get("sha", "")
+                    if adv_review_count >= max_adv_reviews:
+                        actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
+                        logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
+                        should_run_validation = False
+                    else:
+                        should_run_validation = True
+                else:
+                    should_run_validation = True
 
-                if not head_sha:
-                    actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
-                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
-                    return actions
+                if should_run_validation:
+                    codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
+                    if codex_review.lookup_error:
+                        actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")
+                        return actions
+                    if codex_review.present and not codex_review.completed:
+                        actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
+                        return actions
+                    if codex_review.completed:
+                        post_codex_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+                        if post_codex_thread_state.lookup_error:
+                            actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
+                            return actions
+                        if post_codex_thread_state.has_unresolved:
+                            actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
+                            return actions
 
-                published_status, lookup_error = _get_published_adversarial_validation_status(
-                    github_client,
-                    repo_name,
-                    pr_number,
-                    head_sha,
-                )
-                if lookup_error:
-                    actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
-                    return actions
-                if published_status:
-                    actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
-                    if published_status != "PASS":
-                        actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
-                        if published_status == "NEEDS_FIX":
-                            published_report, report_error = _get_published_adversarial_validation_comment(
+                    head_sha = pr_data.get("head", {}).get("sha", "")
+
+                    if not head_sha:
+                        actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
+                        logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
+                        return actions
+
+                    published_status, lookup_error = _get_published_adversarial_validation_status(
+                        github_client,
+                        repo_name,
+                        pr_number,
+                        head_sha,
+                    )
+                    if lookup_error:
+                        actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
+                        return actions
+                    if published_status:
+                        actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+                        if published_status != "PASS":
+                            actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
+                            if published_status == "NEEDS_FIX":
+                                published_report, report_error = _get_published_adversarial_validation_comment(
+                                    github_client,
+                                    repo_name,
+                                    pr_number,
+                                    head_sha,
+                                )
+                                if report_error:
+                                    actions.append(f"Could not read the published adversarial report for Codex Cloud: {report_error}")
+                                elif published_report:
+                                    actions.extend(
+                                        _send_adversarial_validation_feedback_to_codex_cloud(
+                                            repo_name,
+                                            pr_data,
+                                            head_sha,
+                                            published_report,
+                                            github_client,
+                                        )
+                                    )
+                            return actions
+                    else:
+                        try:
+                            with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
+                                actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                                val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                        except Exception as e:
+                            exception_preview = redact_string(str(e))[:2000]
+                            logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
+                            val_result = AdversarialValidationResult(
+                                result="BLOCKED",
+                                summary="Adversarial validation execution failed; see the structured interaction log for details",
+                                diagnostic_category="validation_execution_error",
+                                diagnostic_reason=type(e).__name__,
+                            )
+
+                        publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
+                        if not publication.success:
+                            actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}")
+                            logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                            return actions
+                        actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+
+                        actions.append(
+                            _publish_adversarial_validation_result(
                                 github_client,
                                 repo_name,
                                 pr_number,
                                 head_sha,
+                                val_result,
                             )
-                            if report_error:
-                                actions.append(f"Could not read the published adversarial report for Codex Cloud: {report_error}")
-                            elif published_report:
-                                actions.extend(
-                                    _send_adversarial_validation_feedback_to_codex_cloud(
-                                        repo_name,
-                                        pr_data,
-                                        head_sha,
-                                        published_report,
-                                        github_client,
-                                    )
-                                )
+                        )
+
+                    if published_status == "PASS":
+                        pass
+                    elif val_result.needs_fix:
+                        actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
+                        logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
+                        actions.extend(
+                            _send_adversarial_validation_feedback_to_codex_cloud(
+                                repo_name,
+                                pr_data,
+                                head_sha,
+                                format_adversarial_validation_comment(val_result, head_sha),
+                                github_client,
+                            )
+                        )
+                        actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
                         return actions
-                else:
-                    try:
-                        with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
-                            actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                            val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
-                    except Exception as e:
-                        exception_preview = redact_string(str(e))[:2000]
-                        logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
-                        val_result = AdversarialValidationResult(
-                            result="BLOCKED",
-                            summary="Adversarial validation execution failed; see the structured interaction log for details",
-                            diagnostic_category="validation_execution_error",
-                            diagnostic_reason=type(e).__name__,
-                        )
 
-                    publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
-                    if not publication.success:
-                        actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}")
-                        logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                    elif not val_result.is_pass:
+                        # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
+                        actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                        logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
                         return actions
-                    actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
-
-                    actions.append(
-                        _publish_adversarial_validation_result(
-                            github_client,
-                            repo_name,
-                            pr_number,
-                            head_sha,
-                            val_result,
-                        )
-                    )
-
-                if published_status == "PASS":
-                    pass
-                elif val_result.needs_fix:
-                    actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
-                    logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
-                    actions.extend(
-                        _send_adversarial_validation_feedback_to_codex_cloud(
-                            repo_name,
-                            pr_data,
-                            head_sha,
-                            format_adversarial_validation_comment(val_result, head_sha),
-                            github_client,
-                        )
-                    )
-                    actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
-                    return actions
-
-                elif not val_result.is_pass:
-                    # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
-                    actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
-                    logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
-                    return actions
-                else:
-                    actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
+                    else:
+                        actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
 
             # Verify remote PR head SHA hasn't changed since CI check and validation before merging (fail-closed)
             head_sha = pr_data.get("head", {}).get("sha", "")

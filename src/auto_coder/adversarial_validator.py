@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
@@ -137,6 +137,29 @@ def adversarial_validation_comment_marker(head_sha: str) -> str:
 def adversarial_validation_codex_feedback_marker(head_sha: str) -> str:
     """Return the durable marker for a validation result sent to Codex Cloud."""
     return f"<!-- auto-coder-adversarial-validation-codex-feedback:{ADVERSARIAL_VALIDATION_CACHE_VERSION}:{head_sha} -->"
+
+
+def count_adversarial_validation_comments(comments: Any) -> int:
+    """Count the number of adversarial validation verdict comments on a PR."""
+    if not comments:
+        return 0
+    items: Iterable[Any]
+    if isinstance(comments, (list, tuple)):
+        items = comments
+    else:
+        try:
+            items = list(comments)
+        except Exception:
+            return 0
+
+    count = 0
+    for comment in items:
+        body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
+        if not isinstance(body, str):
+            continue
+        if re.search(r"<!--\s*auto-coder-adversarial-validation:(?!codex-feedback)[^>]+-->", body):
+            count += 1
+    return count
 
 
 def _bounded_comment_field(value: str) -> str:

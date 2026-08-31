@@ -75,6 +75,52 @@ class TestAdversarialValidationConfiguration:
         config2 = AutomationConfig()
         assert config2.ENABLE_ADVERSARIAL_VALIDATION is True
 
+    def test_automation_config_max_adversarial_validations_env_override(self, monkeypatch):
+        monkeypatch.setenv("AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS", "5")
+        config = AutomationConfig()
+        assert config.MAX_ADVERSARIAL_VALIDATIONS == 5
+        assert config.MAX_ADVERSARIAL_REVIEWS == 5
+
+        monkeypatch.setenv("AUTO_CODER_MAX_ADVERSARIAL_REVIEWS", "2")
+        monkeypatch.delenv("AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS", raising=False)
+        config2 = AutomationConfig()
+        assert config2.MAX_ADVERSARIAL_VALIDATIONS == 2
+        assert config2.MAX_ADVERSARIAL_REVIEWS == 2
+
+    def test_max_adversarial_validations_from_config_toml(self, tmp_path):
+        from auto_coder.llm_backend_config import get_adversarial_validation_max_reviews_from_config
+
+        config_path = str(tmp_path / "config.toml")
+        with open(config_path, "w") as f:
+            f.write("[adversarial_validation]\nmax_reviews = 3\n")
+
+        assert get_adversarial_validation_max_reviews_from_config(config_path=config_path) == 3
+
+    def test_max_adversarial_validations_fallback_keys(self, tmp_path):
+        from auto_coder.llm_backend_config import get_adversarial_validation_max_reviews_from_config
+
+        config_path = str(tmp_path / "config.toml")
+        with open(config_path, "w") as f:
+            f.write("[adversarial_validation]\nmax_validations = 4\n")
+        assert get_adversarial_validation_max_reviews_from_config(config_path=config_path) == 4
+
+        with open(config_path, "w") as f:
+            f.write("[backend_adversarial_validation]\nmax_reviews = 2\n")
+        assert get_adversarial_validation_max_reviews_from_config(config_path=config_path) == 2
+
+    def test_count_adversarial_validation_comments(self):
+        from auto_coder.adversarial_validator import count_adversarial_validation_comments
+
+        comments = [
+            {"body": "Regular review comment"},
+            {"body": "<!-- auto-coder-adversarial-validation:v4:abc1234 -->\n## ✅ Auto-Coder adversarial validation: PASS"},
+            {"body": "<!-- auto-coder-adversarial-validation-codex-feedback:v4:abc1234 -->\nFeedback sent to cloud"},
+            {"body": "<!-- auto-coder-adversarial-validation:v4:def5678 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
+        ]
+        assert count_adversarial_validation_comments(comments) == 2
+        assert count_adversarial_validation_comments([]) == 0
+        assert count_adversarial_validation_comments(None) == 0
+
 
 class TestCreateAdversarialValidationBackendManager:
     """Test factory for creating adversarial validation backend manager."""
