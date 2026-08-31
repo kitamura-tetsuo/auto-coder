@@ -145,6 +145,7 @@ class TestParseAdversarialValidationResponse:
   "findings": [
     {
       "violated_requirement": "State must be persisted before event dispatch",
+      "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
       "reachability": "The public save endpoint calls persist_state and then dispatch_event on this branch",
       "required_behavior": "Persist state before dispatching the event",
@@ -190,6 +191,24 @@ class TestParseAdversarialValidationResponse:
         assert result.findings == []
         assert result.dynamic_check_requested == "tests/test_cache.py::test_production_entry_point"
 
+    def test_unverified_finding_prevents_contradictory_pass(self):
+        response = """{
+  "result": "PASS",
+  "summary": "The implementation appears correct, but one material path is unverified",
+  "findings": [{
+    "requirement_id": "REQ-001-test",
+    "violated_requirement": "REQ-001 requires fresh state",
+    "evidence_classification": "UNVERIFIED",
+    "counterexample": "A suspected stale-cache path"
+  }]
+}"""
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "INCONCLUSIVE"
+        assert result.findings == []
+        assert result.is_blocked
+
     @pytest.mark.parametrize(
         "missing_field",
         ["reachability", "required_behavior", "actual_behavior", "evidence"],
@@ -197,6 +216,7 @@ class TestParseAdversarialValidationResponse:
     def test_demonstrated_finding_requires_complete_reachability_evidence(self, missing_field):
         finding = {
             "violated_requirement": "REQ-001 requires rejection",
+            "requirement_id": "REQ-001-test",
             "evidence_classification": "DEMONSTRATED",
             "reachability": "POST /items reaches validate on input S",
             "required_behavior": "Reject S",
@@ -247,7 +267,8 @@ class TestParseAdversarialValidationResponse:
   "findings": [
     {
       "violated_requirement": "Spec requirement R",
-          "evidence_classification": "DEMONSTRATED",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
           "reachability": "The public handler reaches branch B for state S",
           "required_behavior": "Produce R",
           "actual_behavior": "Produce X",
@@ -1005,6 +1026,7 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-test", text="Must do X")],
         )
         mock_run_prompt.return_value = """{
   "result": "NEEDS_FIX",
@@ -1012,7 +1034,8 @@ class TestRunAdversarialValidation:
   "findings": [
     {
       "violated_requirement": "Spec X",
-          "evidence_classification": "DEMONSTRATED",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
           "reachability": "The public entry point reaches the shown branch for S",
           "required_behavior": "Return R",
           "actual_behavior": "Return X",
@@ -1204,6 +1227,7 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-test", text="Must do X")],
         )
         mock_run_prompt.side_effect = [
             """{
@@ -1213,7 +1237,8 @@ class TestRunAdversarialValidation:
   "findings": [
     {
       "violated_requirement": "State reload invariant",
-          "evidence_classification": "DEMONSTRATED",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
           "reachability": "The focused reload test executes the production reload path",
           "required_behavior": "Preserve reloaded state",
           "actual_behavior": "Reload produces X",
@@ -1411,6 +1436,46 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_demonstrated_finding_for_unknown_requirement_cannot_block_as_needs_fix(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="One requirement",
+            pr_diff="complete bounded evidence",
+            all_changed_files=["src/feature.py"],
+            issue_context="REQ-001: Persist state",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-r1", text="Persist state")],
+        )
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "NEEDS_FIX",
+                "summary": "An invented hardening invariant is violated",
+                "requirement_coverage": [{"requirement_id": "REQ-001-r1", "status": "VERIFIED", "evidence": "Persistence is correct"}],
+                "findings": [
+                    {
+                        "requirement_id": "REQ-999-invented",
+                        "violated_requirement": "All caches should have extra defensive guards",
+                        "evidence_classification": "DEMONSTRATED",
+                        "reachability": "The cache entry point accepts an empty key",
+                        "required_behavior": "Reject empty keys",
+                        "actual_behavior": "Accept an empty key",
+                        "evidence": "The implementation has no empty-key guard",
+                        "counterexample": "Given an empty key, the cache accepts it",
+                    }
+                ],
+            }
+        )
+
+        result = run_adversarial_validation("owner/repo", {"number": 100, "title": "One requirement"}, AutomationConfig(), backend_manager=MagicMock())
+
+        assert result.result == "ERROR"
+        assert not result.needs_fix
+        assert result.findings == []
+        assert result.diagnostic_category == "unknown_finding_requirement_id"
+        assert "REQ-999-invented" in (result.diagnostic_reason or "")
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
@@ -1493,6 +1558,7 @@ class TestRunAdversarialValidation:
             pr_diff="diff content",
             changed_tests=["tests/test_feature.py"],
             issue_context="Issue specification: Must do X.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001-test", text="Must do X")],
         )
         mock_run_prompt.side_effect = [
             """{
@@ -1507,7 +1573,8 @@ class TestRunAdversarialValidation:
   "findings": [
     {
       "violated_requirement": "State reload invariant",
-          "evidence_classification": "DEMONSTRATED",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
           "reachability": "The focused reload test executes the production reload path",
           "required_behavior": "Preserve reloaded state",
           "actual_behavior": "Reload produces X",
@@ -1535,7 +1602,8 @@ class TestRunAdversarialValidation:
   "summary": "Test failure confirmed the suspected specification violation",
   "findings": [{
     "violated_requirement": "State reload invariant",
-          "evidence_classification": "DEMONSTRATED",
+          "requirement_id": "REQ-001-test",
+      "evidence_classification": "DEMONSTRATED",
           "reachability": "The focused reload test executes the production reload path",
           "required_behavior": "Preserve reloaded state",
           "actual_behavior": "Reload produces X",

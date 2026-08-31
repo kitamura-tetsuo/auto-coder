@@ -37,6 +37,7 @@ ADVERSARIAL_VALIDATION_CACHE_VERSION = "v6"
 class AdversarialValidationFinding:
     """Demonstrated specification violation identified during validation."""
 
+    requirement_id: str = ""
     violated_requirement: str = ""
     reachability: str = ""
     required_behavior: str = ""
@@ -231,7 +232,8 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
         for index, finding in enumerate(result.findings, start=1):
-            lines.extend(["", f"#### {index}. Violated requirement", _bounded_comment_field(finding.violated_requirement) or "Not specified."])
+            requirement_label = f"`{finding.requirement_id}`: " if finding.requirement_id else ""
+            lines.extend(["", f"#### {index}. Violated requirement", f"{requirement_label}{_bounded_comment_field(finding.violated_requirement) or 'Not specified.'}"])
             if finding.counterexample.strip():
                 lines.extend(["", "**Counterexample**", "", _bounded_comment_field(finding.counterexample)])
             if finding.reachability.strip():
@@ -977,6 +979,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             continue
 
                         required_fields = {
+                            "requirement_id": str(item.get("requirement_id", "")).strip(),
                             "violated_requirement": str(item.get("violated_requirement", "")).strip(),
                             "reachability": str(item.get("reachability", "")).strip(),
                             "required_behavior": str(item.get("required_behavior", "")).strip(),
@@ -1000,6 +1003,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                         findings.append(
                             AdversarialValidationFinding(
+                                requirement_id=required_fields["requirement_id"],
                                 violated_requirement=req,
                                 reachability=required_fields["reachability"],
                                 required_behavior=required_fields["required_behavior"],
@@ -1021,7 +1025,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if raw_result == "PASS":
                     # Valid concrete findings outrank the contradictory top-level
                     # label. Malformed findings have already failed schema parsing.
-                    result_val = "NEEDS_FIX" if findings else "PASS"
+                    result_val = "NEEDS_FIX" if findings else "INCONCLUSIVE" if unverified_suspicion else "PASS"
                 elif raw_result == "NEEDS_FIX":
                     if not findings:
                         if unverified_suspicion:
@@ -1151,6 +1155,17 @@ def _apply_coverage_and_verdict_precedence(
     unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
     incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
     violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
+    finding_requirement_ids = {finding.requirement_id for finding in result.findings}
+    unknown_finding_requirement_ids = sorted(finding_requirement_ids - expected_requirement_ids)
+
+    if unknown_finding_requirement_ids:
+        reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: findings referenced unknown stable requirement IDs"
+        result.findings = []
+        result.diagnostic_category = "unknown_finding_requirement_id"
+        result.diagnostic_reason = reason
+        return result
 
     if unknown_requirement_ids and not result.findings:
         reason = f"Requirement coverage contains IDs outside the deterministic manifest: {', '.join(unknown_requirement_ids)}"
