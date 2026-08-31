@@ -15,6 +15,15 @@ maps to `REQUEST_CHANGES`, and other outcomes map deterministically to `COMMENT`
 Publication is pinned to the validated head SHA and fails closed without falling
 back to the normal user credential.
 
+For a `NEEDS_FIX` verdict, every actionable finding is submitted atomically as
+its own independently resolvable review thread. Findings name a changed-file
+anchor and include their complete requirement, counterexample, evidence, test
+gap, and regression scenario. Valid diff line or range anchors are preserved;
+missing or invalid line coordinates safely become file-level comments rather
+than fabricated line locations. An invalid changed-file anchor or any review API
+failure leaves publication unsuccessful. GitHub's existing review-thread
+resolution state remains the only acknowledgement state used by merge gating.
+
 This native review is the sole and authoritative publication path: Auto-Coder
 does not additionally post the validation result as a regular user-authenticated
 PR comment. The review body carries the same versioned machine-readable marker

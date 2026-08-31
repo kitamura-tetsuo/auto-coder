@@ -47,6 +47,10 @@ class AdversarialValidationFinding:
     counterexample: str = ""
     test_gap: str = ""
     suggested_regression_scenario: str = ""
+    anchor_path: str = ""
+    anchor_line: Optional[int] = None
+    anchor_side: str = "RIGHT"
+    anchor_start_line: Optional[int] = None
 
 
 @dataclass
@@ -299,6 +303,48 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
         suffix = "\n\n_Comment truncated by Auto-Coder; the complete response remains in the structured LLM interaction log._"
         comment = comment[: ADVERSARIAL_VALIDATION_COMMENT_LIMIT - len(suffix)].rstrip() + suffix
     return comment
+
+
+def format_adversarial_review_summary(result: AdversarialValidationResult, head_sha: str) -> str:
+    """Render review-level metadata without duplicating actionable findings."""
+    summary_result = AdversarialValidationResult(
+        result=result.result,
+        summary=result.summary,
+        dynamic_check_requested=result.dynamic_check_requested,
+        diagnostic_category=result.diagnostic_category,
+        diagnostic_reason=result.diagnostic_reason,
+        requirement_coverage=result.requirement_coverage,
+        specification_gaps=result.specification_gaps,
+    )
+    body = format_adversarial_validation_comment(summary_result, head_sha)
+    if result.findings:
+        body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
+    return body
+
+
+def format_adversarial_finding_comment(finding: AdversarialValidationFinding) -> str:
+    """Render all actionable data for one independently resolvable thread."""
+    requirement_label = f"`{finding.requirement_id}`: " if finding.requirement_id else ""
+    lines = [
+        "### Auto-Coder adversarial finding",
+        "",
+        "**Violated requirement**",
+        "",
+        f"{requirement_label}{_bounded_comment_field(finding.violated_requirement) or 'Not specified.'}",
+    ]
+    fields = (
+        ("Required behavior", finding.required_behavior),
+        ("Actual behavior", finding.actual_behavior),
+        ("Counterexample", finding.counterexample),
+        ("Reachable path", finding.reachability),
+        ("Demonstrating evidence", finding.evidence),
+        ("Test gap", finding.test_gap),
+        ("Suggested regression scenario", finding.suggested_regression_scenario),
+    )
+    for heading, value in fields:
+        if value.strip():
+            lines.extend(["", f"**{heading}**", "", _bounded_comment_field(value)])
+    return "\n".join(lines)
 
 
 def is_test_file(file_path: str) -> bool:
@@ -734,6 +780,15 @@ def _extract_finding_from_dict(f: Dict[str, Any]) -> Optional[AdversarialValidat
     return None
 
 
+def _optional_positive_int(value: Any) -> Optional[int]:
+    """Parse an optional positive JSON integer, rejecting booleans and strings."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("review anchor lines must be positive integers")
+    return value
+
+
 def _bounded_response_preview(response: str) -> str:
     """Return a redacted, bounded response preview suitable for normal logs."""
     redacted = redact_string(response)
@@ -1044,6 +1099,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             "actual_behavior": str(item.get("actual_behavior", "")).strip(),
                             "evidence": str(item.get("evidence", "")).strip(),
                             "counterexample": str(item.get("counterexample", "")).strip(),
+                            "anchor_path": str(item.get("anchor_path", "")).strip(),
                         }
                         missing_fields = [name for name, value in required_fields.items() if not value]
                         if missing_fields:
@@ -1071,6 +1127,10 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                                 counterexample=ce,
                                 test_gap=gap,
                                 suggested_regression_scenario=scen,
+                                anchor_path=required_fields["anchor_path"],
+                                anchor_line=_optional_positive_int(item.get("anchor_line")),
+                                anchor_side=str(item.get("anchor_side", "RIGHT")).strip().upper(),
+                                anchor_start_line=_optional_positive_int(item.get("anchor_start_line")),
                             )
                         )
 
