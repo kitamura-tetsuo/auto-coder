@@ -2,7 +2,7 @@
 Unit and integration tests for backend_with_high_score_cloud and difficult label handling.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -304,17 +304,14 @@ class TestDifficultIssueHandling:
         assert result.actions == ["Jules action"]
 
     @patch("auto_coder.automation_engine.LabelManager")
+    @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
-    @patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager")
-    def test_automation_engine_routes_parent_issue_with_sub_issues_to_high_score_cloud(self, mock_create_high_score_cloud, mock_take_actions, mock_label_manager):
-        """Test that parent issue with sub-issues routes to local processing with backend_with_high_score_cloud."""
-        mock_take_actions.return_value = ["Parent issue processed"]
+    def test_automation_engine_routes_parent_issue_through_cloud_lifecycle(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
+        """Parent verification uses the lifecycle-aware high-score dispatcher."""
+        mock_high_score_cloud.return_value = ["Parent verification dispatched"]
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
-
-        mock_backend_mgr = MagicMock()
-        mock_create_high_score_cloud.return_value = mock_backend_mgr
 
         mock_github = MagicMock()
         mock_github.get_all_sub_issues.return_value = [201, 202]
@@ -339,11 +336,13 @@ class TestDifficultIssueHandling:
             jules_mode=True,
         )
 
-        mock_create_high_score_cloud.assert_called_once()
-        mock_take_actions.assert_called_once_with(
+        mock_high_score_cloud.assert_called_once_with(
             "owner/repo",
             candidate.data,
-            backend_manager=mock_backend_mgr,
+            config,
+            mock_github,
+            label_context=ANY,
         )
+        mock_take_actions.assert_not_called()
         assert result.success is True
-        assert result.actions == ["Parent issue processed"]
+        assert result.actions == ["Parent verification dispatched"]

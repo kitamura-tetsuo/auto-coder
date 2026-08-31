@@ -1121,13 +1121,26 @@ class AutomationEngine:
                                 break
 
                     if has_sub_issues:
-                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing with backend_with_high_score_cloud to ensure branch merging.")
-                        get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode (Parent Issue)", item_type="issue", item_number=item_number, details={"mode": "parent_local", "backend": "backend_with_high_score_cloud"})
-                        from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
+                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Delegating verification to backend_with_high_score_cloud.")
+                        get_trace_logger().log(
+                            "Dispatch",
+                            f"Dispatching parent issue #{item_number} to High Score Cloud Backend",
+                            item_type="issue",
+                            item_number=item_number,
+                            details={"mode": "parent_verification", "backend": "backend_with_high_score_cloud"},
+                        )
+                        from .issue_processor import _process_issue_high_score_cloud
 
-                        backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
-                        # Force local processing for parent issues using backend_with_high_score_cloud
-                        result.actions = self._take_issue_actions(repo_name, candidate.data, backend_manager=backend_manager)
+                        # Use the lifecycle-aware dispatcher. It persists asynchronous
+                        # sessions and retains the processing label, while preserving
+                        # the synchronous fallback for local backend configurations.
+                        result.actions = _process_issue_high_score_cloud(
+                            repo_name,
+                            candidate.data,
+                            config,
+                            self.github,
+                            label_context=should_process,
+                        )
                     elif is_difficult:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
                         logger.info(f"Issue #{item_number} has 'difficult' label. Delegating to backend_with_high_score_cloud.")
