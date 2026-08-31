@@ -76,6 +76,17 @@ class RequirementCoverageEntry:
 
 
 @dataclass
+class SpecificationGap:
+    """Material behavior for which the authoritative Issue defines no policy."""
+
+    question: str = ""
+    why_existing_issue_is_insufficient: str = ""
+    observed_case: str = ""
+    affected_scope: str = ""
+    candidate_options: List[str] = field(default_factory=list)
+
+
+@dataclass
 class AdversarialValidationResult:
     """Outcome of adversarial PR validation against the specification oracle.
 
@@ -93,11 +104,17 @@ class AdversarialValidationResult:
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
     requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
+    specification_gaps: List[SpecificationGap] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
-        """Return True if validation explicitly passed with no blocking findings."""
+        """Return whether all defined requirements passed (gaps are orthogonal)."""
         return self.result.strip().upper() == "PASS" and len(self.findings) == 0
+
+    @property
+    def allows_auto_merge(self) -> bool:
+        """Return whether this result satisfies every validation merge gate."""
+        return self.is_pass and not self.specification_gaps
 
     @property
     def needs_fix(self) -> bool:
@@ -245,6 +262,31 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
             if finding.suggested_regression_scenario.strip():
                 lines.extend(["", "**Suggested regression scenario**", "", _bounded_comment_field(finding.suggested_regression_scenario)])
 
+    if result.specification_gaps:
+        lines.extend(
+            [
+                "",
+                f"### Specification gaps ({len(result.specification_gaps)})",
+                "",
+                "These are not proven implementation defects. The linked Issue does not define the required policy, "
+                "and Auto-Coder did not choose one. Review of all defined requirements continued. Automatic merge is "
+                "disabled while any gap remains; a human may still merge manually and handle specification follow-up separately.",
+            ]
+        )
+        for index, gap in enumerate(result.specification_gaps, start=1):
+            lines.extend(
+                [
+                    "",
+                    f"#### Gap {index}: {_bounded_comment_field(gap.question)}",
+                    f"- **Why the Issue is insufficient:** {_bounded_comment_field(gap.why_existing_issue_is_insufficient)}",
+                    f"- **Observed case:** {_bounded_comment_field(gap.observed_case)}",
+                    f"- **Affected scope:** {_bounded_comment_field(gap.affected_scope)}",
+                ]
+            )
+            if gap.candidate_options:
+                lines.append("- **Neutral candidate options (not requirements):**")
+                lines.extend(f"  - {_bounded_comment_field(option)}" for option in gap.candidate_options)
+
     if result.diagnostic_category or result.diagnostic_reason:
         lines.extend(["", "### Diagnostic"])
         if result.diagnostic_category:
@@ -382,7 +424,8 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
 
 
 _MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
-_EXPLICIT_REQUIREMENT = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?" r"(?:`(REQ-\d{3})(?::`|`:)|(REQ-\d{3}):)\s*(\S.*)$")
+_EXPLICIT_REQUIREMENT_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
+_EXPLICIT_REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(\S.*)$")
 
 
 def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
@@ -413,17 +456,13 @@ def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, Li
         line = raw_line.strip()
         if not line or line.startswith("<!--") or line.endswith("-->"):
             continue
-        match = _EXPLICIT_REQUIREMENT.fullmatch(line)
+        content = _EXPLICIT_REQUIREMENT_PREFIX.sub("", line, count=1)
+        match = _EXPLICIT_REQUIREMENT.fullmatch(content)
         if not match:
             malformed.append(line)
             continue
-        code_requirement_id, plain_requirement_id, text = match.groups()
-        requirement_id = code_requirement_id or plain_requirement_id
-        if requirement_id is None:
-            # The regular expression guarantees one identifier; this guard
-            # keeps the invariant explicit for type checkers.
-            malformed.append(line)
-            continue
+        backticked_id, plain_id, text = match.groups()
+        requirement_id = backticked_id or plain_id
         if requirement_id in seen:
             duplicates.add(requirement_id)
         seen.add(requirement_id)
@@ -894,6 +933,19 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if dynamic_check:
                     dynamic_check = str(dynamic_check).strip()
 
+                raw_specification_gaps = parsed.get("specification_gaps", [])
+                if not isinstance(raw_specification_gaps, list):
+                    return _parse_error(raw_response, "schema_error", "Malformed validator schema: specification_gaps must be a list", "specification_gaps must be a list")
+                specification_gaps: List[SpecificationGap] = []
+                for item in raw_specification_gaps:
+                    if not isinstance(item, dict):
+                        return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", "specification gap entries must be objects")
+                    values = {name: str(item.get(name, "")).strip() for name in ("question", "why_existing_issue_is_insufficient", "observed_case", "affected_scope")}
+                    options = item.get("candidate_options", [])
+                    if any(not value for value in values.values()) or not isinstance(options, list) or any(not isinstance(option, str) or not option.strip() for option in options):
+                        return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", "each specification gap requires all four descriptive fields and candidate_options must be a list of non-empty strings")
+                    specification_gaps.append(SpecificationGap(**values, candidate_options=[option.strip() for option in options]))
+
                 raw_requirement_coverage = parsed.get("requirement_coverage", [])
                 if not isinstance(raw_requirement_coverage, list):
                     return _parse_error(
@@ -1065,6 +1117,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
                     requirement_coverage=requirement_coverage,
+                    specification_gaps=specification_gaps,
                 )
             else:
                 return _parse_error(

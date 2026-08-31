@@ -1570,6 +1570,8 @@ def _get_published_adversarial_validation_status(
             continue
         match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
         if match:
+            if match.group(1) == "PASS" and "### Specification gaps (" in body:
+                return "PASS_WITH_SPECIFICATION_GAPS", None
             return match.group(1), None
         return "ERROR", None
 
@@ -1815,6 +1817,19 @@ def _handle_pr_merge(
                     if adv_review_count >= max_adv_reviews:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
+                        current_head_sha = pr_data.get("head", {}).get("sha", "")
+                        saved_status, saved_status_error = _get_published_adversarial_validation_status(
+                            github_client,
+                            repo_name,
+                            pr_number,
+                            current_head_sha,
+                        )
+                        if saved_status_error:
+                            actions.append(f"Could not check unresolved specification gaps for PR #{pr_number}: {saved_status_error}; merge not attempted")
+                            return actions
+                        if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
+                            actions.append(f"Automatic merge disabled for PR #{pr_number}: unresolved specification gaps require human policy review")
+                            return actions
                         should_run_validation = False
                     else:
                         should_run_validation = True
@@ -1931,6 +1946,9 @@ def _handle_pr_merge(
                         # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
                         actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                        return actions
+                    elif not val_result.allows_auto_merge:
+                        actions.append(f"Automatic merge disabled for PR #{pr_number}: {len(val_result.specification_gaps)} unresolved specification gap(s) require human policy review")
                         return actions
                     else:
                         actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
