@@ -49,9 +49,12 @@ def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:
     assert task_id == "task_existing"
     assert "release/2.x" in message
     assert "cloud/repair-1589" in message
-    assert "same `cloud/repair-1589` branch" in message
+    assert "head branch `cloud/repair-1589`" in message
+    assert "H1" in message
     assert "existing pull request #1589" in message
-    assert "do not create a replacement" in message
+    assert "Do not create a new branch." in message
+    assert "Do not create a new pull request." in message
+    assert "Do not replace or close the existing pull request." in message
 
 
 def test_unchanged_state_is_deduplicated_but_changed_states_can_delegate(tmp_path) -> None:

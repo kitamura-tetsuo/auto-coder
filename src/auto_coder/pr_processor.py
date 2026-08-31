@@ -15,9 +15,10 @@ import tempfile
 import threading
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from string import Template
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
@@ -46,9 +47,10 @@ from .github_app_reviewer import publish_adversarial_review
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
+from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
-from .prompt_loader import render_prompt
+from .prompt_loader import get_prompt_template, render_prompt
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
@@ -3402,17 +3404,14 @@ def _delegate_cloud_merge_conflict_repair(
         return False
 
     pr_number = pr_data.get("number")
-    head = pr_data.get("head") or {}
     base = pr_data.get("base") or {}
-    head_branch = pr_data.get("head_branch") or head.get("ref")
-    base_branch = pr_data.get("base_branch") or base.get("ref")
-    head_state = head.get("sha") or pr_data.get("head_sha") or head_branch
-    base_state = base.get("sha") or pr_data.get("base_sha") or base_branch
-    if not pr_number or not head_branch or not base_branch or not head_state or not base_state:
+    base_state = base.get("sha") or pr_data.get("base_sha") or pr_data.get("base_branch") or base.get("ref")
+    target = resolve_existing_pr_repair_target(repo_name, pr_data)
+    if not target or not base_state:
         logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate conflict repair")
         return False
 
-    fingerprint = f"{repo_name}#{pr_number}:{head_state}:{base_state}"
+    fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
     state_path = _cloud_conflict_state_path(repo_name)
     delivered: dict[str, str] = {}
     try:
@@ -3427,12 +3426,8 @@ def _delegate_cloud_merge_conflict_repair(
         logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
         return True
 
-    message = render_prompt(
-        "pr.cloud_merge_conflict_repair",
-        pr_number=pr_number,
-        head_branch=head_branch,
-        base_branch=base_branch,
-    )
+    details = Template(get_prompt_template("pr.cloud_merge_conflict_repair_details")).safe_substitute(base_branch=target.base_branch)
+    message = build_existing_pr_repair_prompt(target, details)
     try:
         accepted = client.send_followup(task_id, message)
     except Exception as exc:
@@ -3486,7 +3481,14 @@ def _send_codex_cloud_error_feedback(
 
         logger.info(f"Triggering continue_if_paused for Codex Cloud task '{task_id}' on PR #{pr_number}")
         client = CodexCloudClient(repo_name=repo_name)
-        resumed = client.continue_if_paused(task_id)
+
+        target = resolve_existing_pr_repair_target(repo_name, pr_data)
+        if target:
+            details = get_prompt_template("codex_cloud.ci_review_repair_details")
+            prompt = build_existing_pr_repair_prompt(target, details)
+            resumed = client.continue_if_paused(task_id, prompt=prompt)
+        else:
+            resumed = client.continue_if_paused(task_id)
 
         if resumed:
             get_trace_logger().log(
@@ -3548,13 +3550,19 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     if not task_id:
         return [f"Cannot send adversarial feedback to Codex Cloud for PR #{pr_number}: no valid Codex task ID found"]
 
-    prompt = render_prompt(
-        "pr.adversarial_validation_fix",
+    target = resolve_existing_pr_repair_target(repo_name, pr_data)
+    if not target:
+        return [f"Cannot send adversarial feedback to Codex Cloud for PR #{pr_number}: PR head/base branch metadata is unavailable"]
+    # The validated commit is authoritative; it may be newer than cached PR head metadata.
+    target = replace(target, head_sha=head_sha)
+
+    details = Template(get_prompt_template("pr.adversarial_validation_fix")).safe_substitute(
         repo_name=repo_name,
         pr_number=pr_number,
         head_sha=head_sha,
         validation_report=validation_report,
     )
+    prompt = build_existing_pr_repair_prompt(target, details)
 
     try:
         from .codex_cloud_client import CodexCloudClient
