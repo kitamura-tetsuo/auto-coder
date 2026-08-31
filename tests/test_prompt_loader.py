@@ -7,7 +7,7 @@ from src.auto_coder.prompt_loader import DEFAULT_PROMPTS_PATH, _get_prompt_for_l
 
 
 def test_adversarial_initial_review_retains_broad_falsification_policy():
-    prompt = get_prompt_template("pr.adversarial_validation")
+    prompt = get_prompt_template("pr.adversarial_validation_initial_review")
 
     assert "Your mission: Falsify the implementation" in prompt
     assert "against every Issue requirement" in prompt
@@ -18,8 +18,6 @@ def test_adversarial_rereview_uses_material_convergence_policy():
         "pr.adversarial_validation_rereview",
         previous_head_sha="old-head",
         current_head_sha="new-head",
-        review_prompt="CURRENT HEAD EVIDENCE",
-        changed_tests="tests/test_fix.py",
     )
 
     assert "classify the current implementation" in prompt
@@ -30,8 +28,7 @@ def test_adversarial_rereview_uses_material_convergence_policy():
     assert "material to an explicit Issue Requirement" in prompt
     assert "count never excuses a material violation" in prompt
     assert "allow the rereview to PASS" in prompt
-    assert "CURRENT HEAD EVIDENCE" in prompt
-    assert "tests/test_fix.py" in prompt
+    assert "Your mission: Falsify the implementation" not in prompt
 
 
 class TestLabelBasedPromptLoader:
