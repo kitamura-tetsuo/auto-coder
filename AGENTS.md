@@ -30,7 +30,9 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 
 ### GitHub Operations
 
-* Use the `gh_cache.py` for all GitHub operations in code not for operation. Do not use the `gh` CLI command in code not for operation.
+* For GitHub operations performed by application code or scripts committed to this repository, use `gh_cache.py`. Do not invoke the `gh` CLI from implementation code.
+* This restriction does not apply to development or agent operations. The `gh` CLI may be used interactively during coding, investigation, testing, issue/PR management, review, or other repository maintenance tasks.
+* In other words, do not replace normal developer/agent use of gh with gh_cache.py.
 * Use the GitHub API properly to retrieve issues and PRs.
 * Use the REST API in preference to graphql because it provides better caching.
 * Don't use graphql for queries.

@@ -14,6 +14,7 @@ import httpx
 import jwt
 
 from .adversarial_validator import AdversarialValidationResult
+from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -43,22 +44,53 @@ class _CachedToken:
     expires_at: float = 0.0
 
 
-def load_reviewer_app_config(config_path: Optional[Path] = None, home: Optional[Path] = None) -> ReviewerAppConfig:
+def load_reviewer_app_config(
+    config_path: Optional[Path] = None,
+    home: Optional[Path] = None,
+    repo_name: Optional[str] = None,
+) -> ReviewerAppConfig:
     """Load ``[github-app-auto-coder-reviewer]`` without reading the PEM into config."""
     base_home = home or Path.home()
     path = config_path or base_home / ".auto-coder" / "config.toml"
     try:
         with path.open("rb") as stream:
-            section = tomllib.load(stream).get("github-app-auto-coder-reviewer", {})
+            base_data = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ValueError("Reviewer GitHub App configuration is unavailable or invalid") from exc
+    if not isinstance(base_data, dict):
+        raise ValueError("Reviewer GitHub App configuration section is invalid")
+
+    effective_repo = repo_name if repo_name is not None else get_active_repo_name()
+    if effective_repo:
+        override_path_str = resolve_repo_override_path(
+            effective_repo,
+            override_root_dir=str(base_home / ".auto-coder"),
+            filename="config.toml",
+        )
+        if override_path_str:
+            override_path = Path(override_path_str)
+            if override_path.exists():
+                try:
+                    with override_path.open("rb") as stream:
+                        override_data = tomllib.load(stream)
+                except (OSError, tomllib.TOMLDecodeError) as exc:
+                    raise ValueError(f"Error loading repository configuration override from {override_path}: {exc}") from exc
+                if not isinstance(override_data, dict):
+                    raise ValueError(f"Repository configuration override at {override_path} must be a TOML table")
+                base_data = deep_merge_config_dict(base_data, override_data)
+
+    section = base_data.get("github-app-auto-coder-reviewer", {})
     if not isinstance(section, dict):
         raise ValueError("Reviewer GitHub App configuration section is invalid")
     app_id = str(section.get("app_id", "")).strip()
     client_id = str(section.get("client_id", "")).strip()
     if not app_id or not app_id.isdigit():
         raise ValueError("Reviewer GitHub App app_id is missing or invalid")
-    return ReviewerAppConfig(app_id=app_id, client_id=client_id, private_key_path=base_home / ".auto-coder" / "auto-coder-reviewer.pem")
+    return ReviewerAppConfig(
+        app_id=app_id,
+        client_id=client_id,
+        private_key_path=base_home / ".auto-coder" / "auto-coder-reviewer.pem",
+    )
 
 
 class GitHubAppReviewer:
@@ -165,7 +197,7 @@ class GitHubAppReviewer:
 def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
     """Load dedicated credentials and publish without touching the user client."""
     try:
-        reviewer = GitHubAppReviewer(load_reviewer_app_config())
+        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
     except Exception:
         logger.error("Dedicated reviewer GitHub App configuration could not be loaded")
         return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App configuration is unavailable")

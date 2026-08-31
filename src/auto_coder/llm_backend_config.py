@@ -69,11 +69,12 @@ def resolve_config_path(config_path: Optional[str] = None) -> str:
 def resolve_repo_override_path(
     repo_name: Optional[str],
     override_root_dir: Optional[str] = None,
+    filename: str = "llm_config.toml",
 ) -> Optional[str]:
     """Resolve the repository-specific configuration override file path.
 
     The path convention is:
-        ~/.auto-coder/<owner>/<repo>/llm_config.toml
+        ~/.auto-coder/<owner>/<repo>/<filename>
 
     Repository overrides must be selected using the GitHub 'owner/name' identity
     and mapped directly to the directory hierarchy under ~/.auto-coder.
@@ -83,6 +84,7 @@ def resolve_repo_override_path(
         repo_name: GitHub repository in 'owner/repo' format. If None, empty, or
                    not in 'owner/repo' format, returns None.
         override_root_dir: Optional override root directory (defaults to ~/.auto-coder).
+        filename: Name of the config file to resolve (defaults to 'llm_config.toml').
 
     Returns:
         Absolute path to the repository override configuration file, or None if invalid repo_name.
@@ -121,7 +123,7 @@ def resolve_repo_override_path(
         base_dir = os.path.expanduser("~/.auto-coder")
 
     base_dir = os.path.abspath(base_dir)
-    override_path = os.path.abspath(os.path.join(base_dir, owner, repo, "llm_config.toml"))
+    override_path = os.path.abspath(os.path.join(base_dir, owner, repo, filename))
 
     # Ensure resolved path is strictly inside base_dir
     try:
@@ -1313,14 +1315,77 @@ def reset_llm_config() -> None:
     _active_repo_name.set(None)
 
 
+def load_app_config_data(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Load configuration from config.toml, optionally merging a repository override.
+
+    Args:
+        config_path: Optional explicit path to base config.toml file.
+        repo_name: Optional GitHub repository ('owner/repo'). If not provided,
+                   checks get_active_repo_name().
+
+    Returns:
+        Merged configuration dictionary.
+    """
+    base_data: Dict[str, Any] = {}
+
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "rb") as f:
+                    base_data = tomllib.load(f)
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+    else:
+        # Check standard locations (local first, then home)
+        config_paths = [
+            os.path.join(os.getcwd(), ".auto-coder", "config.toml"),
+            os.path.expanduser("~/.auto-coder/config.toml"),
+        ]
+        for path in config_paths:
+            if os.path.exists(path):
+                try:
+                    with open(path, "rb") as f:
+                        base_data = tomllib.load(f)
+                    break
+                except Exception as e:
+                    logger = get_logger(__name__)
+                    logger.warning(f"Failed to read config.toml from {path}: {e}")
+                    continue
+
+    if not isinstance(base_data, dict):
+        base_data = {}
+
+    effective_repo = repo_name if repo_name is not None else get_active_repo_name()
+    if effective_repo:
+        override_path = resolve_repo_override_path(effective_repo, filename="config.toml")
+        if override_path and os.path.exists(override_path):
+            try:
+                with open(override_path, "rb") as f:
+                    override_data = tomllib.load(f)
+            except Exception as e:
+                raise ValueError(f"Error loading repository configuration override from {override_path}: {e}")
+
+            if not isinstance(override_data, dict):
+                raise ValueError(f"Repository configuration override at {override_path} must be a TOML table")
+
+            base_data = deep_merge_config_dict(base_data, override_data)
+
+    return base_data
+
+
 def _get_config_value(
     section: str,
     key: str,
     default: Any,
     config_path: Optional[str] = None,
     value_type: Optional[type] = None,
+    repo_name: Optional[str] = None,
 ) -> Any:
-    """Helper to get a value from config.toml with standard lookup paths.
+    """Helper to get a value from config.toml with standard lookup paths and repo overrides.
 
     Args:
         section: TOML section name (e.g., 'jules')
@@ -1328,63 +1393,41 @@ def _get_config_value(
         default: Default value if not found
         config_path: Optional explicit path to config file
         value_type: Optional type to cast the value to (e.g., int, bool)
+        repo_name: Optional repository name ('owner/repo') for repository-scoped override.
 
     Returns:
         The configured value or default
     """
-    import os
-
-    # If explicit path provided, check only that file
-    if config_path:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "rb") as f:
-                    data = tomllib.load(f)
-
-                section_config = data.get(section, {})
-                if key in section_config:
-                    val = section_config[key]
-                    return value_type(val) if value_type else val
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
-
+    try:
+        data = load_app_config_data(config_path=config_path, repo_name=repo_name)
+    except ValueError:
+        raise
+    except Exception as e:
+        logger = get_logger(__name__)
+        logger.warning(f"Failed to load config data: {e}")
         return default
 
-    # Try to find config.toml in standard locations
-    config_paths = [
-        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
-        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
-    ]
-
-    for path in config_paths:
-        if os.path.exists(path):
-            try:
-                with open(path, "rb") as f:
-                    data = tomllib.load(f)
-
-                section_config = data.get(section, {})
-                if key in section_config:
-                    val = section_config[key]
-                    return value_type(val) if value_type else val
-
-            except Exception as e:
-                logger = get_logger(__name__)
-                logger.warning(f"Failed to read config.toml from {path}: {e}")
-                continue
+    section_config = data.get(section, {})
+    if isinstance(section_config, dict) and key in section_config:
+        val = section_config[key]
+        return value_type(val) if value_type else val
 
     return default
 
 
-def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
+def get_jules_enabled_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
     """Check if Jules is enabled via [jules].enabled in config.toml.
 
     This function reads from ~/.auto-coder/config.toml (or local .auto-coder/config.toml)
-    and checks for a [jules] section with an 'enabled' field.
+    and checks for a [jules] section with an 'enabled' field, applying any repo-scoped override.
 
     Args:
         config_path: Optional explicit path to config.toml file. If not provided,
                     will check standard locations.
+        repo_name: Optional GitHub repository name in 'owner/repo' format.
 
     Returns:
         True if Jules is enabled (default), False if explicitly disabled.
@@ -1395,17 +1438,18 @@ def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
         default=True,
         config_path=config_path,
         value_type=bool,
+        repo_name=repo_name,
     )
 
 
-def is_jules_mode_enabled() -> bool:
+def is_jules_mode_enabled(repo_name: Optional[str] = None) -> bool:
     """Check if Jules mode or Cloud mode is enabled.
 
     Cloud/Jules mode is enabled if:
     1. A cloud backend is configured via [backend_cloud] in llm_config.toml, OR
     2. The 'jules' backend is enabled in llm_config.toml and [jules].enabled is true in config.toml
     """
-    llm_config = get_llm_config()
+    llm_config = get_llm_config(repo_name=repo_name)
     if llm_config.backend_cloud_order or llm_config.backend_cloud:
         return True
 
@@ -1414,21 +1458,25 @@ def is_jules_mode_enabled() -> bool:
     jules_backend_enabled = jules_config.enabled if jules_config else False
 
     # Check [jules].enabled in config.toml
-    jules_config_enabled = get_jules_enabled_from_config()
+    jules_config_enabled = get_jules_enabled_from_config(repo_name=repo_name)
 
     return jules_backend_enabled and jules_config_enabled
 
 
-def is_cloud_mode_enabled() -> bool:
+def is_cloud_mode_enabled(repo_name: Optional[str] = None) -> bool:
     """Check if Cloud mode (backend_cloud or Jules) is enabled."""
-    return is_jules_mode_enabled()
+    return is_jules_mode_enabled(repo_name=repo_name)
 
 
-def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+def get_jules_wait_timeout_hours_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get the Jules wait timeout in hours from config.toml.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         Timeout in hours (default: 2)
@@ -1439,14 +1487,19 @@ def get_jules_wait_timeout_hours_from_config(config_path: Optional[str] = None) 
         default=2,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_jules_issue_pr_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+def get_jules_issue_pr_timeout_hours_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get the maximum time Jules may work on an issue without opening a PR.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         Timeout in hours (default: 12)
@@ -1457,14 +1510,19 @@ def get_jules_issue_pr_timeout_hours_from_config(config_path: Optional[str] = No
         default=12,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_jules_pr_ci_timeout_hours_from_config(config_path: Optional[str] = None) -> int:
+def get_jules_pr_ci_timeout_hours_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get the maximum time a Jules PR may stay open without passing CI.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         Timeout in hours (default: 12)
@@ -1475,14 +1533,19 @@ def get_jules_pr_ci_timeout_hours_from_config(config_path: Optional[str] = None)
         default=12,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_github_action_log_max_length_from_config(config_path: Optional[str] = None) -> int:
+def get_github_action_log_max_length_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get the GitHub Action log max length from config.toml.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         Max length (default: 50000)
@@ -1493,10 +1556,14 @@ def get_github_action_log_max_length_from_config(config_path: Optional[str] = No
         default=50000,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_jules_session_expiration_days_from_config(config_path: Optional[str] = None) -> int:
+def get_jules_session_expiration_days_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get the Jules session expiration in days from config.toml.
 
     Looks for [jules] session_expiration_days in config.toml.
@@ -1508,14 +1575,19 @@ def get_jules_session_expiration_days_from_config(config_path: Optional[str] = N
         default=7,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None) -> int:
+def get_process_issues_sleep_time_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get process_issues sleep time from [process_issues].sleep_time in config.toml.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         Sleep time in seconds (default: 300)
@@ -1526,14 +1598,19 @@ def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None)
         default=300,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] = None) -> int:
+def get_process_issues_empty_sleep_time_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
     """Get process_issues empty sleep time from [process_issues].empty_sleep_time in config.toml.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         Sleep time in seconds (default: 600)
@@ -1544,10 +1621,14 @@ def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] =
         default=600,
         config_path=config_path,
         value_type=int,
+        repo_name=repo_name,
     )
 
 
-def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = None) -> bool:
+def get_isolate_single_test_on_failure_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
     """Get isolate_single_test_on_failure setting from [test] section in config.toml.
 
     When enabled, if multiple tests fail, the system will extract and re-run only
@@ -1555,6 +1636,7 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         True if isolation is enabled, False otherwise (default: False)
@@ -1565,14 +1647,19 @@ def get_isolate_single_test_on_failure_from_config(config_path: Optional[str] = 
         default=False,
         config_path=config_path,
         value_type=bool,
+        repo_name=repo_name,
     )
 
 
-def get_issue_allowlist_from_config(config_path: Optional[str] = None) -> Optional[List[int]]:
+def get_issue_allowlist_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Optional[List[int]]:
     """Get the issue author allowlist from config.toml [github].issue_allowlist.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         List of allowed GitHub user IDs (ints) or None if not configured.
@@ -1582,6 +1669,7 @@ def get_issue_allowlist_from_config(config_path: Optional[str] = None) -> Option
         key="issue_allowlist",
         default=None,
         config_path=config_path,
+        repo_name=repo_name,
     )
     if raw_list is None:
         return None
@@ -1594,11 +1682,15 @@ def get_issue_allowlist_from_config(config_path: Optional[str] = None) -> Option
     return result
 
 
-def get_pr_allowlist_from_config(config_path: Optional[str] = None) -> Optional[List[int]]:
+def get_pr_allowlist_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Optional[List[int]]:
     """Get the pull request author allowlist from config.toml [github].pr_allowlist.
 
     Args:
         config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
 
     Returns:
         List of allowed GitHub user IDs (ints) or None if not configured.
@@ -1608,6 +1700,7 @@ def get_pr_allowlist_from_config(config_path: Optional[str] = None) -> Optional[
         key="pr_allowlist",
         default=None,
         config_path=config_path,
+        repo_name=repo_name,
     )
     if raw_list is None:
         return None

@@ -52,6 +52,23 @@ def test_loads_existing_user_facing_configuration_shape(tmp_path: Path) -> None:
     assert loaded.private_key_path == config_dir / "auto-coder-reviewer.pem"
 
 
+def test_load_reviewer_app_config_with_repo_override(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".auto-coder"
+    config_dir.mkdir()
+    config = config_dir / "config.toml"
+    config.write_text('[github-app-auto-coder-reviewer]\napp_id = "111111"\nclient_id = "base-client"\n', encoding="utf-8")
+
+    repo_dir = config_dir / "owner" / "repo"
+    repo_dir.mkdir(parents=True)
+    repo_config = repo_dir / "config.toml"
+    repo_config.write_text('[github-app-auto-coder-reviewer]\napp_id = "222222"\n', encoding="utf-8")
+
+    loaded = load_reviewer_app_config(config, tmp_path, repo_name="owner/repo")
+    assert loaded.app_id == "222222"
+    assert loaded.client_id == "base-client"
+    assert loaded.private_key_path == config_dir / "auto-coder-reviewer.pem"
+
+
 @pytest.mark.parametrize(
     ("result", "event"),
     [

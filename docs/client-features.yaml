@@ -39,59 +39,38 @@ removes dangerous/YOLO flags and enforces `--sandbox read-only`,
 
 #### Repository-Scoped Partial Configuration Overrides
 
-Auto-Coder supports repository-scoped partial overrides for `llm_config.toml` settings. When processing a task for a repository (e.g. `kitamura-tetsuo/auto-coder`), settings from a repository-specific configuration file are merged recursively on top of the base configuration.
-
-- **Base Configuration File**: `~/.auto-coder/llm_config.toml` (or `.auto-coder/llm_config.toml` in the working directory / `AUTO_CODER_CONFIG_PATH`).
-- **Repository Override File**: `~/.auto-coder/<owner>/<repo>/llm_config.toml` (e.g. `~/.auto-coder/kitamura-tetsuo/auto-coder/llm_config.toml`).
-- **Path Resolution**: Must be selected using the full GitHub `<owner>/<repo>` identity mapped directly to the directory structure. Short names without an owner are rejected.
-- **Merge Semantics**:
-  - **Scalar values**: Override value replaces the base value.
+Auto-Coder supports repository-scoped partial overrides for both `llm_config.toml` and `config.toml` settings. When processing a task for a repository (e.g. `kitamura-tetsuo/auto-coder`), settings from a repository-specific configuration file are merged recursively on top of the base configuration.
+- **Base Configuration Files**:
+  - `llm_config.toml`: `~/.auto-coder/llm_config.toml` (or `.auto-coder/llm_config.toml` in the working directory / `AUTO_CODER_CONFIG_PATH`).
+  - `config.toml`: `~/.auto-coder/config.toml` (or `.auto-coder/config.toml` in the working directory).
   - **Tables / Dictionaries**: Recursively merged so sibling keys not specified in the override remain inherited from the base configuration.
   - **Lists / Arrays**: Entire list is replaced by the override (no concatenation).
   - **Missing keys**: Retain base configuration values.
   - **Incompatible types / Invalid TOML**: Fails safely with `ValueError`.
 - **Repository Isolation**: Each repository resolution is isolated and evaluated in its own context without mutating global base configuration state. Sequential tasks across multiple repositories maintain strict isolation.
-- **Example**:
-  Base `~/.auto-coder/llm_config.toml`:
-  ```toml
-  [backend]
-  default = "codex"
-  order = ["codex", "claude"]
-
-  [backends.codex_cloud]
-  model = "codex-base"
-  environment = "env-outliner-123"
-  attempts = 1
-  ```
-  Override `~/.auto-coder/kitamura-tetsuo/auto-coder/llm_config.toml`:
-  ```toml
-  [backends.codex_cloud]
-  environment = "env-autocoder-999"
-  attempts = 3
-  ```
-  Result for `kitamura-tetsuo/auto-coder`: `environment = "env-autocoder-999"`, `attempts = 3`, and `model = "codex-base"` (inherited from base).
-
-#### Backend Configuration Fields
-
-The system supports extensive backend configuration options. Key fields include:
-
-- **model_provider**: Specifies the model provider for backends using `backend_type = "codex"`
-  - Purpose: Allows users to configure providers like OpenRouter, Anthropic, etc.
-  - Example:
+- **Examples**:
+  - **`llm_config.toml` Example**:
+    Base `~/.auto-coder/llm_config.toml`:
     ```toml
-    [grok-4.1-fast]
-    enabled = true
-    model = "x-ai/grok-4.1-fast:free"
-    backend_type = "codex"
-    model_provider = "openrouter"
-    ```
-  - This translates to: `codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter`
-  - Optional field: Backward compatible with existing configurations
+    [backend]
+    default = "codex"
+    order = ["codex", "claude"]
 
-- **usage_markers**: Configurable patterns (strings or JSON snippets) to detect rate limits or usage errors in CLI output
-  - Purpose: Enables users to handle different localizations or new error messages without modifying source code
-  - Supported by: ClaudeClient, GeminiClient, CodexClient, AuggieClient, QwenClient
-  - Default behavior: Each client has built-in default markers (e.g., "rate limit", "quota", "429")
+    [backends.codex_cloud]
+    environment = "env-autocoder-999"
+    attempts = 3
+    ```
+    Result for `kitamura-tetsuo/auto-coder`: `environment = "env-autocoder-999"`, `attempts = 3`, and `model = "codex-base"` (inherited from base).
+
+  - **`config.toml` Example**:
+    Base `~/.auto-coder/config.toml`:
+    ```toml
+    [jules]
+    enabled = true
+    wait_timeout_hours = 2
+
+    [github_action]
+
   - Example:
     ```toml
     [backends.gemini]

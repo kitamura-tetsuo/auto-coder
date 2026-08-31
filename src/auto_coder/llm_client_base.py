@@ -18,6 +18,7 @@ class LLMClientBase(ABC):
         This is optional and can be overridden by subclasses.
         """
         self._extra_args: List[str] = []
+        self._last_session_id: Optional[str] = None
 
     @abstractmethod
     def _run_llm_cli(self, prompt: str) -> str:

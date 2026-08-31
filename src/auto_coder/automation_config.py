@@ -179,6 +179,7 @@ class AutomationConfig:
         replace_mappings: bool = False,
         issue_allowlist: Optional[List[int]] = None,
         pr_allowlist: Optional[List[int]] = None,
+        repo_name: Optional[str] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -190,6 +191,7 @@ class AutomationConfig:
                 If False (default), custom_label_mappings will merge with defaults.
             issue_allowlist: Optional custom issue author allowlist (numeric user IDs)
             pr_allowlist: Optional custom PR author allowlist (numeric user IDs)
+            repo_name: Optional GitHub repository in 'owner/repo' format for repo-scoped config.
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -211,10 +213,11 @@ class AutomationConfig:
         object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", True)
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
 
-        # Load Jules wait timeout from config
-        # Load Jules wait timeout from config
+        # Load Jules and other settings from config with repo scoping
         from .llm_backend_config import (
+            get_active_repo_name,
             get_github_action_log_max_length_from_config,
+            get_isolate_single_test_on_failure_from_config,
             get_issue_allowlist_from_config,
             get_jules_issue_pr_timeout_hours_from_config,
             get_jules_pr_ci_timeout_hours_from_config,
@@ -222,14 +225,17 @@ class AutomationConfig:
             get_pr_allowlist_from_config,
         )
 
-        object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config())
-        object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config())
-        object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config())
-        object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config())
+        effective_repo = repo_name if repo_name is not None else get_active_repo_name()
+        object.__setattr__(self, "repo_name", effective_repo)
+
+        object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config(repo_name=effective_repo))
+        object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config(repo_name=effective_repo))
+        object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config(repo_name=effective_repo))
+        object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config(repo_name=effective_repo))
 
         # Load GitHub author allowlists (numeric user IDs)
-        configured_issue_allowlist = issue_allowlist if issue_allowlist is not None else get_issue_allowlist_from_config()
-        configured_pr_allowlist = pr_allowlist if pr_allowlist is not None else get_pr_allowlist_from_config()
+        configured_issue_allowlist = issue_allowlist if issue_allowlist is not None else get_issue_allowlist_from_config(repo_name=effective_repo)
+        configured_pr_allowlist = pr_allowlist if pr_allowlist is not None else get_pr_allowlist_from_config(repo_name=effective_repo)
 
         object.__setattr__(self, "ISSUE_ALLOWLIST", configured_issue_allowlist)
         object.__setattr__(self, "PR_ALLOWLIST", configured_pr_allowlist)
@@ -242,7 +248,7 @@ class AutomationConfig:
         object.__setattr__(self, "CHECK_DEPENDENCIES", True)
         object.__setattr__(self, "SEARCH_GITHUB_ACTIONS_HISTORY", True)
         object.__setattr__(self, "ENABLE_ACTIONS_HISTORY_FALLBACK", True)
-        object.__setattr__(self, "ISOLATE_SINGLE_TEST_ON_FAILURE", False)
+        object.__setattr__(self, "ISOLATE_SINGLE_TEST_ON_FAILURE", get_isolate_single_test_on_failure_from_config(repo_name=effective_repo))
         object.__setattr__(self, "MERGE_METHOD", "--squash")
         object.__setattr__(self, "MERGE_AUTO", True)
         object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
