@@ -5,8 +5,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
-from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, load_reviewer_app_config
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, format_adversarial_validation_comment
+from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 
 
 class RecordingClient:
@@ -95,7 +95,7 @@ def test_publishes_native_review_with_installation_token_and_exact_sha(tmp_path:
     review_call = client.calls[-1]
     assert review_call[0] == "POST"
     assert review_call[1].endswith("/repos/owner/repo/pulls/42/reviews")
-    assert review_call[2]["json"] == {"body": reviewer._body(result), "event": event, "commit_id": "sha-a"}
+    assert review_call[2]["json"] == {"body": format_adversarial_validation_comment(result, "sha-a"), "event": event, "commit_id": "sha-a"}
     assert review_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
 
 
@@ -134,3 +134,57 @@ def test_cached_expired_token_is_refreshed(tmp_path: Path, monkeypatch: pytest.M
     now[0] = 1_001.0
     assert reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="PASS")).success
     assert sum(call[1].endswith("/installation") for call in client.calls) == 2
+
+
+def test_get_identity_resolves_bot_login_from_app_slug(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = RecordingClient([response(200, {"id": 4765828, "slug": "auto-coder-reviewer"})])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+
+    identity = reviewer.get_identity()
+
+    assert identity.login == "auto-coder-reviewer[bot]"
+    assert identity.app_id == 4765828
+    assert client.calls[0][1].endswith("/app")
+
+
+def test_get_identity_is_cached_after_first_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = RecordingClient([response(200, {"id": 1, "slug": "auto-coder-reviewer"})])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+
+    first = reviewer.get_identity()
+    second = reviewer.get_identity()
+
+    assert first == second
+    assert len(client.calls) == 1
+
+
+def test_get_identity_fails_closed_on_malformed_app_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = RecordingClient([response(200, {"id": 1})])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        reviewer.get_identity()
+
+
+def test_resolve_reviewer_app_identity_loads_config_and_resolves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_dir = tmp_path / ".auto-coder"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text('[github-app-auto-coder-reviewer]\napp_id = "4765828"\n', encoding="utf-8")
+    key = config_dir / "auto-coder-reviewer.pem"
+    key.write_text("fake private key", encoding="utf-8")
+    monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+            captured["url"] = url
+            return response(200, {"id": 4765828, "slug": "auto-coder-reviewer"})
+
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda timeout=30.0: _FakeClient())
+
+    identity = resolve_reviewer_app_identity(repo_name=None)
+
+    assert identity == ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=4765828)
+    assert captured["url"].endswith("/app")

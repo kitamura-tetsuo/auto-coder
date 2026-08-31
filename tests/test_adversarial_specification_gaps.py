@@ -9,7 +9,6 @@ from auto_coder.adversarial_validator import (
     format_adversarial_validation_comment,
     parse_adversarial_validation_response,
 )
-from auto_coder.github_app_reviewer import GitHubAppReviewer
 from auto_coder.pr_processor import _get_published_adversarial_validation_status
 
 
@@ -70,4 +69,4 @@ def test_native_review_does_not_approve_gap_pass() -> None:
     result = AdversarialValidationResult(result="PASS", specification_gaps=[gap()])
 
     assert result.allows_auto_merge is False
-    assert "no policy was selected" in GitHubAppReviewer._body(result)
+    assert "Auto-Coder did not choose one" in format_adversarial_validation_comment(result, "abc123")
