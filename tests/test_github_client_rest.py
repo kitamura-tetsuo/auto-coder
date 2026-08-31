@@ -12,6 +12,18 @@ class TestGitHubClientREST:
     def mock_github_token(self):
         return "test_token"
 
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_pr_changed_file_count_is_independent_of_diff(self, mock_get_ghapi_client, mock_github_token):
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_api.pulls.get.return_value = {"changed_files": 301}
+        client = GitHubClient.get_instance(mock_github_token)
+
+        changed_file_count = client.get_pr_changed_file_count("owner/repo", 123)
+
+        assert changed_file_count == 301
+        mock_api.pulls.get.assert_called_once_with("owner", "repo", 123)
+
     @patch("src.auto_coder.util.gh_cache.get_caching_client")
     def test_get_open_prs_json_rest(self, mock_get_caching_client, mock_github_token):
         """Test get_open_prs_json uses REST API correctly."""

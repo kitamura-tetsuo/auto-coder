@@ -5,7 +5,15 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.auto_coder import cli_ui
+
+
+@pytest.fixture(autouse=True)
+def clear_external_no_color(monkeypatch):
+    """Keep color-mode tests independent from the caller's environment."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 @patch("time.time")

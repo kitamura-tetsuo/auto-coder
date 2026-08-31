@@ -139,9 +139,10 @@ class TestResolvePRIssueNumbers:
 class TestCloseEmptyPR:
     """Tests for _close_empty_pr."""
 
+    @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
     @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_closes_empty_pr_and_increments_attempt(self, mock_increment, mock_release_label):
+    def test_closes_empty_pr_and_increments_attempt(self, mock_increment, mock_release_label, mock_remove_sessions):
         github_client = Mock()
         github_client.get_issue.return_value = {"state": "open", "number": 4800}
         mock_increment.return_value = 2
@@ -154,6 +155,7 @@ class TestCloseEmptyPR:
         assert result.closed is True
         assert result.issue_numbers == [4800]
         github_client.close_pr.assert_called_once()
+        mock_remove_sessions.assert_called_once_with("owner/repo", 4971)
         close_args = github_client.close_pr.call_args[0]
         assert close_args[0] == "owner/repo"
         assert close_args[1] == 4971

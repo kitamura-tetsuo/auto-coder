@@ -9,6 +9,12 @@ import pytest
 from auto_coder.progress_footer import ProgressContext, ProgressFooter, ProgressStage, clear_progress, get_progress_footer, newline_progress, pop_progress_stage, push_progress_stage, set_progress_item
 
 
+@pytest.fixture(autouse=True)
+def clear_external_no_color(monkeypatch):
+    """Keep color-mode tests independent from the caller's environment."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+
 def test_progress_footer_format():
     """Test that progress footer formats correctly."""
     footer = ProgressFooter()
