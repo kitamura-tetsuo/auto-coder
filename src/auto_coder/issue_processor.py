@@ -345,11 +345,30 @@ def _process_issue_codex_cloud_mode(
     backend_name: str,
     label_context: Optional[LabelManagerContext] = None,
 ) -> List[str]:
-    """Submit an issue to Codex Cloud and persist its task identifier."""
+    """Submit an issue to Codex Cloud and persist its task identifier.
+
+    Dispatch is guarded by a durable `CloudRun` record keyed by
+    (issue_number, attempt): if a Codex Cloud run already exists for the
+    issue's current attempt, `CodexCloudClient.start_task()` is not called
+    again. This protection is independent of the `@auto-coder` label, so it
+    remains effective across a process restart or when the label is absent,
+    stale, or temporarily inconsistent (see issue #1606).
+    """
+    from .cloud_run import CloudRun, CloudRunRepository
     from .codex_cloud_client import CodexCloudClient
 
     issue_number = issue_data["number"]
     issue_title = issue_data.get("title", "Unknown")
+
+    attempt = get_current_attempt(repo_name, issue_number)
+    cloud_run_repo = CloudRunRepository(repo_name)
+    existing_run = cloud_run_repo.get(issue_number, attempt)
+    if existing_run is not None and existing_run.provider == "codex-cloud":
+        logger.info(f"Codex Cloud run '{existing_run.task_id}' already exists for issue #{issue_number} attempt {attempt}; not starting a duplicate task")
+        if label_context:
+            label_context.keep_label()
+        return [f"Codex Cloud task '{existing_run.task_id}' already running for issue #{issue_number} attempt {attempt}; skipped duplicate dispatch"]
+
     issue_labels = [label.get("name", "") if isinstance(label, dict) else str(label) for label in issue_data.get("labels", [])]
     prompt = render_prompt(
         "issue.action",
@@ -370,6 +389,15 @@ def _process_issue_codex_cloud_mode(
         repo_name=repo_name,
         base_branch=config.MAIN_BRANCH,
         title=f"{issue_title} (#{issue_number})",
+    )
+    cloud_run_repo.save(
+        CloudRun(
+            repo_name=repo_name,
+            issue_number=issue_number,
+            attempt=attempt,
+            provider="codex-cloud",
+            task_id=task_id,
+        )
     )
     CloudManager(repo_name).add_session(issue_number, task_id)
 
