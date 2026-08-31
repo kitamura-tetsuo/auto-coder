@@ -17,6 +17,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
@@ -2413,6 +2414,12 @@ def _update_with_base_branch(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
+            if _delegate_cloud_merge_conflict_repair(repo_name, pr_data):
+                cmd.run_command(["git", "merge", "--abort"])
+                actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
+                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                return actions
+
             if not _is_local_llm_pr(pr_data):
                 actions.append(f"PR #{pr_number} was not created by local LLM, skipping conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
@@ -3337,6 +3344,115 @@ def _resolve_codex_cloud_task_id(
     return None
 
 
+def _resolve_cloud_conflict_origin(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+) -> Optional[Tuple[Any, str]]:
+    """Return the capable client and existing task ID that originated a PR."""
+    if _is_codex_pr(pr_data):
+        task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
+        if task_id:
+            from .codex_cloud_client import CodexCloudClient
+
+            return CodexCloudClient(repo_name=repo_name), task_id
+
+    if _is_claude_pr(pr_data):
+        task_id = _extract_session_id_from_pr_body(pr_data.get("body", "") or "")
+        if not task_id:
+            manager = CloudManager(repo_name)
+            for issue_number in extract_linked_issues_from_pr_body(pr_data.get("body", "") or ""):
+                task_id = manager.get_session_id(issue_number)
+                if task_id:
+                    break
+        if task_id and not task_id.startswith("http"):
+            from .claude_routine_client import ClaudeRoutineClient
+
+            return ClaudeRoutineClient(repo_name=repo_name), task_id
+
+    return None
+
+
+def _cloud_conflict_state_path(repo_name: str) -> Path:
+    """Return the durable deduplication state path for cloud conflict work."""
+    return Path.home() / ".auto-coder" / repo_name / "cloud_conflict_repairs.json"
+
+
+def _delegate_cloud_merge_conflict_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+) -> bool:
+    """Delegate a current conflict to its originating cloud session when possible.
+
+    ``True`` means this conflict state was either just delegated or was already
+    delegated, so local repair must stop for this processing pass. ``False``
+    preserves the caller's existing fallback path.
+    """
+    origin = _resolve_cloud_conflict_origin(repo_name, pr_data, github_client)
+    if origin is None:
+        return False
+    client, task_id = origin
+
+    # An inherited default method means that the provider does not opt in to
+    # follow-up work. Do not use continue_if_paused as a substitute.
+    from .cloud_task_client_base import CloudTaskClientBase
+
+    if type(client).send_followup is CloudTaskClientBase.send_followup:
+        return False
+
+    pr_number = pr_data.get("number")
+    head = pr_data.get("head") or {}
+    base = pr_data.get("base") or {}
+    head_branch = pr_data.get("head_branch") or head.get("ref")
+    base_branch = pr_data.get("base_branch") or base.get("ref")
+    head_state = head.get("sha") or pr_data.get("head_sha") or head_branch
+    base_state = base.get("sha") or pr_data.get("base_sha") or base_branch
+    if not pr_number or not head_branch or not base_branch or not head_state or not base_state:
+        logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate conflict repair")
+        return False
+
+    fingerprint = f"{repo_name}#{pr_number}:{head_state}:{base_state}"
+    state_path = _cloud_conflict_state_path(repo_name)
+    delivered: dict[str, str] = {}
+    try:
+        if state_path.exists():
+            loaded = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                delivered = {str(key): str(value) for key, value in loaded.items()}
+    except (OSError, ValueError) as exc:
+        logger.warning(f"Could not read cloud conflict repair state: {exc}")
+
+    if fingerprint in delivered:
+        logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
+        return True
+
+    message = render_prompt(
+        "pr.cloud_merge_conflict_repair",
+        pr_number=pr_number,
+        head_branch=head_branch,
+        base_branch=base_branch,
+    )
+    try:
+        accepted = client.send_followup(task_id, message)
+    except Exception as exc:
+        logger.warning(f"Cloud conflict repair delegation failed for PR #{pr_number}: {exc}")
+        return False
+    if not accepted:
+        return False
+
+    delivered[fingerprint] = task_id
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        # Delivery succeeded, so local repair must still stop. A persistence
+        # failure can cause a later retry but must never create parallel repair.
+        logger.warning(f"Could not persist cloud conflict repair state: {exc}")
+    logger.info(f"Delegated merge-conflict repair for PR #{pr_number} to existing cloud task {task_id}")
+    return True
+
+
 def _send_codex_cloud_error_feedback(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -3595,6 +3711,10 @@ def _merge_pr(
             if _is_dependabot_pr(pr_info):
                 logger.info(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
                 log_action(f"Skipped merge conflict resolution for dependency-bot PR #{pr_number}")
+                return False
+
+            if _delegate_cloud_merge_conflict_repair(repo_name, pr_info, client):
+                log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
                 return False
 
             # Try to resolve merge conflicts

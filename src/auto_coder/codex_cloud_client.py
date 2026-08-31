@@ -457,6 +457,24 @@ class CodexCloudClient(CloudTaskClientBase):
         logger.warning(f"Failed to send continuation follow-up to Codex Cloud task '{task_id}'")
         return False
 
+    def send_followup(self, task_id: str, message: str) -> bool:
+        """Send new work to an existing Codex Cloud task via WHAM."""
+        if not task_id or not message:
+            logger.warning("Codex Cloud follow-up requires a task ID and message")
+            return False
+
+        wham = self.wham_client or CodexWhamClient()
+        turn_id = wham.resolve_latest_assistant_turn(task_id)
+        if not turn_id:
+            logger.warning(f"Codex Cloud task '{task_id}' has no usable assistant turn for follow-up")
+            return False
+
+        success = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
+        if success:
+            self.active_tasks[task_id] = message
+            logger.info(f"Assigned follow-up work to Codex Cloud task '{task_id}'")
+        return success
+
     def stop_task(self, task_id: str) -> bool:
         """Stop or clean up a Codex Cloud task tracking."""
         if task_id in self.active_tasks:
