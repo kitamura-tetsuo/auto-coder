@@ -67,6 +67,23 @@ def _clear_sensitive_env(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def _stub_reviewer_app_identity(monkeypatch):
+    """Stub the dedicated adversarial-reviewer App identity for tests.
+
+    Resolving the real identity requires a configured App (config.toml plus
+    a private key) that does not exist in the test HOME. Tests that
+    specifically exercise identity-resolution failure or authorship checks
+    can still override this via a local `patch`/`monkeypatch` call.
+    """
+    from src.auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+    monkeypatch.setattr(
+        "auto_coder.pr_processor.resolve_reviewer_app_identity",
+        lambda repo_name=None: ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=1),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_github_client_singleton():
     """Reset GitHubClient singleton between tests to ensure isolation."""
     GitHubClient.reset_singleton()

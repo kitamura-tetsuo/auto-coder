@@ -1627,22 +1627,55 @@ class GitHubClient:
     def get_pr_reviews(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get all reviews for a pull request."""
         try:
-            owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
+            return self._get_pr_reviews(repo_name, pr_number)
+        except Exception as e:
+            logger.error(f"Failed to get reviews for PR #{pr_number}: {e}")
+            return []
 
-            reviews = api.pulls.list_reviews(owner, repo, pr_number)
+    def get_pr_reviews_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Get PR reviews while preserving REST lookup failures.
 
-            result = []
+        Used for merge-critical persisted state lookups (e.g. adversarial
+        validation) that must fail closed instead of treating an API error
+        as "no reviews".
+        """
+        return self._get_pr_reviews(repo_name, pr_number)
+
+    def _get_pr_reviews(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+
+        per_page = 100
+        result: List[Dict[str, Any]] = []
+        page = 1
+        while page <= COMMENTS_MAX_PAGES:
+            reviews = api.pulls.list_reviews(owner, repo, pr_number, per_page=per_page, page=page)
+            if not reviews:
+                break
+
             for r in reviews:
                 submitted_at = r.get("submitted_at")
                 if hasattr(submitted_at, "isoformat"):
                     submitted_at = submitted_at.isoformat()
 
-                result.append({"state": r.get("state"), "submitted_at": submitted_at, "user": {"login": r.get("user", {}).get("login")} if r.get("user") else None, "id": r.get("id")})
-            return result
-        except Exception as e:
-            logger.error(f"Failed to get reviews for PR #{pr_number}: {e}")
-            return []
+                user = r.get("user")
+                result.append(
+                    {
+                        "id": r.get("id"),
+                        "state": r.get("state"),
+                        "body": r.get("body"),
+                        "submitted_at": submitted_at,
+                        "user": {"login": user.get("login")} if user else None,
+                    }
+                )
+
+            if len(reviews) < per_page:
+                break
+            page += 1
+        else:
+            logger.warning(f"Stopped fetching reviews for PR #{pr_number} after {COMMENTS_MAX_PAGES} pages")
+
+        return result
 
     def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of open sub-issues using GitHub REST API.

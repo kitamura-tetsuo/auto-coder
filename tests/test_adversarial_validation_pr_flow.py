@@ -15,11 +15,11 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
     _get_codex_review_state,
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
-    _publish_adversarial_validation_result,
     _send_adversarial_validation_feedback_to_codex_cloud,
 )
 from auto_coder.util.gh_cache import GitHubClient
@@ -212,48 +212,46 @@ class TestAdversarialValidationPRComment:
         assert '"type":"item.completed"' not in comment
         assert comment.count("Codex CLI event details omitted") == 2
 
-    def test_publish_deduplicates_the_same_head_sha(self):
+    def test_finds_native_review_from_dedicated_reviewer_app_for_exact_sha(self):
         client = MagicMock()
         result = AdversarialValidationResult(result="PASS", summary="Verified")
-        rendered_comment = format_adversarial_validation_comment(result, "abc123")
-        client.get_pr_comments.return_value = [{"id": 1234, "body": rendered_comment}]
+        rendered_body = format_adversarial_validation_comment(result, "abc123")
+        client.get_pr_reviews_strict.return_value = [{"id": 1, "body": rendered_body, "user": {"login": "auto-coder-reviewer[bot]"}}]
 
-        action = _publish_adversarial_validation_result(
-            client,
-            "owner/repo",
-            100,
-            "abc123",
-            result,
-        )
+        body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
 
-        client.add_comment_to_pr.assert_not_called()
-        client.update_comment_for_issue.assert_not_called()
-        assert action == "Adversarial validation result for PR #100 at abc123 was already published"
+        assert error is None
+        assert body == rendered_body
 
-    def test_publish_keeps_first_result_for_the_same_head_sha_immutable(self):
+    def test_lookalike_review_from_another_author_is_not_authoritative(self):
         client = MagicMock()
-        client.get_pr_comments.return_value = [
-            {
-                "id": 1234,
-                "body": format_adversarial_validation_comment(
-                    AdversarialValidationResult(result="BLOCKED", summary="Temporary failure"),
-                    "abc123",
-                ),
-            }
-        ]
         result = AdversarialValidationResult(result="PASS", summary="Verified")
+        rendered_body = format_adversarial_validation_comment(result, "abc123")
+        client.get_pr_reviews_strict.return_value = [{"id": 1, "body": rendered_body, "user": {"login": "someone-else[bot]"}}]
+        client.get_pr_comments.return_value = []
 
-        action = _publish_adversarial_validation_result(
-            client,
-            "owner/repo",
-            100,
-            "abc123",
-            result,
-        )
+        body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
 
-        client.add_comment_to_pr.assert_not_called()
-        client.update_comment_for_issue.assert_not_called()
-        assert action == "Adversarial validation result for PR #100 at abc123 was already published"
+        assert error is None
+        assert body is None
+
+    def test_native_review_lookup_fails_closed_on_reviews_api_error(self):
+        client = MagicMock()
+        client.get_pr_reviews_strict.side_effect = RuntimeError("API unavailable")
+
+        body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
+
+        assert body is None
+        assert error == "API unavailable"
+
+    def test_native_review_lookup_fails_closed_on_identity_resolution_error(self):
+        client = MagicMock()
+        with patch("auto_coder.pr_processor.resolve_reviewer_app_identity", side_effect=RuntimeError("no reviewer credentials")):
+            body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
+
+        assert body is None
+        assert error == "no reviewer credentials"
+        client.get_pr_reviews_strict.assert_not_called()
 
     @pytest.mark.parametrize("status", ["PASS", "NEEDS_FIX", "BLOCKED", "INCONCLUSIVE", "ERROR"])
     def test_reads_published_status_for_exact_head_sha(self, status):
@@ -316,20 +314,22 @@ class TestAdversarialValidationPRComment:
         assert saved_status is None
         assert error == "API unavailable"
 
-    def test_publish_failure_is_reported_to_caller(self):
+    def test_reads_published_status_from_native_review_over_legacy_comment(self):
         client = MagicMock()
-        client.get_pr_comments.return_value = []
-        client.add_comment_to_pr.side_effect = RuntimeError("API unavailable")
+        client.get_pr_reviews_strict.return_value = [
+            {
+                "body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Native verdict"), "abc123"),
+                "user": {"login": "auto-coder-reviewer[bot]"},
+            }
+        ]
+        # A stale/legacy comment for the same SHA must not be consulted once a native review exists.
+        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="NEEDS_FIX", summary="Stale"), "abc123")}]
 
-        action = _publish_adversarial_validation_result(
-            client,
-            "owner/repo",
-            100,
-            "abc123",
-            AdversarialValidationResult(result="BLOCKED", summary="Could not validate"),
-        )
+        saved_status, error = _get_published_adversarial_validation_status(client, "owner/repo", 100, "abc123")
 
-        assert action == "Failed to publish adversarial validation result to PR #100: API unavailable"
+        assert saved_status == "PASS"
+        assert error is None
+        client.get_pr_comments.assert_not_called()
 
 
 class TestAdversarialValidationCodexFeedback:
@@ -508,6 +508,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        dedicated_reviewer_publication,
     ):
         """When CI is green and adversarial validation passes, PR should be merged."""
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
@@ -530,13 +531,10 @@ class TestAdversarialValidationPRFlow:
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_called_once()
-        client.add_comment_to_pr.assert_called_once()
-        comment = client.add_comment_to_pr.call_args.args[2]
-        assert "adversarial validation: PASS" in comment
-        assert "All specifications verified" in comment
-        assert "abc123456789" in comment
+        dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
+        client.add_comment_to_pr.assert_not_called()
         assert any("Adversarial validation passed" in a for a in actions)
-        assert any("Published adversarial validation result" in a for a in actions)
+        assert any("Published APPROVE adversarial review" in a for a in actions)
         assert any("Successfully merged PR #100" in a for a in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
@@ -557,6 +555,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        dedicated_reviewer_publication,
     ):
         """A violation is reported without checking out or modifying the PR branch."""
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
@@ -585,12 +584,8 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_called_once()
         mock_checkout.assert_not_called()
         mock_merge_pr.assert_not_called()
-        client.add_comment_to_pr.assert_called_once()
-        comment = client.add_comment_to_pr.call_args.args[2]
-        assert "adversarial validation: NEEDS_FIX" in comment
-        assert "Spec requires idempotency" in comment
-        assert "Tests only test single execution" in comment
-        assert "Call action twice and verify state" in comment
+        client.add_comment_to_pr.assert_not_called()
+        dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
         assert any("Adversarial validation failed for PR #100" in a for a in actions)
         assert any("no local automatic adversarial fix was attempted" in a for a in actions)
 
@@ -610,6 +605,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        dedicated_reviewer_publication,
     ):
         """When validation produces a BLOCKED or INCONCLUSIVE status, merge must be blocked (fail-closed)."""
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
@@ -631,9 +627,8 @@ class TestAdversarialValidationPRFlow:
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_not_called()
-        client.add_comment_to_pr.assert_called_once()
-        assert "adversarial validation: BLOCKED" in client.add_comment_to_pr.call_args.args[2]
-        assert "Oracle acquisition failed" in client.add_comment_to_pr.call_args.args[2]
+        client.add_comment_to_pr.assert_not_called()
+        dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
         assert any("Adversarial validation blocked PR #100" in a for a in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
@@ -652,6 +647,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        dedicated_reviewer_publication,
     ):
         raw_stream = '{"type":"thread.started"}\n{"type":"item.completed","item":{"text":"noise"}}'
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
@@ -666,7 +662,9 @@ class TestAdversarialValidationPRFlow:
 
         mock_run_validation.assert_not_called()
         mock_merge_pr.assert_not_called()
-        comment = client.add_comment_to_pr.call_args.args[2]
+        client.add_comment_to_pr.assert_not_called()
+        published_result = dedicated_reviewer_publication.call_args.args[3]
+        comment = format_adversarial_validation_comment(published_result, "abc123456789")
         assert "adversarial validation: BLOCKED" in comment
         assert "validation_execution_error" in comment
         assert "RuntimeError" in comment

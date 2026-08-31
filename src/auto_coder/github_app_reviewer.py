@@ -13,7 +13,7 @@ from typing import Callable, Optional
 import httpx
 import jwt
 
-from .adversarial_validator import AdversarialValidationResult
+from .adversarial_validator import AdversarialValidationResult, format_adversarial_validation_comment
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
 
@@ -36,6 +36,14 @@ class ReviewPublicationResult:
     success: bool = False
     event: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewerAppIdentity:
+    """The dedicated reviewer App's own bot identity, resolved via its credentials."""
+
+    login: str = ""
+    app_id: int = 0
 
 
 @dataclass
@@ -109,6 +117,7 @@ class GitHubAppReviewer:
         self._client = client or httpx.Client(timeout=30.0)
         self._clock = clock
         self._tokens: dict[str, _CachedToken] = {}
+        self._identity: Optional[ReviewerAppIdentity] = None
         self._lock = threading.Lock()
 
     def _jwt(self) -> str:
@@ -155,25 +164,26 @@ class GitHubAppReviewer:
             self._tokens[repo_name] = _CachedToken(token, expiry)
             return token
 
-    @staticmethod
-    def _body(result: AdversarialValidationResult) -> str:
-        lines = ["## Adversarial validation", "", f"**Verdict:** {result.result.strip().upper()}", "", result.summary or "No summary was provided."]
-        for index, finding in enumerate(result.findings, 1):
-            lines.extend(
-                [
-                    "",
-                    f"### Finding {index}",
-                    f"- **Violated requirement:** {finding.violated_requirement}",
-                    f"- **Counterexample:** {finding.counterexample}",
-                    f"- **Test gap:** {finding.test_gap}",
-                    f"- **Suggested regression scenario:** {finding.suggested_regression_scenario}",
-                ]
-            )
-        if result.specification_gaps:
-            lines.extend(["", "### Specification gaps", "These are not proven defects and no policy was selected. Review of defined requirements continued. Automatic merge is disabled; humans may merge manually and manage specification follow-up separately."])
-            for index, gap in enumerate(result.specification_gaps, 1):
-                lines.extend(["", f"#### Gap {index}: {gap.question}", f"- **Issue insufficiency:** {gap.why_existing_issue_is_insufficient}", f"- **Observed case:** {gap.observed_case}", f"- **Affected scope:** {gap.affected_scope}"])
-        return "\n".join(lines)
+    def get_identity(self) -> ReviewerAppIdentity:
+        """Resolve the reviewer App's own bot login/id from its own credentials.
+
+        This is deliberately independent of any string configured by the
+        caller: the login is only accepted if the App's private key can
+        authenticate a JWT and GitHub resolves that JWT's `/app` identity,
+        so a lookalike review cannot be mistaken for an authoritative one.
+        """
+        with self._lock:
+            if self._identity is not None:
+                return self._identity
+            app_jwt = self._jwt()
+            info = self._request("GET", "/app", app_jwt).json()
+            slug = info.get("slug") if isinstance(info, dict) else None
+            app_id = info.get("id") if isinstance(info, dict) else None
+            if not isinstance(slug, str) or not slug or not isinstance(app_id, int):
+                raise RuntimeError("Reviewer GitHub App identity could not be resolved")
+            identity = ReviewerAppIdentity(login=f"{slug}[bot]", app_id=app_id)
+            self._identity = identity
+            return identity
 
     def publish(self, repo_name: str, pr_number: int, validated_head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
         """Submit a native review, failing closed on auth, head races, or API errors."""
@@ -188,7 +198,7 @@ class GitHubAppReviewer:
                 "POST",
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",
                 token,
-                json={"body": self._body(result), "event": event, "commit_id": validated_head_sha},
+                json={"body": format_adversarial_validation_comment(result, validated_head_sha), "event": event, "commit_id": validated_head_sha},
             )
             return ReviewPublicationResult(True, event, "")
         except Exception:
@@ -206,3 +216,14 @@ def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, re
         logger.error("Dedicated reviewer GitHub App configuration could not be loaded")
         return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App configuration is unavailable")
     return reviewer.publish(repo_name, pr_number, head_sha, result)
+
+
+def resolve_reviewer_app_identity(repo_name: Optional[str] = None) -> ReviewerAppIdentity:
+    """Resolve the dedicated reviewer App's own bot identity.
+
+    Raises on any failure (missing config, unreachable API, malformed
+    response) so merge-critical persisted-state lookups can fail closed
+    instead of silently treating an unresolved identity as "no review".
+    """
+    reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
+    return reviewer.get_identity()

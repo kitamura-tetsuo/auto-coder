@@ -41,7 +41,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .github_app_reviewer import publish_adversarial_review
+from .github_app_reviewer import publish_adversarial_review, resolve_reviewer_app_identity
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_gh_logger, get_logger
@@ -1525,28 +1525,80 @@ def _process_pr_jules_mode(
         return actions
 
 
-def _publish_adversarial_validation_result(
+def _find_authoritative_adversarial_review(
     github_client: Any,
     repo_name: str,
     pr_number: int,
     head_sha: str,
-    result: AdversarialValidationResult,
-) -> str:
-    """Publish one structured validation comment per PR head commit."""
-    marker = adversarial_validation_comment_marker(head_sha)
-    rendered_comment = format_adversarial_validation_comment(result, head_sha)
-    try:
-        existing_comments = github_client.get_pr_comments(repo_name, pr_number)
-        for comment in existing_comments:
-            body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
-            if isinstance(body, str) and body.startswith(marker):
-                return f"Adversarial validation result for PR #{pr_number} at {head_sha[:8]} was already published"
+) -> Tuple[Optional[str], Optional[str]]:
+    """Find the dedicated reviewer App's native review body for an exact head SHA.
 
-        github_client.add_comment_to_pr(repo_name, pr_number, rendered_comment)
-        return f"Published adversarial validation result to PR #{pr_number}"
+    Persisted adversarial-validation state now lives in a native PR review
+    authored through the dedicated `auto-coder-reviewer` GitHub App instead of
+    a regular user-authenticated PR comment. A review only counts as
+    authoritative when it was authored by that exact App identity (resolved
+    from the App's own credentials, not a configurable string) and carries
+    the marker for this exact head SHA; a lookalike review from anyone else
+    is ignored. Any failure to resolve the App identity or read PR reviews is
+    reported as an error rather than treated as "no review", because this
+    lookup gates merge decisions and must fail closed.
+    """
+    marker = adversarial_validation_comment_marker(head_sha)
+    try:
+        identity = resolve_reviewer_app_identity(repo_name)
     except Exception as e:
-        logger.error(f"Failed to publish adversarial validation result to PR #{pr_number}: {e}")
-        return f"Failed to publish adversarial validation result to PR #{pr_number}: {e}"
+        logger.error(f"Failed to resolve dedicated reviewer App identity for PR #{pr_number}: {e}")
+        return None, str(e)
+
+    try:
+        reviews = github_client.get_pr_reviews_strict(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to read PR reviews for PR #{pr_number}: {e}")
+        return None, str(e)
+
+    for review in reviews:
+        login = _comment_value(_comment_value(review, "user") or {}, "login", "")
+        body = _comment_value(review, "body", "")
+        if login == identity.login and isinstance(body, str) and body.startswith(marker):
+            return body, None
+
+    return None, None
+
+
+def _get_legacy_adversarial_validation_comment(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return a pre-migration validation comment for one PR head SHA, if any.
+
+    Legacy comments were produced by the previous user-authenticated
+    publication path. They are only ever read here for backward-compatible
+    same-SHA deduplication; this path never creates or updates them.
+    """
+    marker = adversarial_validation_comment_marker(head_sha)
+    try:
+        comments = github_client.get_pr_comments(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed to read legacy adversarial validation comments for PR #{pr_number}: {e}")
+        return None, str(e)
+
+    for comment in comments:
+        body = _comment_value(comment, "body", "")
+        if isinstance(body, str) and body.startswith(marker):
+            return body, None
+    return None, None
+
+
+def _parse_adversarial_validation_status(body: str) -> str:
+    """Extract the verdict recorded in a validation marker body."""
+    match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
+    if not match:
+        return "ERROR"
+    if match.group(1) == "PASS" and "### Specification gaps (" in body:
+        return "PASS_WITH_SPECIFICATION_GAPS"
+    return match.group(1)
 
 
 def _get_published_adversarial_validation_status(
@@ -1555,24 +1607,24 @@ def _get_published_adversarial_validation_status(
     pr_number: int,
     head_sha: str,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Read the immutable validation status already published for a head SHA."""
-    marker = adversarial_validation_comment_marker(head_sha)
-    try:
-        comments = github_client.get_pr_comments(repo_name, pr_number)
-    except Exception as e:
-        logger.error(f"Failed to check prior adversarial validation for PR #{pr_number}: {e}")
-        return None, str(e)
+    """Read the immutable validation status already published for a head SHA.
 
-    for comment in comments:
-        body = comment.get("body", "") if isinstance(comment, dict) else getattr(comment, "body", "")
-        if not isinstance(body, str) or not body.startswith(marker):
-            continue
-        match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
-        if match:
-            if match.group(1) == "PASS" and "### Specification gaps (" in body:
-                return "PASS_WITH_SPECIFICATION_GAPS", None
-            return match.group(1), None
-        return "ERROR", None
+    The dedicated reviewer App's native review is the authoritative source.
+    A legacy user-authenticated comment is only consulted when no native
+    review exists yet, so PR heads validated before this change keep their
+    persisted state without being re-validated or re-published.
+    """
+    native_body, native_error = _find_authoritative_adversarial_review(github_client, repo_name, pr_number, head_sha)
+    if native_error:
+        return None, native_error
+    if native_body is not None:
+        return _parse_adversarial_validation_status(native_body), None
+
+    legacy_body, legacy_error = _get_legacy_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha)
+    if legacy_error:
+        return None, legacy_error
+    if legacy_body is not None:
+        return _parse_adversarial_validation_status(legacy_body), None
 
     return None, None
 
@@ -1584,18 +1636,13 @@ def _get_published_adversarial_validation_comment(
     head_sha: str,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Return the durable validation report for one PR head SHA."""
-    marker = adversarial_validation_comment_marker(head_sha)
-    try:
-        comments = github_client.get_pr_comments(repo_name, pr_number)
-    except Exception as e:
-        logger.error(f"Failed to read adversarial validation report for PR #{pr_number}: {e}")
-        return None, str(e)
+    native_body, native_error = _find_authoritative_adversarial_review(github_client, repo_name, pr_number, head_sha)
+    if native_error:
+        return None, native_error
+    if native_body is not None:
+        return native_body, None
 
-    for comment in comments:
-        body = _comment_value(comment, "body", "")
-        if isinstance(body, str) and body.startswith(marker):
-            return body, None
-    return None, None
+    return _get_legacy_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha)
 
 
 @contextlib.contextmanager
@@ -1807,7 +1854,10 @@ def _handle_pr_merge(
                 if max_adv_reviews is not None and max_adv_reviews >= 0:
                     try:
                         existing_pr_comments = github_client.get_pr_comments(repo_name, pr_number) if github_client else []
-                        adv_review_count = count_adversarial_validation_comments(existing_pr_comments)
+                        existing_reviews = github_client.get_pr_reviews_strict(repo_name, pr_number) if github_client else []
+                        reviewer_identity = resolve_reviewer_app_identity(repo_name)
+                        authoritative_reviews = [review for review in existing_reviews if _comment_value(_comment_value(review, "user") or {}, "login", "") == reviewer_identity.login]
+                        adv_review_count = count_adversarial_validation_comments(existing_pr_comments) + count_adversarial_validation_comments(authoritative_reviews)
                     except Exception as e:
                         logger.error(f"Failed to check adversarial validation count for PR #{pr_number}: {e}")
                         actions.append(f"Could not check prior adversarial validation count for PR #{pr_number}: {e}; validation not started")
@@ -1913,16 +1963,6 @@ def _handle_pr_merge(
                             logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
                             return actions
                         actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
-
-                        actions.append(
-                            _publish_adversarial_validation_result(
-                                github_client,
-                                repo_name,
-                                pr_number,
-                                head_sha,
-                                val_result,
-                            )
-                        )
 
                     if published_status == "PASS":
                         pass
