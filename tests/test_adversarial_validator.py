@@ -85,6 +85,22 @@ diff --git a/src/service_test.py b/src/service_test.py
             ("REQ-002", "Preserve Origin: #12/REQ-007"),
         ]
 
+    def test_explicit_contract_accepts_inline_code_requirement_ids(self):
+        issue = VerifiedIssueOracle(
+            number=1589,
+            body=("## Requirements\n" "- `REQ-001:` Delegate repair to the originating cloud session.\n" "- `REQ-002`: Preserve the actual base branch.\n" "- `REQ-003`: Keep the existing pull request."),
+        )
+
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=(issue,)))
+
+        assert manifest.mode == "explicit-contract"
+        assert manifest.error is None
+        assert [(item.requirement_id, item.text) for item in manifest.requirements] == [
+            ("REQ-001", "Delegate repair to the originating cloud session."),
+            ("REQ-002", "Preserve the actual base branch."),
+            ("REQ-003", "Keep the existing pull request."),
+        ]
+
     def test_duplicate_explicit_ids_across_issues_are_issue_qualified(self):
         issues = (
             VerifiedIssueOracle(number=101, body="## Requirements\nREQ-001: First contract."),

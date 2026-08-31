@@ -382,7 +382,7 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
 
 
 _MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
-_EXPLICIT_REQUIREMENT = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?(REQ-\d{3}):\s*(\S.*)$")
+_EXPLICIT_REQUIREMENT = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?" r"(?:`(REQ-\d{3})(?::`|`:)|(REQ-\d{3}):)\s*(\S.*)$")
 
 
 def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
@@ -417,7 +417,13 @@ def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, Li
         if not match:
             malformed.append(line)
             continue
-        requirement_id, text = match.groups()
+        code_requirement_id, plain_requirement_id, text = match.groups()
+        requirement_id = code_requirement_id or plain_requirement_id
+        if requirement_id is None:
+            # The regular expression guarantees one identifier; this guard
+            # keeps the invariant explicit for type checkers.
+            malformed.append(line)
+            continue
         if requirement_id in seen:
             duplicates.add(requirement_id)
         seen.add(requirement_id)
