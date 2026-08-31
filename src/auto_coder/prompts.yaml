@@ -46,8 +46,19 @@ pr:
   jules_merge_conflict_resolution: |-
     Merge conflicts detected. Please pull in the main branch and resolve the conflicts.
 
-  cloud_merge_conflict_repair: |-
-    Update the existing pull request #$pr_number branch `$head_branch` from its actual base branch `$base_branch` and resolve all resulting merge conflicts while preserving the intended pull request changes. Run the appropriate tests, commit the conflict repair, and push it to the same `$head_branch` branch. Keep the existing pull request #$pr_number; do not create a replacement pull request or a new task/session.
+  existing_pr_repair: |-
+    You are repairing the existing pull request #$pr_number in $repo_name.
+    Work only on its current head branch `$head_branch` (currently at commit $head_sha), which targets base branch `$base_branch`.
+    Do not create a new branch.
+    Do not create a new pull request.
+    Do not replace or close the existing pull request.
+    Commit and push the corrective changes to the same `$head_branch` branch so that pull request #$pr_number is updated.
+    Creating another PR does not satisfy this task.
+
+    $details
+
+  cloud_merge_conflict_repair_details: |-
+    Merge the actual base branch `$base_branch` into the current head branch and resolve all resulting merge conflicts while preserving the intended pull request changes. Run the appropriate tests before committing.
 
   merge_conflict_resolution: |-
     There are merge conflicts when trying to merge $base_branch branch into PR #$pr_number: $pr_title
@@ -1582,3 +1593,6 @@ jules:
 codex_cloud:
   continuation: |-
     Review the current pull request status and continue working on it. If CI checks are failing, review the latest failure logs, fix the issues, push the fixes to the existing pull request, and continue until all CI checks pass. Also address any valid unresolved review comments.
+
+  ci_review_repair_details: |-
+    CI checks are currently failing. Review the latest failure logs, fix the issues, and continue until all CI checks pass. Also address any valid unresolved review comments.

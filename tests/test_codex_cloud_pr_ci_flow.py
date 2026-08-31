@@ -38,7 +38,7 @@ class TestCodexCloudPRCIFlow:
             "title": "Fix bug in parser",
             "body": "Implementation details.\n\nhttps://chatgpt.com/codex/tasks/task_e_11223344",
             "user": {"login": "octocat"},
-            "head": {"ref": "codex/issue-101"},
+            "head": {"ref": "codex/issue-101", "sha": "sha101"},
             "base": {"ref": "main"},
         }
         failed_checks = [{"name": "PR Tests", "conclusion": "failure"}]
@@ -52,7 +52,15 @@ class TestCodexCloudPRCIFlow:
                 github_client=mock_github_client,
             )
 
-            mock_cont.assert_called_once_with("task_e_11223344")
+            mock_cont.assert_called_once()
+            (task_id,) = mock_cont.call_args.args
+            prompt = mock_cont.call_args.kwargs["prompt"]
+            assert task_id == "task_e_11223344"
+            assert "pull request #101" in prompt
+            assert "codex/issue-101" in prompt
+            assert "sha101" in prompt
+            assert "Do not create a new branch." in prompt
+            assert "Do not create a new pull request." in prompt
             assert any("Sent continuation request to Codex Cloud task 'task_e_11223344'" in a for a in actions)
             assert any("Posted comment on PR #101" in a for a in actions)
             mock_github_client.add_comment_to_pr.assert_called_once()

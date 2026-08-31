@@ -341,6 +341,8 @@ class TestAdversarialValidationCodexFeedback:
         pr_data = {
             "number": 100,
             "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "stale_sha"},
+            "base": {"ref": "main"},
         }
         report = "## Auto-Coder adversarial validation: NEEDS_FIX\n\nConcrete counterexample"
 
@@ -361,9 +363,33 @@ class TestAdversarialValidationCodexFeedback:
         assert "head123" in prompt
         assert report in prompt
         assert "add strict regression tests" in prompt
+        assert "codex/issue-99" in prompt
+        assert "Do not create a new branch." in prompt
+        assert "Do not create a new pull request." in prompt
+        assert "Do not replace or close the existing pull request." in prompt
         assert any("Sent adversarial NEEDS_FIX report" in action for action in actions)
         delivery_comment = client.add_comment_to_pr.call_args.args[2]
         assert delivery_comment.startswith(adversarial_validation_codex_feedback_marker("head123"))
+
+    def test_missing_branch_metadata_blocks_feedback_instead_of_weak_prompt(self):
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_abc123",
+        }
+
+        with patch("auto_coder.codex_cloud_client.CodexCloudClient") as cloud_client_type:
+            actions = _send_adversarial_validation_feedback_to_codex_cloud(
+                "owner/repo",
+                pr_data,
+                "head123",
+                "report",
+                client,
+            )
+
+        cloud_client_type.assert_not_called()
+        assert any("PR head/base branch metadata is unavailable" in action for action in actions)
 
     def test_delivery_marker_prevents_duplicate_codex_cloud_followup(self):
         client = MagicMock()
