@@ -424,7 +424,8 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
 
 
 _MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
-_EXPLICIT_REQUIREMENT = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?(REQ-\d{3}):\s*(\S.*)$")
+_EXPLICIT_REQUIREMENT_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
+_EXPLICIT_REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(\S.*)$")
 
 
 def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
@@ -455,11 +456,13 @@ def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, Li
         line = raw_line.strip()
         if not line or line.startswith("<!--") or line.endswith("-->"):
             continue
-        match = _EXPLICIT_REQUIREMENT.fullmatch(line)
+        content = _EXPLICIT_REQUIREMENT_PREFIX.sub("", line, count=1)
+        match = _EXPLICIT_REQUIREMENT.fullmatch(content)
         if not match:
             malformed.append(line)
             continue
-        requirement_id, text = match.groups()
+        backticked_id, plain_id, text = match.groups()
+        requirement_id = backticked_id or plain_id
         if requirement_id in seen:
             duplicates.add(requirement_id)
         seen.add(requirement_id)
