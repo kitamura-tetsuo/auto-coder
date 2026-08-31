@@ -114,15 +114,16 @@ class TestNonDifficultCloudIssueRouting:
 
     @patch("auto_coder.issue_processor.CloudManager")
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")
-    def test_codex_cloud_dispatch_persists_and_comments_task_url(self, mock_client_type, mock_cloud_manager_type):
+    def test_codex_cloud_dispatch_persists_and_comments_task_url(self, mock_client_type, mock_cloud_manager_type, tmp_path, monkeypatch):
         """A successful asynchronous dispatch must publish its task on the issue."""
+        monkeypatch.setenv("HOME", str(tmp_path))
         client = mock_client_type.return_value
         client.start_task.return_value = "task_e_123"
         client.task_urls = {"task_e_123": "https://chatgpt.com/codex/tasks/task_e_123"}
         github_client = MagicMock()
         label_context = MagicMock()
 
-        with patch("auto_coder.issue_processor.get_commit_log", return_value=""):
+        with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=0):
             actions = _process_issue_codex_cloud_mode(
                 "owner/repo",
                 {"number": 10, "title": "Simple fix", "body": "Fix it", "labels": []},
@@ -141,6 +142,13 @@ class TestNonDifficultCloudIssueRouting:
         github_client.add_labels.assert_called_once_with("owner/repo", 10, ["@auto-coder"])
         label_context.keep_label.assert_called_once_with()
         assert actions == ["Started Codex Cloud task 'task_e_123' for issue #10"]
+
+        from auto_coder.cloud_run import CloudRunRepository
+
+        persisted = CloudRunRepository("owner/repo").get(issue_number=10, attempt=0)
+        assert persisted is not None
+        assert persisted.provider == "codex-cloud"
+        assert persisted.task_id == "task_e_123"
 
     @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
     def test_process_issue_cloud_backend_delegates_to_codex_cloud(self, mock_codex_cloud_mode):
