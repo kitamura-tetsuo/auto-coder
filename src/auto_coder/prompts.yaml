@@ -598,12 +598,35 @@ pr:
 
     Re-review the current PR head against the original issue specification.
     Previous findings and conclusions are context only, not the correctness oracle.
-    First verify whether previous findings are actually fixed, then independently
-    try to find new plausible incorrect implementations or test-oracle gaps that
-    would still pass the current tests.
+    The original Issue Requirements remain the source of truth throughout every
+    review iteration. Apply this convergence policy in order:
 
-    The original issue specification remains the source of truth.
-    Do not assume that fixing all previous findings means the PR is correct.
+    1. For EACH previously blocking finding, classify the current implementation
+       as FIXED, STILL_VIOLATED, or REGRESSED. A finding is not FIXED merely
+       because its reported example now passes: check equivalent reachable paths
+       for the same requirement and reject workaround-only or symptom-masking
+       changes.
+    2. Inspect the corrective changes and changed tests for regressions related to
+       the affected behavior, including persistence, state, authorization, and
+       synchronization behavior where applicable.
+    3. Do NOT restart unrestricted broad adversarial exploration. A newly noticed
+       finding may block only if it is both demonstrated/reachable under the
+       supplied evidence and material to an explicit Issue Requirement. It is
+       material only when leaving it unfixed would reasonably justify delaying
+       merge: an explicit requirement fails on a supported or realistic path;
+       persistence, state, authorization, or synchronization is incorrect; data
+       can be lost or corrupted; a documented supported variant breaks; or an
+       equivalently significant correctness defect exists.
+
+    Low-impact boundary conditions, speculative robustness concerns, additional
+    hardening, and test improvements MUST NOT produce NEEDS_FIX unless they meet
+    that demonstrated/reachable and material standard. Conversely, iteration
+    count never excuses a material violation: return NEEDS_FIX whenever a prior
+    blocker remains, a fix masks its symptom, the fix causes a related regression,
+    or any newly discovered demonstrated/reachable material violation is present.
+    When all prior blockers are fixed and there is no related regression or new
+    material demonstrated violation, allow the rereview to PASS subject to the
+    complete requirement-coverage rules in the embedded review prompt.
 
     $review_prompt
 
