@@ -527,6 +527,15 @@ pr:
           "test_gap": "<Why the existing test suite fails to detect this defect>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
         }
+      ],
+      "specification_gaps": [
+        {
+          "question": "<What materially relevant behavior is not defined?>",
+          "why_existing_issue_is_insufficient": "<Why judging it would require choosing a new product or workflow policy>",
+          "observed_case": "<Concrete PR state, boundary, or behavior exposing the ambiguity>",
+          "affected_scope": "<Behavior or decision affected>",
+          "candidate_options": ["<Optional neutral descriptions; never requirements>"]
+        }
       ]
     }
     ```
@@ -544,11 +553,18 @@ pr:
           "evidence": "The supplied patch and tests directly establish this requirement"
         }
       ],
-      "findings": []
+      "findings": [],
+      "specification_gaps": []
     }
     ```
 
     Every finding must cite an exact stable requirement ID from the supplied manifest. Never create a finding for an invented invariant, hardening opportunity, maintainability concern, or test gap. If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list and mark the corresponding requirement IDs UNVERIFIED. PASS requires exactly one VERIFIED or justified IRRELEVANT coverage entry for every stable ID below; a boolean completeness claim cannot substitute for the entries.
+
+    SPECIFICATION GAP POLICY:
+    - Record a specification gap only when the PR exposes a materially relevant concrete case, the authoritative Issue is silent about its required behavior, and correctness cannot be judged without choosing a new product or workflow policy.
+    - A defined requirement with insufficient evidence is UNVERIFIED/INCONCLUSIVE, not a specification gap. A demonstrated violation of a defined requirement remains a finding and forces NEEDS_FIX.
+    - Gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and allow PASS, NEEDS_FIX, INCONCLUSIVE, or BLOCKED alongside gaps according to the defined requirements.
+    - Do not select, recommend, or promote a candidate policy. PR discussion, reviewer suggestions, repository conventions, implementation choices, and candidate options are not authoritative requirements. Candidate options, if useful, must be neutral descriptions only.
 
     Context:
     Repository: $repo_name
@@ -607,6 +623,10 @@ pr:
     Previous findings and conclusions are context only, not the correctness oracle.
     The original Issue Requirements remain the source of truth throughout every
     review iteration. Apply this convergence policy in order:
+
+    Re-evaluate previously reported specification gaps and preserve each one while
+    it remains relevant and the authoritative Issue still does not define the
+    missing policy. Never turn a gap or candidate option into a finding.
 
     1. For EACH previously blocking finding, classify the current implementation
        as FIXED, STILL_VIOLATED, or REGRESSED. A finding is not FIXED merely
@@ -696,7 +716,8 @@ pr:
           "test_gap": "<Why the test suite failed to catch this>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>"
         }
-      ]
+      ],
+      "specification_gaps": []
     }
     ```
 
@@ -707,6 +728,8 @@ pr:
 
     Adversarial validation report:
     $validation_report
+
+    Fix only demonstrated violations of requirements already defined by the linked Issue. Any "Specification gaps" section is human-facing context, not a repair request: do not select or implement candidate policies from it, and do not create or modify Issues to resolve it.
 
 issue:
   action: |-

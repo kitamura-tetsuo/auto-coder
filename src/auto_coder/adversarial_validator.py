@@ -30,7 +30,7 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v6"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v7"
 
 
 @dataclass
@@ -47,6 +47,17 @@ class AdversarialValidationFinding:
     counterexample: str = ""
     test_gap: str = ""
     suggested_regression_scenario: str = ""
+
+
+@dataclass
+class SpecificationGap:
+    """Material behavior for which the authoritative Issue defines no policy."""
+
+    question: str = ""
+    why_existing_issue_is_insufficient: str = ""
+    observed_case: str = ""
+    affected_scope: str = ""
+    candidate_options: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -93,11 +104,17 @@ class AdversarialValidationResult:
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
     requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
+    specification_gaps: List[SpecificationGap] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
-        """Return True if validation explicitly passed with no blocking findings."""
+        """Return True when every defined requirement explicitly passed."""
         return self.result.strip().upper() == "PASS" and len(self.findings) == 0
+
+    @property
+    def auto_merge_allowed(self) -> bool:
+        """Return whether this result clears the adversarial automatic-merge gate."""
+        return self.is_pass and not self.specification_gaps
 
     @property
     def needs_fix(self) -> bool:
@@ -244,6 +261,32 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
                 lines.extend(["", "**Test gap**", "", _bounded_comment_field(finding.test_gap)])
             if finding.suggested_regression_scenario.strip():
                 lines.extend(["", "**Suggested regression scenario**", "", _bounded_comment_field(finding.suggested_regression_scenario)])
+
+    if result.specification_gaps:
+        lines.extend(
+            [
+                "",
+                f"### Specification gaps ({len(result.specification_gaps)})",
+                "",
+                "These are not proven implementation defects. The authoritative Issue does not define the required policy, "
+                "and Auto-Coder did not choose one. Review of all defined requirements continued, but automatic merge is "
+                "disabled while any gap remains. A human may still merge manually and handle follow-up specification work "
+                "separately.",
+            ]
+        )
+        for index, gap in enumerate(result.specification_gaps, start=1):
+            lines.extend(
+                [
+                    "",
+                    f"#### {index}. {_bounded_comment_field(gap.question)}",
+                    f"- **Why the Issue is insufficient:** {_bounded_comment_field(gap.why_existing_issue_is_insufficient)}",
+                    f"- **Observed case:** {_bounded_comment_field(gap.observed_case)}",
+                    f"- **Affected scope:** {_bounded_comment_field(gap.affected_scope)}",
+                ]
+            )
+            if gap.candidate_options:
+                lines.append("- **Neutral candidate options (discussion only):**")
+                lines.extend(f"  - {_bounded_comment_field(option)}" for option in gap.candidate_options)
 
     if result.diagnostic_category or result.diagnostic_reason:
         lines.extend(["", "### Diagnostic"])
@@ -937,6 +980,21 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 findings: List[AdversarialValidationFinding] = []
                 unverified_suspicion = False
 
+                raw_specification_gaps = parsed.get("specification_gaps", [])
+                if not isinstance(raw_specification_gaps, list):
+                    return _parse_error(raw_response, "schema_error", "Malformed validator schema: specification_gaps must be a list", f"specification_gaps must be a list, got {type(raw_specification_gaps).__name__}")
+                specification_gaps: List[SpecificationGap] = []
+                for item in raw_specification_gaps:
+                    if not isinstance(item, dict):
+                        return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", "specification gap entries must be objects")
+                    required_gap_fields = {name: str(item.get(name, "")).strip() for name in ("question", "why_existing_issue_is_insufficient", "observed_case", "affected_scope")}
+                    missing_gap_fields = [name for name, value in required_gap_fields.items() if not value]
+                    options = item.get("candidate_options", [])
+                    if missing_gap_fields or not isinstance(options, list) or any(not isinstance(option, str) or not option.strip() for option in options):
+                        reason = f"missing fields: {', '.join(missing_gap_fields)}" if missing_gap_fields else "candidate_options must contain only non-empty strings"
+                        return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", reason)
+                    specification_gaps.append(SpecificationGap(**required_gap_fields, candidate_options=[option.strip() for option in options]))
+
                 if raw_findings is not None:
                     if not isinstance(raw_findings, list):
                         return _parse_error(
@@ -1059,6 +1117,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
                     requirement_coverage=requirement_coverage,
+                    specification_gaps=specification_gaps,
                 )
             else:
                 return _parse_error(
@@ -1401,6 +1460,7 @@ def run_adversarial_validation(
 
     # 6. Dynamic validation on suspicion (if requested)
     if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix:
+        initial_specification_gaps = list(result.specification_gaps)
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
         try:
@@ -1452,6 +1512,11 @@ def run_adversarial_validation(
                     # expose an ID cannot safely retain dynamic-check context.
                     raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
             result = parse_adversarial_validation_response(followup_response)
+            if initial_specification_gaps and not result.specification_gaps:
+                # A focused evidence check cannot silently resolve an oracle gap.
+                # Only a full later review may determine that the case is no
+                # longer relevant or that the authoritative Issue now defines it.
+                result.specification_gaps = initial_specification_gaps
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
             result = _apply_coverage_and_verdict_precedence(result, context)
 

@@ -169,11 +169,15 @@ class GitHubAppReviewer:
                     f"- **Suggested regression scenario:** {finding.suggested_regression_scenario}",
                 ]
             )
+        if result.specification_gaps:
+            lines.extend(["", "### Specification gaps", "", "These are not proven defects, and Auto-Coder did not choose a policy. Review of defined requirements continued. Automatic merge is disabled while a gap remains; a human may merge manually and handle specification work separately."])
+            for index, gap in enumerate(result.specification_gaps, 1):
+                lines.extend(["", f"#### Gap {index}: {gap.question}", f"- **Why the Issue is insufficient:** {gap.why_existing_issue_is_insufficient}", f"- **Observed case:** {gap.observed_case}", f"- **Affected scope:** {gap.affected_scope}"])
         return "\n".join(lines)
 
     def publish(self, repo_name: str, pr_number: int, validated_head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
         """Submit a native review, failing closed on auth, head races, or API errors."""
-        event = "APPROVE" if result.is_pass else "REQUEST_CHANGES" if result.needs_fix else "COMMENT"
+        event = "APPROVE" if result.auto_merge_allowed else "REQUEST_CHANGES" if result.needs_fix else "COMMENT"
         try:
             token = self._installation_token(repo_name)
             current_pr = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}", token).json()

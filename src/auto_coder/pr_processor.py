@@ -1568,6 +1568,8 @@ def _get_published_adversarial_validation_status(
         if not isinstance(body, str) or not body.startswith(marker):
             continue
         match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
+        if match and match.group(1) == "PASS" and re.search(r"^### Specification gaps \([1-9][0-9]*\)\s*$", body, re.MULTILINE):
+            return "PASS_WITH_SPECIFICATION_GAPS", None
         if match:
             return match.group(1), None
         return "ERROR", None
@@ -1926,9 +1928,10 @@ def _handle_pr_merge(
                         actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
                         return actions
 
-                    elif not val_result.is_pass:
+                    elif not val_result.auto_merge_allowed:
                         # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
-                        actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                        gap_reason = f" ({len(val_result.specification_gaps)} unresolved specification gap(s))" if val_result.specification_gaps else ""
+                        actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}{gap_reason}")
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
                         return actions
                     else:
