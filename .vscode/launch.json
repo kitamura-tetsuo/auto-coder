@@ -78,14 +78,16 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/workspaces/auto-coder",
+            "cwd": "/workspaces/target/auto-coder",
             "args": [
                 "process-issues",
-                "--no-check-labels",
+                // "--disable-graphrag",
+                "--only",
+                "https://github.com/kitamura-tetsuo/auto-coder/issues/1591", 
                 // "--force-reindex",
-                "--disable-graphrag",
-                "--verbose",
-                "--force"
+                "--force",
+                "--port",
+                "8001"
             ],
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {

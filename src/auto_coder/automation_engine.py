@@ -1387,7 +1387,7 @@ class AutomationEngine:
 
             # Both must be true for Jules mode to be enabled
             # jules_mode parameter is requested state, and is_jules_mode_enabled checks config
-            jules_mode = jules_mode and is_jules_mode_enabled()
+            jules_mode = jules_mode and is_jules_mode_enabled(repo_name=repo_name)
             from datetime import datetime
 
             with ProgressStage("Processing single PR/IS"):

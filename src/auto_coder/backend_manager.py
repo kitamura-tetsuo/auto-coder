@@ -435,12 +435,7 @@ class BackendManager(LLMBackendManagerBase):
         if saved_backend != self._default_backend and time_since_switch >= 7200:  # 2 hours
             # Auto-reset to default backend when non-default was active too long
             current_backend = self._current_backend_name()
-            logger.info(
-                "Auto-resetting backend to default after %.0f seconds. Saved backend: %s, Current backend: %s",
-                time_since_switch,
-                saved_backend,
-                current_backend,
-            )
+            logger.info(f"Auto-resetting backend to default after {time_since_switch:.0f} seconds. " f"Saved backend: {saved_backend}, Current backend: {current_backend}")
             self.switch_to_default_backend()
             return
 

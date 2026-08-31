@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandExecutor
@@ -65,6 +65,33 @@ class TestAutomationEngine:
 
     # Note: _resolve_merge_conflicts_with_gemini is now in conflict_resolver.py
     # These tests are covered by test_conflict_resolver.py
+
+    def test_process_single_honors_explicit_cloud_mode(self, mock_github_client):
+        """Single-item processing must preserve an enabled cloud-mode request."""
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="issue", data={"number": 1591, "title": "Cloud issue"}, priority=1)
+        processing_result = CandidateProcessingResult(
+            type="issue",
+            number=1591,
+            title="Cloud issue",
+            success=True,
+            actions=["Started Codex Cloud task"],
+        )
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        engine._process_single_candidate_unified = Mock(return_value=processing_result)
+
+        with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=True) as cloud_mode_enabled:
+            result = engine.process_single("owner/repo", "issue", 1591, jules_mode=True)
+
+        cloud_mode_enabled.assert_called_once_with(repo_name="owner/repo")
+        engine._process_single_candidate_unified.assert_called_once_with(
+            "owner/repo",
+            candidate,
+            engine.config,
+            True,
+        )
+        assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
 
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py

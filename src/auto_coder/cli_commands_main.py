@@ -13,7 +13,7 @@ from .cli_helpers import build_backend_manager_from_config, build_message_backen
 from .cli_ui import Spinner, create_terminal_link, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .health_monitor import get_health_monitor, start_health_monitoring
-from .llm_backend_config import get_llm_config, set_active_repo_name
+from .llm_backend_config import get_llm_config, is_jules_mode_enabled, set_active_repo_name
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
 from .util.gh_cache import GitHubClient
@@ -117,6 +117,7 @@ def process_issues(
     set_active_repo_name(repo_name)
 
     config = get_llm_config(repo_name=repo_name)
+    configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
 
     active_backends = config.get_active_backends()
     ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
@@ -288,7 +289,7 @@ def process_issues(
                 engine_config.CHECK_LABELS = False
 
                 # Run single-item processing
-                _ = automation_engine.process_single(repo_name, target_type, number)
+                _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode)
                 # Print brief summary to stdout
                 click.echo(f"Processed {target_type} #{number}")
                 # Close MCP session if present
@@ -329,10 +330,10 @@ def process_issues(
             if target_type is None:
                 # Auto-detect the type; process_single reports failures in its result
                 # instead of raising, so the detection happens while building the candidate.
-                result = automation_engine.process_single(repo_name, "auto", number)
+                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode)
                 target_type = "pr" if result.get("prs_processed") else "issue"
             else:
-                result = automation_engine.process_single(repo_name, target_type, number)
+                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode)
 
             # Create completion message with clickable link
             target_display = f"{target_type} #{number}"

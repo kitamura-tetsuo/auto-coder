@@ -141,6 +141,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
     claude_code_routine_token = "sk-ant-oat01-..."
     ```
   - Behavior:
+    - Single-item processing (`process-issues --only`) honors the repository's cloud/Jules mode configuration, just like continuous issue processing.
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
     - Before creating a Codex Cloud task, weekly usage is fetched with ChatGPT OAuth credentials from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). The task starts only when the remaining percentage is at least `(days_until_reset + 1) * 5`; missing credentials, authentication errors, and malformed responses safely route to the next backend. OpenAI API keys are never used for this request.
     - Codex Cloud supports `continue_if_paused()` via the internal WHAM backend API (`POST https://chatgpt.com/backend-api/wham/tasks`). When CI checks fail on a Codex Cloud-created PR, auto-coder resolves the latest assistant turn ID via WHAM turn APIs and sends a follow-up continuation prompt using Codex OAuth credentials (never the OpenAI API key), allowing Codex to resume and fix the PR without spawning new tasks. Repeated resumptions do not post duplicate informational PR comments; Jules fix-request notifications use the same deduplication rule.

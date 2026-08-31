@@ -112,6 +112,36 @@ class TestCloudBackendConfig:
 class TestNonDifficultCloudIssueRouting:
     """Test handling and routing of non-difficult issues to backend_cloud."""
 
+    @patch("auto_coder.issue_processor.CloudManager")
+    @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+    def test_codex_cloud_dispatch_persists_and_comments_task_url(self, mock_client_type, mock_cloud_manager_type):
+        """A successful asynchronous dispatch must publish its task on the issue."""
+        client = mock_client_type.return_value
+        client.start_task.return_value = "task_e_123"
+        client.task_urls = {"task_e_123": "https://chatgpt.com/codex/tasks/task_e_123"}
+        github_client = MagicMock()
+        label_context = MagicMock()
+
+        with patch("auto_coder.issue_processor.get_commit_log", return_value=""):
+            actions = _process_issue_codex_cloud_mode(
+                "owner/repo",
+                {"number": 10, "title": "Simple fix", "body": "Fix it", "labels": []},
+                AutomationConfig(),
+                github_client,
+                backend_name="codex-cloud-luna",
+                label_context=label_context,
+            )
+
+        mock_cloud_manager_type.return_value.add_session.assert_called_once_with(10, "task_e_123")
+        github_client.add_comment_to_issue.assert_called_once_with(
+            "owner/repo",
+            10,
+            "I started a Codex Cloud task to work on this issue. Task ID: task_e_123\n\n" "https://chatgpt.com/codex/tasks/task_e_123",
+        )
+        github_client.add_labels.assert_called_once_with("owner/repo", 10, ["@auto-coder"])
+        label_context.keep_label.assert_called_once_with()
+        assert actions == ["Started Codex Cloud task 'task_e_123' for issue #10"]
+
     @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
     def test_process_issue_cloud_backend_delegates_to_codex_cloud(self, mock_codex_cloud_mode):
         """Test _process_issue_cloud_backend delegates to codex-cloud when configured in backend_cloud."""
