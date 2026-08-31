@@ -180,6 +180,7 @@ class AutomationConfig:
         issue_allowlist: Optional[List[int]] = None,
         pr_allowlist: Optional[List[int]] = None,
         repo_name: Optional[str] = None,
+        max_open_prs_for_issues: Optional[int] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -192,6 +193,7 @@ class AutomationConfig:
             issue_allowlist: Optional custom issue author allowlist (numeric user IDs)
             pr_allowlist: Optional custom PR author allowlist (numeric user IDs)
             repo_name: Optional GitHub repository in 'owner/repo' format for repo-scoped config.
+            max_open_prs_for_issues: Optional maximum number of open PRs allowed when collecting issues.
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -223,6 +225,7 @@ class AutomationConfig:
             get_jules_pr_ci_timeout_hours_from_config,
             get_jules_wait_timeout_hours_from_config,
             get_pr_allowlist_from_config,
+            get_process_issues_max_open_prs_for_issues_from_config,
         )
 
         effective_repo = repo_name if repo_name is not None else get_active_repo_name()
@@ -232,6 +235,10 @@ class AutomationConfig:
         object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config(repo_name=effective_repo))
         object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config(repo_name=effective_repo))
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config(repo_name=effective_repo))
+
+        configured_max_open_prs = max_open_prs_for_issues if max_open_prs_for_issues is not None else get_process_issues_max_open_prs_for_issues_from_config(repo_name=effective_repo)
+        object.__setattr__(self, "MAX_OPEN_PRS_FOR_ISSUES", configured_max_open_prs)
+        object.__setattr__(self, "max_open_prs_for_issues", configured_max_open_prs)
 
         # Load GitHub author allowlists (numeric user IDs)
         configured_issue_allowlist = issue_allowlist if issue_allowlist is not None else get_issue_allowlist_from_config(repo_name=effective_repo)
@@ -532,6 +539,17 @@ class AutomationConfig:
             object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", enabled)
             logger.info(f"Loaded ENABLE_ADVERSARIAL_VALIDATION={enabled} from environment")
 
+        # Max open PRs for issue processing override
+        max_open_prs_env = os.environ.get("AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES") or os.environ.get("AUTO_CODER_MAX_OPEN_PRS")
+        if max_open_prs_env is not None:
+            try:
+                val = int(max_open_prs_env)
+                object.__setattr__(self, "MAX_OPEN_PRS_FOR_ISSUES", val)
+                object.__setattr__(self, "max_open_prs_for_issues", val)
+                logger.info(f"Loaded MAX_OPEN_PRS_FOR_ISSUES={val} from environment")
+            except ValueError as e:
+                logger.error(f"Failed to parse AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES: {e}")
+
     def _merge_label_mappings(self, new_mappings: Dict[str, str]) -> None:
         """Merge new label mappings with existing ones.
 
@@ -581,6 +599,8 @@ class AutomationConfig:
     MAX_RESPONSE_SIZE: int = 200
     max_issues_per_run: int = -1
     max_prs_per_run: int = -1
+    MAX_OPEN_PRS_FOR_ISSUES: int = 3
+    max_open_prs_for_issues: int = 3
     # Default max attempts for fix loops
     # Note: tests expect strict default value of 30
     MAX_FIX_ATTEMPTS: int = 30

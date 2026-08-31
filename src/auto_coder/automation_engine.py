@@ -800,7 +800,12 @@ class AutomationEngine:
             # - max_items is set and we haven't reached it yet (respect the requested limit), OR
             # - we have no PR candidates, OR
             # - we have few PR candidates and they're low priority (optimization to avoid usage limits)
-            should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2)
+            raw_threshold = getattr(self.config, "MAX_OPEN_PRS_FOR_ISSUES", None)
+            if raw_threshold is None:
+                raw_threshold = getattr(self.config, "max_open_prs_for_issues", None)
+            threshold: int = 3 if raw_threshold is None else int(raw_threshold)
+            max_pr_priority = max([candidate.priority for candidate in candidates]) if candidates else 0
+            should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < threshold and max_pr_priority < 2)
 
             if should_collect_issues:
                 # Collect issue candidates

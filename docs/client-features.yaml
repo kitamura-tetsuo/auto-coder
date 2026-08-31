@@ -229,6 +229,19 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Defaults to general backend configuration if not specified
 
+- **`max_open_prs_for_issues` configuration**: Open PR threshold for issue processing
+  - Purpose: Controls the maximum number of open PR candidates allowed when collecting new issues to process.
+  - Configuration section: `[process_issues]` in `config.toml` (`max_open_prs_for_issues` or `max_open_prs`)
+  - CLI option: `--max-open-prs-for-issues` / `--max-open-prs` (in `process_issues`)
+  - Environment variable: `AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES` or `AUTO_CODER_MAX_OPEN_PRS`
+  - Default: `3`
+  - Behavior:
+    - When open PR candidate count is at or above the threshold (or if any PR candidate has high priority >= 2), collection of new issues is skipped to prioritize resolving existing open PRs.
+    - When open PR candidate count is below the threshold and all PRs have low priority (< 2), or when 0 PR candidates exist, issues are collected and processed.
+    - Supports repository-scoped configuration overrides in `config.toml`.
+  - Configuration file: "~/.auto-coder/config.toml"
+  - Optional field: Defaults to 3 if not specified
+
 #### Placeholder Replacement System
 
 - **Purpose**: Enable dynamic configuration values in option lists using placeholders
