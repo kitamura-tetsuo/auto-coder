@@ -1337,8 +1337,29 @@ def run_adversarial_validation(
             max(0, manifest_budget - len(coverage_prefix)),
             "(Unverified path metadata unavailable)",
         )
+    registry = session_registry or ReviewerSessionRegistry()
+
+    def manager_identity() -> tuple[str, str, str]:
+        identity = backend_manager.get_current_backend_identity()
+        if not isinstance(identity, tuple) or len(identity) != 3:
+            return "", "", ""
+        return str(identity[0]), str(identity[1]), str(identity[2])
+
+    backend_name, backend_type, model_name = manager_identity()
+    stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
+    is_rereview = stored_session is not None and stored_session.last_head_sha != head_sha
+    if is_rereview:
+        review_policy = render_prompt(
+            "pr.adversarial_validation_rereview",
+            previous_head_sha=stored_session.last_head_sha,
+            current_head_sha=head_sha,
+        )
+    else:
+        review_policy = render_prompt("pr.adversarial_validation_initial_review")
+
     prompt = render_prompt(
         "pr.adversarial_validation",
+        review_policy=review_policy,
         repo_name=repo_name,
         pr_number=pr_number,
         pr_title=context.pr_title,
@@ -1350,24 +1371,6 @@ def run_adversarial_validation(
         coverage_status=coverage_status,
         requirement_manifest=requirement_manifest,
     )
-
-    registry = session_registry or ReviewerSessionRegistry()
-
-    def manager_identity() -> tuple[str, str, str]:
-        identity = backend_manager.get_current_backend_identity()
-        if not isinstance(identity, tuple) or len(identity) != 3:
-            return "", "", ""
-        return str(identity[0]), str(identity[1]), str(identity[2])
-
-    backend_name, backend_type, model_name = manager_identity()
-    stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
-    if stored_session and stored_session.last_head_sha != head_sha:
-        prompt = render_prompt(
-            "pr.adversarial_validation_rereview",
-            previous_head_sha=stored_session.last_head_sha,
-            current_head_sha=head_sha,
-            review_prompt=prompt,
-        )
 
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):

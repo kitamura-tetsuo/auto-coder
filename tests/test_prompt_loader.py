@@ -6,6 +6,31 @@ from src.auto_coder import prompt_loader
 from src.auto_coder.prompt_loader import DEFAULT_PROMPTS_PATH, _get_prompt_for_labels, _is_breaking_change_issue, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, get_prompt_template, render_prompt
 
 
+def test_adversarial_initial_review_retains_broad_falsification_policy():
+    prompt = get_prompt_template("pr.adversarial_validation_initial_review")
+
+    assert "Your mission: Falsify the implementation" in prompt
+    assert "against every Issue requirement" in prompt
+
+
+def test_adversarial_rereview_uses_material_convergence_policy():
+    prompt = render_prompt(
+        "pr.adversarial_validation_rereview",
+        previous_head_sha="old-head",
+        current_head_sha="new-head",
+    )
+
+    assert "classify the current implementation" in prompt
+    assert "FIXED, STILL_VIOLATED, or REGRESSED" in prompt
+    assert "reject workaround-only or symptom-masking" in prompt
+    assert "Do NOT restart unrestricted broad adversarial exploration" in prompt
+    assert "both demonstrated/reachable" in prompt
+    assert "material to an explicit Issue Requirement" in prompt
+    assert "count never excuses a material violation" in prompt
+    assert "allow the rereview to PASS" in prompt
+    assert "Your mission: Falsify the implementation" not in prompt
+
+
 class TestLabelBasedPromptLoader:
     """Test label-based prompt selection functionality."""
 
