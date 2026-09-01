@@ -1500,14 +1500,18 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 compacted_findings: List[AdversarialValidationFinding] = []
                 findings_by_counterexample: Dict[tuple[str, ...], AdversarialValidationFinding] = {}
                 for finding in findings:
+                    # Requirement-perspective descriptions (required/actual
+                    # behavior and counterexample wording) may legitimately
+                    # differ even when they point to the same production
+                    # defect.  The demonstrated path, evidence, anchor, and
+                    # correction/test oracle form the concrete identity.  A
+                    # materially different fix or oracle therefore remains a
+                    # separate actionable finding.
                     identity = (
                         finding.anchor_path,
                         str(finding.anchor_line or ""),
                         finding.reachability,
-                        finding.required_behavior,
-                        finding.actual_behavior,
                         finding.evidence,
-                        finding.counterexample,
                         finding.suggested_regression_scenario,
                     )
                     existing = findings_by_counterexample.get(identity)

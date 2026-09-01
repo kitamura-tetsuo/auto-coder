@@ -129,10 +129,7 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
     shared = {
         "evidence_classification": "DEMONSTRATED",
         "reachability": "The status handler reaches the exception branch",
-        "required_behavior": "Propagate fatal lookup failure",
-        "actual_behavior": "Returns success without setting failed status",
         "evidence": "handler.py:42 catches and returns",
-        "counterexample": "Given a lookup error, when status runs, then failure is required, but success is returned, and tests omit errors",
         "anchor_path": "handler.py",
         "suggested_regression_scenario": "Raise from lookup and assert failed status",
     }
@@ -140,8 +137,22 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
         {
             "result": "NEEDS_FIX",
             "findings": [
-                {**shared, "requirement_id": "REQ-001", "violated_requirement": "Failures propagate"},
-                {**shared, "requirement_id": "REQ-002", "violated_requirement": "Status distinguishes failure"},
+                {
+                    **shared,
+                    "requirement_id": "REQ-001",
+                    "violated_requirement": "Failures propagate",
+                    "required_behavior": "Propagate fatal lookup failure",
+                    "actual_behavior": "Returns success",
+                    "counterexample": "Given a lookup error, when status runs, then failure must propagate, but success is returned, and tests omit errors",
+                },
+                {
+                    **shared,
+                    "requirement_id": "REQ-002",
+                    "violated_requirement": "Status distinguishes failure",
+                    "required_behavior": "Record a failed structured status",
+                    "actual_behavior": "Leaves the previous success status",
+                    "counterexample": "Given the same lookup error, when status runs, then FAILED is required, but SUCCESS remains, and tests omit errors",
+                },
             ],
         }
     )
@@ -152,6 +163,33 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
     assert result.findings[0].all_requirement_ids == ["REQ-001", "REQ-002"]
     assert "Failures propagate" in result.findings[0].violated_requirement
     assert "Status distinguishes failure" in result.findings[0].violated_requirement
+
+
+def test_materially_different_corrections_are_not_compacted() -> None:
+    common = {
+        "requirement_ids": ["REQ-001"],
+        "violated_requirement": "Failures propagate",
+        "evidence_classification": "DEMONSTRATED",
+        "reachability": "The handler reaches an exception branch",
+        "required_behavior": "Propagate fatal failures",
+        "actual_behavior": "Returns success",
+        "evidence": "handler.py catches and returns",
+        "counterexample": "Given an operation error, the handler returns success and tests omit the error",
+        "anchor_path": "handler.py",
+    }
+    response = json.dumps(
+        {
+            "result": "NEEDS_FIX",
+            "findings": [
+                {**common, "suggested_regression_scenario": "Raise from status lookup and assert FAILED"},
+                {**common, "suggested_regression_scenario": "Raise from review lookup and assert retry"},
+            ],
+        }
+    )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert len(result.findings) == 2
 
 
 def test_requirement_coverage_stays_violated_for_grouped_current_finding() -> None:
