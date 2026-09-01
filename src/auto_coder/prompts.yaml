@@ -649,7 +649,12 @@ pr:
     Previous reviewed head: $previous_head_sha
     Current head: $current_head_sha
 
-    Re-review the current PR head against the original issue specification.
+    Perform incremental requirement-coverage validation of the current PR head
+    against the original issue specification. Use the previous review response
+    in this persistent session, including its per-requirement coverage, as
+    historical evidence rather than discarding it and starting a full review
+    from scratch.
+
     Previous findings and conclusions are context only, not the correctness oracle.
     The original Issue Requirements remain the source of truth throughout every
     review iteration. Apply this convergence policy in order:
@@ -659,10 +664,25 @@ pr:
        because its reported example now passes: check equivalent reachable paths
        for the same requirement and reject workaround-only or symptom-masking
        changes.
-    2. Inspect the corrective changes and changed tests for regressions related to
+    2. Determine which Issue Requirements may be affected by the changes between
+       the previous reviewed head and the current head. Revalidate every such
+       requirement on the current head, including requirements implicated by a
+       prior blocker, requirements whose prior evidence or implementation path
+       the corrective changes could invalidate, and requirements coupled to the
+       changed behavior through shared state, persistence, authorization,
+       synchronization, or other relevant invariants.
+    3. Inspect the corrective changes and changed tests for regressions related to
        the affected behavior, including persistence, state, authorization, and
        synchronization behavior where applicable.
-    3. Do NOT restart unrestricted broad adversarial exploration. A newly noticed
+    4. For each requirement previously classified VERIFIED or IRRELEVANT that is
+       not affected, carry that status forward only after checking that the
+       corrective changes do not alter or invalidate the implementation, test,
+       scope, or other evidence supporting the previous classification. In the
+       current response, emit the requirement's exact ID and status again, and
+       state both the previous reviewed head and the non-impact basis in its
+       evidence. Never carry forward a status merely because the previous
+       reviewer reported it.
+    5. Do NOT restart unrestricted broad adversarial exploration. A newly noticed
        finding may block only if it is both demonstrated/reachable under the
        supplied evidence and material to an explicit Issue Requirement. It is
        material only when leaving it unfixed would reasonably justify delaying
@@ -677,9 +697,16 @@ pr:
     count never excuses a material violation: return NEEDS_FIX whenever a prior
     blocker remains, a fix masks its symptom, the fix causes a related regression,
     or any newly discovered demonstrated/reachable material violation is present.
-    When all prior blockers are fixed and there is no related regression or new
-    material demonstrated violation, allow the rereview to PASS subject to the
-    complete requirement-coverage rules in the review prompt.
+    The current response must still contain exactly one coverage entry for every
+    stable requirement ID. An entry may be VERIFIED or IRRELEVANT based on fresh
+    current-head evidence or on the validated carry-forward procedure above. If
+    the corrective diff may have invalidated prior evidence and current evidence
+    cannot re-establish the requirement, mark it UNVERIFIED and return
+    INCONCLUSIVE. When all prior blockers are fixed, every affected requirement
+    has been revalidated, unaffected prior coverage has been safely carried
+    forward, and there is no related regression or new material demonstrated
+    violation, allow the rereview to PASS. These incremental rules apply only to
+    rereviews; the initial validation remains a full-coverage, fail-closed review.
 
   adversarial_validation_followup: |-
     You are an expert adversarial software correctness reviewer.
