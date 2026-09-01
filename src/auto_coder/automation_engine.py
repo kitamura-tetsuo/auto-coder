@@ -1057,6 +1057,16 @@ class AutomationEngine:
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
 
+            # Candidate data is not an authority for GitHub's item type.  The
+            # Issues API represents PRs as issue-like objects, and candidates
+            # can also arrive from retries or internal enqueue paths.  Gate at
+            # the common Issue dispatch boundary, before labels, attempts,
+            # branches, CloudRuns, comments, or implementation backends.
+            if item_type == "issue":
+                authoritative_type = self._get_authoritative_item_type(repo_name, item_number)
+                if authoritative_type != "issue":
+                    raise ValueError(f"Refusing Issue dispatch for {repo_name}#{item_number}: " f"GitHub identifies the target as {authoritative_type}")
+
             # Close empty PRs or stale Jules PRs before the label gate below.
             if item_type == "pr":
                 from .pr_processor import _close_empty_pr, _close_stale_jules_pr
@@ -1191,6 +1201,31 @@ class AutomationEngine:
             logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
 
         return result
+
+    def _get_authoritative_item_type(self, repo_name: str, item_number: int) -> str:
+        """Establish an issue-like target's type, failing closed on ambiguity."""
+        strict_getter = getattr(type(self.github), "get_item_type_strict", None)
+        if strict_getter is not None:
+            item_type = strict_getter(self.github, repo_name, item_number)
+            if item_type in ("issue", "pr"):
+                return item_type
+            raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
+
+        # Test doubles and alternate GitHubClient implementations still have to
+        # return the raw Issues API representation.  Absence or malformed data
+        # is not interpreted as confirmation that the target is an Issue.
+        item = self.github.get_issue(repo_name, item_number)
+        if item is None:
+            raise ValueError(f"GitHub item type lookup failed for {repo_name}#{item_number}")
+
+        def field(name: str) -> Any:
+            return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+        if field("number") != item_number:
+            raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
+        if isinstance(item, dict):
+            return "pr" if "pull_request" in item else "issue"
+        return "pr" if hasattr(item, "pull_request") else "issue"
 
     def _process_unlocked_issue(
         self,
@@ -2161,6 +2196,10 @@ class AutomationEngine:
                     related_issues=related_issues,
                 )
             elif target_type == "issue":
+                authoritative_type = self._get_authoritative_item_type(repo_name, number)
+                if authoritative_type != "issue":
+                    logger.error(f"Refusing Issue candidate for {repo_name}#{number}: " f"GitHub identifies the target as {authoritative_type}")
+                    return None
                 # Get issue data
                 # repo = self.github.get_repository(repo_name)
                 # issue = repo.get_issue(number)

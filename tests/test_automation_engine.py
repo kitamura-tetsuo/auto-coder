@@ -92,6 +92,84 @@ class TestAutomationEngine:
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
 
+    def test_misclassified_pr_is_rejected_before_issue_side_effects(self):
+        """An Issue candidate cannot override the authoritative GitHub PR type."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                assert (repo_name, item_number) == ("owner/repo", 200)
+                return "pr"
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={
+                "number": 200,
+                "title": "Cloud-created PR",
+                "labels": ["@auto-coder"],
+            },
+            priority=0,
+            issue_number=200,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.cloud_run.CloudRunRepository") as cloud_runs,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error == ("Refusing Issue dispatch for owner/repo#200: " "GitHub identifies the target as pr")
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+        increment.assert_not_called()
+        cloud_runs.assert_not_called()
+
+    def test_issue_dispatch_fails_closed_when_type_lookup_fails(self):
+        """An unavailable authoritative lookup cannot authorize Issue work."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                raise RuntimeError("GitHub unavailable")
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={"number": 201, "title": "Unknown target"},
+            priority=0,
+            issue_number=201,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error == "GitHub unavailable"
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+
+    def test_explicit_issue_candidate_rejects_pull_request(self):
+        """Explicit target_type=issue is still checked against GitHub state."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                return "pr"
+
+            def get_issue(self, repo_name, item_number):
+                raise AssertionError("PR rejection must happen before issue hydration")
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+
+        assert engine._create_candidate_from_single("owner/repo", "issue", 202) is None
+
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py
 

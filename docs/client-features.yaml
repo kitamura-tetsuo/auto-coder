@@ -4,6 +4,14 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Configuration
 
+#### Authoritative Issue dispatch type guard
+
+Before any Issue implementation side effect, Auto-Coder performs an uncached
+REST lookup of the target's authoritative GitHub issue-like object. Pull
+requests are rejected even when labeled `@auto-coder` or supplied through an
+explicitly misclassified candidate. Failed or ambiguous lookups fail closed,
+while genuine pull requests remain available to the normal PR lifecycle.
+
 #### Bounded material test-oracle review
 
 The initial authoritative adversarial review may report a small, consolidated
