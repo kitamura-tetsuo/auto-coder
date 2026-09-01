@@ -61,6 +61,7 @@ from .review_thread_validation import (
     classify_review_threads,
     is_change_provenance_thread,
     render_claimed_review_threads_section,
+    reopen_review_threads_after_publication_failure,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
 )
@@ -2200,6 +2201,18 @@ def _handle_pr_merge(
 
                         publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                         if not publication.success:
+                            if resolved_thread_ids:
+                                reopened_thread_ids = reopen_review_threads_after_publication_failure(
+                                    github_client,
+                                    repo_name,
+                                    pr_number,
+                                    claimed_review_threads,
+                                    resolved_thread_ids,
+                                )
+                                if reopened_thread_ids:
+                                    actions.append(f"Reopened {len(reopened_thread_ids)} review thread(s) after adversarial review publication failed")
+                                if len(reopened_thread_ids) != len(resolved_thread_ids):
+                                    actions.append("Some review-thread publication rollbacks remain pending and will be retried before later merge processing")
                             actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}")
                             logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
                             return actions

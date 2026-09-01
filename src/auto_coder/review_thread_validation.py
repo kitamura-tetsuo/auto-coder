@@ -804,3 +804,59 @@ def resolve_addressed_review_threads(
         resolved.append(thread_id)
 
     return resolved
+
+
+def reopen_review_threads_after_publication_failure(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    claimed: Sequence[ClaimedReviewThread],
+    resolved_thread_ids: Sequence[str],
+    registry: Optional[StaleReviewThreadRegistry] = None,
+) -> List[str]:
+    """Reopen threads resolved by a verdict that failed durable publication.
+
+    A durable rollback transition is recorded before each mutation. If the
+    immediate rollback cannot be confirmed, the normal startup reconciliation
+    path will retry it on later processing cycles.
+    """
+    rollback_registry = registry or StaleReviewThreadRegistry()
+    reopened: List[str] = []
+    for thread_id in resolved_thread_ids:
+        claimed_thread = _find_claimed_thread(claimed, thread_id)
+        root_comment_database_id = claimed_thread.root_comment_database_id if claimed_thread is not None else None
+        try:
+            rollback_registry.record_rollback_transition(
+                repo_name,
+                pr_number,
+                thread_id,
+                root_comment_database_id,
+            )
+        except Exception as exc:
+            logger.error(f"Could not durably prepare publication-failure rollback for thread {thread_id} on PR #{pr_number}: {exc}")
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, UNRESOLVE_ROLLBACK_MAX_ATTEMPTS + 1):
+            try:
+                github_client.unresolve_review_thread(thread_id)
+                last_exc = None
+                reopened.append(thread_id)
+                break
+            except Exception as exc:
+                last_exc = exc
+                logger.error(f"Attempt {attempt}/{UNRESOLVE_ROLLBACK_MAX_ATTEMPTS} to reopen thread {thread_id} after review publication failure on PR #{pr_number} failed: {exc}")
+
+        if last_exc is not None:
+            try:
+                rollback_registry.record(repo_name, pr_number, thread_id)
+            except Exception as persist_exc:
+                logger.error(f"Could not persist publication-failure rollback for thread {thread_id} on PR #{pr_number}: {persist_exc}")
+            continue
+
+        try:
+            rollback_registry.clear(repo_name, thread_id)
+        except Exception as exc:
+            # GitHub already confirms the thread is unresolved. Keeping the
+            # transition merely causes fail-closed reconciliation next cycle.
+            logger.error(f"Reopened thread {thread_id} on PR #{pr_number} but could not retire its rollback transition: {exc}")
+    return reopened
