@@ -15,6 +15,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    AdversarialValidationEligibility,
     ClaimedReviewThreadGateState,
     CodexReviewState,
     _enforce_unresolved_provenance_gate,
@@ -1175,6 +1176,47 @@ class TestAdversarialValidationPRFlow:
         mock_merge_pr.assert_not_called()
         assert actions[-1] == "Could not determine Codex review state for PR #90: comments API unavailable; validation not started"
         assert status.error == "comments API unavailable"
+        assert status.outcome is PRProcessingOutcome.FAILED
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1]))
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState())
+    @patch(
+        "auto_coder.pr_processor._get_adversarial_validation_eligibility",
+        return_value=AdversarialValidationEligibility(issue_numbers=(99,)),
+    )
+    @patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState())
+    @patch(
+        "auto_coder.pr_processor._get_published_adversarial_validation_status",
+        return_value=(None, "reviews API unavailable"),
+    )
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_published_validation_status_lookup_error_is_structured_failure(
+        self,
+        mock_merge_pr,
+        mock_run_validation,
+        mock_published_status,
+        mock_codex_review,
+        mock_eligibility,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        pr_data = {"number": 91, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current3"}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        status = ProcessedPRResult(pr_data=pr_data)
+
+        actions = _handle_pr_merge(MagicMock(), "owner/repo", pr_data, config, {}, status)
+
+        mock_run_validation.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert actions[-1] == "Could not check prior adversarial validation for PR #91: reviews API unavailable; validation not started"
+        assert status.error == "reviews API unavailable"
         assert status.outcome is PRProcessingOutcome.FAILED
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)

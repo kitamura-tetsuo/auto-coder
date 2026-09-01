@@ -2071,6 +2071,9 @@ def _handle_pr_merge(
                 adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if adversarial_eligibility.lookup_error:
                     actions.append(f"Could not verify adversarial-validation eligibility for PR #{pr_number}: {adversarial_eligibility.lookup_error}; merge not attempted")
+                    if processing_status is not None:
+                        processing_status.error = adversarial_eligibility.lookup_error
+                        processing_status.outcome = PRProcessingOutcome.FAILED
                     return actions
 
             adversarial_validation_applicable = adversarial_eligibility.is_applicable
@@ -2090,6 +2093,9 @@ def _handle_pr_merge(
                     except Exception as e:
                         logger.error(f"Failed to check adversarial validation count for PR #{pr_number}: {e}")
                         actions.append(f"Could not check prior adversarial validation count for PR #{pr_number}: {e}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = str(e)
+                            processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
 
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
@@ -2105,6 +2111,9 @@ def _handle_pr_merge(
                         )
                         if saved_status_error:
                             actions.append(f"Could not check unresolved specification gaps for PR #{pr_number}: {saved_status_error}; merge not attempted")
+                            if processing_status is not None:
+                                processing_status.error = saved_status_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
                             actions.append(f"Automatic merge disabled for PR #{pr_number}: unresolved specification gaps require human policy review")
@@ -2135,6 +2144,9 @@ def _handle_pr_merge(
                         post_codex_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
                         if post_codex_thread_state.lookup_error:
                             actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
+                            if processing_status is not None:
+                                processing_status.error = post_codex_thread_state.lookup_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
                         if post_codex_thread_state.has_blocking_unresolved:
                             actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
@@ -2158,6 +2170,9 @@ def _handle_pr_merge(
                     )
                     if lookup_error:
                         actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = lookup_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
                     has_new_provenance_evidence = False
@@ -2171,6 +2186,9 @@ def _handle_pr_merge(
                         )
                         if report_error:
                             actions.append(f"Could not compare prior provenance evidence for PR #{pr_number}: {report_error}; validation not started")
+                            if processing_status is not None:
+                                processing_status.error = report_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
                         has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report) or saved_pass_has_unresolved_provenance
 
@@ -2187,6 +2205,9 @@ def _handle_pr_merge(
                                 )
                                 if report_error:
                                     actions.append(f"Could not read the published adversarial report for Codex Cloud: {report_error}")
+                                    if processing_status is not None:
+                                        processing_status.error = report_error
+                                        processing_status.outcome = PRProcessingOutcome.FAILED
                                 elif published_report:
                                     actions.extend(
                                         _send_adversarial_validation_feedback_to_codex_cloud(
