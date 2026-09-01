@@ -2350,6 +2350,9 @@ def _handle_pr_merge(
             except Exception as e:
                 actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
                 logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
+                if processing_status is not None:
+                    processing_status.error = str(e)
+                    processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
 
             merge_result = _merge_pr(

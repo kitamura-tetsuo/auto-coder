@@ -1332,6 +1332,7 @@ class AutomationEngine:
                             "success": result.success,
                             "actions": result.actions,
                             "error": result.error,
+                            "outcome": result.outcome.value,
                         }
                         if candidate.type == "issue":
                             results["issues_processed"].append(result_dict)  # type: ignore

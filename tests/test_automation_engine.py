@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -91,6 +91,54 @@ class TestAutomationEngine:
             True,
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_error_count"),
+        [(PRProcessingOutcome.SUCCESS, 0), (PRProcessingOutcome.DEFERRED, 0)],
+    )
+    def test_process_single_preserves_nonfailure_pr_outcome(self, mock_github_client, outcome, expected_error_count):
+        """Action wording must not override a successful or deferred structured outcome."""
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="pr", data={"number": 123, "title": "PR"}, priority=1)
+        action = "Error budget information only" if outcome is PRProcessingOutcome.SUCCESS else "Skipping merge for unresolved review threads"
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        engine._process_single_candidate_unified = Mock(
+            return_value=CandidateProcessingResult(
+                type="pr",
+                number=123,
+                success=True,
+                actions=[action],
+                outcome=outcome,
+            )
+        )
+
+        result = engine.process_single("owner/repo", "pr", 123)
+
+        assert len(result["errors"]) == expected_error_count
+        assert result["prs_processed"] == [{"pr_data": candidate.data, "actions_taken": [action], "outcome": outcome.value}]
+
+    def test_process_single_propagates_remote_head_verification_failure(self, mock_github_client):
+        """A nested caught merge-stage exception must reach top-level errors."""
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="pr", data={"number": 5266, "title": "PR"}, priority=1)
+        diagnostic = "Failed to verify remote head SHA for PR #5266: GitHub API rate limited; merge aborted."
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with patch(
+            "auto_coder.automation_engine.process_pull_request",
+            return_value=ProcessedPRResult(
+                pr_data=candidate.data,
+                actions_taken=[diagnostic],
+                error="GitHub API rate limited",
+                outcome=PRProcessingOutcome.FAILED,
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 5266)
+
+        assert result["errors"] == ["Error processing pr #5266: GitHub API rate limited"]
+        assert result["prs_processed"] == [{"pr_data": candidate.data, "actions_taken": [diagnostic], "outcome": "failed"}]
 
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py

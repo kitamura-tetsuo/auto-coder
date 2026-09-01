@@ -12,7 +12,7 @@ from auto_coder.adversarial_validator import (
     adversarial_validation_codex_feedback_marker,
     format_adversarial_validation_comment,
 )
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
     _enforce_unresolved_provenance_gate,
@@ -893,12 +893,15 @@ class TestAdversarialValidationPRFlow:
         client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.side_effect = RuntimeError("GitHub API rate limited")
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        status = ProcessedPRResult(pr_data=pr_data)
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, status)
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_not_called()
-        assert any("Failed to verify remote head SHA" in a for a in actions)
+        assert status.error == "GitHub API rate limited"
+        assert status.outcome is PRProcessingOutcome.FAILED
+        assert actions[-1] == "Failed to verify remote head SHA for PR #100: GitHub API rate limited; merge aborted."
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
