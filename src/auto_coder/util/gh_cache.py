@@ -36,6 +36,7 @@ class ReviewThread:
     is_resolved: bool = False
     is_outdated: bool = False
     comments: List["ReviewThreadComment"] = field(default_factory=list)
+    comments_truncated: bool = False
 
 
 # Safety bound for paginated comment listings (100 comments per page).
@@ -1065,6 +1066,9 @@ class GitHubClient:
                       isResolved
                       isOutdated
                       comments(first: 50) {
+                        pageInfo {
+                          hasNextPage
+                        }
                         nodes {
                           databaseId
                           body
@@ -1101,7 +1105,8 @@ class GitHubClient:
             nodes = review_threads_data.get("nodes") or []
             for node in nodes:
                 if node:
-                    comment_nodes = ((node.get("comments") or {}).get("nodes")) or []
+                    comments_data = node.get("comments") or {}
+                    comment_nodes = comments_data.get("nodes") or []
                     comments = [
                         ReviewThreadComment(
                             database_id=comment_node.get("databaseId"),
@@ -1111,12 +1116,14 @@ class GitHubClient:
                         for comment_node in comment_nodes
                         if comment_node
                     ]
+                    comments_truncated = bool((comments_data.get("pageInfo") or {}).get("hasNextPage"))
                     threads.append(
                         ReviewThread(
                             id=node.get("id", ""),
                             is_resolved=bool(node.get("isResolved", False)),
                             is_outdated=bool(node.get("isOutdated", False)),
                             comments=comments,
+                            comments_truncated=comments_truncated,
                         )
                     )
 

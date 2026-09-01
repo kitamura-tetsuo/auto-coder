@@ -59,10 +59,16 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_logins: Se
     """Split unresolved review threads into claimed-addressed and ordinary blockers.
 
     A thread is "claimed" only when its root (first) comment was authored by a
-    login in ``eligible_logins`` (REQ-011) AND at least one comment in the
-    thread carries the explicit Auto-Coder addressed marker (REQ-001). Every
-    other unresolved thread — including one where an ineligible/human thread
-    merely contains a copied marker string — counts as an ordinary blocker.
+    login in ``eligible_logins`` (REQ-011) AND at least one *reply after the
+    root* carries the explicit Auto-Coder addressed marker (REQ-001). The root
+    comment itself is excluded from marker detection: it is the original
+    review finding, not an implementation-agent claim, so a reviewer that
+    happens to quote or emit the marker text in its finding must never make
+    its own thread look claimed (AC-011). Every other unresolved thread —
+    including one where an ineligible/human thread merely contains a copied
+    marker string, or where the full discussion could not be retrieved
+    (``comments_truncated``) — counts as an ordinary blocker (REQ-008 fails
+    closed on incomplete evidence).
     """
     claimed: List[ClaimedReviewThread] = []
     blocking_unresolved_count = 0
@@ -72,13 +78,13 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_logins: Se
             continue
 
         comments = thread.comments or []
-        if not comments:
+        if not comments or thread.comments_truncated:
             blocking_unresolved_count += 1
             continue
 
         root = comments[0]
         is_eligible = bool(root.author_login) and root.author_login in eligible_logins
-        has_claim = any(reply_claims_review_addressed(comment.body) for comment in comments)
+        has_claim = any(reply_claims_review_addressed(comment.body) for comment in comments[1:])
 
         if is_eligible and has_claim:
             discussion = "\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments)

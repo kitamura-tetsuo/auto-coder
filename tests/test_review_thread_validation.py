@@ -15,8 +15,8 @@ REVIEWER_APP_LOGIN = "auto-coder-reviewer[bot]"
 ELIGIBLE_LOGINS = {CODEX_LOGIN, REVIEWER_APP_LOGIN}
 
 
-def _thread(thread_id, is_resolved, comments):
-    return ReviewThread(id=thread_id, is_resolved=is_resolved, comments=comments)
+def _thread(thread_id, is_resolved, comments, comments_truncated=False):
+    return ReviewThread(id=thread_id, is_resolved=is_resolved, comments=comments, comments_truncated=comments_truncated)
 
 
 def _comment(author, body, database_id=1):
@@ -84,6 +84,60 @@ class TestClassifyReviewThreads:
 
     def test_thread_with_no_comments_is_blocking(self):
         threads = [_thread("t1", False, [])]
+        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        assert result.claimed == ()
+        assert result.blocking_unresolved_count == 1
+
+    def test_marker_in_root_finding_alone_does_not_claim_the_thread(self):
+        """AC-011: the root comment is the original review finding, not an
+        implementation-agent claim. An eligible reviewer that happens to
+        quote/emit the marker in its own finding (with no addressed reply)
+        must not make its own thread look claimed."""
+        threads = [
+            _thread(
+                "t1",
+                False,
+                [
+                    _comment(CODEX_LOGIN, f"The counter never resets on retry.\n{REVIEW_ADDRESSED_MARKER}"),
+                ],
+            )
+        ]
+        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        assert result.claimed == ()
+        assert result.blocking_unresolved_count == 1
+
+    def test_marker_in_root_with_no_reply_stays_blocking_even_with_replies(self):
+        """Same as above but with subsequent non-claiming discussion: still
+        no implementation-agent claim exists anywhere but the root."""
+        threads = [
+            _thread(
+                "t1",
+                False,
+                [
+                    _comment(CODEX_LOGIN, f"finding.\n{REVIEW_ADDRESSED_MARKER}"),
+                    _comment("a-human", "looking into this"),
+                ],
+            )
+        ]
+        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        assert result.claimed == ()
+        assert result.blocking_unresolved_count == 1
+
+    def test_truncated_comment_list_fails_closed_to_blocking(self):
+        """REQ-002/REQ-008: a thread whose full discussion could not be
+        retrieved (>50 comments) must never be treated as claimed, even if
+        the visible page contains an eligible root and an addressed marker."""
+        threads = [
+            _thread(
+                "t1",
+                False,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", f"Fixed.\n{REVIEW_ADDRESSED_MARKER}"),
+                ],
+                comments_truncated=True,
+            )
+        ]
         result = classify_review_threads(threads, ELIGIBLE_LOGINS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1

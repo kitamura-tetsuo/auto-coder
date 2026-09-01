@@ -380,6 +380,38 @@ def test_get_pr_review_threads_includes_comments(mock_github_client):
     assert len(threads[0].comments) == 2
     assert threads[0].comments[0] == ReviewThreadComment(database_id=100, body="Original finding", author_login="chatgpt-codex-connector[bot]")
     assert threads[0].comments[1].author_login == "agent[bot]"
+    assert threads[0].comments_truncated is False
+
+
+def test_get_pr_review_threads_marks_truncated_comment_list(mock_github_client):
+    mock_response = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "t1",
+                                "isResolved": False,
+                                "isOutdated": False,
+                                "comments": {
+                                    "pageInfo": {"hasNextPage": True},
+                                    "nodes": [
+                                        {"databaseId": 100, "body": "Original finding", "author": {"login": "chatgpt-codex-connector[bot]"}},
+                                    ],
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    mock_github_client.graphql_query.return_value = mock_response
+
+    threads = mock_github_client.get_pr_review_threads("owner/repo", 101)
+    assert threads[0].comments_truncated is True
 
 
 def test_get_pr_review_threads_missing_comments_field_defaults_empty(mock_github_client):
