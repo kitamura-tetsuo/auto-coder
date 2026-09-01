@@ -6,6 +6,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.llm_backend_config import (
+    get_auto_update_enabled_from_config,
     get_github_action_log_max_length_from_config,
     get_isolate_single_test_on_failure_from_config,
     get_issue_allowlist_from_config,
@@ -15,6 +16,24 @@ from auto_coder.llm_backend_config import (
     get_pr_allowlist_from_config,
     load_app_config_data,
 )
+
+
+def test_auto_update_enabled_defaults_to_true(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[jules]\nenabled = false\n", encoding="utf-8")
+
+    assert get_auto_update_enabled_from_config(config_path=str(config_path)) is True
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_auto_update_enabled_reads_config(tmp_path: Path, enabled: bool):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"[auto_update]\nenabled = {str(enabled).lower()}\n",
+        encoding="utf-8",
+    )
+
+    assert get_auto_update_enabled_from_config(config_path=str(config_path)) is enabled
 
 
 class TestLoadAppConfigData:

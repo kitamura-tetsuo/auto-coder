@@ -1442,6 +1442,21 @@ def get_jules_enabled_from_config(
     )
 
 
+def get_auto_update_enabled_from_config(config_path: Optional[str] = None) -> bool:
+    """Return whether automatic package updates are enabled in config.toml.
+
+    Auto-update remains enabled when the setting is absent so existing
+    installations retain their current behaviour.
+    """
+    return _get_config_value(
+        section="auto_update",
+        key="enabled",
+        default=True,
+        config_path=config_path,
+        value_type=bool,
+    )
+
+
 def is_jules_mode_enabled(repo_name: Optional[str] = None) -> bool:
     """Check if Jules mode or Cloud mode is enabled.
 

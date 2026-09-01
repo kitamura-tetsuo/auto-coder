@@ -40,11 +40,16 @@ class AutoUpdateResult:
 
 
 def _auto_update_disabled() -> bool:
-    """Return True when auto-update checks are disabled via environment."""
+    """Return True when auto-update checks are disabled by environment or config."""
     flag = os.environ.get("AUTO_CODER_DISABLE_AUTO_UPDATE")
-    if not flag:
-        return False
-    return flag.strip().lower() in {"1", "true", "yes", "on"}
+    if flag and flag.strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+
+    # Import lazily because update checks also run from lightweight execution
+    # paths that do not otherwise need the backend configuration module.
+    from .llm_backend_config import get_auto_update_enabled_from_config
+
+    return not get_auto_update_enabled_from_config()
 
 
 def _detect_install_method() -> Optional[str]:
@@ -291,7 +296,7 @@ def _uv_upgrade_indicated_change(stdout: str, stderr: str) -> bool:
 def maybe_run_auto_update() -> AutoUpdateResult:
     """Attempt to upgrade the package via pipx or uv tool automatically."""
     if _auto_update_disabled():
-        logger.debug("Auto-update disabled via AUTO_CODER_DISABLE_AUTO_UPDATE")
+        logger.debug("Auto-update disabled by configuration")
         return AutoUpdateResult(False, False, reason="disabled")
 
     install_method = _detect_install_method()

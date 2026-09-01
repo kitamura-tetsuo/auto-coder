@@ -12,6 +12,10 @@ def clear_disable_flag(monkeypatch):
     monkeypatch.delenv("AUTO_CODER_DISABLE_AUTO_UPDATE", raising=False)
     monkeypatch.delenv("AUTO_CODER_UPDATE_INTERVAL_SECONDS", raising=False)
     monkeypatch.delenv("AUTO_CODER_UPDATE_STATE_DIR", raising=False)
+    monkeypatch.setattr(
+        "src.auto_coder.llm_backend_config.get_auto_update_enabled_from_config",
+        lambda: True,
+    )
 
 
 # ---- _detect_install_method tests ----
@@ -171,6 +175,36 @@ def test_maybe_run_auto_update_respects_disable_flag(monkeypatch):
     assert result.attempted is False
     assert result.updated is False
     assert result.reason == "disabled"
+
+
+def test_maybe_run_auto_update_respects_disabled_config(monkeypatch):
+    with (
+        patch(
+            "src.auto_coder.llm_backend_config.get_auto_update_enabled_from_config",
+            return_value=False,
+        ) as mock_config,
+        patch("src.auto_coder.update_manager._detect_install_method") as mock_detect,
+    ):
+        result = update_manager.maybe_run_auto_update()
+
+    mock_config.assert_called_once_with()
+    mock_detect.assert_not_called()
+    assert result == update_manager.AutoUpdateResult(False, False, reason="disabled")
+
+
+def test_maybe_run_auto_update_allows_enabled_config(monkeypatch):
+    with (
+        patch(
+            "src.auto_coder.llm_backend_config.get_auto_update_enabled_from_config",
+            return_value=True,
+        ) as mock_config,
+        patch("src.auto_coder.update_manager._detect_install_method", return_value=None) as mock_detect,
+    ):
+        result = update_manager.maybe_run_auto_update()
+
+    mock_config.assert_called_once_with()
+    mock_detect.assert_called_once_with()
+    assert result.reason == "outside-managed-env"
 
 
 # ---- maybe_run_auto_update tests (uv path) ----

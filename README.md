@@ -756,6 +756,18 @@ Check the codex CLI documentation for the full list of supported providers and t
 
 #### Configuration Management
 
+Automatic package updates are enabled by default. To disable them, add this to
+`.auto-coder/config.toml` (project-local) or `~/.auto-coder/config.toml`:
+
+```toml
+[auto_update]
+enabled = false
+```
+
+Set `enabled = true` to turn them back on. The existing
+`AUTO_CODER_DISABLE_AUTO_UPDATE=1` environment variable always disables updates,
+regardless of this setting.
+
 To manage the configuration file, use the built-in config commands:
 ```bash
 # Show current configuration
