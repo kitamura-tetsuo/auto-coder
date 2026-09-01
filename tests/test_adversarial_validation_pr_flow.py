@@ -725,8 +725,9 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
+        status = ProcessedPRResult(pr_data=pr_data)
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, status)
 
         mock_run_validation.assert_not_called()
         mock_merge_pr.assert_not_called()
@@ -738,6 +739,8 @@ class TestAdversarialValidationPRFlow:
         assert "RuntimeError" in comment
         assert '"type":"thread.started"' not in comment
         assert any("Adversarial validation blocked PR #100" in action for action in actions)
+        assert status.error == raw_stream
+        assert status.outcome is PRProcessingOutcome.FAILED
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

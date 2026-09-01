@@ -2239,6 +2239,9 @@ def _handle_pr_merge(
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
+                            if processing_status is not None:
+                                processing_status.error = str(e)
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             val_result = AdversarialValidationResult(
                                 result="BLOCKED",
                                 summary="Adversarial validation execution failed; see the structured interaction log for details",
