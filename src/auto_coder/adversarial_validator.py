@@ -813,8 +813,8 @@ def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition
     if not isinstance(raw_value, list):
         return []
 
-    dispositions: List[ReviewThreadDisposition] = []
-    seen_thread_ids: set[str] = set()
+    candidates: Dict[str, List[ReviewThreadDisposition]] = {}
+    order: List[str] = []
     for item in raw_value:
         if not isinstance(item, dict):
             logger.warning("Dropping malformed thread_dispositions entry: not an object")
@@ -826,11 +826,21 @@ def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition
         if not thread_id or status not in VALID_REVIEW_THREAD_DISPOSITION_STATUSES or not rationale or not evidence:
             logger.warning(f"Dropping malformed thread_dispositions entry for thread_id={thread_id!r}: incomplete or invalid fields")
             continue
-        if thread_id in seen_thread_ids:
-            logger.warning(f"Dropping duplicate thread_dispositions entry for thread_id={thread_id!r}")
+        if thread_id not in candidates:
+            order.append(thread_id)
+        candidates.setdefault(thread_id, []).append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
+
+    dispositions: List[ReviewThreadDisposition] = []
+    for thread_id in order:
+        entries = candidates[thread_id]
+        if len(entries) > 1:
+            # A duplicate thread_id is an ambiguous/contradictory validator
+            # response (e.g. ADDRESSED then STILL_VALID for the same thread).
+            # Fail closed: invalidate every entry for this thread rather than
+            # keeping whichever one happened to come first (REQ-006, REQ-008).
+            logger.warning(f"Dropping all thread_dispositions entries for thread_id={thread_id!r}: {len(entries)} contradictory/duplicate entries")
             continue
-        seen_thread_ids.add(thread_id)
-        dispositions.append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
+        dispositions.append(entries[0])
     return dispositions
 
 
@@ -1608,6 +1618,7 @@ def run_adversarial_validation(
             original_findings_str = "\n".join(original_findings_blocks) if original_findings_blocks else "(No initial findings recorded)"
 
             logger.info(f"Dynamic check executed on {check_target} (success={test_success}); querying reviewer with raw test output for final decision")
+            initial_thread_dispositions_str = "\n".join(f"- {d.thread_id}: {d.status} — {d.rationale}" for d in initial_thread_dispositions) if initial_thread_dispositions else "(No initial thread dispositions recorded)"
             followup_prompt = render_prompt(
                 "pr.adversarial_validation_followup",
                 repo_name=repo_name,
@@ -1622,6 +1633,8 @@ def run_adversarial_validation(
                 linked_issues_context=context.issue_context,
                 pr_diff=context.pr_diff,
                 requirement_manifest=requirement_manifest,
+                claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
+                initial_thread_dispositions=initial_thread_dispositions_str,
             )
             with ProgressStage("Adversarial dynamic check follow-up"):
                 followup_session_id = getattr(backend_manager, "_last_session_id", None)
@@ -1634,10 +1647,14 @@ def run_adversarial_validation(
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
             result = _apply_coverage_and_verdict_precedence(result, context)
-            if not result.thread_dispositions:
-                # The follow-up prompt does not re-request thread dispositions;
-                # retain the initial pass's independent thread verification.
-                result.thread_dispositions = initial_thread_dispositions
+            if initial_thread_dispositions and not result.thread_dispositions:
+                # The follow-up prompt explicitly asks for a final disposition
+                # per claimed thread grounded in the dynamic-check evidence.
+                # Never resurrect the stale initial dispositions here: if the
+                # follow-up omitted them, that thread must fail closed to
+                # "no valid disposition" (stays unresolved) rather than reuse
+                # evidence the dynamic check may have since contradicted.
+                logger.warning(f"Dynamic-check follow-up for PR #{pr_number} returned no thread_dispositions; " f"{len(initial_thread_dispositions)} claimed thread(s) will not be resolved this run")
 
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")

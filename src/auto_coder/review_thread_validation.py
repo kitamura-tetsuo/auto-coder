@@ -179,15 +179,23 @@ def resolve_addressed_review_threads(
     if not addressed_thread_ids:
         return []
 
-    try:
-        current_pr = github_client.get_pull_request(repo_name, pr_number)
-        current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
-    except Exception as exc:
-        logger.error(f"Could not verify current PR head before resolving review threads on PR #{pr_number}: {exc}")
-        return []
+    def _head_is_still_current() -> bool:
+        """Re-read the PR's live head and confirm it still matches the
+        validated head. Called both before starting and again immediately
+        before each resolve mutation, since a new commit can land at any
+        point during this loop (REQ-006, AC-009)."""
+        try:
+            current_pr = github_client.get_pull_request(repo_name, pr_number)
+            current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+        except Exception as exc:
+            logger.error(f"Could not verify current PR head before resolving review threads on PR #{pr_number}: {exc}")
+            return False
+        if not validated_head_sha or not current_head_sha or current_head_sha != validated_head_sha:
+            logger.warning(f"PR #{pr_number} head changed since adversarial validation (validated {validated_head_sha}, current {current_head_sha}); " "not resolving claimed review thread(s)")
+            return False
+        return True
 
-    if not validated_head_sha or not current_head_sha or current_head_sha != validated_head_sha:
-        logger.warning(f"PR #{pr_number} head changed since adversarial validation (validated {validated_head_sha}, current {current_head_sha}); " "not resolving any claimed review thread")
+    if not _head_is_still_current():
         return []
 
     resolved: List[str] = []
@@ -206,6 +214,12 @@ def resolve_addressed_review_threads(
         except Exception as exc:
             logger.error(f"Failed to record independent validator explanation for thread {thread_id} on PR #{pr_number}: {exc}")
             continue
+
+        # Re-check immediately before the resolve mutation: a new commit can
+        # land between the initial check (or the previous iteration's reply)
+        # and this point.
+        if not _head_is_still_current():
+            return resolved
 
         try:
             github_client.resolve_review_thread(thread_id)

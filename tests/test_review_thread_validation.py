@@ -304,3 +304,21 @@ class TestResolveAddressedReviewThreads:
 
         assert set(resolved) == {"t1", "t2"}
         assert client.resolve_review_thread.call_count == 2
+
+    def test_head_advances_between_reply_and_resolve_mutation(self):
+        """AC-009: the first head lookup passes (H1), but the PR advances to
+        H2 before the resolve mutation — re-checked immediately before that
+        mutation, not just once at the start of the loop."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},  # initial check before the loop
+            {"head": {"sha": "sha2-newer"}},  # re-check right before resolving
+        ]
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        assert resolved == []
+        client.reply_to_review_thread.assert_called_once()
+        client.resolve_review_thread.assert_not_called()

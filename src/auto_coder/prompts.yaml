@@ -709,12 +709,19 @@ pr:
     PR Changes (Diff):
     $pr_diff
 
+    Claimed-Addressed Review Threads (re-adjudicate every one of these using this dynamic-check evidence; return a final thread_dispositions entry for each, replacing your earlier disposition rather than repeating it unexamined):
+    $claimed_review_threads
+
+    Your initial thread_dispositions from before this dynamic check (context only; the dynamic evidence above may confirm or overturn any of these):
+    $initial_thread_dispositions
+
     TASK:
     Based on the execution results of the dynamic check:
     1. Does the dynamic execution resolve or reject your suspected counterexample?
     2. If the dynamic test ran and proved the implementation behaves correctly per the specification, return `result: "PASS"`.
     3. If the dynamic test failed or revealed a defect, return `result: "NEEDS_FIX"` with the concrete counterexample.
     4. If the test ran but did NOT test the suspected scenario, explain why and return `result: "INCONCLUSIVE"` or `result: "NEEDS_FIX"` if a concrete defect remains proven.
+    5. For each thread listed in Claimed-Addressed Review Threads, independently re-determine ADDRESSED / STILL_VALID / INCONCLUSIVE grounded in this dynamic-check result and the current implementation — never merely repeat your initial disposition. If the dynamic evidence disproves an initial ADDRESSED, return STILL_VALID; if it proves an initial INCONCLUSIVE, return ADDRESSED or STILL_VALID as the evidence now shows.
 
     OUTPUT FORMAT:
     Respond with JSON:
@@ -745,6 +752,14 @@ pr:
           "anchor_line": "<Optional changed line number, or null for a file-level thread>",
           "anchor_side": "RIGHT or LEFT",
           "anchor_start_line": "<Optional start of a changed line range, or null>"
+        }
+      ],
+      "thread_dispositions": [
+        {
+          "thread_id": "<exact thread ID from the Claimed-Addressed Review Threads section above>",
+          "status": "ADDRESSED" | "STILL_VALID" | "INCONCLUSIVE",
+          "rationale": "<Concrete rationale grounded in the dynamic-check result and current implementation>",
+          "evidence": "<Specific dynamic-check output or code path>"
         }
       ]
     }

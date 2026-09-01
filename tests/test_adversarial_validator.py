@@ -1624,6 +1624,137 @@ class TestRunAdversarialValidation:
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_followup_overturns_initial_addressed_disposition(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """The dynamic check disproves an initial ADDRESSED claim; the
+        follow-up's fresh STILL_VALID must win, never the stale initial one."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
+  ]
+}"""
+        mock_run_tests.return_value = {"success": False, "output": "FAILED tests/test_feature.py::test_reload", "errors": ""}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "PASS",
+  "summary": "Dynamic check disproves the claimed fix",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "The dynamic test reproduces the original defect", "evidence": "FAILED tests/test_feature.py::test_reload"}
+  ]
+}"""
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
+
+        assert len(result.thread_dispositions) == 1
+        assert result.thread_dispositions[0].status == "STILL_VALID"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_followup_confirms_initial_inconclusive_as_addressed(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """The dynamic check proves an initially INCONCLUSIVE thread is fixed."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "INCONCLUSIVE", "rationale": "Cannot tell from the diff alone", "evidence": "No dynamic evidence yet"}
+  ]
+}"""
+        mock_run_tests.return_value = {"success": True, "output": "PASSED tests/test_feature.py::test_reload", "errors": ""}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "PASS",
+  "summary": "Dynamic check proves the fix",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "The dynamic test now exercises and passes the original failing path", "evidence": "PASSED tests/test_feature.py::test_reload"}
+  ]
+}"""
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
+
+        assert len(result.thread_dispositions) == 1
+        assert result.thread_dispositions[0].status == "ADDRESSED"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_followup_omitting_dispositions_does_not_resurrect_stale_ones(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """If the follow-up response omits thread_dispositions entirely, the
+        claimed thread must fail closed to unresolved rather than silently
+        keep the initial (now unverified) disposition."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
+  ]
+}"""
+        mock_run_tests.return_value = {"success": True, "output": "PASSED", "errors": ""}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "PASS",
+  "summary": "Dynamic check passed",
+  "findings": []
+}"""
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
+
+        assert result.thread_dispositions == []
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
     def test_run_adversarial_validation_dynamic_check_failure_routes_to_reviewer(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """Failing dynamic check is sent to the reviewer for semantic determination against the counterexample."""
         mock_build_ctx.return_value = AdversarialValidationContext(
@@ -1792,7 +1923,10 @@ class TestParseThreadDispositions:
         assert result.result == "PASS"
         assert result.thread_dispositions == []
 
-    def test_duplicate_thread_id_second_entry_dropped(self):
+    def test_duplicate_thread_id_invalidates_the_thread(self):
+        """A contradictory/duplicate thread_id (e.g. ADDRESSED then STILL_VALID
+        for the same thread) must not resolve to whichever entry came first;
+        the thread must receive no valid disposition at all (fail-closed)."""
         json_resp = json.dumps(
             {
                 "result": "PASS",
@@ -1801,12 +1935,12 @@ class TestParseThreadDispositions:
                 "thread_dispositions": [
                     {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "first", "evidence": "first"},
                     {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "second", "evidence": "second"},
+                    {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "ok", "evidence": "ok"},
                 ],
             }
         )
         result = parse_adversarial_validation_response(json_resp)
-        assert len(result.thread_dispositions) == 1
-        assert result.thread_dispositions[0].rationale == "first"
+        assert [d.thread_id for d in result.thread_dispositions] == ["thread-2"]
 
     def test_still_valid_and_inconclusive_statuses_parse(self):
         json_resp = json.dumps(
