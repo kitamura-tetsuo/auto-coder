@@ -228,12 +228,11 @@ def test_has_unresolved_review_threads_helper(mock_github_client):
         assert has_unresolved_review_threads(None, "owner/repo", 101) is True
 
 
-@patch("auto_coder.pr_processor.has_unresolved_review_threads")
-@patch("auto_coder.pr_processor._merge_pr")
+@patch("auto_coder.pr_processor._handle_pr_merge")
 @patch("auto_coder.pr_processor.LabelManager")
 @patch("auto_coder.pr_processor.GitHubClient.get_instance")
-def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, mock_label_manager, mock_merge_pr, mock_has_unresolved):
-    mock_has_unresolved.return_value = True
+def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, mock_label_manager, mock_handle_merge):
+    mock_handle_merge.return_value = ["Skipping merge for PR #123 due to unresolved review threads"]
     context_mock = MagicMock()
     context_mock.__enter__.return_value = MagicMock()
     mock_label_manager.return_value = context_mock
@@ -246,16 +245,14 @@ def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, moc
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
     assert any("Skipping merge for PR #123 due to unresolved review threads" in a for a in result.actions_taken)
-    mock_merge_pr.assert_not_called()
+    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {})
 
 
-@patch("auto_coder.pr_processor.has_unresolved_review_threads")
-@patch("auto_coder.pr_processor._merge_pr")
+@patch("auto_coder.pr_processor._handle_pr_merge")
 @patch("auto_coder.pr_processor.LabelManager")
 @patch("auto_coder.pr_processor.GitHubClient.get_instance")
-def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_label_manager, mock_merge_pr, mock_has_unresolved):
-    mock_has_unresolved.return_value = False
-    mock_merge_pr.return_value = True
+def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_label_manager, mock_handle_merge):
+    mock_handle_merge.return_value = ["Successfully merged PR #123"]
     context_mock = MagicMock()
     lm_instance = MagicMock()
     context_mock.__enter__.return_value = lm_instance
@@ -269,7 +266,7 @@ def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_labe
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
     assert any("Successfully merged PR #123" in a for a in result.actions_taken)
-    mock_merge_pr.assert_called_once()
+    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {})
     lm_instance.keep_label.assert_called_once()
 
 
@@ -643,6 +640,8 @@ class TestClaimedReviewThreadGateState:
 
         assert state.has_blocking_unresolved is True
         assert len(state.claimed) == 1
+        assert tuple(thread.id for thread in state.unresolved) == ("t1", "t2")
+        assert tuple(thread.id for thread in state.blocking_unresolved) == ("t2",)
 
     def test_no_strict_lookup_capability_fails_closed_to_blocking(self):
         from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state

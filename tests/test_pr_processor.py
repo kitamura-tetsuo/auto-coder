@@ -348,9 +348,9 @@ class TestKeepLabelOnPRMerge:
         def fake_label_manager(*_args, **_kwargs):
             yield MockLabelManagerContext(True)
 
-        # Mock _merge_pr to return True (successful merge)
+        # Mock the shared merge workflow to return a successful merge.
         with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.pr_processor._merge_pr", return_value=True):
+            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=["Successfully merged PR #123"]):
                 with patch("src.auto_coder.pr_processor.GitHubClient") as mock_client_class:
                     mock_client = Mock()
                     mock_client_class.get_instance.return_value = mock_client
@@ -391,9 +391,9 @@ class TestKeepLabelOnPRMerge:
         def fake_label_manager(*_args, **_kwargs):
             yield MockLabelManagerContext(True)
 
-        # Mock _merge_pr to return False (failed merge)
+        # Mock the shared merge workflow to return a failed merge.
         with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.pr_processor._merge_pr", return_value=False):
+            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=["Failed to merge PR #456"]):
                 with patch("src.auto_coder.pr_processor.GitHubClient") as mock_client_class:
                     mock_client = Mock()
                     mock_client_class.get_instance.return_value = mock_client

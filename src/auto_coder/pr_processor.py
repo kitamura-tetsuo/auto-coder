@@ -118,6 +118,7 @@ class ClaimedReviewThreadGateState:
 
     claimed: Tuple[Any, ...] = ()
     unresolved: Tuple[ReviewThread, ...] = ()
+    blocking_unresolved: Tuple[ReviewThread, ...] = ()
     has_blocking_unresolved: bool = False
     lookup_error: Optional[str] = None
 
@@ -172,9 +173,14 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
 
     eligible_logins = _resolve_eligible_review_thread_logins(repo_name)
     classification = classify_review_threads(threads, eligible_logins)
+    claimed_thread_ids = {thread.thread_id for thread in classification.claimed}
     return ClaimedReviewThreadGateState(
         claimed=tuple(classification.claimed),
         unresolved=tuple(thread for thread in threads if not thread.is_resolved),
+        # Repair delegation must receive only ordinary blockers. Claimed-addressed
+        # threads remain unresolved for independent validation, but asking the
+        # implementation agent to repair them again violates that protocol.
+        blocking_unresolved=tuple(thread for thread in threads if not thread.is_resolved and thread.id not in claimed_thread_ids),
         has_blocking_unresolved=classification.blocking_unresolved_count > 0,
     )
 
@@ -1229,7 +1235,13 @@ def _process_pr_for_merge(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
 ) -> ProcessedPRResult:
-    """Process a PR for quick merging when GitHub Actions are passing."""
+    """Process a passing PR through the shared merge transition workflow.
+
+    This entry point intentionally delegates the decision to ``_handle_pr_merge``
+    instead of maintaining a second unresolved-thread gate. In particular, a
+    claimed-addressed thread must enter independent adversarial validation here
+    exactly as it does during batch processing.
+    """
     processed_pr = ProcessedPRResult(
         pr_data=pr_data,
         actions_taken=[],
@@ -1252,42 +1264,9 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        # Since Actions are passing, attempt direct merge
-        # Check if AUTO_MERGE is enabled before attempting merge
-        if not config.AUTO_MERGE:
-            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to configuration (AUTO_MERGE=False)")
-            return processed_pr
-
-        # Check for disable-auto-merge label
-        labels = pr_data.get("labels", [])
-        if any((isinstance(label, dict) and label.get("name") == "disable-auto-merge") or (isinstance(label, str) and label == "disable-auto-merge") for label in labels):
-            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to 'disable-auto-merge' label")
-            return processed_pr
-
-        # Check for unresolved review threads
-        review_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_data["number"])
-        if review_thread_state.lookup_error:
-            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} because review threads could not be checked: {review_thread_state.lookup_error}")
-            return processed_pr
-        if review_thread_state.has_unresolved:
-            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
-            processed_pr.actions_taken.extend(
-                _delegate_codex_cloud_review_thread_repair(
-                    repo_name,
-                    pr_data,
-                    github_client=github_client,
-                )
-            )
-            return processed_pr
-
-        head_sha = pr_data.get("head", {}).get("sha", "")
-        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client, expected_head_sha=head_sha or None)
-        if merge_result:
-            processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
-            # Retain label on successful merge
+        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
+        if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
-        else:
-            processed_pr.actions_taken.append(f"Failed to merge PR #{pr_data['number']}")
         return processed_pr
 
 
@@ -1995,7 +1974,7 @@ def _handle_pr_merge(
                         repo_name,
                         pr_data,
                         github_client=github_client,
-                        unresolved_threads=claimed_thread_state.unresolved,
+                        unresolved_threads=claimed_thread_state.blocking_unresolved,
                     )
                 )
                 return actions

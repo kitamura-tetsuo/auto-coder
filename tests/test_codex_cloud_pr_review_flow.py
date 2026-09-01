@@ -2,12 +2,18 @@
 
 from unittest.mock import MagicMock, patch
 
+from auto_coder.adversarial_validator import AdversarialValidationResult
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    AdversarialValidationEligibility,
     ClaimedReviewThreadGateState,
+    CodexReviewState,
     _delegate_codex_cloud_review_thread_repair,
     _handle_pr_merge,
+    _process_pr_for_merge,
 )
+from auto_coder.review_thread_validation import ClaimedReviewThread
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -100,6 +106,60 @@ def test_non_codex_pr_preserves_generic_review_gate() -> None:
     send_followup.assert_not_called()
 
 
+def test_single_pr_merge_entry_validates_claimed_thread_without_redelegating() -> None:
+    client = MagicMock()
+    client.get_pull_request.return_value = {"head": {"sha": "head-1"}}
+    claimed = ClaimedReviewThread(
+        thread_id="PRRT_thread_1",
+        root_comment_database_id=101,
+        root_author_login="chatgpt-codex-connector[bot]",
+        original_finding="This misses the empty-input case",
+        discussion="agent: fixed and tested",
+    )
+    config = AutomationConfig()
+    config.AUTO_MERGE = True
+    config.MAX_ADVERSARIAL_VALIDATIONS = -1
+
+    with (
+        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=client),
+        patch("auto_coder.pr_processor.LabelManager") as label_manager,
+        patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+        patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+        patch(
+            "auto_coder.pr_processor._get_claimed_review_thread_state",
+            return_value=ClaimedReviewThreadGateState(claimed=(claimed,)),
+        ),
+        patch(
+            "auto_coder.pr_processor._get_adversarial_validation_eligibility",
+            return_value=AdversarialValidationEligibility(issue_numbers=(42,)),
+        ),
+        patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState()),
+        patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=(None, None)),
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree") as worktree,
+        patch(
+            "auto_coder.pr_processor.run_adversarial_validation",
+            return_value=AdversarialValidationResult(result="PASS", summary="Pass", findings=[]),
+        ) as run_validation,
+        patch(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            return_value=ReviewPublicationResult(True, "APPROVE", ""),
+        ),
+        patch("auto_coder.pr_processor._merge_pr", return_value=False),
+        patch("auto_coder.pr_processor._delegate_codex_cloud_review_thread_repair") as delegate_review_repair,
+    ):
+        label_manager.return_value.__enter__.return_value = MagicMock()
+        worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        result = _process_pr_for_merge("owner/repo", _pr_data(), config)
+
+    assert any("claimed-addressed review thread" in action for action in result.actions_taken)
+    assert any("Adversarial validation passed" in action for action in result.actions_taken)
+    run_validation.assert_called_once()
+    assert "PRRT_thread_1" in run_validation.call_args.kwargs["claimed_review_threads_section"]
+    delegate_review_repair.assert_not_called()
+
+
 @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
 @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
 @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -116,6 +176,7 @@ def test_passing_codex_pr_delegates_blocking_review_threads(
     checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
     claimed_state.return_value = ClaimedReviewThreadGateState(
         unresolved=(thread,),
+        blocking_unresolved=(thread,),
         has_blocking_unresolved=True,
     )
     delegate_review_repair.return_value = ["Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262"]
