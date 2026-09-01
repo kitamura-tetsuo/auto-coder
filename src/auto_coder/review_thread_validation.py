@@ -102,7 +102,7 @@ class StaleReviewThreadRegistryError(RuntimeError):
 
 @dataclass
 class StaleReviewThreadBlocker:
-    """Durable state for rollback-required or marker-cleanup-required work.
+    """Durable state for rollback, its transition, or marker cleanup work.
 
     Persisted so rollback failures and post-rollback marker cleanup survive
     separate ``_handle_pr_merge`` invocations and process restarts
@@ -173,6 +173,26 @@ class StaleReviewThreadRegistry:
             )
             self._save(data)
 
+    def record_rollback_transition(self, repository: str, pr_number: int, thread_id: str, root_comment_database_id: Optional[int]) -> None:
+        """Persist an ambiguous rollback transition before mutating GitHub.
+
+        If the process cannot durably record the mutation's outcome afterward,
+        this state prevents a future run from applying the old blocker to a
+        later legitimate resolution.
+        """
+        with self._lock:
+            data = self._load()
+            data[self._key(repository, thread_id)] = asdict(
+                StaleReviewThreadBlocker(
+                    repository=repository,
+                    pr_number=pr_number,
+                    thread_id=thread_id,
+                    state="rollback_transition",
+                    root_comment_database_id=root_comment_database_id,
+                )
+            )
+            self._save(data)
+
     def clear(self, repository: str, thread_id: str) -> None:
         """Remove a blocker once GitHub confirms the thread is unresolved."""
         with self._lock:
@@ -201,7 +221,7 @@ class StaleReviewThreadRegistry:
                 raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains a malformed entry for key {key!r}")
             state = value.get("state", "rollback_required")
             root_comment_database_id = value.get("root_comment_database_id")
-            if not isinstance(state, str) or state not in {"rollback_required", "marker_cleanup_required"}:
+            if not isinstance(state, str) or state not in {"rollback_required", "rollback_transition", "marker_cleanup_required"}:
                 raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains an invalid state for key {key!r}")
             if root_comment_database_id is not None and (not isinstance(root_comment_database_id, int) or isinstance(root_comment_database_id, bool)):
                 raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains invalid root-comment data for key {key!r}")
@@ -226,6 +246,10 @@ class StaleReviewThreadRegistry:
     def marker_cleanup_pending_for_pr(self, repository: str, pr_number: int) -> dict[str, int]:
         """Return rolled-back threads that only need a CLEARED marker reply."""
         return {record.thread_id: record.root_comment_database_id for record in self._records_for_pr(repository, pr_number) if record.state == "marker_cleanup_required" and record.root_comment_database_id is not None}
+
+    def rollback_transitions_for_pr(self, repository: str, pr_number: int) -> List[str]:
+        """Return ambiguous transitions that must block without mutation."""
+        return [record.thread_id for record in self._records_for_pr(repository, pr_number) if record.state == "rollback_transition"]
 
 
 def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> tuple[dict[str, Optional[int]], List[str]]:
@@ -357,6 +381,7 @@ def retry_pending_stale_review_thread_rollbacks(
     registry = registry or StaleReviewThreadRegistry()
     local_pending = registry.pending_for_pr(repo_name, pr_number)
     marker_cleanup_pending = registry.marker_cleanup_pending_for_pr(repo_name, pr_number)
+    rollback_transitions = registry.rollback_transitions_for_pr(repo_name, pr_number)
     try:
         github_pending, incomplete_thread_ids = _find_github_stale_blockers(github_client, repo_name, pr_number)
     except StaleReviewThreadRegistryError:
@@ -381,8 +406,13 @@ def retry_pending_stale_review_thread_rollbacks(
         # A confirmed rollback owns this old marker. It must never attach to
         # a later legitimate resolution and authorize another unresolve.
         all_pending.pop(thread_id, None)
+    for thread_id in rollback_transitions:
+        # The prior invocation may have completed its unresolve but failed to
+        # record that outcome. Never let the old marker mutate a potentially
+        # legitimate later resolution from this ambiguous state.
+        all_pending.pop(thread_id, None)
 
-    still_blocked: List[str] = []
+    still_blocked: List[str] = list(rollback_transitions)
     for thread_id, cleanup_root_comment_database_id in marker_cleanup_pending.items():
         try:
             github_client.reply_to_review_thread(repo_name, pr_number, cleanup_root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
@@ -393,9 +423,18 @@ def retry_pending_stale_review_thread_rollbacks(
 
     for thread_id, root_comment_database_id in all_pending.items():
         try:
+            registry.record_rollback_transition(repo_name, pr_number, thread_id, root_comment_database_id)
+        except Exception as exc:
+            raise StaleReviewThreadRegistryError(f"Could not durably prepare stale rollback of thread {thread_id} on PR #{pr_number}: {exc}") from exc
+
+        try:
             github_client.unresolve_review_thread(thread_id)
         except Exception as exc:
             logger.error(f"Retry to revert stale resolution of thread {thread_id} on PR #{pr_number} failed: {exc}")
+            try:
+                registry.record(repo_name, pr_number, thread_id)
+            except Exception as persist_exc:
+                logger.error(f"Could not restore rollback-required state for thread {thread_id} on PR #{pr_number}; the fail-closed rollback transition remains: {persist_exc}")
             still_blocked.append(thread_id)
             continue
 
@@ -404,13 +443,17 @@ def retry_pending_stale_review_thread_rollbacks(
                 github_client.reply_to_review_thread(repo_name, pr_number, root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
             except Exception as exc:
                 logger.error(f"Reverted thread {thread_id} on PR #{pr_number} but could not post the cleared marker: {exc}")
-                registry.record_marker_cleanup(repo_name, pr_number, thread_id, root_comment_database_id)
+                try:
+                    registry.record_marker_cleanup(repo_name, pr_number, thread_id, root_comment_database_id)
+                except Exception as persist_exc:
+                    logger.error(f"Could not record marker cleanup for thread {thread_id} on PR #{pr_number}; the fail-closed rollback transition remains: {persist_exc}")
                 still_blocked.append(thread_id)
                 continue
         try:
             registry.clear(repo_name, thread_id)
         except Exception as exc:
             logger.error(f"Reverted thread {thread_id} on PR #{pr_number} but could not clear its local registry entry: {exc}")
+            still_blocked.append(thread_id)
     return still_blocked
 
 
@@ -627,6 +670,18 @@ def resolve_addressed_review_threads(
         # resolved against a disposition for a head that is no longer current
         # (REQ-006, AC-009).
         if not _head_is_still_current():
+            rollback_registry = stale_registry or StaleReviewThreadRegistry()
+            try:
+                rollback_registry.record_rollback_transition(
+                    repo_name,
+                    pr_number,
+                    thread_id,
+                    claimed_thread.root_comment_database_id,
+                )
+            except Exception as transition_exc:
+                logger.error(f"Could not durably prepare rollback of stale resolution for thread {thread_id} on PR #{pr_number}: {transition_exc}")
+                raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from transition_exc
+
             last_exc: Optional[Exception] = None
             for attempt in range(1, UNRESOLVE_ROLLBACK_MAX_ATTEMPTS + 1):
                 try:
@@ -645,7 +700,7 @@ def resolve_addressed_review_threads(
                 # marker posted above already durably records it on GitHub
                 # regardless of whether this local write succeeds.
                 try:
-                    (stale_registry or StaleReviewThreadRegistry()).record(repo_name, pr_number, thread_id)
+                    rollback_registry.record(repo_name, pr_number, thread_id)
                 except Exception as persist_exc:
                     logger.error(f"Failed to persist stale-resolution blocker for thread {thread_id} on PR #{pr_number} locally; the GitHub-side marker posted before the resolve attempt remains the durable record: {persist_exc}")
                 raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
@@ -653,21 +708,25 @@ def resolve_addressed_review_threads(
             # Rollback succeeded: close out the intent marker. If the reply
             # fails, persist cleanup-only state so later runs retry the reply
             # without ever unresolving a new legitimate resolution.
-            try:
-                (stale_registry or StaleReviewThreadRegistry()).clear(repo_name, thread_id)
-            except Exception:
-                pass
             if claimed_thread.root_comment_database_id is not None:
                 try:
                     github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
                 except Exception as exc:
                     logger.error(f"Rolled back thread {thread_id} on PR #{pr_number} but could not post the cleared marker: {exc}")
-                    (stale_registry or StaleReviewThreadRegistry()).record_marker_cleanup(
-                        repo_name,
-                        pr_number,
-                        thread_id,
-                        claimed_thread.root_comment_database_id,
-                    )
+                    try:
+                        rollback_registry.record_marker_cleanup(
+                            repo_name,
+                            pr_number,
+                            thread_id,
+                            claimed_thread.root_comment_database_id,
+                        )
+                    except Exception as persist_exc:
+                        logger.error(f"Could not record marker cleanup for thread {thread_id} on PR #{pr_number}; the fail-closed rollback transition remains: {persist_exc}")
+                else:
+                    try:
+                        rollback_registry.clear(repo_name, thread_id)
+                    except Exception as persist_exc:
+                        logger.error(f"Cleared stale marker for thread {thread_id} on PR #{pr_number} but could not retire its fail-closed rollback transition: {persist_exc}")
             return resolved
 
         # Fully successful resolution on the still-current head: close out

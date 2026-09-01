@@ -184,6 +184,10 @@ class TestRenderClaimedReviewThreadsSection:
 
 
 class TestResolveAddressedReviewThreads:
+    @pytest.fixture(autouse=True)
+    def _isolate_default_stale_registry(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
     def _claimed(self, thread_id="t1", root_comment_database_id=42):
         return ClaimedReviewThread(
             thread_id=thread_id,
@@ -578,6 +582,14 @@ class TestStaleReviewThreadRegistry:
         assert registry.pending_for_pr("owner/repo", 42) == []
         assert registry.marker_cleanup_pending_for_pr("owner/repo", 42) == {"thread-1": 101}
 
+    def test_rollback_transition_is_distinct_and_fail_closed(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record_rollback_transition("owner/repo", 42, "thread-1", 101)
+
+        assert registry.pending_for_pr("owner/repo", 42) == []
+        assert registry.marker_cleanup_pending_for_pr("owner/repo", 42) == {}
+        assert registry.rollback_transitions_for_pr("owner/repo", 42) == ["thread-1"]
+
     def test_malformed_entry_fails_closed_even_for_a_different_pr(self, tmp_path):
         """[P1] A structurally malformed entry anywhere in the file (e.g.
         from a bug or manual edit) must never be silently skipped — it could
@@ -640,6 +652,85 @@ class TestStaleReviewThreadRegistry:
 
 
 class TestRetryPendingStaleReviewThreadRollbacks:
+    def test_dual_cleanup_failure_leaves_transition_that_never_unresolves_later_resolution(self, tmp_path):
+        """[P2] CLEAR and cleanup persistence may both fail after rollback.
+        The pre-mutation transition survives and blocks a fresh run without
+        mutating a later legitimate resolution."""
+        path = tmp_path / "stale.json"
+        registry = StaleReviewThreadRegistry(path=path)
+        first_client = MagicMock()
+        first_client.get_pull_request_head_sha_strict.side_effect = ["sha1", "sha1", "sha2"]
+        first_client.reply_to_review_thread.side_effect = [None, None, Exception("CLEAR failed")]
+        claimed = [ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=101)]
+        dispositions = [ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="fixed", evidence="verified")]
+
+        with patch.object(registry, "record_marker_cleanup", side_effect=OSError("disk full")):
+            resolved = resolve_addressed_review_threads(
+                first_client,
+                "owner/repo",
+                42,
+                "sha1",
+                claimed,
+                dispositions,
+                stale_registry=registry,
+            )
+
+        assert resolved == []
+        first_client.unresolve_review_thread.assert_called_once_with("thread-1")
+        assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == ["thread-1"]
+
+        fresh_client = MagicMock()
+        fresh_client.get_authenticated_user_login.return_value = "auto-coder[bot]"
+        fresh_client.get_pull_request_head_sha_strict.return_value = "sha3"
+        fresh_client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=101),
+                    _comment("auto-coder[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(
+            fresh_client,
+            "owner/repo",
+            42,
+            registry=StaleReviewThreadRegistry(path=path),
+        )
+
+        assert still_blocked == ["thread-1"]
+        fresh_client.unresolve_review_thread.assert_not_called()
+        fresh_client.reply_to_review_thread.assert_not_called()
+
+    def test_retry_path_dual_cleanup_failure_keeps_fail_closed_transition(self, tmp_path):
+        """The GitHub-only retry path establishes the same transition before
+        unresolving, so dual cleanup failure cannot erase all durable state."""
+        path = tmp_path / "stale.json"
+        registry = StaleReviewThreadRegistry(path=path)
+        first_client = MagicMock()
+        first_client.get_authenticated_user_login.return_value = "auto-coder[bot]"
+        first_client.get_pull_request_head_sha_strict.return_value = "sha2"
+        first_client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=101),
+                    _comment("auto-coder[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                ],
+            )
+        ]
+        first_client.reply_to_review_thread.side_effect = Exception("CLEAR failed")
+
+        with patch.object(registry, "record_marker_cleanup", side_effect=OSError("disk full")):
+            still_blocked = retry_pending_stale_review_thread_rollbacks(first_client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == ["thread-1"]
+        first_client.unresolve_review_thread.assert_called_once_with("thread-1")
+        assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == ["thread-1"]
+
     def test_failed_clear_after_rollback_cannot_unresolve_later_legitimate_resolution(self, tmp_path):
         """[P2] H1 resolve -> H2 -> successful rollback -> failed CLEAR.
         A fresh run seeing a later legitimate resolution must retry only the
