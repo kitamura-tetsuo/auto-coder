@@ -1049,6 +1049,21 @@ class GitHubClient:
         """Get review threads while preserving lookup failures for merge gates."""
         return self._get_pr_review_threads(repo_name, pr_number)
 
+    def get_authenticated_user_login(self) -> str:
+        """Return the login proven by this client's GitHub credential.
+
+        Marker-based safety state may only trust comments authored through the
+        same credential Auto-Coder uses to write those markers.  Keep this a
+        strict lookup: an absent or malformed identity must not widen the set
+        of trusted comment authors.
+        """
+        api = get_ghapi_client(self.token)
+        user = api.users.get_authenticated()
+        login = user.get("login") if isinstance(user, dict) else getattr(user, "login", None)
+        if not isinstance(login, str) or not login:
+            raise RuntimeError("GitHub did not return the authenticated user's login")
+        return login
+
     def _get_pr_review_threads(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
         """Fetch all review-thread pages and let callers decide error handling."""
         owner, repo = repo_name.split("/")

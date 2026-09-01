@@ -11,6 +11,8 @@ These tests cover the acceptance scenarios from the issue:
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.auto_coder.cloud_run import (
     CloudRun,
     CloudRunEvent,
@@ -86,6 +88,35 @@ class TestCloudRunPersistence:
             storage_path = Path(tmpdir) / "cloud_runs.json"
             repo = CloudRunRepository("owner/repo", storage_path=storage_path)
             assert repo.get(issue_number=999, attempt=0) is None
+
+    def test_from_dict_converts_supported_json_number_values(self):
+        run = CloudRun.from_dict(
+            {
+                "repo_name": "owner/repo",
+                "issue_number": "100",
+                "attempt": 2,
+                "provider": "codex-cloud",
+                "task_id": "task-A",
+                "pull_request_numbers": ["200", 201],
+            }
+        )
+
+        assert run.issue_number == 100
+        assert run.attempt == 2
+        assert run.pull_request_numbers == [200, 201]
+
+    def test_from_dict_rejects_non_list_pull_request_numbers(self):
+        with pytest.raises(ValueError, match="pull_request_numbers.*list"):
+            CloudRun.from_dict(
+                {
+                    "repo_name": "owner/repo",
+                    "issue_number": 100,
+                    "attempt": 2,
+                    "provider": "codex-cloud",
+                    "task_id": "task-A",
+                    "pull_request_numbers": "200",
+                }
+            )
 
 
 class TestCloudRunMultiplePullRequests:

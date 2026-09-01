@@ -27,6 +27,13 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def _json_int(value: object, field_name: str) -> int:
+    """Convert a JSON scalar to an integer with an explicit type boundary."""
+    if not isinstance(value, (str, int, float, bytes, bytearray)):
+        raise ValueError(f"Cloud run field {field_name!r} must be an integer")
+    return int(value)
+
+
 @dataclass
 class CloudRun:
     """A durable record of one cloud provider run for a single Issue attempt.
@@ -61,13 +68,16 @@ class CloudRun:
 
     @staticmethod
     def from_dict(data: Dict[str, object]) -> "CloudRun":
+        pull_request_numbers = data.get("pull_request_numbers", [])
+        if not isinstance(pull_request_numbers, list):
+            raise ValueError("Cloud run field 'pull_request_numbers' must be a list")
         return CloudRun(
             repo_name=str(data["repo_name"]),
-            issue_number=int(data["issue_number"]),  # type: ignore[arg-type]
-            attempt=int(data["attempt"]),  # type: ignore[arg-type]
+            issue_number=_json_int(data["issue_number"], "issue_number"),
+            attempt=_json_int(data["attempt"], "attempt"),
             provider=str(data["provider"]),
             task_id=str(data["task_id"]),
-            pull_request_numbers=[int(n) for n in data.get("pull_request_numbers", [])],  # type: ignore[union-attr]
+            pull_request_numbers=[_json_int(number, "pull_request_numbers") for number in pull_request_numbers],
         )
 
 
@@ -168,7 +178,11 @@ class CloudRunRepository:
         """List all persisted runs (across attempts) for an issue, ordered by attempt."""
         with self._lock:
             data = self._read_all()
-            runs = [CloudRun.from_dict(raw) for raw in data.values() if int(raw.get("issue_number", -1)) == issue_number]  # type: ignore[arg-type]
+            runs = []
+            for raw in data.values():
+                run = CloudRun.from_dict(raw)
+                if run.issue_number == issue_number:
+                    runs.append(run)
             runs.sort(key=lambda r: r.attempt)
             return runs
 

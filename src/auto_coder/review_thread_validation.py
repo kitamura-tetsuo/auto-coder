@@ -200,12 +200,12 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     process restart because it is in a different failure domain, and may be
     the only surviving evidence of a stale resolution (REQ-006, REQ-008).
 
-    A thread's state is derived chronologically: the *latest* marker
-    (BLOCKER or CLEARED) in the thread wins, so a thread that was blocked,
-    successfully cleared, and later blocked again by an unrelated incident
-    is still correctly reported as pending. Only resolved threads are
-    considered, since an unresolved thread is already caught by the
-    ordinary unresolved-thread gate regardless of any marker.
+    A thread's state is derived chronologically from trusted events: the
+    *latest* marker (BLOCKER or CLEARED) authored by the identity proven by
+    this GitHub client's credential wins. Exact marker text from any other
+    author is ignored. Only resolved threads are considered, since an
+    unresolved thread is already caught by the ordinary unresolved-thread
+    gate regardless of any marker.
 
     Marker recognition requires an *exact* match (a comment body, stripped
     of surrounding whitespace, equal to the marker constant) rather than a
@@ -214,15 +214,11 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     (e.g. "the CLEARED marker has not been posted yet"), and substring
     matching would let such prose silently create or clear blocker state.
 
-    A thread whose comment list is truncated (``comments_truncated``) and
-    that has no confirmed marker on its visible page cannot be ruled out as
-    hiding a marker beyond that page, but its incompleteness must not be
-    mistaken for a confirmed blocker: reporting it in ``pending`` would make
-    the caller call ``unresolve_review_thread()`` on a thread that may never
-    have had a stale-resolution marker at all, mutating unrelated GitHub
-    state. Such threads are instead returned separately in
-    ``incomplete_thread_ids`` so the caller can fail closed for merge
-    processing (REQ-008) without touching them.
+    A thread whose comment list is truncated (``comments_truncated``) has an
+    unknown latest state even when a BLOCKER is visible: an unfetched later
+    page may contain its matching CLEARED event. Such threads are returned
+    only in ``incomplete_thread_ids`` so the caller fails closed for merge
+    processing (REQ-008) without mutating them from partial evidence.
 
     A freshly-posted ``STALE_BLOCKER_MARKER`` records the PR head it was
     posted against (see ``_format_stale_blocker_marker``). If that recorded
@@ -241,6 +237,8 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     incomplete_thread_ids: List[str] = []
     current_head_sha: Optional[str] = None
     current_head_fetched = False
+    trusted_marker_author: Optional[str] = None
+    trusted_marker_author_fetched = False
 
     def _current_head() -> Optional[str]:
         nonlocal current_head_sha, current_head_fetched
@@ -254,8 +252,23 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
                 current_head_sha = None
         return current_head_sha
 
+    def _trusted_marker_author() -> str:
+        nonlocal trusted_marker_author, trusted_marker_author_fetched
+        if not trusted_marker_author_fetched:
+            trusted_marker_author_fetched = True
+            candidate = github_client.get_authenticated_user_login()
+            if not isinstance(candidate, str) or not candidate:
+                raise RuntimeError("Could not determine Auto-Coder's authenticated GitHub marker identity")
+            trusted_marker_author = candidate
+        if trusted_marker_author is None:
+            raise RuntimeError("Could not determine Auto-Coder's authenticated GitHub marker identity")
+        return trusted_marker_author
+
     for thread in threads:
         if not thread.is_resolved:
+            continue
+        if thread.comments_truncated:
+            incomplete_thread_ids.append(thread.id)
             continue
         comments = thread.comments or []
         root_comment_database_id = comments[0].database_id if comments else None
@@ -265,6 +278,10 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
         latest_blocker_head: Optional[str] = None
         for comment in comments:
             body = (comment.body or "").strip()
+            if not (body == STALE_BLOCKER_CLEARED_MARKER or body == STALE_BLOCKER_MARKER or body.startswith(f"{STALE_BLOCKER_MARKER}\n")):
+                continue
+            if comment.author_login != _trusted_marker_author():
+                continue
             if body == STALE_BLOCKER_CLEARED_MARKER:
                 latest_blocker_head = None
             elif body == STALE_BLOCKER_MARKER:
@@ -273,8 +290,6 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
                 match = _STALE_BLOCKER_HEAD_RE.search(body)
                 latest_blocker_head = match.group("sha") if match else ""
         if latest_blocker_head is None:
-            if thread.comments_truncated:
-                incomplete_thread_ids.append(thread.id)
             continue
         if latest_blocker_head and latest_blocker_head == _current_head():
             # Nothing has changed since this marker was posted; not stale.
@@ -316,12 +331,9 @@ def retry_pending_stale_review_thread_rollbacks(
         raise StaleReviewThreadRegistryError(f"Could not scan GitHub review threads for stale-resolution markers on PR #{pr_number}: {exc}") from exc
 
     if incomplete_thread_ids:
-        # These threads have a truncated comment list with no confirmed
-        # marker on the visible page: their marker state is genuinely
-        # unknown, not confirmed-blocked. Fail closed for merge processing
-        # (REQ-008) without calling unresolve_review_thread() on them — that
-        # would mutate GitHub state for a thread that may never have had a
-        # stale-resolution marker at all.
+        # These threads have truncated comment lists, so their latest marker
+        # state is unknown regardless of which events are visible. Fail
+        # closed (REQ-008) without mutating GitHub from partial evidence.
         raise StaleReviewThreadRegistryError(f"Could not fully scan review thread(s) {', '.join(incomplete_thread_ids)} for stale-resolution markers on PR #{pr_number}: comment list truncated")
 
     all_pending: dict[str, Optional[int]] = dict.fromkeys(local_pending, None)

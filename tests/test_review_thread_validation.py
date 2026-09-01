@@ -486,6 +486,7 @@ class TestResolveAddressedReviewThreads:
         # still discover the durable GitHub-side marker independently.
         fresh_registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         fresh_client = MagicMock()
+        fresh_client.get_authenticated_user_login.return_value = "agent[bot]"
         fresh_client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "t1",
@@ -628,6 +629,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         resolution is not actually stale."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
         client.get_pr_review_threads_strict.return_value = [
             _thread(
@@ -654,6 +656,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         thread must still be treated as a genuine, confirmed blocker."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pull_request.return_value = {"head": {"sha": "sha2-newer"}}
         client.get_pr_review_threads_strict.return_value = [
             _thread(
@@ -677,6 +680,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         (fail closed) rather than being silently skipped."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pull_request.side_effect = Exception("network error")
         client.get_pr_review_threads_strict.return_value = [
             _thread(
@@ -751,6 +755,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         with no local registry state at all."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -770,6 +775,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
     def test_github_side_marker_cleared_after_successful_retry(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -810,10 +816,10 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         client.unresolve_review_thread.assert_not_called()
 
-    def test_truncated_thread_with_confirmed_marker_on_visible_page_is_still_pending(self, tmp_path):
-        """A truncated thread whose visible page DOES contain a confirmed
-        marker is a genuine confirmed blocker (not merely "incomplete"), so
-        it must still be retried normally rather than treated as unknown."""
+    def test_truncated_thread_with_visible_blocker_fails_closed_without_mutating(self, tmp_path):
+        """[P2] A later, unfetched page may contain the matching CLEARED
+        event, so a visible BLOCKER does not make truncated evidence complete
+        and must not authorize an automatic unresolve."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = [
@@ -828,10 +834,10 @@ class TestRetryPendingStaleReviewThreadRollbacks:
             )
         ]
 
-        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+        with pytest.raises(StaleReviewThreadRegistryError):
+            retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
-        assert still_blocked == []
-        client.unresolve_review_thread.assert_called_once_with("thread-1")
+        client.unresolve_review_thread.assert_not_called()
 
     def test_github_marker_scan_failure_fails_closed(self, tmp_path):
         """[P1] The GitHub-side marker scan may be the only surviving evidence
@@ -854,6 +860,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         because a CLEARED marker appears earlier in the discussion."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -880,6 +887,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         canonical marker comment may change blocker state."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -906,6 +914,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         not trigger an automatic unresolve."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -925,9 +934,55 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         assert still_blocked == []
         client.unresolve_review_thread.assert_not_called()
 
+    def test_untrusted_exact_cleared_marker_does_not_clear_trusted_blocker(self, tmp_path):
+        """[P1] Only the authenticated Auto-Coder identity may advance the
+        durable marker state, even when another author copies the exact body."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_authenticated_user_login.return_value = "auto-coder[bot]"
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("auto-coder[bot]", STALE_BLOCKER_MARKER),
+                    _comment("implementation-agent[bot]", "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+
+    def test_untrusted_exact_blocker_marker_does_not_unresolve(self, tmp_path):
+        """[P1] An unrelated author cannot create authoritative blocker
+        state by copying the exact BLOCKER body."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_authenticated_user_login.return_value = "auto-coder[bot]"
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("unrelated-human", STALE_BLOCKER_MARKER),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_not_called()
+
     def test_github_marker_with_later_cleared_reply_is_not_pending(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",

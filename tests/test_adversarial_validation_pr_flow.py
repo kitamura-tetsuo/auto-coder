@@ -1614,6 +1614,7 @@ class TestClaimedReviewThreadValidationFlow:
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
 
         client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
         client.get_pr_review_threads_strict.return_value = [
             ReviewThread(
                 id="thread-1",

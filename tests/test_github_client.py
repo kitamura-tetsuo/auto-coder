@@ -33,6 +33,28 @@ class TestGitHubClient:
         assert client.token == mock_github_token
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_authenticated_user_login(self, mock_get_client, mock_github_token):
+        mock_api = Mock()
+        mock_api.users.get_authenticated.return_value = AttrDict({"login": "auto-coder[bot]"})
+        mock_get_client.return_value = mock_api
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        assert client.get_authenticated_user_login() == "auto-coder[bot]"
+        mock_api.users.get_authenticated.assert_called_once_with()
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_authenticated_user_login_rejects_missing_login(self, mock_get_client, mock_github_token):
+        mock_api = Mock()
+        mock_api.users.get_authenticated.return_value = AttrDict({})
+        mock_get_client.return_value = mock_api
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        with pytest.raises(RuntimeError, match="authenticated user's login"):
+            client.get_authenticated_user_login()
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_repository_success(self, mock_get_client, mock_github_token):
         """Test successful repository retrieval."""
         # Setup
