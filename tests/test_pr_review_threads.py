@@ -391,7 +391,7 @@ def test_get_pr_review_threads_includes_comments(mock_github_client):
                                 "isOutdated": False,
                                 "comments": {
                                     "nodes": [
-                                        {"databaseId": 100, "body": "Original finding", "author": {"login": "chatgpt-codex-connector[bot]"}},
+                                        {"databaseId": 100, "body": "Original finding", "author": {"login": "chatgpt-codex-connector", "databaseId": 199175422}},
                                         {"databaseId": 101, "body": "Fixed it", "author": {"login": "agent[bot]"}},
                                     ]
                                 },
@@ -407,7 +407,7 @@ def test_get_pr_review_threads_includes_comments(mock_github_client):
     threads = mock_github_client.get_pr_review_threads("owner/repo", 101)
     assert len(threads) == 1
     assert len(threads[0].comments) == 2
-    assert threads[0].comments[0] == ReviewThreadComment(database_id=100, body="Original finding", author_login="chatgpt-codex-connector[bot]")
+    assert threads[0].comments[0] == ReviewThreadComment(database_id=100, body="Original finding", author_login="chatgpt-codex-connector", author_id=199175422)
     assert threads[0].comments[1].author_login == "agent[bot]"
     assert threads[0].comments_truncated is False
 
@@ -582,7 +582,7 @@ class TestClaimedReviewThreadGateState:
                                         "isOutdated": False,
                                         "comments": {
                                             "nodes": [
-                                                {"databaseId": 1, "body": "finding", "author": {"login": "chatgpt-codex-connector[bot]"}},
+                                                {"databaseId": 1, "body": "finding", "author": {"login": "chatgpt-codex-connector", "databaseId": 199175422}},
                                                 {"databaseId": 2, "body": "Fixed.\n<!-- auto-coder-review-addressed:v1 -->", "author": {"login": "agent[bot]"}},
                                             ]
                                         },
@@ -595,7 +595,7 @@ class TestClaimedReviewThreadGateState:
             }
         )
 
-        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate, patch("auto_coder.pr_processor._resolve_eligible_review_thread_logins", return_value={"chatgpt-codex-connector[bot]"}):
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate, patch("auto_coder.pr_processor._resolve_eligible_review_thread_ids", return_value={199175422}):
             mock_gate.return_value = ReviewThreadGateState(has_unresolved=True)
             state = _get_claimed_review_thread_state(client, "owner/repo", 101)
 
@@ -619,7 +619,9 @@ class TestClaimedReviewThreadGateState:
                                     {
                                         "id": "t1",
                                         "isResolved": False,
-                                        "comments": {"nodes": [{"databaseId": 1, "body": "finding", "author": {"login": "chatgpt-codex-connector[bot]"}}, {"databaseId": 2, "body": "Fixed.\n<!-- auto-coder-review-addressed:v1 -->", "author": {"login": "agent[bot]"}}]},
+                                        "comments": {
+                                            "nodes": [{"databaseId": 1, "body": "finding", "author": {"login": "chatgpt-codex-connector", "databaseId": 199175422}}, {"databaseId": 2, "body": "Fixed.\n<!-- auto-coder-review-addressed:v1 -->", "author": {"login": "agent[bot]", "databaseId": 999}}]
+                                        },
                                     },
                                     {
                                         "id": "t2",
@@ -634,7 +636,7 @@ class TestClaimedReviewThreadGateState:
             }
         )
 
-        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate, patch("auto_coder.pr_processor._resolve_eligible_review_thread_logins", return_value={"chatgpt-codex-connector[bot]"}):
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate, patch("auto_coder.pr_processor._resolve_eligible_review_thread_ids", return_value={199175422}):
             mock_gate.return_value = ReviewThreadGateState(has_unresolved=True)
             state = _get_claimed_review_thread_state(client, "owner/repo", 101)
 

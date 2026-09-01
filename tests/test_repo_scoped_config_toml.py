@@ -14,6 +14,7 @@ from auto_coder.llm_backend_config import (
     get_jules_pr_ci_timeout_hours_from_config,
     get_jules_wait_timeout_hours_from_config,
     get_pr_allowlist_from_config,
+    get_pr_review_allowlist_from_config,
     load_app_config_data,
 )
 
@@ -124,6 +125,7 @@ isolate_single_test_on_failure = false
 [github]
 issue_allowlist = [100]
 pr_allowlist = [200]
+pr_review_allowlist = [199175422]
 """,
             encoding="utf-8",
         )
@@ -143,6 +145,7 @@ isolate_single_test_on_failure = true
 
 [github]
 issue_allowlist = [999]
+pr_review_allowlist = [123456789]
 """,
             encoding="utf-8",
         )
@@ -156,6 +159,7 @@ issue_allowlist = [999]
         assert get_isolate_single_test_on_failure_from_config(config_path=str(base_config), repo_name="owner/repo") is True
         assert get_issue_allowlist_from_config(config_path=str(base_config), repo_name="owner/repo") == [999]
         assert get_pr_allowlist_from_config(config_path=str(base_config), repo_name="owner/repo") == [200]
+        assert get_pr_review_allowlist_from_config(config_path=str(base_config), repo_name="owner/repo") == [123456789]
 
     def test_automation_config_instance_with_repo_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         home_dir = tmp_path / "home"
@@ -192,3 +196,22 @@ isolate_single_test_on_failure = true
         assert config.repo_name == "owner/repo"
         assert config.JULES_WAIT_TIMEOUT_HOURS == 9
         assert config.ISOLATE_SINGLE_TEST_ON_FAILURE is True
+
+
+class TestPRReviewAllowlistConfig:
+    def test_absent_and_empty_authorize_nobody(self, tmp_path: Path):
+        absent = tmp_path / "absent.toml"
+        absent.write_text("[github]\n", encoding="utf-8")
+        empty = tmp_path / "empty.toml"
+        empty.write_text("[github]\npr_review_allowlist = []\n", encoding="utf-8")
+
+        assert get_pr_review_allowlist_from_config(config_path=str(absent)) is None
+        assert get_pr_review_allowlist_from_config(config_path=str(empty)) == []
+
+    @pytest.mark.parametrize("invalid_value", ['["199175422"]', "[true]", "[0]", "[-1]", '["chatgpt-codex-connector[bot]"]'])
+    def test_rejects_invalid_identity_ids(self, tmp_path: Path, invalid_value: str):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(f"[github]\npr_review_allowlist = {invalid_value}\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="positive integer GitHub identity IDs"):
+            get_pr_review_allowlist_from_config(config_path=str(config_path))

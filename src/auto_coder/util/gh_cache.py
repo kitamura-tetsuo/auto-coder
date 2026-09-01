@@ -28,6 +28,7 @@ class ReviewThreadComment:
     database_id: Optional[int] = None
     body: str = ""
     author_login: str = ""
+    author_id: Optional[int] = None
 
 
 @dataclass
@@ -1113,6 +1114,23 @@ class GitHubClient:
                           body
                           author {
                             login
+                            ... on Bot {
+                              databaseId
+                            }
+                            ... on EnterpriseUserAccount {
+                              user {
+                                databaseId
+                              }
+                            }
+                            ... on Mannequin {
+                              databaseId
+                            }
+                            ... on Organization {
+                              databaseId
+                            }
+                            ... on User {
+                              databaseId
+                            }
                           }
                         }
                       }
@@ -1152,15 +1170,23 @@ class GitHubClient:
                         raise RuntimeError(f"Review-thread response for PR #{pr_number} contained thread {thread_id} without an explicit resolved state")
                     comments_data = node.get("comments") or {}
                     comment_nodes = comments_data.get("nodes") or []
-                    comments = [
-                        ReviewThreadComment(
-                            database_id=comment_node.get("databaseId"),
-                            body=str(comment_node.get("body", "") or ""),
-                            author_login=str(((comment_node.get("author") or {}) or {}).get("login") or ""),
+                    comments: List[ReviewThreadComment] = []
+                    for comment_node in comment_nodes:
+                        if not comment_node:
+                            continue
+                        author = comment_node.get("author") or {}
+                        raw_author_id = author.get("databaseId")
+                        if raw_author_id is None:
+                            raw_author_id = (author.get("user") or {}).get("databaseId")
+                        author_id = raw_author_id if isinstance(raw_author_id, int) and not isinstance(raw_author_id, bool) and raw_author_id > 0 else None
+                        comments.append(
+                            ReviewThreadComment(
+                                database_id=comment_node.get("databaseId"),
+                                body=str(comment_node.get("body", "") or ""),
+                                author_login=str(author.get("login") or ""),
+                                author_id=author_id,
+                            )
                         )
-                        for comment_node in comment_nodes
-                        if comment_node
-                    ]
                     comments_truncated = bool((comments_data.get("pageInfo") or {}).get("hasNextPage"))
                     threads.append(
                         ReviewThread(
