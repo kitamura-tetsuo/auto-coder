@@ -358,3 +358,39 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
     assert saved_after_retry is not None
     assert saved_after_retry.last_head_sha == "sha-b"
     assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"
+
+
+def test_non_authoritative_resolved_response_preserves_the_open_checkpoint(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.unverified_files = ["src/unavailable.py"]
+    validation_context.all_changed_files.append("src/unavailable.py")
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    resolved = gap_payload(
+        status="RESOLVED",
+        phase="REREVIEW",
+        resolution_evidence="The new commit contains a direct regression test.",
+    )
+    manager.continue_session.return_value = validation_response(resolved)
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "INCONCLUSIVE"
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved is not None
+    assert saved.last_head_sha == "sha-a"
+    assert saved.test_oracle_gaps[0].status == "OPEN"
+    assert initial.status == "OPEN"

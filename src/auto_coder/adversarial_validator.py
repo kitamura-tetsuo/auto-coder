@@ -10,7 +10,7 @@ import ast
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Optional
 
 from .automation_config import AutomationConfig
@@ -1649,7 +1649,10 @@ def _reconcile_test_oracle_gap_lifecycle(
             gap.resolution_evidence = ""
         return result
 
-    prior_by_id = {gap.gap_id: gap for gap in stored_session.test_oracle_gaps}
+    # Reconciliation is speculative until deterministic coverage/provenance
+    # checks establish an authoritative lifecycle result. Never mutate the
+    # registry-owned checkpoint objects during that speculative phase.
+    prior_by_id = {gap.gap_id: replace(gap) for gap in stored_session.test_oracle_gaps}
     current_by_id = {gap.gap_id: gap for gap in result.test_oracle_gaps}
     reconciled: List[TestOracleGap] = []
     rejected_new_ids: List[str] = []
