@@ -63,6 +63,18 @@ class StaleReviewThreadResolutionError(RuntimeError):
         super().__init__(f"Thread {thread_id} on {repo_name}#{pr_number} was resolved against a stale PR head and could not be rolled back to unresolved")
 
 
+class StaleReviewThreadRegistryError(RuntimeError):
+    """The stale-resolution registry's storage could not be trusted.
+
+    Raised when the registry file exists but cannot be read or parsed
+    (corruption, permissions, an I/O error, or unexpected content). A missing
+    file legitimately means "no blockers recorded yet"; an existing-but-bad
+    file must never be treated the same way, since it may be hiding a real
+    blocker (REQ-006, REQ-008) — silently degrading to an empty registry
+    would recreate the exact false-success this registry exists to prevent.
+    """
+
+
 @dataclass
 class StaleReviewThreadBlocker:
     """A durable record that a thread is resolved against a stale head.
@@ -93,12 +105,20 @@ class StaleReviewThreadRegistry:
 
     def _load(self) -> dict[str, dict[str, object]]:
         if not self.path.exists():
+            # No file yet legitimately means "no blockers recorded" — this is
+            # the only case allowed to return empty without raising.
             return {}
         try:
-            value = json.loads(self.path.read_text(encoding="utf-8"))
-            return value if isinstance(value, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+            text = self.path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise StaleReviewThreadRegistryError(f"Could not read stale-review-thread registry at {self.path}: {exc}") from exc
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains invalid JSON: {exc}") from exc
+        if not isinstance(value, dict):
+            raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} does not contain a JSON object")
+        return value
 
     def _save(self, data: dict[str, dict[str, object]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -380,7 +400,14 @@ def resolve_addressed_review_threads(
                 # exception alone would be forgotten on the very next
                 # processing pass while the GitHub thread stays incorrectly
                 # resolved — and raise so this run also blocks immediately.
-                (stale_registry or StaleReviewThreadRegistry()).record(repo_name, pr_number, thread_id)
+                try:
+                    (stale_registry or StaleReviewThreadRegistry()).record(repo_name, pr_number, thread_id)
+                except Exception as persist_exc:
+                    # A failure to persist the blocker must not turn into a
+                    # silently-continuing ordinary exception: this run still
+                    # has to block immediately below regardless of whether
+                    # the record survives for a later run to see.
+                    logger.error(f"Failed to persist stale-resolution blocker for thread {thread_id} on PR #{pr_number}; this run still blocks, but a later run may not remember this failure: {persist_exc}")
                 raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
             return resolved
 

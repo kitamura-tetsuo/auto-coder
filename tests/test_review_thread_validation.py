@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -8,6 +9,7 @@ from auto_coder.review_thread_validation import (
     UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
     ClaimedReviewThread,
     StaleReviewThreadRegistry,
+    StaleReviewThreadRegistryError,
     StaleReviewThreadResolutionError,
     classify_review_threads,
     render_claimed_review_threads_section,
@@ -408,6 +410,28 @@ class TestResolveAddressedReviewThreads:
 
         registry.record.assert_called_once_with("owner/repo", 1, "t1")
 
+    def test_exhausted_rollback_still_raises_even_if_persisting_the_blocker_fails(self):
+        """[P1] A write failure while persisting the blocker (disk full,
+        permissions, ...) must not turn into a silently-continuing ordinary
+        exception — this run must still fail closed with
+        StaleReviewThreadResolutionError."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha2-newer"}},
+        ]
+        client.unresolve_review_thread.side_effect = Exception("persistent error")
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+        registry = MagicMock()
+        registry.record.side_effect = OSError("disk full")
+
+        with pytest.raises(StaleReviewThreadResolutionError) as exc_info:
+            resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions, stale_registry=registry)
+
+        assert exc_info.value.thread_id == "t1"
+
 
 class TestStaleReviewThreadRegistry:
     def test_record_then_pending_for_pr(self, tmp_path):
@@ -445,6 +469,39 @@ class TestStaleReviewThreadRegistry:
         StaleReviewThreadRegistry(path=path).record("owner/repo", 42, "thread-1")
 
         assert StaleReviewThreadRegistry(path=path).pending_for_pr("owner/repo", 42) == ["thread-1"]
+
+    def test_corrupt_json_fails_closed_instead_of_looking_empty(self, tmp_path):
+        """[P1] An existing-but-unparseable registry file must never be
+        silently treated as "no blockers" — it may be hiding a real one."""
+        path = tmp_path / "stale.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        registry = StaleReviewThreadRegistry(path=path)
+
+        with pytest.raises(StaleReviewThreadRegistryError):
+            registry.pending_for_pr("owner/repo", 42)
+
+    def test_non_object_json_fails_closed(self, tmp_path):
+        path = tmp_path / "stale.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        registry = StaleReviewThreadRegistry(path=path)
+
+        with pytest.raises(StaleReviewThreadRegistryError):
+            registry.pending_for_pr("owner/repo", 42)
+
+    def test_unreadable_file_fails_closed(self, tmp_path):
+        path = tmp_path / "stale.json"
+        path.write_text('{"k": {"repository": "owner/repo", "pr_number": 42, "thread_id": "t1"}}', encoding="utf-8")
+        registry = StaleReviewThreadRegistry(path=path)
+
+        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            with pytest.raises(StaleReviewThreadRegistryError):
+                registry.pending_for_pr("owner/repo", 42)
+
+    def test_missing_file_is_legitimately_empty(self, tmp_path):
+        """Only a genuinely absent file (never yet written) may return empty
+        without raising — this is the sole exception to fail-closed."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "does-not-exist.json")
+        assert registry.pending_for_pr("owner/repo", 42) == []
 
 
 class TestRetryPendingStaleReviewThreadRollbacks:

@@ -51,7 +51,7 @@ from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repa
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
-from .review_thread_validation import StaleReviewThreadResolutionError, classify_review_threads, render_claimed_review_threads_section, resolve_addressed_review_threads, retry_pending_stale_review_thread_rollbacks
+from .review_thread_validation import StaleReviewThreadRegistryError, StaleReviewThreadResolutionError, classify_review_threads, render_claimed_review_threads_section, resolve_addressed_review_threads, retry_pending_stale_review_thread_rollbacks
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
@@ -1831,7 +1831,15 @@ def _handle_pr_merge(
         # thread remains blocked, regardless of what CI/validation would
         # otherwise decide this run (REQ-006, REQ-008).
         stale_client = github_client or GitHubClient.get_instance()
-        pending_stale_threads = retry_pending_stale_review_thread_rollbacks(stale_client, repo_name, pr_number)
+        try:
+            pending_stale_threads = retry_pending_stale_review_thread_rollbacks(stale_client, repo_name, pr_number)
+        except StaleReviewThreadRegistryError as e:
+            # The registry's storage cannot be trusted (corrupt, unreadable):
+            # it may be hiding a real stale-resolution blocker, so this must
+            # never be treated as "no blockers exist" (REQ-006, REQ-008).
+            logger.error(f"Stale-review-thread registry is unreadable for PR #{pr_number}: {e}")
+            actions.append(f"Skipping merge for PR #{pr_number}: stale-review-thread registry could not be read ({e})")
+            return actions
         if pending_stale_threads:
             actions.append(f"Skipping merge for PR #{pr_number}: review thread(s) {', '.join(pending_stale_threads)} were resolved against a stale head and could not be reverted")
             return actions

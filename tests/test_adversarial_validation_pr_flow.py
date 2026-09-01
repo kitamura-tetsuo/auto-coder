@@ -1529,6 +1529,27 @@ class TestClaimedReviewThreadValidationFlow:
         mock_exit_if_in_progress.assert_called_once()
         assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == []
 
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_corrupt_stale_registry_refuses_merge_rather_than_looking_empty(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] A registry file that exists but cannot be parsed must never be
+        treated as "no blockers" — it may be hiding a real stale-resolution
+        blocker — so merge must be refused before CI checks run."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        (tmp_path / ".auto-coder").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".auto-coder" / "stale_review_threads.json").write_text("{not valid json", encoding="utf-8")
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+        client = MagicMock()
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("registry could not be read" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()
+
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
