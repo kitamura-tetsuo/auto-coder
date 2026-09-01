@@ -6,6 +6,7 @@ import pytest
 from auto_coder.adversarial_validator import ReviewThreadDisposition
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
+    STALE_BLOCKER_MARKER,
     UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
     ClaimedReviewThread,
     StaleReviewThreadRegistry,
@@ -707,11 +708,14 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         assert still_blocked == []
         client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 1, "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->")
 
-    def test_truncated_comments_with_no_visible_marker_is_still_pending(self, tmp_path):
+    def test_truncated_comments_with_no_visible_marker_fails_closed_without_mutating(self, tmp_path):
         """[P1] A truncated review-thread discussion can hide the marker on a
-        page that was never fetched. The visible first page has no marker at
-        all, but the thread is conservatively treated as pending rather than
-        assumed clear, since the actual blocker may be on a later page."""
+        page that was never fetched. The visible first page has no confirmed
+        marker at all, so its actual state is unknown, not confirmed-blocked:
+        merge processing must fail closed (via a raised
+        StaleReviewThreadRegistryError), but the scan must never mutate this
+        unrelated thread by calling unresolve_review_thread() on it merely
+        because it was truncated."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = [
@@ -719,6 +723,29 @@ class TestRetryPendingStaleReviewThreadRollbacks:
                 "thread-1",
                 True,
                 [_comment(CODEX_LOGIN, "finding", database_id=1)],
+                comments_truncated=True,
+            )
+        ]
+
+        with pytest.raises(StaleReviewThreadRegistryError):
+            retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        client.unresolve_review_thread.assert_not_called()
+
+    def test_truncated_thread_with_confirmed_marker_on_visible_page_is_still_pending(self, tmp_path):
+        """A truncated thread whose visible page DOES contain a confirmed
+        marker is a genuine confirmed blocker (not merely "incomplete"), so
+        it must still be retried normally rather than treated as unknown."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", STALE_BLOCKER_MARKER),
+                ],
                 comments_truncated=True,
             )
         ]
@@ -766,6 +793,59 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert still_blocked == []
         client.unresolve_review_thread.assert_called_once_with("thread-1")
+
+    def test_prose_quoting_cleared_marker_does_not_clear_a_real_blocker(self, tmp_path):
+        """[P1] A real BLOCKER marker followed by ordinary prose that merely
+        quotes the CLEARED marker text (e.g. review discussion explaining
+        that "the CLEARED marker has not been posted yet") must not be
+        mistaken for an actual machine-posted CLEARED marker. Only an exact,
+        canonical marker comment may change blocker state."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", STALE_BLOCKER_MARKER),
+                    _comment(
+                        "kitamura-tetsuo",
+                        "Note: the <!-- auto-coder-stale-review-thread-blocker-cleared:v1 --> marker has not been posted yet.",
+                    ),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+
+    def test_prose_quoting_blocker_marker_without_a_real_marker_does_not_unresolve(self, tmp_path):
+        """[P1] Prose that merely quotes the BLOCKER marker text, with no
+        actual machine-posted marker comment anywhere in the thread, must
+        not trigger an automatic unresolve."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment(
+                        "kitamura-tetsuo",
+                        "Discussion mentioning <!-- auto-coder-stale-review-thread-blocker:v1 --> in prose, not as an actual marker comment.",
+                    ),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_not_called()
 
     def test_github_marker_with_later_cleared_reply_is_not_pending(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")

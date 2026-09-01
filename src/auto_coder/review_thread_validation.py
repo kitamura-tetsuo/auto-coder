@@ -171,12 +171,13 @@ class StaleReviewThreadRegistry:
         return thread_ids
 
 
-def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> dict[str, Optional[int]]:
+def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> tuple[dict[str, Optional[int]], List[str]]:
     """Scan every resolved review thread for an active ``STALE_BLOCKER_MARKER``.
 
-    Returns the pending thread IDs (mapped to their root comment's database
-    ID, for posting the cleared-marker reply later, when available). This is
-    an independent durability layer that lives on GitHub rather than local
+    Returns ``(pending, incomplete_thread_ids)``. ``pending`` maps a
+    confirmed-blocked thread ID to its root comment's database ID (for
+    posting the cleared-marker reply later, when available). This is an
+    independent durability layer that lives on GitHub rather than local
     disk: a marker reply survives a local registry write failure and a
     process restart because it is in a different failure domain, and may be
     the only surviving evidence of a stale resolution (REQ-006, REQ-008).
@@ -188,33 +189,43 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     considered, since an unresolved thread is already caught by the
     ordinary unresolved-thread gate regardless of any marker.
 
-    Fails closed, not best-effort: this scan may be the *only* surviving
-    record of a stale resolution (the local registry write can itself have
-    failed), so a lookup failure here must not be silently treated as "no
-    blockers" — the caller is expected to let this propagate and block
-    merge processing. Likewise, a thread whose comment list is truncated
-    (``comments_truncated``) cannot be ruled out as hiding a marker beyond
-    the visible page, so it is conservatively treated as pending.
+    Marker recognition requires an *exact* match (a comment body, stripped
+    of surrounding whitespace, equal to the marker constant) rather than a
+    substring search. Ordinary review discussion — including this very
+    feature's own review thread — routinely quotes marker text in prose
+    (e.g. "the CLEARED marker has not been posted yet"), and substring
+    matching would let such prose silently create or clear blocker state.
+
+    A thread whose comment list is truncated (``comments_truncated``) and
+    that has no confirmed marker on its visible page cannot be ruled out as
+    hiding a marker beyond that page, but its incompleteness must not be
+    mistaken for a confirmed blocker: reporting it in ``pending`` would make
+    the caller call ``unresolve_review_thread()`` on a thread that may never
+    have had a stale-resolution marker at all, mutating unrelated GitHub
+    state. Such threads are instead returned separately in
+    ``incomplete_thread_ids`` so the caller can fail closed for merge
+    processing (REQ-008) without touching them.
     """
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
     pending: dict[str, Optional[int]] = {}
+    incomplete_thread_ids: List[str] = []
     for thread in threads:
         if not thread.is_resolved:
             continue
         comments = thread.comments or []
         root_comment_database_id = comments[0].database_id if comments else None
-        if thread.comments_truncated:
-            pending[thread.id] = root_comment_database_id
-            continue
         latest_marker_is_blocker = False
         for comment in comments:
-            if STALE_BLOCKER_CLEARED_MARKER in comment.body:
+            body = (comment.body or "").strip()
+            if body == STALE_BLOCKER_CLEARED_MARKER:
                 latest_marker_is_blocker = False
-            elif STALE_BLOCKER_MARKER in comment.body:
+            elif body == STALE_BLOCKER_MARKER:
                 latest_marker_is_blocker = True
         if latest_marker_is_blocker:
             pending[thread.id] = root_comment_database_id
-    return pending
+        elif thread.comments_truncated:
+            incomplete_thread_ids.append(thread.id)
+    return pending, incomplete_thread_ids
 
 
 def retry_pending_stale_review_thread_rollbacks(
@@ -238,7 +249,7 @@ def retry_pending_stale_review_thread_rollbacks(
     registry = registry or StaleReviewThreadRegistry()
     local_pending = registry.pending_for_pr(repo_name, pr_number)
     try:
-        github_pending = _find_github_stale_blockers(github_client, repo_name, pr_number)
+        github_pending, incomplete_thread_ids = _find_github_stale_blockers(github_client, repo_name, pr_number)
     except StaleReviewThreadRegistryError:
         raise
     except Exception as exc:
@@ -248,6 +259,15 @@ def retry_pending_stale_review_thread_rollbacks(
         # corrupt local registry, not be treated as "no blockers" (REQ-006,
         # REQ-008).
         raise StaleReviewThreadRegistryError(f"Could not scan GitHub review threads for stale-resolution markers on PR #{pr_number}: {exc}") from exc
+
+    if incomplete_thread_ids:
+        # These threads have a truncated comment list with no confirmed
+        # marker on the visible page: their marker state is genuinely
+        # unknown, not confirmed-blocked. Fail closed for merge processing
+        # (REQ-008) without calling unresolve_review_thread() on them — that
+        # would mutate GitHub state for a thread that may never have had a
+        # stale-resolution marker at all.
+        raise StaleReviewThreadRegistryError(f"Could not fully scan review thread(s) {', '.join(incomplete_thread_ids)} for stale-resolution markers on PR #{pr_number}: comment list truncated")
 
     all_pending: dict[str, Optional[int]] = dict.fromkeys(local_pending, None)
     all_pending.update(github_pending)
