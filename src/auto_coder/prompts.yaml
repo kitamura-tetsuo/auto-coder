@@ -1719,6 +1719,11 @@ jules:
 
 
 codex_cloud:
+  unsafe_work_branch_reissue: |-
+    Pull request #$pr_number for $issue_numbers was closed because its remote head branch was `work`, which is a shared/transient Codex Cloud branch and is unsafe for an independently managed task.
+
+    Preserve the current implementation and publish it again from the intended implementation state. Create and push a new remote branch whose name is unique to this task or its linked issue, then open a new replacement pull request linked to the same issue. Do not reuse, update, push to, or force-push the remote `work` branch. Do not reopen, retarget, or reuse the closed pull request. The replacement branch and pull request must be created by this existing Codex Cloud task.
+
   review_thread_repair_details: |-
     Review every currently unresolved GitHub review thread on this pull request. Address each valid finding in the implementation, add or update regression tests, run the required test suite, and push the corrective commits to the existing pull request branch.
 
