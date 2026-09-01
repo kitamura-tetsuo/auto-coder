@@ -1203,7 +1203,11 @@ class GitHubClient:
         """
         response = self.graphql_query(mutation, {"threadId": thread_id})
         thread = (((response or {}).get("data") or {}).get("unresolveReviewThread") or {}).get("thread") or {}
-        if thread.get("isResolved"):
+        # Fail closed on an ambiguous confirmation: a missing/empty payload or
+        # a payload missing "isResolved" must not be mistaken for success just
+        # because it happens to be falsy. Only an explicit match on this exact
+        # thread ID with isResolved literally False counts as confirmed.
+        if thread.get("id") != thread_id or thread.get("isResolved") is not False:
             raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as unresolved")
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:

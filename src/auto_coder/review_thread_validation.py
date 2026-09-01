@@ -35,6 +35,29 @@ logger = get_logger(__name__)
 
 RESOLVER_EXPLANATION_MARKER = "<!-- auto-coder-review-thread-resolved:v1 -->"
 
+# Bounded attempts to revert a stale resolution (REQ-006/REQ-008): a single
+# failed rollback attempt must not permanently leave a thread resolved
+# against a disposition for a head that is no longer current.
+UNRESOLVE_ROLLBACK_MAX_ATTEMPTS = 3
+
+
+class StaleReviewThreadResolutionError(RuntimeError):
+    """A thread was resolved against a stale head and could not be rolled back.
+
+    The GitHub thread has already been marked resolved by a disposition that
+    no longer corresponds to the PR's current head, and every rollback
+    attempt failed or returned an unconfirmed response. This is a durable
+    integrity problem, not a transient one to log and move past: the caller
+    must treat it as a merge-blocking failure rather than silently
+    continuing (REQ-006, REQ-008).
+    """
+
+    def __init__(self, thread_id: str, repo_name: str, pr_number: int) -> None:
+        self.thread_id = thread_id
+        self.repo_name = repo_name
+        self.pr_number = pr_number
+        super().__init__(f"Thread {thread_id} on {repo_name}#{pr_number} was resolved against a stale PR head and could not be rolled back to unresolved")
+
 
 @dataclass(frozen=True)
 class ClaimedReviewThread:
@@ -233,10 +256,22 @@ def resolve_addressed_review_threads(
         # resolved against a disposition for a head that is no longer current
         # (REQ-006, AC-009).
         if not _head_is_still_current():
-            try:
-                github_client.unresolve_review_thread(thread_id)
-            except Exception as exc:
-                logger.error(f"Head changed immediately after resolving thread {thread_id} on PR #{pr_number}, and reverting the resolution failed: {exc}")
+            last_exc: Optional[Exception] = None
+            for attempt in range(1, UNRESOLVE_ROLLBACK_MAX_ATTEMPTS + 1):
+                try:
+                    github_client.unresolve_review_thread(thread_id)
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.error(f"Attempt {attempt}/{UNRESOLVE_ROLLBACK_MAX_ATTEMPTS} to revert stale resolution of thread {thread_id} on PR #{pr_number} failed: {exc}")
+            if last_exc is not None:
+                # Every rollback attempt failed or was unconfirmed: the thread
+                # is durably resolved against a stale head. This must not be
+                # a log-and-continue outcome (REQ-006, REQ-008) — raise so the
+                # caller treats this run as blocked rather than merging with
+                # an incorrectly resolved thread.
+                raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
             return resolved
 
         resolved.append(thread_id)

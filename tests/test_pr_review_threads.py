@@ -468,6 +468,43 @@ def test_reply_to_review_thread_failure_propagates(mock_github_client):
             mock_github_client.reply_to_review_thread("owner/repo", 5, 100, "explanation body")
 
 
+def test_unresolve_review_thread_success(mock_github_client):
+    mock_github_client.graphql_query.return_value = {"data": {"unresolveReviewThread": {"thread": {"id": "t1", "isResolved": False}}}}
+    mock_github_client.unresolve_review_thread("t1")  # should not raise
+
+
+def test_unresolve_review_thread_not_confirmed_raises(mock_github_client):
+    mock_github_client.graphql_query.return_value = {"data": {"unresolveReviewThread": {"thread": {"id": "t1", "isResolved": True}}}}
+    with pytest.raises(RuntimeError):
+        mock_github_client.unresolve_review_thread("t1")
+
+
+def test_unresolve_review_thread_empty_payload_fails_closed(mock_github_client):
+    """An empty/missing thread payload must not be mistaken for confirmed
+    success just because `.get("isResolved")` on it is falsy."""
+    mock_github_client.graphql_query.return_value = {"data": {"unresolveReviewThread": {"thread": {}}}}
+    with pytest.raises(RuntimeError):
+        mock_github_client.unresolve_review_thread("t1")
+
+
+def test_unresolve_review_thread_missing_thread_key_fails_closed(mock_github_client):
+    mock_github_client.graphql_query.return_value = {"data": {"unresolveReviewThread": {}}}
+    with pytest.raises(RuntimeError):
+        mock_github_client.unresolve_review_thread("t1")
+
+
+def test_unresolve_review_thread_wrong_id_fails_closed(mock_github_client):
+    mock_github_client.graphql_query.return_value = {"data": {"unresolveReviewThread": {"thread": {"id": "other-thread", "isResolved": False}}}}
+    with pytest.raises(RuntimeError):
+        mock_github_client.unresolve_review_thread("t1")
+
+
+def test_unresolve_review_thread_mutation_error_propagates(mock_github_client):
+    mock_github_client.graphql_query.side_effect = Exception("GraphQL mutation failed")
+    with pytest.raises(Exception):
+        mock_github_client.unresolve_review_thread("t1")
+
+
 class TestClaimedReviewThreadGateState:
     def test_no_unresolved_threads_short_circuits(self):
         from auto_coder.pr_processor import _get_claimed_review_thread_state

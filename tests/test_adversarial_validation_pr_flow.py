@@ -1447,6 +1447,56 @@ class TestClaimedReviewThreadValidationFlow:
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
+    @patch("auto_coder.pr_processor.resolve_addressed_review_threads")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_stale_resolution_rollback_failure_blocks_merge(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_resolve,
+        mock_publish,
+        mock_adv_val,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_if_in_progress,
+    ):
+        """[P1] A stale-resolution rollback that could not be confirmed must
+        block merge for this run rather than being logged and ignored."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread, StaleReviewThreadResolutionError
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        claimed = ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1, root_author_login="chatgpt-codex-connector[bot]", original_finding="finding", discussion="discussion")
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(claimed=(claimed,), has_blocking_unresolved=False)
+        mock_adv_val.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Pass",
+            findings=[],
+            thread_dispositions=[ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="Verified fix", evidence="Reproduced original path; now passes")],
+        )
+        mock_resolve.side_effect = StaleReviewThreadResolutionError("thread-1", "owner/repo", 123)
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("stale head" in a and "thread-1" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
     def test_blocking_unresolved_thread_still_blocks_merge(
         self,
         mock_claimed_state,

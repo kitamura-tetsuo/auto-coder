@@ -51,7 +51,7 @@ from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repa
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
-from .review_thread_validation import classify_review_threads, render_claimed_review_threads_section, resolve_addressed_review_threads
+from .review_thread_validation import StaleReviewThreadResolutionError, classify_review_threads, render_claimed_review_threads_section, resolve_addressed_review_threads
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
@@ -2114,6 +2114,15 @@ def _handle_pr_merge(
                                 )
                                 if resolved_thread_ids:
                                     actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
+                            except StaleReviewThreadResolutionError as e:
+                                # A thread is durably resolved against a stale head and
+                                # could not be rolled back: GitHub's authoritative
+                                # unresolved-thread gate can no longer be trusted for
+                                # this PR, so merge must not proceed this run even if
+                                # every other gate would otherwise allow it.
+                                logger.error(f"Stale review-thread resolution could not be rolled back for PR #{pr_number}: {e}")
+                                actions.append(f"Skipping merge for PR #{pr_number}: review thread {e.thread_id} was resolved against a stale head and could not be reverted")
+                                return actions
                             except Exception as e:
                                 logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
 

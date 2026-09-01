@@ -1,9 +1,13 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from auto_coder.adversarial_validator import ReviewThreadDisposition
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
+    UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
     ClaimedReviewThread,
+    StaleReviewThreadResolutionError,
     classify_review_threads,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
@@ -343,3 +347,42 @@ class TestResolveAddressedReviewThreads:
         assert resolved == []
         client.resolve_review_thread.assert_called_once_with("t1")
         client.unresolve_review_thread.assert_called_once_with("t1")
+
+    def test_rollback_retries_and_succeeds_on_a_later_attempt(self):
+        """The first two unresolve attempts fail, the third succeeds: the
+        thread is still not reported as resolved, and no exception escapes."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha2-newer"}},
+        ]
+        client.unresolve_review_thread.side_effect = [Exception("transient error 1"), Exception("transient error 2"), None]
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        assert resolved == []
+        assert client.unresolve_review_thread.call_count == 3
+
+    def test_rollback_exhausted_retries_raises_stale_resolution_error(self):
+        """[P1] Every rollback attempt fails: this must not be a log-and-continue
+        outcome. The GitHub thread is durably resolved against a stale head,
+        so the failure must surface as a blocking exception rather than being
+        silently absorbed."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha2-newer"}},
+        ]
+        client.unresolve_review_thread.side_effect = Exception("persistent error")
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        with pytest.raises(StaleReviewThreadResolutionError) as exc_info:
+            resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        assert exc_info.value.thread_id == "t1"
+        assert client.unresolve_review_thread.call_count == UNRESOLVE_ROLLBACK_MAX_ATTEMPTS
