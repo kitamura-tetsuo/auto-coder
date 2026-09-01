@@ -178,7 +178,9 @@ class TestAutomationEngine:
 
             # Assert
             assert result["repository"] == "test/repo"
-            assert len(result["prs_processed"]) == 0
+            assert len(result["prs_processed"]) == 1
+            assert result["prs_processed"][0]["outcome"] == "failed"
+            assert result["prs_processed"][0]["actions_taken"] == ["Processing failed: Processing failed"]
             assert len(result["errors"]) == 1
             assert "Processing failed" in result["errors"][0]
             mock_take_actions.assert_called_once()

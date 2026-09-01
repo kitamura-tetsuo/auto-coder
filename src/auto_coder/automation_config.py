@@ -3,6 +3,7 @@
 import json
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -869,6 +870,15 @@ class CandidateProcessingResult:
     success: bool = False
     actions: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    outcome: "PRProcessingOutcome" = field(default_factory=lambda: PRProcessingOutcome.SUCCESS)
+
+
+class PRProcessingOutcome(str, Enum):
+    """Machine-readable outcome of a pull-request processing operation."""
+
+    SUCCESS = "success"
+    DEFERRED = "deferred"
+    FAILED = "failed"
 
 
 @dataclass
@@ -927,6 +937,7 @@ class ProcessedPRResult:
     priority: Optional[str] = None  # "merge", "fix", "single", "error"
     analysis: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
 
 
 @dataclass

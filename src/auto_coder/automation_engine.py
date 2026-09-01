@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
-from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
+from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
@@ -1184,7 +1184,8 @@ class AutomationEngine:
                     # Check if there was an error during processing
                     if pr_result.error:
                         result.error = pr_result.error
-                    result.success = True
+                    result.outcome = pr_result.outcome
+                    result.success = pr_result.outcome != PRProcessingOutcome.FAILED
 
         except Exception as e:
             result.error = str(e)
@@ -1434,6 +1435,14 @@ class AutomationEngine:
                         # Add error to errors list instead of processed list
                         error_msg = f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {processing_result.error}"
                         result.errors.append(error_msg)
+                        if candidate.type == "pr":
+                            result.prs_processed.append(
+                                {
+                                    "pr_data": candidate.data,
+                                    "actions_taken": processing_result.actions,
+                                    "outcome": processing_result.outcome.value,
+                                }
+                            )
                     elif processing_result.success:
                         # Convert to the format expected by process_single
                         if candidate.type == "issue":
@@ -1446,6 +1455,7 @@ class AutomationEngine:
                             processed_item = {
                                 "pr_data": candidate.data,
                                 "actions_taken": processing_result.actions,
+                                "outcome": processing_result.outcome.value,
                             }
                             result.prs_processed.append(processed_item)
 

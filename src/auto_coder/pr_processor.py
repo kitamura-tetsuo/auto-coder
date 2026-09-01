@@ -37,7 +37,7 @@ from .adversarial_validator import (
     run_adversarial_validation,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
-from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, StaleJulesPRResult
+from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
 from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
@@ -577,6 +577,7 @@ def process_pull_request(
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
+                processed_pr.outcome = processed_pr_result.outcome
                 # Copy error if it was set
                 if processed_pr_result.error:
                     processed_pr.error = processed_pr_result.error
@@ -598,6 +599,8 @@ def process_pull_request(
             actions_taken=[f"Error processing PR: {str(e)}"],
             priority="error",
             analysis=None,
+            error=str(e),
+            outcome=PRProcessingOutcome.FAILED,
         )
 
 
@@ -1322,7 +1325,7 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
+        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -1351,14 +1354,18 @@ def _process_pr_for_fixes(
         # Use the existing PR actions logic for fixing issues
         with ProgressStage("Fixing issues"):
             try:
-                actions = _take_pr_actions(github_client, repo_name, pr_data, config)
+                processing_status = ProcessedPRResult(pr_data=pr_data)
+                actions = _take_pr_actions(github_client, repo_name, pr_data, config, processing_status)
                 processed_pr.actions_taken = actions
+                processed_pr.error = processing_status.error
+                processed_pr.outcome = processing_status.outcome
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
                     should_process.keep_label()
             except Exception as e:
-                # Set error in result instead of adding to actions
                 processed_pr.error = f"Processing failed: {str(e)}"
+                processed_pr.actions_taken.append(processed_pr.error)
+                processed_pr.outcome = PRProcessingOutcome.FAILED
 
     return processed_pr
 
@@ -1368,6 +1375,7 @@ def _take_pr_actions(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
+    processing_status: Optional[ProcessedPRResult] = None,
 ) -> List[str]:
     """Take actions on a PR including merge handling and analysis."""
     actions = []
@@ -1376,7 +1384,7 @@ def _take_pr_actions(
     try:
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
+        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processing_status)
         actions.extend(merge_actions)
 
         # If merge process completed successfully (PR was merged), skip analysis
@@ -1387,6 +1395,9 @@ def _take_pr_actions(
 
     except Exception as e:
         actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
+        if processing_status is not None:
+            processing_status.error = str(e)
+            processing_status.outcome = PRProcessingOutcome.FAILED
 
     return actions
 
@@ -1866,6 +1877,7 @@ def _handle_pr_merge(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     analysis: Dict[str, Any],
+    processing_status: Optional[ProcessedPRResult] = None,
 ) -> List[str]:
     """Handle PR merge process following the intended flow."""
     actions = []
@@ -2350,6 +2362,8 @@ def _handle_pr_merge(
             )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
+                if processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.SUCCESS
                 _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
 
                 # Clean up old PRs if this is a Jules PR with a session ID
@@ -2535,7 +2549,11 @@ def _handle_pr_merge(
                     actions.append(f"PR #{pr_number} processing completed")
 
     except Exception as e:
-        actions.append(f"Error handling PR merge for PR #{pr_number}: {e}")
+        diagnostic = f"Error handling PR merge for PR #{pr_number}: {e}"
+        actions.append(diagnostic)
+        if processing_status is not None:
+            processing_status.error = str(e)
+            processing_status.outcome = PRProcessingOutcome.FAILED
 
     return actions
 
