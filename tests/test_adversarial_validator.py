@@ -1053,8 +1053,14 @@ class TestRunAdversarialValidation:
 
         assert result.is_pass
         prompt = manager.continue_session.call_args.args[1]
+        normalized_prompt = " ".join(prompt.split())
         assert "Do NOT restart unrestricted broad adversarial exploration" in prompt
         assert "FIXED, STILL_VIOLATED, or REGRESSED" in prompt
+        assert "incremental requirement-coverage validation" in normalized_prompt
+        assert "carry that status forward only after checking" in normalized_prompt
+        assert "Never carry forward a status merely because the previous reviewer reported it" in normalized_prompt
+        assert "exactly one coverage entry for every stable requirement ID" in normalized_prompt
+        assert "initial validation remains a full-coverage, fail-closed review" in normalized_prompt
         assert "Stable Issue Requirement Manifest:\nManifest mode: legacy-extraction\n- REQ-003: Rereview must converge." in prompt
         assert "Changed/Added Tests:\n- tests/test_fix.py" in prompt
         assert "corrective_change = True" in prompt
