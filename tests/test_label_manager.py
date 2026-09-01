@@ -1268,8 +1268,7 @@ class TestLabelManagerProcessorIntegration:
         }
 
         with patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=mock_github_client):
-            with patch("src.auto_coder.pr_processor._merge_pr") as mock_merge:
-                mock_merge.return_value = True  # Successful merge
+            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=["Successfully merged PR #123"]):
 
                 # Call the function which should call keep_label()
                 result = _process_pr_for_merge(
@@ -1304,8 +1303,7 @@ class TestLabelManagerProcessorIntegration:
         }
 
         with patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=mock_github_client):
-            with patch("src.auto_coder.pr_processor._merge_pr") as mock_merge:
-                mock_merge.return_value = False  # Failed merge
+            with patch("src.auto_coder.pr_processor._handle_pr_merge", return_value=["Failed to merge PR #123"]):
 
                 # Call the function
                 result = _process_pr_for_merge(
