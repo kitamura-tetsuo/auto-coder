@@ -60,7 +60,6 @@ from .review_thread_validation import (
     change_provenance_reply_fingerprint,
     classify_review_threads,
     is_change_provenance_thread,
-    publish_unresolved_change_provenance_dispositions,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
@@ -2167,6 +2166,7 @@ def _handle_pr_merge(
                             # The existing aggregated clarification thread remains
                             # authoritative until independently resolved.
                             val_result.publish_clarification_thread = False
+                        val_result.provenance_thread_comment_ids = {thread.thread_id: thread.root_comment_database_id for thread in claimed_review_threads if thread.is_change_provenance and thread.root_comment_database_id is not None}
 
                         # Independent thread-completion validation (REQ-001..REQ-010): this
                         # runs whenever a fresh validation pass produced dispositions,
@@ -2195,17 +2195,6 @@ def _handle_pr_merge(
                                 return actions
                             except Exception as e:
                                 logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
-
-                            published_provenance_ids = publish_unresolved_change_provenance_dispositions(
-                                github_client,
-                                repo_name,
-                                pr_number,
-                                head_sha,
-                                claimed_review_threads,
-                                val_result.thread_dispositions,
-                            )
-                            if published_provenance_ids:
-                                actions.append(f"Published concrete provenance disposition on {len(published_provenance_ids)} clarification thread(s) for PR #{pr_number}")
 
                         _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
 

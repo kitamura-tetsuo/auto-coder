@@ -40,7 +40,6 @@ from .util.gh_cache import ReviewThread
 logger = get_logger(__name__)
 
 RESOLVER_EXPLANATION_MARKER = "<!-- auto-coder-review-thread-resolved:v1 -->"
-PROVENANCE_DISPOSITION_MARKER = "<!-- auto-coder-change-provenance-disposition:v1 -->"
 
 # Posted into the affected GitHub thread itself as an independent durability
 # layer for a stale-resolution blocker: unlike the local JSON registry, a
@@ -640,64 +639,6 @@ def _format_resolver_explanation(disposition: ReviewThreadDisposition) -> str:
             disposition.evidence or "(no evidence provided)",
         ]
     )
-
-
-def _format_change_provenance_disposition(disposition: ReviewThreadDisposition, validated_head_sha: str) -> str:
-    """Render the concrete independent result into the existing clarification thread."""
-    correction = "The identified accidental or contradicted material change must be removed or corrected before merge." if disposition.status == "STILL_VALID" else "The supplied explanation was insufficient to clear this clarification blocker."
-    return "\n".join(
-        [
-            PROVENANCE_DISPOSITION_MARKER,
-            "### Auto-Coder independent provenance verification",
-            "",
-            f"Validated commit: `{validated_head_sha}`",
-            "",
-            f"Status: **{disposition.status}**",
-            "",
-            correction,
-            "",
-            "**Rationale**",
-            "",
-            disposition.rationale,
-            "",
-            "**Evidence**",
-            "",
-            disposition.evidence,
-        ]
-    )
-
-
-def publish_unresolved_change_provenance_dispositions(
-    github_client: Any,
-    repo_name: str,
-    pr_number: int,
-    validated_head_sha: str,
-    claimed: Sequence[ClaimedReviewThread],
-    dispositions: Sequence[ReviewThreadDisposition],
-) -> List[str]:
-    """Reply with concrete STILL_VALID/INCONCLUSIVE evidence on provenance threads."""
-    published: List[str] = []
-    for disposition in dispositions:
-        if disposition.status == "ADDRESSED":
-            continue
-        claimed_thread = _find_claimed_thread(claimed, disposition.thread_id)
-        if claimed_thread is None or not claimed_thread.is_change_provenance or claimed_thread.root_comment_database_id is None:
-            continue
-        try:
-            current_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
-            if current_head_sha != validated_head_sha:
-                logger.warning(f"PR #{pr_number} head changed before publishing provenance disposition for thread {disposition.thread_id}")
-                continue
-            github_client.reply_to_review_thread(
-                repo_name,
-                pr_number,
-                claimed_thread.root_comment_database_id,
-                _format_change_provenance_disposition(disposition, validated_head_sha),
-            )
-            published.append(disposition.thread_id)
-        except Exception as exc:
-            logger.error(f"Failed to publish provenance disposition for thread {disposition.thread_id} on PR #{pr_number}: {exc}")
-    return published
 
 
 def resolve_addressed_review_threads(

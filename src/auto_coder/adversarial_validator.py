@@ -143,6 +143,7 @@ class AdversarialValidationResult:
     unexplained_changes: List[ChangeProvenanceItem] = field(default_factory=list)
     clarification_reply_fingerprint: str = ""
     publish_clarification_thread: bool = True
+    provenance_thread_comment_ids: Dict[str, int] = field(default_factory=dict)
 
     @property
     def is_pass(self) -> bool:
@@ -411,6 +412,31 @@ def format_change_provenance_clarification(items: List[ChangeProvenanceItem]) ->
         ]
     )
     return "\n".join(lines)
+
+
+def format_change_provenance_disposition(disposition: ReviewThreadDisposition, validated_head_sha: str) -> str:
+    """Render an independent unresolved result for the clarification thread."""
+    correction = "The identified accidental or contradicted material change must be removed or corrected before merge." if disposition.status == "STILL_VALID" else "The supplied explanation was insufficient to clear this clarification blocker."
+    return "\n".join(
+        [
+            "<!-- auto-coder-change-provenance-disposition:v1 -->",
+            "### Auto-Coder independent provenance verification",
+            "",
+            f"Validated commit: `{validated_head_sha}`",
+            "",
+            f"Status: **{disposition.status}**",
+            "",
+            correction,
+            "",
+            "**Rationale**",
+            "",
+            disposition.rationale,
+            "",
+            "**Evidence**",
+            "",
+            disposition.evidence,
+        ]
+    )
 
 
 def format_adversarial_finding_comment(finding: AdversarialValidationFinding) -> str:

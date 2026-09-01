@@ -6,7 +6,6 @@ import pytest
 from auto_coder.adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, ReviewThreadDisposition
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
-    PROVENANCE_DISPOSITION_MARKER,
     STALE_BLOCKER_CLEARED_MARKER,
     STALE_BLOCKER_MARKER,
     UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
@@ -17,7 +16,6 @@ from auto_coder.review_thread_validation import (
     change_provenance_reply_fingerprint,
     classify_review_threads,
     is_change_provenance_thread,
-    publish_unresolved_change_provenance_dispositions,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
@@ -260,45 +258,6 @@ class TestRenderClaimedReviewThreadsSection:
         rendered = render_claimed_review_threads_section([thread])
         assert "thread-abc" in rendered
         assert "The counter never resets" in rendered
-
-
-@pytest.mark.parametrize(
-    ("rationale", "evidence"),
-    [
-        ("The script was accidental branch residue", "scripts/example.sh has no causal link to the Issue changes"),
-        ("The generated-file explanation is contradicted", "Manual keys in generated.json cannot be produced by the generator"),
-    ],
-)
-def test_publishes_concrete_still_valid_provenance_in_existing_thread(rationale, evidence):
-    client = MagicMock()
-    client.get_pull_request_head_sha_strict.return_value = "head-a"
-    claimed = ClaimedReviewThread(
-        thread_id="provenance-1",
-        root_comment_database_id=42,
-        is_change_provenance=True,
-    )
-    disposition = ReviewThreadDisposition(
-        thread_id="provenance-1",
-        status="STILL_VALID",
-        rationale=rationale,
-        evidence=evidence,
-    )
-
-    published = publish_unresolved_change_provenance_dispositions(
-        client,
-        "owner/repo",
-        7,
-        "head-a",
-        [claimed],
-        [disposition],
-    )
-
-    assert published == ["provenance-1"]
-    reply = client.reply_to_review_thread.call_args.args[3]
-    assert PROVENANCE_DISPOSITION_MARKER in reply
-    assert "must be removed or corrected" in reply
-    assert rationale in reply
-    assert evidence in reply
 
 
 class TestResolveAddressedReviewThreads:

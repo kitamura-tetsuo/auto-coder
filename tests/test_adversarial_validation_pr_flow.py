@@ -1530,6 +1530,7 @@ class TestClaimedReviewThreadValidationFlow:
         published_result = publish.call_args.args[3]
         assert published_result.clarification_reply_fingerprint.startswith("<!-- auto-coder-change-provenance-evidence:v1:")
         assert published_result.publish_clarification_thread is False
+        assert published_result.provenance_thread_comment_ids == {"provenance-1": 1}
         assert any("unchanged commit" in action and "new implementer provenance evidence" in action for action in actions)
         assert any("Successfully merged PR #123" in action for action in actions)
 

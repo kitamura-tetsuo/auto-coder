@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 
 
@@ -181,8 +181,8 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
         response(
             200,
             [
-                {"filename": "uv.lock", "patch": "@@ -1 +1 @@\n-old\n+new"},
-                {"filename": "pyproject.toml", "patch": "@@ -1 +1 @@\n-old\n+new"},
+                {"filename": "assets/generated.bin", "patch": None},
+                {"filename": "src/host.py", "patch": "@@ -1 +1 @@\n-old\n+new"},
             ],
         ),
     )
@@ -192,8 +192,7 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
         result="INCONCLUSIVE",
         summary="Issue requirements verified; provenance needs clarification",
         unexplained_changes=[
-            ChangeProvenanceItem(paths=["uv.lock", "pyproject.toml"], change_group="Dependency metadata", why_unexplained="No causal dependency edit is evident"),
-            ChangeProvenanceItem(paths=["scripts/example.sh"], change_group="Example script", why_unexplained="The Issue does not mention this script"),
+            ChangeProvenanceItem(paths=["assets/generated.bin"], change_group="Generated binary artifact", why_unexplained="No generating source change is evident"),
         ],
     )
 
@@ -203,13 +202,73 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
     assert publication.event == "COMMENT"
     comments = client.calls[-1][2]["json"]["comments"]
     assert len(comments) == 1
-    assert comments[0]["path"] == "uv.lock"
+    assert comments[0]["path"] == "src/host.py"
     assert comments[0]["line"] == 1
     assert comments[0]["side"] == "RIGHT"
     assert "subject_type" not in comments[0]
-    assert "uv.lock" in comments[0]["body"]
-    assert "pyproject.toml" in comments[0]["body"]
-    assert "scripts/example.sh" in comments[0]["body"]
+    assert "assets/generated.bin" in comments[0]["body"]
+
+
+def test_binary_only_clarification_uses_app_authenticated_file_comment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = auth_responses()[:-1]
+    responses.extend(
+        [
+            response(200, [{"filename": "assets/generated.bin", "patch": None}]),
+            response(201, {"id": 81}),
+            response(200, {"id": 9}),
+        ]
+    )
+    client = ReviewSchemaValidatingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Binary provenance needs clarification",
+        unexplained_changes=[
+            ChangeProvenanceItem(paths=["assets/generated.bin"], change_group="Generated binary artifact", why_unexplained="No generator input is evident"),
+        ],
+    )
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", result)
+
+    assert publication.success is True
+    file_comment_call = next(call for call in client.calls if call[0] == "POST" and call[1].endswith("/pulls/42/comments"))
+    assert file_comment_call[2]["json"] == {
+        "path": "assets/generated.bin",
+        "body": file_comment_call[2]["json"]["body"],
+        "commit_id": "sha-a",
+        "subject_type": "file",
+    }
+    assert "change-provenance clarification" in file_comment_call[2]["json"]["body"]
+    assert file_comment_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
+    review_call = next(call for call in client.calls if call[0] == "POST" and call[1].endswith("/pulls/42/reviews"))
+    assert "comments" not in review_call[2]["json"]
+
+
+def test_provenance_disposition_reply_uses_reviewer_app_installation_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = RecordingClient(auth_responses() + [response(201, {"id": 82})])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Issue requirements remain verified",
+        thread_dispositions=[
+            ReviewThreadDisposition(
+                thread_id="provenance-1",
+                status="STILL_VALID",
+                rationale="The binary was accidental branch residue",
+                evidence="The implementer confirms it has no causal relationship to the Issue",
+            )
+        ],
+        provenance_thread_comment_ids={"provenance-1": 456},
+    )
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", result)
+
+    assert publication.success is True
+    reply_call = next(call for call in client.calls if call[1].endswith("/pulls/42/comments/456/replies"))
+    assert reply_call[0] == "POST"
+    assert reply_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
+    assert "STILL_VALID" in reply_call[2]["json"]["body"]
+    assert "accidental branch residue" in reply_call[2]["json"]["body"]
 
 
 def test_invalid_line_falls_back_to_valid_diff_line_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
