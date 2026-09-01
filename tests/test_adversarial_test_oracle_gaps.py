@@ -50,21 +50,26 @@ def gap_payload(
     }
 
 
+def validation_response(payload: dict[str, object], result: str = "PASS") -> str:
+    return json.dumps(
+        {
+            "result": result,
+            "summary": "Production behavior is correct.",
+            "requirement_coverage": [
+                {
+                    "requirement_id": "REQ-001",
+                    "status": "VERIFIED",
+                    "evidence": "The server guard enforces the Issue requirement.",
+                }
+            ],
+            "findings": [],
+            "test_oracle_gaps": [payload],
+        }
+    )
+
+
 def parsed_result(payload: dict[str, object]):
-    response = {
-        "result": "PASS",
-        "summary": "Production behavior is correct.",
-        "requirement_coverage": [
-            {
-                "requirement_id": "REQ-001",
-                "status": "VERIFIED",
-                "evidence": "The server guard enforces the Issue requirement.",
-            }
-        ],
-        "findings": [],
-        "test_oracle_gaps": [payload],
-    }
-    return parse_adversarial_validation_response(json.dumps(response))
+    return parse_adversarial_validation_response(validation_response(payload))
 
 
 def context() -> AdversarialValidationContext:
@@ -135,6 +140,26 @@ def test_new_commit_with_focused_boundary_test_can_resolve_and_converge() -> Non
     assert result.result == "PASS"
     assert result.is_pass is True
     assert result.test_oracle_gaps[0].status == "RESOLVED"
+
+
+def test_resolution_accepts_paraphrased_narrative_for_the_same_stable_scope() -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    resolved_payload = gap_payload(
+        status="RESOLVED",
+        phase="REREVIEW",
+        resolution_evidence="The committed direct-boundary regression test protects the recorded invariant.",
+    )
+    resolved_payload["plausible_incorrect_implementation"] = "The server rejection check is omitted."
+    resolved_payload["why_tests_still_pass"] = "Earlier coverage never reached this server entry point."
+    resolved_payload["material_consequence"] = "Rejected data could alter durable state."
+    resolved_payload["focused_regression_scenario"] = "Directly reject the candidate and compare durable state before and after."
+
+    result = _reconcile_test_oracle_gap_lifecycle(parsed_result(resolved_payload), prior_session(initial), "sha-b")
+    result = _apply_coverage_and_verdict_precedence(result, context())
+
+    assert result.result == "PASS"
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
+    assert result.test_oracle_gaps[0].focused_regression_scenario == initial.focused_regression_scenario
 
 
 def test_rereview_discards_unbounded_new_gap_but_accepts_required_exception() -> None:
@@ -221,3 +246,115 @@ def test_validation_run_persists_gap_identity_and_scope_for_rereview(tmp_path) -
     assert saved is not None
     assert saved.last_head_sha == "sha-a"
     assert saved.test_oracle_gaps == result.test_oracle_gaps
+
+
+def test_failed_first_attempt_keeps_retry_in_initial_discovery_phase(tmp_path) -> None:
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = validation_response(gap_payload(), "NEEDS_TESTS")
+
+    with (
+        patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
+        patch("auto_coder.adversarial_validator.run_llm_prompt", return_value="malformed response"),
+    ):
+        failed = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+        saved_after_failure = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+        retried = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    assert failed.result == "ERROR"
+    assert saved_after_failure is not None
+    assert saved_after_failure.last_head_sha == ""
+    assert retried.result == "NEEDS_TESTS"
+    retry_prompt = manager.continue_session.call_args.args[1]
+    assert "Your mission: Falsify the implementation" in retry_prompt
+    assert "Do NOT restart unrestricted broad adversarial exploration" not in retry_prompt
+
+
+def test_incomplete_initial_review_does_not_advance_the_lifecycle_checkpoint(tmp_path) -> None:
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    validation_context.unverified_files = ["src/unavailable.py"]
+    validation_context.all_changed_files.append("src/unavailable.py")
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+
+    with (
+        patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
+        patch("auto_coder.adversarial_validator.run_llm_prompt", return_value=validation_response(gap_payload(), "NEEDS_TESTS")),
+    ):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "NEEDS_TESTS"
+    assert result.diagnostic_category == "incomplete_evidence_coverage"
+    assert saved is not None
+    assert saved.last_head_sha == ""
+    assert saved.test_oracle_gaps == []
+
+
+def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    resolved = gap_payload(
+        status="RESOLVED",
+        phase="REREVIEW",
+        resolution_evidence="The new commit directly tests rejection and unchanged durable state.",
+    )
+    manager.continue_session.side_effect = ["malformed response", validation_response(resolved)]
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        failed = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+        saved_after_failure = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+        retried = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved_after_retry = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert failed.result == "ERROR"
+    assert saved_after_failure is not None
+    assert saved_after_failure.last_head_sha == "sha-a"
+    assert saved_after_failure.test_oracle_gaps[0].status == "OPEN"
+    assert retried.result == "PASS"
+    assert saved_after_retry is not None
+    assert saved_after_retry.last_head_sha == "sha-b"
+    assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"

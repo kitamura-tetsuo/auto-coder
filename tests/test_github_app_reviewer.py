@@ -190,6 +190,7 @@ def test_open_test_oracle_gap_requests_changes_without_claiming_a_violation(tmp_
     )
     responses = auth_responses()
     responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
+    responses.insert(-2, response(200, []))
     client = RecordingClient(responses)
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
@@ -206,6 +207,49 @@ def test_open_test_oracle_gap_requests_changes_without_claiming_a_violation(tmp_
     assert payload["event"] == "REQUEST_CHANGES"
     assert "does **not** claim that current production behavior violates" in payload["comments"][0]["body"]
     assert "Add only the focused regression protection" in payload["comments"][0]["body"]
+
+
+def test_open_gap_rereview_reuses_the_existing_root_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gap = TestOracleGap(
+        gap_id="TOG-stable",
+        requirement_id="REQ-001",
+        requirement_text="Validate at the server boundary",
+        authoritative_boundary="GridMutation.apply_candidate",
+        invariant="Rejected input preserves state",
+        plausible_incorrect_implementation="Delete the guard",
+        why_tests_still_pass="Tests stop at the client",
+        material_consequence="Invalid state can persist",
+        focused_regression_scenario="Invoke the server boundary directly",
+        anchor_path="src/example.py",
+        anchor_line=1,
+    )
+    existing_body = "### Auto-Coder material test-oracle gap\n\nGap identity: `TOG-stable`"
+    patch = [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]
+    responses = [
+        response(200, {"id": 77}),
+        response(201, {"token": "fake-installation-token", "expires_at": "2099-01-01T00:00:00Z"}),
+        response(200, {"head": {"sha": "sha-a"}}),
+        response(200, []),
+        response(200, patch),
+        response(200, {"id": 9}),
+        response(200, {"head": {"sha": "sha-b"}}),
+        response(200, [{"body": existing_body}]),
+        response(200, patch),
+        response(200, {"id": 10}),
+    ]
+    client = RecordingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(result="NEEDS_TESTS", test_oracle_gaps=[gap])
+
+    first = reviewer.publish("owner/repo", 42, "sha-a", result)
+    second = reviewer.publish("owner/repo", 42, "sha-b", result)
+
+    assert first.success is True
+    assert second.success is True
+    review_payloads = [call[2]["json"] for call in client.calls if call[0] == "POST" and call[1].endswith("/reviews")]
+    assert len(review_payloads[0]["comments"]) == 1
+    assert "comments" not in review_payloads[1]
+    assert "remain represented by existing review threads" in review_payloads[1]["body"]
 
 
 def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

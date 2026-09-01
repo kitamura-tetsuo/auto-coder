@@ -380,7 +380,11 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     return comment
 
 
-def format_adversarial_review_summary(result: AdversarialValidationResult, head_sha: str) -> str:
+def format_adversarial_review_summary(
+    result: AdversarialValidationResult,
+    head_sha: str,
+    attached_test_oracle_gap_count: Optional[int] = None,
+) -> str:
     """Render review-level metadata without duplicating actionable findings."""
     summary_result = AdversarialValidationResult(
         result=result.result,
@@ -396,8 +400,11 @@ def format_adversarial_review_summary(result: AdversarialValidationResult, head_
         body += f"\n{result.clarification_reply_fingerprint}"
     if result.findings:
         body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
-    if result.open_test_oracle_gaps:
-        body += f"\n\n{len(result.open_test_oracle_gaps)} focused regression-test request thread(s) are attached to this review."
+    attached_gap_count = len(result.open_test_oracle_gaps) if attached_test_oracle_gap_count is None else attached_test_oracle_gap_count
+    if attached_gap_count:
+        body += f"\n\n{attached_gap_count} focused regression-test request thread(s) are attached to this review."
+    elif result.open_test_oracle_gaps:
+        body += f"\n\n{len(result.open_test_oracle_gaps)} open material test-oracle gap(s) remain represented by existing review threads."
     if result.unexplained_changes and result.publish_clarification_thread:
         body += "\n\nOne change-provenance clarification thread is attached to this review."
     unresolved_dispositions = [disposition for disposition in result.thread_dispositions if disposition.status != "ADDRESSED"]
@@ -1624,20 +1631,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
 def _same_test_oracle_gap_scope(left: TestOracleGap, right: TestOracleGap) -> bool:
     """Return whether two lifecycle entries describe the same missing oracle."""
-    return all(
-        getattr(left, name) == getattr(right, name)
-        for name in (
-            "gap_id",
-            "requirement_id",
-            "requirement_text",
-            "authoritative_boundary",
-            "invariant",
-            "plausible_incorrect_implementation",
-            "why_tests_still_pass",
-            "material_consequence",
-            "focused_regression_scenario",
-        )
-    )
+    return left.gap_id == right.gap_id and left.requirement_id == right.requirement_id
 
 
 def _reconcile_test_oracle_gap_lifecycle(
@@ -1677,7 +1671,11 @@ def _reconcile_test_oracle_gap_lifecycle(
             # committed regression protection required to close an open gap.
             reconciled.append(prior)
             continue
-        reconciled.append(current)
+        # Descriptive prose may be paraphrased by the reviewer. Preserve the
+        # original authoritative scope while applying only lifecycle evidence.
+        prior.status = current.status
+        prior.resolution_evidence = current.resolution_evidence
+        reconciled.append(prior)
 
     for gap in current_by_id.values():
         if gap.status != "OPEN" or gap.discovery_phase != "REREVIEW" or gap.rereview_exception_reason not in TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS or not gap.rereview_exception_evidence:
@@ -1686,7 +1684,7 @@ def _reconcile_test_oracle_gap_lifecycle(
         reconciled.append(gap)
 
     result.test_oracle_gaps = reconciled
-    if result.result != "ERROR":
+    if result.result not in {"ERROR", "INCONCLUSIVE", "BLOCKED"}:
         if result.findings:
             result.result = "NEEDS_FIX"
         elif result.open_test_oracle_gaps:
@@ -1798,8 +1796,14 @@ def _apply_coverage_and_verdict_precedence(
             result.diagnostic_reason = result.diagnostic_reason or "; ".join(coverage_details)
         return result
 
-    if result.open_test_oracle_gaps:
+    if result.open_test_oracle_gaps and result.result in {"PASS", "NEEDS_TESTS"}:
         result.result = "NEEDS_TESTS"
+        if context.unverified_files:
+            result.diagnostic_category = "incomplete_evidence_coverage"
+            result.diagnostic_reason = f"Material changed-file evidence was incomplete for: {', '.join(context.unverified_files)}"
+        elif not expected_requirement_ids or incomplete_requirement_ids:
+            result.diagnostic_category = "incomplete_requirement_coverage"
+            result.diagnostic_reason = "The deterministic Issue requirement manifest was empty" if not expected_requirement_ids else f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}"
 
     if context.has_complete_file_coverage and expected_requirement_ids and not incomplete_requirement_ids and result.unexplained_changes:
         result.result = "INCONCLUSIVE"
@@ -1954,19 +1958,20 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
-    if stored_session is not None:
+    lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
+    if lifecycle_session is not None:
         review_policy = render_prompt(
             "pr.adversarial_validation_rereview",
-            previous_head_sha=stored_session.last_head_sha,
+            previous_head_sha=lifecycle_session.last_head_sha,
             current_head_sha=head_sha,
         )
     else:
         review_policy = render_prompt("pr.adversarial_validation_initial_review")
 
     prior_test_oracle_gaps = "(No material test-oracle gaps have been recorded for this PR.)"
-    if stored_session and stored_session.test_oracle_gaps:
+    if lifecycle_session and lifecycle_session.test_oracle_gaps:
         prior_test_oracle_gaps = json.dumps(
-            [gap.__dict__ for gap in stored_session.test_oracle_gaps],
+            [gap.__dict__ for gap in lifecycle_session.test_oracle_gaps],
             indent=2,
             sort_keys=True,
         )
@@ -2001,7 +2006,7 @@ def run_adversarial_validation(
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
-    result = _reconcile_test_oracle_gap_lifecycle(result, stored_session, head_sha)
+    result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
     result = _apply_coverage_and_verdict_precedence(result, context)
 
     initial_thread_dispositions = result.thread_dispositions
@@ -2063,7 +2068,7 @@ def run_adversarial_validation(
                     raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
-            result = _reconcile_test_oracle_gap_lifecycle(result, stored_session, head_sha)
+            result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
             result = _apply_coverage_and_verdict_precedence(result, context)
             if initial_thread_dispositions and not result.thread_dispositions:
                 # The follow-up prompt explicitly asks for a final disposition
@@ -2093,6 +2098,10 @@ def run_adversarial_validation(
 
     persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
     if used_backend and persisted_session_id:
+        incomplete_lifecycle_diagnostics = {"incomplete_evidence_coverage", "incomplete_requirement_coverage"}
+        lifecycle_completed = result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS"} and result.diagnostic_category not in incomplete_lifecycle_diagnostics
+        persisted_head_sha = head_sha if lifecycle_completed else lifecycle_session.last_head_sha if lifecycle_session else ""
+        persisted_gaps = result.test_oracle_gaps if lifecycle_completed else lifecycle_session.test_oracle_gaps if lifecycle_session else []
         registry.save(
             ReviewerSession(
                 repository=repo_name,
@@ -2101,8 +2110,8 @@ def run_adversarial_validation(
                 backend_type=used_type,
                 model_name=used_model,
                 session_id=persisted_session_id,
-                last_head_sha=head_sha,
-                test_oracle_gaps=result.test_oracle_gaps,
+                last_head_sha=persisted_head_sha,
+                test_oracle_gaps=persisted_gaps,
             )
         )
 

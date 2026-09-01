@@ -22,6 +22,8 @@ introduced a boundary, weakened protection, or required revalidation directly
 exposed an entirely untested authoritative material boundary. Closed gaps cannot
 be reopened for input variants or stronger assertions outside their original
 boundary and invariant.
+Previously published gap identities reuse their existing unresolved review
+threads; insufficient corrective commits do not create duplicate root threads.
 
 #### Dedicated adversarial reviewer GitHub App
 

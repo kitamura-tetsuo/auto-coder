@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import tomllib
@@ -205,6 +206,8 @@ class GitHubAppReviewer:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
             comments: list[dict[str, object]] = []
             file_level_clarification: Optional[dict[str, object]] = None
+            published_gap_ids = self._published_test_oracle_gap_ids(repo_name, pr_number, token) if result.open_test_oracle_gaps else set()
+            gaps_to_publish = [gap for gap in result.open_test_oracle_gaps if gap.gap_id not in published_gap_ids]
             if result.needs_fix or result.needs_tests or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files: dict[str, object] = {}
                 page = 1
@@ -217,7 +220,7 @@ class GitHubAppReviewer:
                         break
                     page += 1
                 comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
-                comments.extend(self._test_oracle_gap_comment(gap, changed_files) for gap in result.open_test_oracle_gaps)
+                comments.extend(self._test_oracle_gap_comment(gap, changed_files) for gap in gaps_to_publish)
                 if result.unexplained_changes and result.publish_clarification_thread:
                     clarification_body = format_change_provenance_clarification(result.unexplained_changes)
                     unexplained_paths = [path for item in result.unexplained_changes for path in item.paths if path in changed_files]
@@ -256,7 +259,11 @@ class GitHubAppReviewer:
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",
                 token,
                 json={
-                    "body": format_adversarial_review_summary(result, validated_head_sha),
+                    "body": format_adversarial_review_summary(
+                        result,
+                        validated_head_sha,
+                        attached_test_oracle_gap_count=len(gaps_to_publish),
+                    ),
                     "event": event,
                     "commit_id": validated_head_sha,
                     **({"comments": comments} if comments else {}),
@@ -284,6 +291,29 @@ class GitHubAppReviewer:
             # include credential-bearing request details.
             logger.error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
+
+    def _published_test_oracle_gap_ids(self, repo_name: str, pr_number: int, token: str) -> set[str]:
+        """Return stable gap identities that already have a root review thread."""
+        published: set[str] = set()
+        page = 1
+        marker = re.compile(r"^Gap identity: `([^`]+)`$", re.MULTILINE)
+        while True:
+            comments = self._request(
+                "GET",
+                f"/repos/{repo_name}/pulls/{pr_number}/comments?per_page=100&page={page}",
+                token,
+            ).json()
+            if not isinstance(comments, list):
+                raise RuntimeError("GitHub did not return pull-request review comments")
+            for comment in comments:
+                body = comment.get("body", "") if isinstance(comment, dict) else ""
+                if isinstance(body, str):
+                    match = marker.search(body)
+                    if match:
+                        published.add(match.group(1))
+            if len(comments) < 100:
+                return published
+            page += 1
 
     @staticmethod
     def _finding_comment(finding: AdversarialValidationFinding, changed_files: dict[str, object]) -> dict[str, object]:
