@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import tomllib
@@ -16,10 +17,12 @@ import jwt
 from .adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
+    TestOracleGap,
     format_adversarial_finding_comment,
     format_adversarial_review_summary,
     format_change_provenance_clarification,
     format_change_provenance_disposition,
+    format_test_oracle_gap_comment,
 )
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
@@ -194,7 +197,7 @@ class GitHubAppReviewer:
 
     def publish(self, repo_name: str, pr_number: int, validated_head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
         """Submit a native review, failing closed on auth, head races, or API errors."""
-        event = "APPROVE" if result.allows_auto_merge else "REQUEST_CHANGES" if result.needs_fix else "COMMENT"
+        event = "APPROVE" if result.allows_auto_merge else "REQUEST_CHANGES" if result.needs_fix or result.needs_tests else "COMMENT"
         try:
             token = self._installation_token(repo_name)
             current_pr = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}", token).json()
@@ -203,7 +206,9 @@ class GitHubAppReviewer:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
             comments: list[dict[str, object]] = []
             file_level_clarification: Optional[dict[str, object]] = None
-            if result.needs_fix or (result.unexplained_changes and result.publish_clarification_thread):
+            published_gap_ids = self._published_test_oracle_gap_ids(repo_name, pr_number, token) if result.open_test_oracle_gaps else set()
+            gaps_to_publish = [gap for gap in result.open_test_oracle_gaps if gap.gap_id not in published_gap_ids]
+            if result.needs_fix or result.needs_tests or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files: dict[str, object] = {}
                 page = 1
                 while True:
@@ -215,6 +220,7 @@ class GitHubAppReviewer:
                         break
                     page += 1
                 comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
+                comments.extend(self._test_oracle_gap_comment(gap, changed_files) for gap in gaps_to_publish)
                 if result.unexplained_changes and result.publish_clarification_thread:
                     clarification_body = format_change_provenance_clarification(result.unexplained_changes)
                     unexplained_paths = [path for item in result.unexplained_changes for path in item.paths if path in changed_files]
@@ -253,7 +259,11 @@ class GitHubAppReviewer:
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",
                 token,
                 json={
-                    "body": format_adversarial_review_summary(result, validated_head_sha),
+                    "body": format_adversarial_review_summary(
+                        result,
+                        validated_head_sha,
+                        attached_test_oracle_gap_count=len(gaps_to_publish),
+                    ),
                     "event": event,
                     "commit_id": validated_head_sha,
                     **({"comments": comments} if comments else {}),
@@ -282,22 +292,76 @@ class GitHubAppReviewer:
             logger.error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
 
+    def _published_test_oracle_gap_ids(self, repo_name: str, pr_number: int, token: str) -> set[str]:
+        """Return stable gap identities that already have a root review thread."""
+        published: set[str] = set()
+        page = 1
+        marker = re.compile(r"^Gap identity: `([^`]+)`$", re.MULTILINE)
+        while True:
+            comments = self._request(
+                "GET",
+                f"/repos/{repo_name}/pulls/{pr_number}/comments?per_page=100&page={page}",
+                token,
+            ).json()
+            if not isinstance(comments, list):
+                raise RuntimeError("GitHub did not return pull-request review comments")
+            for comment in comments:
+                body = comment.get("body", "") if isinstance(comment, dict) else ""
+                if isinstance(body, str):
+                    match = marker.search(body)
+                    if match:
+                        published.add(match.group(1))
+            if len(comments) < 100:
+                return published
+            page += 1
+
     @staticmethod
     def _finding_comment(finding: AdversarialValidationFinding, changed_files: dict[str, object]) -> dict[str, object]:
         """Build one review comment anchored to a line accepted by nested reviews."""
-        if not finding.anchor_path or finding.anchor_path not in changed_files:
+        return GitHubAppReviewer._anchored_comment(
+            finding.anchor_path,
+            finding.anchor_line,
+            finding.anchor_side,
+            finding.anchor_start_line,
+            format_adversarial_finding_comment(finding),
+            changed_files,
+        )
+
+    @staticmethod
+    def _test_oracle_gap_comment(gap: TestOracleGap, changed_files: dict[str, object]) -> dict[str, object]:
+        """Build one review thread that requests focused regression protection."""
+        return GitHubAppReviewer._anchored_comment(
+            gap.anchor_path,
+            gap.anchor_line,
+            gap.anchor_side,
+            gap.anchor_start_line,
+            format_test_oracle_gap_comment(gap),
+            changed_files,
+        )
+
+    @staticmethod
+    def _anchored_comment(
+        anchor_path: str,
+        anchor_line: Optional[int],
+        anchor_side: str,
+        anchor_start_line: Optional[int],
+        body: str,
+        changed_files: dict[str, object],
+    ) -> dict[str, object]:
+        """Build one review comment anchored to a line accepted by nested reviews."""
+        if not anchor_path or anchor_path not in changed_files:
             raise ValueError("Every actionable finding must anchor to a changed file")
         comment: dict[str, object] = {
-            "path": finding.anchor_path,
-            "body": format_adversarial_finding_comment(finding),
+            "path": anchor_path,
+            "body": body,
         }
-        side = finding.anchor_side.strip().upper()
-        patch = changed_files[finding.anchor_path]
+        side = anchor_side.strip().upper()
+        patch = changed_files[anchor_path]
         valid_lines = _diff_lines(patch if isinstance(patch, str) else "", side)
-        if side in {"LEFT", "RIGHT"} and finding.anchor_line in valid_lines:
-            comment.update({"line": finding.anchor_line, "side": side})
-            if finding.anchor_start_line in valid_lines and finding.anchor_start_line != finding.anchor_line and finding.anchor_start_line < finding.anchor_line:
-                comment.update({"start_line": finding.anchor_start_line, "start_side": side})
+        if side in {"LEFT", "RIGHT"} and anchor_line in valid_lines:
+            comment.update({"line": anchor_line, "side": side})
+            if anchor_start_line in valid_lines and anchor_start_line != anchor_line and anchor_start_line < anchor_line:
+                comment.update({"start_line": anchor_start_line, "start_side": side})
         else:
             fallback_anchor = _first_diff_anchor(patch if isinstance(patch, str) else "")
             if fallback_anchor is None:

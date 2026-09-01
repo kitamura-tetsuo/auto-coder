@@ -5,9 +5,35 @@ from __future__ import annotations
 import json
 import os
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import ClassVar, List, Optional
+
+
+@dataclass
+class TestOracleGap:
+    """Persisted material gap in regression protection for an Issue requirement."""
+
+    __test__: ClassVar[bool] = False
+
+    gap_id: str = ""
+    requirement_id: str = ""
+    requirement_text: str = ""
+    authoritative_boundary: str = ""
+    invariant: str = ""
+    plausible_incorrect_implementation: str = ""
+    why_tests_still_pass: str = ""
+    material_consequence: str = ""
+    focused_regression_scenario: str = ""
+    anchor_path: str = ""
+    anchor_line: Optional[int] = None
+    anchor_side: str = "RIGHT"
+    anchor_start_line: Optional[int] = None
+    discovery_phase: str = "INITIAL"
+    rereview_exception_reason: str = "NONE"
+    rereview_exception_evidence: str = ""
+    status: str = "OPEN"
+    resolution_evidence: str = ""
 
 
 @dataclass
@@ -19,6 +45,7 @@ class ReviewerSession:
     model_name: str = ""
     session_id: str = ""
     last_head_sha: str = ""
+    test_oracle_gaps: List[TestOracleGap] = field(default_factory=list)
 
 
 class ReviewerSessionRegistry:
@@ -51,6 +78,14 @@ class ReviewerSessionRegistry:
                 stored_pr_number = raw["pr_number"]
                 if not isinstance(stored_pr_number, int):
                     return None
+                raw_gaps = raw.get("test_oracle_gaps", [])
+                if not isinstance(raw_gaps, list):
+                    return None
+                gaps: List[TestOracleGap] = []
+                for raw_gap in raw_gaps:
+                    if not isinstance(raw_gap, dict):
+                        return None
+                    gaps.append(TestOracleGap(**raw_gap))
                 return ReviewerSession(
                     repository=str(raw["repository"]),
                     pr_number=stored_pr_number,
@@ -59,6 +94,7 @@ class ReviewerSessionRegistry:
                     model_name=str(raw["model_name"]),
                     session_id=str(raw["session_id"]),
                     last_head_sha=str(raw["last_head_sha"]),
+                    test_oracle_gaps=gaps,
                 )
             except (KeyError, TypeError, ValueError):
                 return None
