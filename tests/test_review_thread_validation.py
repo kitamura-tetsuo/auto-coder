@@ -616,6 +616,84 @@ class TestStaleReviewThreadRegistry:
 
 
 class TestRetryPendingStaleReviewThreadRollbacks:
+    def test_marker_matching_current_head_is_not_stale_despite_missing_cleared_reply(self, tmp_path):
+        """[P2] Regression oracle: a resolve succeeded on the still-current
+        head, but the best-effort STALE_BLOCKER_CLEARED_MARKER reply that
+        closes out the pre-resolve intent marker failed to post (e.g.
+        transient API error) and merge was deferred for an unrelated reason.
+        A later, fresh processing run must not call unresolve_review_thread()
+        on this thread merely because the old pre-resolve marker remains --
+        the marker records the head it was posted against, and since that
+        head still equals the PR's current head, nothing has changed and the
+        resolution is not actually stale."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                    # The CLEARED reply never made it -- this is the only
+                    # marker present.
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_not_called()
+
+    def test_marker_with_stale_head_is_still_pending(self, tmp_path):
+        """The head-aware comparison only suppresses staleness when nothing
+        has changed. If a new commit landed after the marker was posted (the
+        marker's recorded head no longer matches the PR's current head), the
+        thread must still be treated as a genuine, confirmed blocker."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": "sha2-newer"}}
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+
+    def test_head_aware_marker_lookup_failure_fails_closed(self, tmp_path):
+        """If the current-head lookup itself fails, the marker's staleness
+        cannot be ruled out, so the thread must remain treated as pending
+        (fail closed) rather than being silently skipped."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pull_request.side_effect = Exception("network error")
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+
     def test_no_pending_blockers_is_a_no_op(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()

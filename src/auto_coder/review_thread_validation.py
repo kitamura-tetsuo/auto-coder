@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -45,6 +46,23 @@ RESOLVER_EXPLANATION_MARKER = "<!-- auto-coder-review-thread-resolved:v1 -->"
 # it lives in a different failure domain (REQ-006, REQ-008).
 STALE_BLOCKER_MARKER = "<!-- auto-coder-stale-review-thread-blocker:v1 -->"
 STALE_BLOCKER_CLEARED_MARKER = "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->"
+
+# Second line appended to a freshly-posted STALE_BLOCKER_MARKER, recording the
+# PR head the blocker was posted against. A later scan compares this to the
+# PR's *current* head: if nothing has changed, the marker cannot represent an
+# actual stale resolution (staleness only exists relative to a head that has
+# since moved), so a failed close-out CLEARED write can never make a
+# still-valid, current-head resolution look stale on a later run. A bare
+# STALE_BLOCKER_MARKER with no head line (the legacy/unknown-provenance case)
+# has no such information to compare against and is always treated as
+# pending, matching the previous, more conservative behavior.
+_STALE_BLOCKER_HEAD_LINE_PREFIX = "<!-- resolved-against-head: "
+_STALE_BLOCKER_HEAD_RE = re.compile(re.escape(_STALE_BLOCKER_HEAD_LINE_PREFIX) + r"(?P<sha>\S+) -->$")
+
+
+def _format_stale_blocker_marker(head_sha: str) -> str:
+    return f"{STALE_BLOCKER_MARKER}\n{_STALE_BLOCKER_HEAD_LINE_PREFIX}{head_sha} -->"
+
 
 # Bounded attempts to revert a stale resolution (REQ-006/REQ-008): a single
 # failed rollback attempt must not permanently leave a thread resolved
@@ -205,26 +223,63 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     state. Such threads are instead returned separately in
     ``incomplete_thread_ids`` so the caller can fail closed for merge
     processing (REQ-008) without touching them.
+
+    A freshly-posted ``STALE_BLOCKER_MARKER`` records the PR head it was
+    posted against (see ``_format_stale_blocker_marker``). If that recorded
+    head still equals the PR's *current* head, nothing has changed since the
+    marker was posted, so it cannot represent an actual stale resolution
+    (staleness is only meaningful relative to a head that has since moved):
+    such a thread is not reported as pending. This is what keeps a failed
+    close-out ``STALE_BLOCKER_CLEARED_MARKER`` write from making a
+    still-valid, current-head resolution look stale on a later run. A bare,
+    headless ``STALE_BLOCKER_MARKER`` (legacy/unknown provenance) or a
+    failure to determine the current head is always treated as pending,
+    fail-closed.
     """
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
     pending: dict[str, Optional[int]] = {}
     incomplete_thread_ids: List[str] = []
+    current_head_sha: Optional[str] = None
+    current_head_fetched = False
+
+    def _current_head() -> Optional[str]:
+        nonlocal current_head_sha, current_head_fetched
+        if not current_head_fetched:
+            current_head_fetched = True
+            try:
+                current_pr = github_client.get_pull_request(repo_name, pr_number)
+                current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+            except Exception as exc:
+                logger.error(f"Could not determine current PR head while scanning stale-resolution markers on PR #{pr_number}: {exc}")
+                current_head_sha = None
+        return current_head_sha
+
     for thread in threads:
         if not thread.is_resolved:
             continue
         comments = thread.comments or []
         root_comment_database_id = comments[0].database_id if comments else None
-        latest_marker_is_blocker = False
+        # None = no active blocker marker seen yet; "" = a legacy/headless
+        # blocker marker (always pending); otherwise the head it was posted
+        # against.
+        latest_blocker_head: Optional[str] = None
         for comment in comments:
             body = (comment.body or "").strip()
             if body == STALE_BLOCKER_CLEARED_MARKER:
-                latest_marker_is_blocker = False
+                latest_blocker_head = None
             elif body == STALE_BLOCKER_MARKER:
-                latest_marker_is_blocker = True
-        if latest_marker_is_blocker:
-            pending[thread.id] = root_comment_database_id
-        elif thread.comments_truncated:
-            incomplete_thread_ids.append(thread.id)
+                latest_blocker_head = ""
+            elif body.startswith(STALE_BLOCKER_MARKER):
+                match = _STALE_BLOCKER_HEAD_RE.search(body)
+                latest_blocker_head = match.group("sha") if match else ""
+        if latest_blocker_head is None:
+            if thread.comments_truncated:
+                incomplete_thread_ids.append(thread.id)
+            continue
+        if latest_blocker_head and latest_blocker_head == _current_head():
+            # Nothing has changed since this marker was posted; not stale.
+            continue
+        pending[thread.id] = root_comment_database_id
     return pending, incomplete_thread_ids
 
 
@@ -495,7 +550,7 @@ def resolve_addressed_review_threads(
         # it simply stays unresolved, which the ordinary gate already
         # handles safely.
         try:
-            github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, STALE_BLOCKER_MARKER)
+            github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, _format_stale_blocker_marker(validated_head_sha))
         except Exception as exc:
             logger.error(f"Could not durably record resolve-intent for thread {thread_id} on PR #{pr_number}; skipping this thread rather than risking an unrecoverable stale resolution: {exc}")
             continue
