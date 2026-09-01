@@ -227,6 +227,18 @@ def resolve_addressed_review_threads(
             logger.error(f"Failed to resolve review thread {thread_id} on PR #{pr_number} after recording its explanation: {exc}")
             continue
 
+        # The head can still advance between the pre-mutation check above and
+        # the mutation actually completing. Re-verify once more and, if the
+        # head moved, revert the resolution rather than leave a thread
+        # resolved against a disposition for a head that is no longer current
+        # (REQ-006, AC-009).
+        if not _head_is_still_current():
+            try:
+                github_client.unresolve_review_thread(thread_id)
+            except Exception as exc:
+                logger.error(f"Head changed immediately after resolving thread {thread_id} on PR #{pr_number}, and reverting the resolution failed: {exc}")
+            return resolved
+
         resolved.append(thread_id)
 
     return resolved

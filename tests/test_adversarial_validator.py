@@ -1854,6 +1854,42 @@ class TestRunAdversarialValidation:
         assert result.result == "BLOCKED"
         assert "could not be completed" in result.summary
 
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_check_exception_discards_initial_thread_dispositions(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """If the dynamic check that would re-adjudicate a claimed thread
+        fails before a final disposition is obtained, the provisional initial
+        disposition must not survive: it must never be able to resolve a
+        thread when the PR-level result itself is BLOCKED."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
+  ]
+}"""
+        mock_run_tests.side_effect = RuntimeError("Test runner crashed")
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+
+        assert result.result == "BLOCKED"
+        assert result.thread_dispositions == []
+
 
 class TestParseThreadDispositions:
     """Tests for parsing the optional `thread_dispositions` field (issue #1619)."""
@@ -1935,6 +1971,26 @@ class TestParseThreadDispositions:
                 "thread_dispositions": [
                     {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "first", "evidence": "first"},
                     {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "second", "evidence": "second"},
+                    {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "ok", "evidence": "ok"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert [d.thread_id for d in result.thread_dispositions] == ["thread-2"]
+
+    def test_duplicate_thread_id_invalidates_thread_even_when_one_entry_is_malformed(self):
+        """A duplicate thread_id must be detected from the raw list before
+        per-entry validation: a valid ADDRESSED plus a malformed duplicate
+        (e.g. empty evidence) for the same ID must still yield no disposition
+        for that thread, not silently keep the one valid entry."""
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "valid", "evidence": "valid"},
+                    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "malformed dup", "evidence": ""},
                     {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "ok", "evidence": "ok"},
                 ],
             }

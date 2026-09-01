@@ -322,3 +322,24 @@ class TestResolveAddressedReviewThreads:
         assert resolved == []
         client.reply_to_review_thread.assert_called_once()
         client.resolve_review_thread.assert_not_called()
+
+    def test_head_advances_between_resolve_mutation_and_post_check_reverts_it(self):
+        """AC-009: the head is still current for the pre-mutation check and
+        the resolve_review_thread() mutation itself succeeds, but a
+        post-mutation re-check finds the head has since moved. The
+        resolution must be reverted (unresolve_review_thread) and the thread
+        must not be reported as resolved."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},  # initial check before the loop
+            {"head": {"sha": "sha1"}},  # pre-mutation re-check
+            {"head": {"sha": "sha2-newer"}},  # post-mutation re-check
+        ]
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        assert resolved == []
+        client.resolve_review_thread.assert_called_once_with("t1")
+        client.unresolve_review_thread.assert_called_once_with("t1")

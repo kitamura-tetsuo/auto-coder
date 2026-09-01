@@ -1183,6 +1183,29 @@ class GitHubClient:
         if not thread.get("isResolved"):
             raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as resolved")
 
+    def unresolve_review_thread(self, thread_id: str) -> None:
+        """Revert a GitHub PR review thread to unresolved via ``unresolveReviewThread``.
+
+        Used to undo a resolution performed against a PR head that turned out
+        to be stale by the time the mutation completed. Raises on any failure,
+        including a response that does not confirm the thread is no longer
+        resolved, so a caller cannot mistake a failed revert for success.
+        """
+        mutation = """
+            mutation($threadId: ID!) {
+              unresolveReviewThread(input: {threadId: $threadId}) {
+                thread {
+                  id
+                  isResolved
+                }
+              }
+            }
+        """
+        response = self.graphql_query(mutation, {"threadId": thread_id})
+        thread = (((response or {}).get("data") or {}).get("unresolveReviewThread") or {}).get("thread") or {}
+        if thread.get("isResolved"):
+            raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as unresolved")
+
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
         """Check if an issue has a linked pull request.
 

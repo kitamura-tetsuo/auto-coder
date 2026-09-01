@@ -813,34 +813,39 @@ def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition
     if not isinstance(raw_value, list):
         return []
 
-    candidates: Dict[str, List[ReviewThreadDisposition]] = {}
-    order: List[str] = []
+    # Count raw thread_id occurrences BEFORE per-entry validation. A duplicate
+    # thread_id must invalidate that thread even when one of the duplicates is
+    # itself malformed (e.g. one valid ADDRESSED entry plus a second, invalid
+    # entry for the same ID) — otherwise the malformed entry would be dropped
+    # first and the single remaining valid entry would wrongly survive
+    # (REQ-006, REQ-008).
+    raw_thread_id_counts: Dict[str, int] = {}
+    for item in raw_value:
+        if not isinstance(item, dict):
+            continue
+        raw_thread_id = str(item.get("thread_id", "")).strip()
+        if raw_thread_id:
+            raw_thread_id_counts[raw_thread_id] = raw_thread_id_counts.get(raw_thread_id, 0) + 1
+    duplicate_thread_ids = {thread_id for thread_id, count in raw_thread_id_counts.items() if count > 1}
+
+    dispositions: List[ReviewThreadDisposition] = []
     for item in raw_value:
         if not isinstance(item, dict):
             logger.warning("Dropping malformed thread_dispositions entry: not an object")
             continue
         thread_id = str(item.get("thread_id", "")).strip()
+        if thread_id in duplicate_thread_ids:
+            # Fail closed: invalidate every entry for this thread rather than
+            # keeping whichever valid one happened to parse (REQ-006, REQ-008).
+            logger.warning(f"Dropping thread_dispositions entry for thread_id={thread_id!r}: {raw_thread_id_counts[thread_id]} contradictory/duplicate raw entries")
+            continue
         status = str(item.get("status", "")).strip().upper()
         rationale = str(item.get("rationale", "")).strip()
         evidence = str(item.get("evidence", "")).strip()
         if not thread_id or status not in VALID_REVIEW_THREAD_DISPOSITION_STATUSES or not rationale or not evidence:
             logger.warning(f"Dropping malformed thread_dispositions entry for thread_id={thread_id!r}: incomplete or invalid fields")
             continue
-        if thread_id not in candidates:
-            order.append(thread_id)
-        candidates.setdefault(thread_id, []).append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
-
-    dispositions: List[ReviewThreadDisposition] = []
-    for thread_id in order:
-        entries = candidates[thread_id]
-        if len(entries) > 1:
-            # A duplicate thread_id is an ambiguous/contradictory validator
-            # response (e.g. ADDRESSED then STILL_VALID for the same thread).
-            # Fail closed: invalidate every entry for this thread rather than
-            # keeping whichever one happened to come first (REQ-006, REQ-008).
-            logger.warning(f"Dropping all thread_dispositions entries for thread_id={thread_id!r}: {len(entries)} contradictory/duplicate entries")
-            continue
-        dispositions.append(entries[0])
+        dispositions.append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
     return dispositions
 
 
@@ -1661,6 +1666,15 @@ def run_adversarial_validation(
             # Inability to complete a requested check must be treated as non-pass (fail-closed)
             result.result = "BLOCKED"
             result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
+            if initial_thread_dispositions:
+                # Once dynamic re-adjudication starts, an initial disposition is
+                # provisional: it was explicitly not trusted enough to skip the
+                # dynamic check. If that check (or the follow-up call) fails
+                # before a final disposition is obtained, the initial one must
+                # not resolve any thread — clear it so every claimed thread
+                # stays unresolved (REQ-006, REQ-008).
+                logger.warning(f"Dynamic re-adjudication failed for PR #{pr_number}; discarding {len(initial_thread_dispositions)} initial thread disposition(s)")
+                result.thread_dispositions = []
 
     result = _apply_coverage_and_verdict_precedence(result, context)
 
