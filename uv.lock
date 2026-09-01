@@ -304,7 +304,7 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
-version = "2026.9.2+g7bb37cb3"
+version = "2026.9.2+g234ccf41"
 source = { editable = "." }
 dependencies = [
     { name = "aider-chat" },
