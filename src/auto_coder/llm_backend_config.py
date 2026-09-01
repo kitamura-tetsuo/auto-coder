@@ -1761,6 +1761,32 @@ def get_pr_allowlist_from_config(
     return result
 
 
+def get_pr_review_allowlist_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Optional[List[int]]:
+    """Get stable reviewer identity IDs allowed to enter automatic adjudication.
+
+    Unlike the legacy issue/PR author allowlists, this security boundary is
+    intentionally strict: values must already be positive integers. In
+    particular, booleans and numeric strings are not coerced.
+    """
+    raw_list = _get_config_value(
+        section="github",
+        key="pr_review_allowlist",
+        default=None,
+        config_path=config_path,
+        repo_name=repo_name,
+    )
+    if raw_list is None:
+        return None
+    if not isinstance(raw_list, list):
+        raise ValueError("[github].pr_review_allowlist must be a list of positive integer GitHub identity IDs")
+    if any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in raw_list):
+        raise ValueError("[github].pr_review_allowlist must contain only positive integer GitHub identity IDs")
+    return list(raw_list)
+
+
 def get_adversarial_validation_max_reviews_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,

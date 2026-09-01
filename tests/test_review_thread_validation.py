@@ -22,21 +22,25 @@ from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
 CODEX_LOGIN = "chatgpt-codex-connector[bot]"
 REVIEWER_APP_LOGIN = "auto-coder-reviewer[bot]"
-ELIGIBLE_LOGINS = {CODEX_LOGIN, REVIEWER_APP_LOGIN}
+CODEX_ID = 199175422
+REVIEWER_APP_ID = 200000001
+ELIGIBLE_AUTHOR_IDS = {CODEX_ID, REVIEWER_APP_ID}
 
 
 def _thread(thread_id, is_resolved, comments, comments_truncated=False):
     return ReviewThread(id=thread_id, is_resolved=is_resolved, comments=comments, comments_truncated=comments_truncated)
 
 
-def _comment(author, body, database_id=1):
-    return ReviewThreadComment(database_id=database_id, body=body, author_login=author)
+def _comment(author, body, database_id=1, author_id=None):
+    if author_id is None:
+        author_id = {CODEX_LOGIN: CODEX_ID, REVIEWER_APP_LOGIN: REVIEWER_APP_ID}.get(author, 999999999)
+    return ReviewThreadComment(database_id=database_id, body=body, author_login=author, author_id=author_id)
 
 
 class TestClassifyReviewThreads:
     def test_resolved_thread_is_ignored(self):
         threads = [_thread("t1", True, [_comment(CODEX_LOGIN, "finding")])]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 0
 
@@ -51,7 +55,7 @@ class TestClassifyReviewThreads:
                 ],
             )
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.blocking_unresolved_count == 0
         assert len(result.claimed) == 1
         claimed = result.claimed[0]
@@ -71,7 +75,7 @@ class TestClassifyReviewThreads:
                 ],
             )
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
@@ -88,13 +92,13 @@ class TestClassifyReviewThreads:
                 ],
             )
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
     def test_thread_with_no_comments_is_blocking(self):
         threads = [_thread("t1", False, [])]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
@@ -112,7 +116,7 @@ class TestClassifyReviewThreads:
                 ],
             )
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
@@ -129,7 +133,7 @@ class TestClassifyReviewThreads:
                 ],
             )
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
@@ -148,7 +152,7 @@ class TestClassifyReviewThreads:
                 comments_truncated=True,
             )
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
@@ -162,8 +166,39 @@ class TestClassifyReviewThreads:
             ),
             _thread("blocking", False, [_comment("human", "please fix this")]),
         ]
-        result = classify_review_threads(threads, ELIGIBLE_LOGINS)
+        result = classify_review_threads(threads, ELIGIBLE_AUTHOR_IDS)
         assert [c.thread_id for c in result.claimed] == ["claimed"]
+        assert result.blocking_unresolved_count == 1
+
+    def test_authorization_uses_id_regardless_of_login_representation(self):
+        comments = [
+            _comment("chatgpt-codex-connector", "finding", author_id=CODEX_ID),
+            _comment("agent[bot]", f"Fixed.\n{REVIEW_ADDRESSED_MARKER}"),
+        ]
+
+        result = classify_review_threads([_thread("t1", False, comments)], ELIGIBLE_AUTHOR_IDS)
+
+        assert [thread.thread_id for thread in result.claimed] == ["t1"]
+        assert result.blocking_unresolved_count == 0
+
+    def test_spoofed_trusted_login_with_untrusted_id_is_blocking(self):
+        comments = [
+            _comment(CODEX_LOGIN, "finding", author_id=987654321),
+            _comment("agent[bot]", f"Fixed.\n{REVIEW_ADDRESSED_MARKER}"),
+        ]
+
+        result = classify_review_threads([_thread("t1", False, comments)], ELIGIBLE_AUTHOR_IDS)
+
+        assert result.claimed == ()
+        assert result.blocking_unresolved_count == 1
+
+    def test_missing_author_id_does_not_fall_back_to_login(self):
+        root = ReviewThreadComment(database_id=1, body="finding", author_login=CODEX_LOGIN, author_id=None)
+        comments = [root, _comment("agent[bot]", f"Fixed.\n{REVIEW_ADDRESSED_MARKER}")]
+
+        result = classify_review_threads([_thread("t1", False, comments)], ELIGIBLE_AUTHOR_IDS)
+
+        assert result.claimed == ()
         assert result.blocking_unresolved_count == 1
 
 

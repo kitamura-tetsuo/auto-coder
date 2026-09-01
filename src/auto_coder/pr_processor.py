@@ -47,6 +47,7 @@ from .git_info import get_commit_log
 from .github_app_reviewer import publish_adversarial_review, resolve_reviewer_app_identity
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError
+from .llm_backend_config import get_pr_review_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
@@ -123,23 +124,10 @@ class ClaimedReviewThreadGateState:
     lookup_error: Optional[str] = None
 
 
-def _resolve_eligible_review_thread_logins(repo_name: str) -> Set[str]:
-    """Return logins whose review threads may be automatically adjudicated.
-
-    Always includes the Codex GitHub review bot. Also includes Auto-Coder's
-    own dedicated reviewer App identity when it can be resolved; if that
-    resolution fails, only the Codex bot is treated as eligible for this call
-    (fail-closed for the reviewer-App-authored threads, not for the whole
-    feature).
-    """
-    eligible = {CODEX_REVIEW_BOT_LOGIN}
-    try:
-        identity = resolve_reviewer_app_identity(repo_name)
-        if identity.login:
-            eligible.add(identity.login)
-    except Exception as e:
-        logger.warning(f"Could not resolve reviewer App identity for eligible review-thread authors: {e}")
-    return eligible
+def _resolve_eligible_review_thread_ids(repo_name: str) -> Set[int]:
+    """Return configured stable identity IDs eligible for adjudication."""
+    configured_ids = get_pr_review_allowlist_from_config(repo_name=repo_name)
+    return set(configured_ids or [])
 
 
 def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_number: int) -> ClaimedReviewThreadGateState:
@@ -171,8 +159,8 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
         logger.error(f"Failed detailed review-thread lookup for PR #{pr_number}: {e}")
         return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
 
-    eligible_logins = _resolve_eligible_review_thread_logins(repo_name)
-    classification = classify_review_threads(threads, eligible_logins)
+    eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
+    classification = classify_review_threads(threads, eligible_author_ids)
     claimed_thread_ids = {thread.thread_id for thread in classification.claimed}
     return ClaimedReviewThreadGateState(
         claimed=tuple(classification.claimed),

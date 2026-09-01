@@ -520,11 +520,11 @@ class ReviewThreadClassification:
     blocking_unresolved_count: int = 0
 
 
-def classify_review_threads(threads: Iterable[ReviewThread], eligible_logins: Set[str]) -> ReviewThreadClassification:
+def classify_review_threads(threads: Iterable[ReviewThread], eligible_author_ids: Set[int]) -> ReviewThreadClassification:
     """Split unresolved review threads into claimed-addressed and ordinary blockers.
 
     A thread is "claimed" only when its root (first) comment was authored by a
-    login in ``eligible_logins`` (REQ-011) AND at least one *reply after the
+    stable GitHub identity ID in ``eligible_author_ids`` AND at least one *reply after the
     root* carries the explicit Auto-Coder addressed marker (REQ-001). The root
     comment itself is excluded from marker detection: it is the original
     review finding, not an implementation-agent claim, so a reviewer that
@@ -548,7 +548,7 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_logins: Se
             continue
 
         root = comments[0]
-        is_eligible = bool(root.author_login) and root.author_login in eligible_logins
+        is_eligible = root.author_id is not None and root.author_id in eligible_author_ids
         has_claim = any(reply_claims_review_addressed(comment.body) for comment in comments[1:])
 
         if is_eligible and has_claim:
