@@ -23,7 +23,11 @@ Fail-closed by construction:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+import os
+import threading
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Set
 
 from .adversarial_validator import ReviewThreadDisposition
@@ -57,6 +61,108 @@ class StaleReviewThreadResolutionError(RuntimeError):
         self.repo_name = repo_name
         self.pr_number = pr_number
         super().__init__(f"Thread {thread_id} on {repo_name}#{pr_number} was resolved against a stale PR head and could not be rolled back to unresolved")
+
+
+@dataclass
+class StaleReviewThreadBlocker:
+    """A durable record that a thread is resolved against a stale head.
+
+    Persisted so the integrity failure survives across separate
+    ``_handle_pr_merge`` invocations (and process restarts): an in-memory
+    exception alone only blocks the single run that discovered it, but the
+    underlying GitHub thread remains incorrectly resolved until a later run
+    successfully rolls it back (REQ-006, REQ-008).
+    """
+
+    repository: str = ""
+    pr_number: int = 0
+    thread_id: str = ""
+
+
+class StaleReviewThreadRegistry:
+    """Persistent store of unresolved stale-resolution rollback failures."""
+
+    _lock = threading.RLock()
+
+    def __init__(self, path: Optional[Path] = None) -> None:
+        self.path = path or Path.home() / ".auto-coder" / "stale_review_threads.json"
+
+    @staticmethod
+    def _key(repository: str, thread_id: str) -> str:
+        return json.dumps([repository, thread_id], separators=(",", ":"))
+
+    def _load(self) -> dict[str, dict[str, object]]:
+        if not self.path.exists():
+            return {}
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save(self, data: dict[str, dict[str, object]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(f"{self.path.suffix}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, self.path)
+
+    def record(self, repository: str, pr_number: int, thread_id: str) -> None:
+        """Persist that ``thread_id`` is resolved against a stale head."""
+        with self._lock:
+            data = self._load()
+            data[self._key(repository, thread_id)] = asdict(StaleReviewThreadBlocker(repository=repository, pr_number=pr_number, thread_id=thread_id))
+            self._save(data)
+
+    def clear(self, repository: str, thread_id: str) -> None:
+        """Remove a blocker once GitHub confirms the thread is unresolved."""
+        with self._lock:
+            data = self._load()
+            key = self._key(repository, thread_id)
+            if key not in data:
+                return
+            del data[key]
+            self._save(data)
+
+    def pending_for_pr(self, repository: str, pr_number: int) -> List[str]:
+        """Return every still-pending stale thread ID for this PR."""
+        with self._lock:
+            data = self._load()
+        thread_ids: List[str] = []
+        for value in data.values():
+            if isinstance(value, dict) and value.get("repository") == repository and value.get("pr_number") == pr_number:
+                thread_id = value.get("thread_id")
+                if isinstance(thread_id, str) and thread_id:
+                    thread_ids.append(thread_id)
+        return thread_ids
+
+
+def retry_pending_stale_review_thread_rollbacks(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    registry: Optional[StaleReviewThreadRegistry] = None,
+) -> List[str]:
+    """Retry every persisted stale-resolution rollback for this PR.
+
+    Called on every processing run so a rollback failure from an earlier run
+    is retried rather than forgotten. A thread's blocker is cleared only once
+    GitHub explicitly confirms it is unresolved; every failure or unconfirmed
+    response leaves it recorded. Returns the thread IDs that are still
+    blocked after this attempt — callers must refuse to merge while this is
+    non-empty (REQ-006, REQ-008).
+    """
+    registry = registry or StaleReviewThreadRegistry()
+    pending = registry.pending_for_pr(repo_name, pr_number)
+    still_blocked: List[str] = []
+    for thread_id in pending:
+        try:
+            github_client.unresolve_review_thread(thread_id)
+        except Exception as exc:
+            logger.error(f"Retry to revert stale resolution of thread {thread_id} on PR #{pr_number} failed: {exc}")
+            still_blocked.append(thread_id)
+            continue
+        registry.clear(repo_name, thread_id)
+    return still_blocked
 
 
 @dataclass(frozen=True)
@@ -186,6 +292,7 @@ def resolve_addressed_review_threads(
     validated_head_sha: str,
     claimed: Sequence[ClaimedReviewThread],
     dispositions: Sequence[ReviewThreadDisposition],
+    stale_registry: Optional[StaleReviewThreadRegistry] = None,
 ) -> List[str]:
     """Resolve every thread the validator confirmed ADDRESSED, fail-closed.
 
@@ -268,9 +375,12 @@ def resolve_addressed_review_threads(
             if last_exc is not None:
                 # Every rollback attempt failed or was unconfirmed: the thread
                 # is durably resolved against a stale head. This must not be
-                # a log-and-continue outcome (REQ-006, REQ-008) — raise so the
-                # caller treats this run as blocked rather than merging with
-                # an incorrectly resolved thread.
+                # a log-and-continue outcome (REQ-006, REQ-008). Persist the
+                # failure so it survives past this single run — an in-memory
+                # exception alone would be forgotten on the very next
+                # processing pass while the GitHub thread stays incorrectly
+                # resolved — and raise so this run also blocks immediately.
+                (stale_registry or StaleReviewThreadRegistry()).record(repo_name, pr_number, thread_id)
                 raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
             return resolved
 

@@ -7,10 +7,12 @@ from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
     UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
     ClaimedReviewThread,
+    StaleReviewThreadRegistry,
     StaleReviewThreadResolutionError,
     classify_review_threads,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
+    retry_pending_stale_review_thread_rollbacks,
 )
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
@@ -386,3 +388,108 @@ class TestResolveAddressedReviewThreads:
 
         assert exc_info.value.thread_id == "t1"
         assert client.unresolve_review_thread.call_count == UNRESOLVE_ROLLBACK_MAX_ATTEMPTS
+
+    def test_exhausted_rollback_persists_a_blocker(self):
+        """[P1] Exhausting rollback attempts must persist the failure, not
+        just raise an in-memory exception, so it survives past this run."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha2-newer"}},
+        ]
+        client.unresolve_review_thread.side_effect = Exception("persistent error")
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+        registry = MagicMock()
+
+        with pytest.raises(StaleReviewThreadResolutionError):
+            resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions, stale_registry=registry)
+
+        registry.record.assert_called_once_with("owner/repo", 1, "t1")
+
+
+class TestStaleReviewThreadRegistry:
+    def test_record_then_pending_for_pr(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+
+        assert registry.pending_for_pr("owner/repo", 42) == ["thread-1"]
+        assert registry.pending_for_pr("owner/repo", 99) == []
+        assert registry.pending_for_pr("other/repo", 42) == []
+
+    def test_clear_removes_the_blocker(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+        registry.clear("owner/repo", "thread-1")
+
+        assert registry.pending_for_pr("owner/repo", 42) == []
+
+    def test_clear_missing_entry_is_a_no_op(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.clear("owner/repo", "thread-1")  # should not raise
+        assert registry.pending_for_pr("owner/repo", 42) == []
+
+    def test_multiple_threads_tracked_independently(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+        registry.record("owner/repo", 42, "thread-2")
+        registry.clear("owner/repo", "thread-1")
+
+        assert registry.pending_for_pr("owner/repo", 42) == ["thread-2"]
+
+    def test_survives_across_registry_instances(self, tmp_path):
+        """The blocker is durable: a fresh registry instance pointed at the
+        same file still sees it (models a later, separate processing run)."""
+        path = tmp_path / "stale.json"
+        StaleReviewThreadRegistry(path=path).record("owner/repo", 42, "thread-1")
+
+        assert StaleReviewThreadRegistry(path=path).pending_for_pr("owner/repo", 42) == ["thread-1"]
+
+
+class TestRetryPendingStaleReviewThreadRollbacks:
+    def test_no_pending_blockers_is_a_no_op(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_not_called()
+
+    def test_successful_retry_clears_the_blocker(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+        client = MagicMock()  # unresolve_review_thread succeeds (no exception)
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        assert registry.pending_for_pr("owner/repo", 42) == []
+
+    def test_failed_retry_keeps_the_blocker_pending(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+        client = MagicMock()
+        client.unresolve_review_thread.side_effect = Exception("still failing")
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == ["thread-1"]
+        assert registry.pending_for_pr("owner/repo", 42) == ["thread-1"]
+
+    def test_second_run_retries_and_succeeds_where_first_failed(self, tmp_path):
+        """Models two separate processing runs: the first run's rollback
+        failure is persisted; a later run's successful retry clears it."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record("owner/repo", 42, "thread-1")
+
+        failing_client = MagicMock()
+        failing_client.unresolve_review_thread.side_effect = Exception("still failing")
+        first_run_result = retry_pending_stale_review_thread_rollbacks(failing_client, "owner/repo", 42, registry=registry)
+        assert first_run_result == ["thread-1"]
+
+        succeeding_client = MagicMock()
+        second_run_result = retry_pending_stale_review_thread_rollbacks(succeeding_client, "owner/repo", 42, registry=registry)
+        assert second_run_result == []
+        assert registry.pending_for_pr("owner/repo", 42) == []

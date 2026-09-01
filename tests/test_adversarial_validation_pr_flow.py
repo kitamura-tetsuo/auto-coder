@@ -1493,6 +1493,42 @@ class TestClaimedReviewThreadValidationFlow:
         assert any("stale head" in a and "thread-1" in a for a in actions)
         mock_merge_pr.assert_not_called()
 
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_persisted_stale_blocker_refuses_merge_on_a_later_run_and_clears_once_reverted(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] A rollback failure persisted by an earlier run must block a
+        later, separate `_handle_pr_merge()` invocation immediately —
+        bypassing CI/mergeability checks entirely, since GitHub's own
+        unresolved-thread state can no longer be trusted for this PR — and
+        must stop blocking only once a later retry is confirmed."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        from auto_coder.review_thread_validation import StaleReviewThreadRegistry
+
+        StaleReviewThreadRegistry().record("owner/repo", 123, "thread-1")
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        # Run 1: the blocker is still there and the rollback retry still fails.
+        client = MagicMock()
+        client.unresolve_review_thread.side_effect = Exception("still failing")
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("thread(s) thread-1" in a and "stale head" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()  # blocked before even reaching CI checks
+        assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == ["thread-1"]
+
+        # Run 2: this time the retry succeeds, clearing the blocker; normal
+        # processing (CI checks, etc.) resumes.
+        mock_exit_if_in_progress.return_value = True
+        client2 = MagicMock()  # unresolve_review_thread succeeds
+        _handle_pr_merge(client2, "owner/repo", pr_data, config, {})
+
+        mock_exit_if_in_progress.assert_called_once()
+        assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == []
+
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
