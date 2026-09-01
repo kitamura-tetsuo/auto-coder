@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
@@ -54,11 +54,13 @@ from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
 from .review_thread_validation import (
+    ClaimedReviewThread,
     StaleReviewThreadRegistryError,
     StaleReviewThreadResolutionError,
     change_provenance_reply_fingerprint,
     classify_review_threads,
     is_change_provenance_thread,
+    publish_unresolved_change_provenance_dispositions,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
@@ -140,6 +142,21 @@ class ClaimedReviewThreadGateState:
     blocking_unresolved: Tuple[ReviewThread, ...] = ()
     has_blocking_unresolved: bool = False
     lookup_error: Optional[str] = None
+
+
+def _enforce_unresolved_provenance_gate(
+    result: AdversarialValidationResult,
+    claimed_review_threads: Sequence[ClaimedReviewThread],
+    resolved_thread_ids: Sequence[str],
+) -> Set[str]:
+    """Prevent PASS while preserving the validator's concrete provenance result."""
+    unresolved_ids = {thread.thread_id for thread in claimed_review_threads if thread.is_change_provenance} - set(resolved_thread_ids)
+    if unresolved_ids and result.is_pass:
+        result.result = "INCONCLUSIVE"
+        result.summary = f"{result.summary.rstrip()} Change-provenance clarification remains unresolved after independent validation.".strip()
+        result.diagnostic_category = "change_provenance_clarification"
+        result.diagnostic_reason = f"Unresolved clarification thread(s): {', '.join(sorted(unresolved_ids))}"
+    return unresolved_ids
 
 
 def _resolve_eligible_review_thread_ids(repo_name: str) -> Set[int]:
@@ -2179,12 +2196,18 @@ def _handle_pr_merge(
                             except Exception as e:
                                 logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
 
-                        unresolved_provenance_ids = {thread.thread_id for thread in claimed_review_threads if thread.is_change_provenance} - set(resolved_thread_ids)
-                        if unresolved_provenance_ids and val_result.is_pass:
-                            val_result.result = "INCONCLUSIVE"
-                            val_result.summary = "Change-provenance clarification remains unresolved after independent validation"
-                            val_result.diagnostic_category = "change_provenance_clarification"
-                            val_result.diagnostic_reason = f"Unresolved clarification thread(s): {', '.join(sorted(unresolved_provenance_ids))}"
+                            published_provenance_ids = publish_unresolved_change_provenance_dispositions(
+                                github_client,
+                                repo_name,
+                                pr_number,
+                                head_sha,
+                                claimed_review_threads,
+                                val_result.thread_dispositions,
+                            )
+                            if published_provenance_ids:
+                                actions.append(f"Published concrete provenance disposition on {len(published_provenance_ids)} clarification thread(s) for PR #{pr_number}")
+
+                        _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
 
                         publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                         if not publication.success:

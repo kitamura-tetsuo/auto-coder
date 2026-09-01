@@ -15,6 +15,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
     _get_codex_review_state,
@@ -1440,6 +1441,40 @@ class TestClaimedReviewThreadValidationFlow:
     """End-to-end coverage for issue #1619: a claimed-addressed review thread
     does not block merge outright; it is carried into a fresh adversarial
     validation run and resolved only on a valid ADDRESSED disposition."""
+
+    @pytest.mark.parametrize(
+        ("rationale", "evidence"),
+        [
+            ("scripts/example.sh was accidental work", "The implementer confirms it has no relationship to the Issue"),
+            ("The generated-file claim is contradicted", "Manual changes are present outside generator output"),
+        ],
+    )
+    def test_unresolved_provenance_preserves_concrete_still_valid_review(self, rationale, evidence):
+        from auto_coder.adversarial_validator import ReviewThreadDisposition, format_adversarial_review_summary
+        from auto_coder.review_thread_validation import ClaimedReviewThread
+
+        result = AdversarialValidationResult(
+            result="PASS",
+            summary="All Issue requirements remain verified.",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="provenance-1",
+                    status="STILL_VALID",
+                    rationale=rationale,
+                    evidence=evidence,
+                )
+            ],
+        )
+        claimed = [ClaimedReviewThread(thread_id="provenance-1", is_change_provenance=True)]
+
+        unresolved = _enforce_unresolved_provenance_gate(result, claimed, [])
+        published_body = format_adversarial_review_summary(result, "same-head")
+
+        assert unresolved == {"provenance-1"}
+        assert result.result == "INCONCLUSIVE"
+        assert result.summary.startswith("All Issue requirements remain verified.")
+        assert rationale in published_body
+        assert evidence in published_body
 
     def test_new_provenance_reply_revalidates_and_passes_same_sha(self):
         from auto_coder.adversarial_validator import ReviewThreadDisposition

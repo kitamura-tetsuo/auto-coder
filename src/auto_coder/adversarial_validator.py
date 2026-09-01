@@ -357,6 +357,23 @@ def format_adversarial_review_summary(result: AdversarialValidationResult, head_
         body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
     if result.unexplained_changes and result.publish_clarification_thread:
         body += "\n\nOne change-provenance clarification thread is attached to this review."
+    unresolved_dispositions = [disposition for disposition in result.thread_dispositions if disposition.status != "ADDRESSED"]
+    if unresolved_dispositions:
+        body += "\n\n### Unresolved review-thread dispositions"
+        for disposition in unresolved_dispositions:
+            body += "\n\n" + "\n".join(
+                [
+                    f"#### `{_bounded_comment_field(disposition.thread_id)}`: {disposition.status}",
+                    "",
+                    "**Rationale**",
+                    "",
+                    _bounded_comment_field(disposition.rationale),
+                    "",
+                    "**Evidence**",
+                    "",
+                    _bounded_comment_field(disposition.evidence),
+                ]
+            )
     return body
 
 

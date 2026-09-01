@@ -214,14 +214,19 @@ class GitHubAppReviewer:
                     page += 1
                 comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
                 if result.unexplained_changes and result.publish_clarification_thread:
-                    anchor_path = next((path for item in result.unexplained_changes for path in item.paths if path in changed_files), "")
-                    if not anchor_path:
-                        raise ValueError("Change-provenance clarification must anchor to a changed file")
+                    anchor = next(
+                        ((path, diff_anchor) for item in result.unexplained_changes for path in item.paths if path in changed_files for diff_anchor in [_first_diff_anchor(changed_files[path] if isinstance(changed_files[path], str) else "")] if diff_anchor is not None),
+                        None,
+                    )
+                    if anchor is None:
+                        raise ValueError("Change-provenance clarification must anchor to a represented diff line")
+                    anchor_path, (anchor_line, anchor_side) = anchor
                     comments.append(
                         {
                             "path": anchor_path,
                             "body": format_change_provenance_clarification(result.unexplained_changes),
-                            "subject_type": "file",
+                            "line": anchor_line,
+                            "side": anchor_side,
                         }
                     )
             self._request(
@@ -244,7 +249,7 @@ class GitHubAppReviewer:
 
     @staticmethod
     def _finding_comment(finding: AdversarialValidationFinding, changed_files: dict[str, object]) -> dict[str, object]:
-        """Build one review comment, safely degrading invalid lines to file level."""
+        """Build one review comment anchored to a line accepted by nested reviews."""
         if not finding.anchor_path or finding.anchor_path not in changed_files:
             raise ValueError("Every actionable finding must anchor to a changed file")
         comment: dict[str, object] = {
@@ -259,7 +264,11 @@ class GitHubAppReviewer:
             if finding.anchor_start_line in valid_lines and finding.anchor_start_line != finding.anchor_line and finding.anchor_start_line < finding.anchor_line:
                 comment.update({"start_line": finding.anchor_start_line, "start_side": side})
         else:
-            comment["subject_type"] = "file"
+            fallback_anchor = _first_diff_anchor(patch if isinstance(patch, str) else "")
+            if fallback_anchor is None:
+                raise ValueError("Every nested review comment must anchor to a represented diff line")
+            line, fallback_side = fallback_anchor
+            comment.update({"line": line, "side": fallback_side})
         return comment
 
 
@@ -286,6 +295,19 @@ def _diff_lines(patch: str, side: str) -> set[int]:
                 represented.add(new_line)
             new_line += 1
     return represented
+
+
+def _first_diff_anchor(patch: object) -> Optional[tuple[int, str]]:
+    """Choose a valid nested-review anchor, preferring the current-file side."""
+    if not isinstance(patch, str):
+        return None
+    right_lines = _diff_lines(patch, "RIGHT")
+    if right_lines:
+        return min(right_lines), "RIGHT"
+    left_lines = _diff_lines(patch, "LEFT")
+    if left_lines:
+        return min(left_lines), "LEFT"
+    return None
 
 
 def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:

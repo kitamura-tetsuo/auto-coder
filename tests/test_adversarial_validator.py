@@ -20,6 +20,7 @@ from auto_coder.adversarial_validator import (
     extract_all_changed_files,
     extract_changed_test_files,
     extract_issue_requirements,
+    format_adversarial_review_summary,
     format_change_provenance_clarification,
     is_test_file,
     parse_adversarial_validation_response,
@@ -99,6 +100,28 @@ def test_complete_requirements_with_unexplained_changes_becomes_clarification_bl
     assert result.diagnostic_category == "change_provenance_clarification"
     assert result.requirement_coverage[0].status == "VERIFIED"
     assert len(result.unexplained_changes) == 1
+
+
+@pytest.mark.parametrize(
+    ("rationale", "evidence"),
+    [
+        ("scripts/example.sh was unrelated work accidentally left in the branch", "The implementer identifies the script change as accidental"),
+        ("The generated-file claim is contradicted by manual edits", "generated.json changes keys that are absent from generator input and output"),
+    ],
+)
+def test_review_summary_publishes_concrete_still_valid_provenance(rationale: str, evidence: str) -> None:
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Issue requirements remain verified",
+        thread_dispositions=[ReviewThreadDisposition(thread_id="provenance-1", status="STILL_VALID", rationale=rationale, evidence=evidence)],
+    )
+
+    body = format_adversarial_review_summary(result, "abc123")
+
+    assert "Issue requirements remain verified" in body
+    assert "`provenance-1`: STILL_VALID" in body
+    assert rationale in body
+    assert evidence in body
 
 
 class TestExtractChangedTestFiles:

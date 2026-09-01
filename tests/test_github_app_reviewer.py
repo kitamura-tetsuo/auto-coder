@@ -19,6 +19,21 @@ class RecordingClient:
         return self.responses.pop(0)
 
 
+class ReviewSchemaValidatingClient(RecordingClient):
+    """Reject nested review-comment shapes that GitHub's reviews API rejects."""
+
+    def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        if method == "POST" and url.endswith("/reviews"):
+            payload = kwargs["json"]
+            assert isinstance(payload, dict)
+            allowed = {"path", "position", "body", "line", "side", "start_line", "start_side"}
+            for comment in payload.get("comments", []):
+                assert set(comment) <= allowed
+                assert "path" in comment and "body" in comment
+                assert "position" in comment or "line" in comment
+        return super().request(method, url, **kwargs)
+
+
 def response(status: int, data: dict[str, object]) -> httpx.Response:
     return httpx.Response(status, json=data, request=httpx.Request("GET", "https://api.github.test"))
 
@@ -102,7 +117,8 @@ def test_publishes_native_review_with_installation_token_and_exact_sha(tmp_path:
     assert payload["commit_id"] == "sha-a"
     assert "Validated commit: `sha-a`" in payload["body"]
     if result.needs_fix:
-        assert payload["comments"][0]["subject_type"] == "file"
+        assert payload["comments"][0]["line"] == 1
+        assert payload["comments"][0]["side"] == "RIGHT"
     assert review_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
 
 
@@ -153,7 +169,8 @@ def test_each_finding_is_an_independent_review_comment_with_safe_anchors(tmp_pat
     assert payload["comments"][0]["side"] == "RIGHT"
     assert "REQ-001" in payload["comments"][0]["body"]
     assert "Suggested regression scenario" in payload["comments"][0]["body"]
-    assert payload["comments"][1]["subject_type"] == "file"
+    assert payload["comments"][1]["line"] == 10
+    assert payload["comments"][1]["side"] == "RIGHT"
     assert "Preserve the value" not in payload["body"]
 
 
@@ -169,7 +186,7 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
             ],
         ),
     )
-    client = RecordingClient(responses)
+    client = ReviewSchemaValidatingClient(responses)
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
     result = AdversarialValidationResult(
         result="INCONCLUSIVE",
@@ -187,12 +204,15 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
     comments = client.calls[-1][2]["json"]["comments"]
     assert len(comments) == 1
     assert comments[0]["path"] == "uv.lock"
+    assert comments[0]["line"] == 1
+    assert comments[0]["side"] == "RIGHT"
+    assert "subject_type" not in comments[0]
     assert "uv.lock" in comments[0]["body"]
     assert "pyproject.toml" in comments[0]["body"]
     assert "scripts/example.sh" in comments[0]["body"]
 
 
-def test_invalid_line_falls_back_to_file_level_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_line_falls_back_to_valid_diff_line_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     responses = auth_responses()
     responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
     reviewer = configured_reviewer(tmp_path, RecordingClient(responses), monkeypatch)
@@ -202,7 +222,12 @@ def test_invalid_line_falls_back_to_file_level_anchor(tmp_path: Path, monkeypatc
 
     assert publication.success is True
     comment = reviewer._client.calls[-1][2]["json"]["comments"][0]  # type: ignore[attr-defined,index]
-    assert comment == {"path": "src/example.py", "body": "### Auto-Coder adversarial finding\n\n**Violated requirement**\n\nRequirement", "subject_type": "file"}
+    assert comment == {
+        "path": "src/example.py",
+        "body": "### Auto-Coder adversarial finding\n\n**Violated requirement**\n\nRequirement",
+        "line": 1,
+        "side": "RIGHT",
+    }
 
 
 def test_missing_changed_file_anchor_fails_without_submitting_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
