@@ -1640,6 +1640,11 @@ jules:
 
 
 codex_cloud:
+  review_thread_repair_details: |-
+    Review every currently unresolved GitHub review thread on this pull request. Address each valid finding in the implementation, add or update regression tests, run the required test suite, and push the corrective commits to the existing pull request branch.
+
+    Do not resolve, close, or otherwise mark any review thread as resolved yourself; leave that decision to Auto-Coder's independent validation. For each thread you believe you have successfully addressed, reply directly in that same thread with a concise explanation of the implementation change and the validation or regression-test evidence supporting the claim, ending the reply with the exact marker `<!-- auto-coder-review-addressed:v1 -->` on its own line. Only add this marker when you are confident the finding is corrected in the current code. If you cannot fix or verify a finding, disagree with it, or consider it already satisfied or invalid, leave the thread unresolved and do not add the marker; explain your reasoning in the thread instead. Treat every thread independently.
+
   continuation: |-
     Review the current pull request status and continue working on it. If CI checks are failing, review the latest failure logs, fix the issues, push the fixes to the existing pull request, and continue until all CI checks pass. Also address any valid unresolved review comments.
 

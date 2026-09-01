@@ -104,8 +104,8 @@
             "args": [
                 "process-issues",
                 // "--disable-graphrag",
-                // "--only",
-                // "https://github.com/kitamura-tetsuo/outliner/pull/5246",
+                "--only",
+                "https://github.com/kitamura-tetsuo/outliner/pull/5262",
                 // "--force-reindex",
                 "--force",
                 "--port",

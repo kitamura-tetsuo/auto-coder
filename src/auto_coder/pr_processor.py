@@ -4,6 +4,7 @@ PR processing functionality for Auto-Coder automation engine.
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -116,6 +117,7 @@ class ClaimedReviewThreadGateState:
     reviewer's implementation agent (issue #1619, REQ-001/REQ-011)."""
 
     claimed: Tuple[Any, ...] = ()
+    unresolved: Tuple[ReviewThread, ...] = ()
     has_blocking_unresolved: bool = False
     lookup_error: Optional[str] = None
 
@@ -172,6 +174,7 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
     classification = classify_review_threads(threads, eligible_logins)
     return ClaimedReviewThreadGateState(
         claimed=tuple(classification.claimed),
+        unresolved=tuple(thread for thread in threads if not thread.is_resolved),
         has_blocking_unresolved=classification.blocking_unresolved_count > 0,
     )
 
@@ -1268,6 +1271,13 @@ def _process_pr_for_merge(
             return processed_pr
         if review_thread_state.has_unresolved:
             processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to unresolved review threads")
+            processed_pr.actions_taken.extend(
+                _delegate_codex_cloud_review_thread_repair(
+                    repo_name,
+                    pr_data,
+                    github_client=github_client,
+                )
+            )
             return processed_pr
 
         head_sha = pr_data.get("head", {}).get("sha", "")
@@ -1980,6 +1990,14 @@ def _handle_pr_merge(
                 return actions
             if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
+                actions.extend(
+                    _delegate_codex_cloud_review_thread_repair(
+                        repo_name,
+                        pr_data,
+                        github_client=github_client,
+                        unresolved_threads=claimed_thread_state.unresolved,
+                    )
+                )
                 return actions
             claimed_review_threads = claimed_thread_state.claimed
             if claimed_review_threads:
@@ -3603,6 +3621,115 @@ def _resolve_cloud_conflict_origin(
 def _cloud_conflict_state_path(repo_name: str) -> Path:
     """Return the durable deduplication state path for cloud conflict work."""
     return Path.home() / ".auto-coder" / repo_name / "cloud_conflict_repairs.json"
+
+
+def _cloud_review_repair_state_path(repo_name: str) -> Path:
+    """Return the durable deduplication state path for Codex review work."""
+    return Path.home() / ".auto-coder" / repo_name / "cloud_review_repairs.json"
+
+
+def _review_thread_repair_fingerprint(
+    repo_name: str,
+    pr_number: int,
+    task_id: str,
+    head_sha: str,
+    unresolved_threads: Tuple[ReviewThread, ...],
+) -> str:
+    """Identify one exact PR-head and unresolved-review state."""
+    thread_state = [
+        {
+            "id": thread.id,
+            "comments": [
+                {
+                    "database_id": comment.database_id,
+                    "body": comment.body,
+                    "author": comment.author_login,
+                }
+                for comment in thread.comments
+            ],
+            "comments_truncated": thread.comments_truncated,
+        }
+        for thread in unresolved_threads
+    ]
+    serialized = json.dumps(thread_state, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    review_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"{repo_name}#{pr_number}:{task_id}:{head_sha}:{review_digest}"
+
+
+def _delegate_codex_cloud_review_thread_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+    unresolved_threads: Tuple[ReviewThread, ...] = (),
+) -> List[str]:
+    """Assign unresolved review feedback to the PR's existing Codex Cloud task.
+
+    Delivery is durable and state-sensitive: an unchanged PR head and review
+    discussion is sent only once, while a new commit or changed discussion can
+    be assigned again. A missing Codex task simply preserves the generic
+    review-thread merge gate for non-Codex pull requests.
+    """
+    pr_number = int(pr_data["number"])
+    if not _is_codex_pr(pr_data):
+        return []
+
+    task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
+    if not task_id:
+        return []
+
+    target = resolve_existing_pr_repair_target(repo_name, pr_data)
+    if not target:
+        logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate review repair")
+        return [f"Cannot request Codex Cloud review repair for PR #{pr_number}: PR head/base branch metadata is unavailable"]
+
+    fingerprint = _review_thread_repair_fingerprint(
+        repo_name,
+        pr_number,
+        task_id,
+        target.head_sha,
+        unresolved_threads,
+    )
+    state_path = _cloud_review_repair_state_path(repo_name)
+    delivered: dict[str, str] = {}
+    try:
+        if state_path.exists():
+            loaded = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                delivered = {str(key): str(value) for key, value in loaded.items()}
+    except (OSError, ValueError) as exc:
+        logger.warning(f"Could not read Codex Cloud review repair state: {exc}")
+
+    if fingerprint in delivered:
+        logger.info(f"Review-thread repair for PR #{pr_number} at the current state was already delegated")
+        return [f"Codex Cloud review repair was already requested for PR #{pr_number} at the current state"]
+
+    details = get_prompt_template("codex_cloud.review_thread_repair_details")
+    prompt = build_existing_pr_repair_prompt(target, details)
+    try:
+        from .codex_cloud_client import CodexCloudClient
+
+        accepted = CodexCloudClient(repo_name=repo_name).send_followup(task_id, prompt)
+    except Exception as exc:
+        logger.warning(f"Codex Cloud review repair delegation failed for PR #{pr_number}: {exc}")
+        return [f"Failed to request Codex Cloud review repair for PR #{pr_number}: {exc}"]
+    if not accepted:
+        return [f"Codex Cloud task '{task_id}' could not receive review repair work for PR #{pr_number}"]
+
+    delivered[fingerprint] = task_id
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"Could not persist Codex Cloud review repair state: {exc}")
+
+    get_trace_logger().log(
+        "Codex Cloud Review Repair",
+        f"Assigned unresolved review threads to Codex Cloud task '{task_id}' for PR #{pr_number}",
+        item_type="pr",
+        item_number=pr_number,
+        details={"task_id": task_id, "head_sha": target.head_sha},
+    )
+    return [f"Requested Codex Cloud task '{task_id}' to address unresolved review threads for PR #{pr_number}"]
 
 
 def _delegate_cloud_merge_conflict_repair(
