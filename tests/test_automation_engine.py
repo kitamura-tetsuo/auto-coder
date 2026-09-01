@@ -215,6 +215,50 @@ class TestAutomationEngine:
             }
         ]
 
+    def test_process_single_propagates_review_thread_lookup_failure_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must classify a failed gate lookup as failed."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 79, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                return_value=ClaimedReviewThreadGateState(lookup_error="GraphQL Network Error"),
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 79)
+
+        diagnostic = "Skipping merge for PR #79 because review threads could not be checked: GraphQL Network Error"
+        assert result["errors"] == ["Error processing pr #79: GraphQL Network Error"]
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #79", diagnostic],
+                "outcome": "failed",
+            }
+        ]
+
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py
 

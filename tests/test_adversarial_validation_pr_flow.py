@@ -15,6 +15,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    ClaimedReviewThreadGateState,
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
@@ -924,6 +925,33 @@ class TestAdversarialValidationPRFlow:
 
         assert actions == ["Could not determine CI status for PR #77: GitHub API unavailable"]
         assert status.error == "GitHub API unavailable"
+        assert status.outcome is PRProcessingOutcome.FAILED
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1]))
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    def test_review_thread_lookup_error_is_structured_failure(
+        self,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """A failed gate lookup is internal, unlike a successfully detected gate."""
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(lookup_error="GraphQL Network Error")
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 78, "head": {"sha": "abc123"}, "labels": []}
+        status = ProcessedPRResult(pr_data=pr_data)
+
+        actions = _handle_pr_merge(MagicMock(), "owner/repo", pr_data, config, {}, status)
+
+        assert actions == [
+            "All GitHub Actions checks passed for PR #78",
+            "Skipping merge for PR #78 because review threads could not be checked: GraphQL Network Error",
+        ]
+        assert status.error == "GraphQL Network Error"
         assert status.outcome is PRProcessingOutcome.FAILED
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)

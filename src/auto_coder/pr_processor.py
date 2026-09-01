@@ -1390,7 +1390,7 @@ def _take_pr_actions(
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
             actions.append(f"PR #{pr_number} was merged.")
-        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions) or any("Skipping merge" in action for action in merge_actions):
+        elif (processing_status is None or processing_status.outcome is not PRProcessingOutcome.FAILED) and ("ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions) or any("Skipping merge" in action for action in merge_actions)):
             actions.append(f"PR #{pr_number} processing deferred.")
 
     except Exception as e:
@@ -2039,6 +2039,9 @@ def _handle_pr_merge(
             claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
             if claimed_thread_state.lookup_error:
                 actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {claimed_thread_state.lookup_error}")
+                if processing_status is not None:
+                    processing_status.error = claimed_thread_state.lookup_error
+                    processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
             if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
