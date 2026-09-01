@@ -247,15 +247,15 @@ class StaleReviewThreadRegistry:
         """Return rolled-back threads that only need a CLEARED marker reply."""
         return {record.thread_id: record.root_comment_database_id for record in self._records_for_pr(repository, pr_number) if record.state == "marker_cleanup_required" and record.root_comment_database_id is not None}
 
-    def rollback_transitions_for_pr(self, repository: str, pr_number: int) -> List[str]:
-        """Return ambiguous transitions that must block without mutation."""
-        return [record.thread_id for record in self._records_for_pr(repository, pr_number) if record.state == "rollback_transition"]
+    def rollback_transitions_for_pr(self, repository: str, pr_number: int) -> dict[str, Optional[int]]:
+        """Return ambiguous transitions for authoritative reconciliation."""
+        return {record.thread_id: record.root_comment_database_id for record in self._records_for_pr(repository, pr_number) if record.state == "rollback_transition"}
 
 
-def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> tuple[dict[str, Optional[int]], List[str]]:
+def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> tuple[dict[str, Optional[int]], List[str], List[ReviewThread]]:
     """Scan every resolved review thread for an active ``STALE_BLOCKER_MARKER``.
 
-    Returns ``(pending, incomplete_thread_ids)``. ``pending`` maps a
+    Returns ``(pending, incomplete_thread_ids, threads)``. ``pending`` maps a
     confirmed-blocked thread ID to its root comment's database ID (for
     posting the cleared-marker reply later, when available). This is an
     independent durability layer that lives on GitHub rather than local
@@ -361,7 +361,7 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
         final_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
         if final_head_sha != current_head_sha:
             raise RuntimeError(f"PR #{pr_number} head changed while scanning stale-resolution markers " f"({current_head_sha} -> {final_head_sha})")
-    return pending, incomplete_thread_ids
+    return pending, incomplete_thread_ids, threads
 
 
 def retry_pending_stale_review_thread_rollbacks(
@@ -387,7 +387,7 @@ def retry_pending_stale_review_thread_rollbacks(
     marker_cleanup_pending = registry.marker_cleanup_pending_for_pr(repo_name, pr_number)
     rollback_transitions = registry.rollback_transitions_for_pr(repo_name, pr_number)
     try:
-        github_pending, incomplete_thread_ids = _find_github_stale_blockers(github_client, repo_name, pr_number)
+        github_pending, incomplete_thread_ids, github_threads = _find_github_stale_blockers(github_client, repo_name, pr_number)
     except StaleReviewThreadRegistryError:
         raise
     except Exception as exc:
@@ -411,18 +411,58 @@ def retry_pending_stale_review_thread_rollbacks(
         # a later legitimate resolution and authorize another unresolve.
         all_pending.pop(thread_id, None)
     for thread_id in rollback_transitions:
-        # The prior invocation may have completed its unresolve but failed to
-        # record that outcome. Never let the old marker mutate a potentially
-        # legitimate later resolution from this ambiguous state.
         all_pending.pop(thread_id, None)
 
-    still_blocked: List[str] = list(rollback_transitions)
+    still_blocked: List[str] = []
     for thread_id, cleanup_root_comment_database_id in marker_cleanup_pending.items():
         try:
             github_client.reply_to_review_thread(repo_name, pr_number, cleanup_root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
             registry.clear(repo_name, thread_id)
         except Exception as exc:
             logger.error(f"Could not finish stale-marker cleanup for rolled-back thread {thread_id} on PR #{pr_number}: {exc}")
+            still_blocked.append(thread_id)
+
+    for thread_id, transition_root_comment_database_id in rollback_transitions.items():
+        exact_matches = [thread for thread in github_threads if thread.id == thread_id]
+        if len(exact_matches) != 1:
+            logger.error(f"Could not reconcile rollback transition for thread {thread_id} on PR #{pr_number}: " f"expected exactly one authoritative thread, found {len(exact_matches)}")
+            still_blocked.append(thread_id)
+            continue
+
+        if exact_matches[0].is_resolved:
+            # The guarded rollback did not run or did not take effect. Keep
+            # the existing transition durable while retrying it below.
+            all_pending[thread_id] = transition_root_comment_database_id
+            continue
+
+        # GitHub now explicitly confirms the exact thread is unresolved, so
+        # the ambiguous mutation outcome has converged. Retire its marker
+        # without ever issuing another unresolve against this thread.
+        if transition_root_comment_database_id is not None:
+            try:
+                github_client.reply_to_review_thread(
+                    repo_name,
+                    pr_number,
+                    transition_root_comment_database_id,
+                    STALE_BLOCKER_CLEARED_MARKER,
+                )
+            except Exception as exc:
+                logger.error(f"Confirmed thread {thread_id} unresolved on PR #{pr_number} but could not post the cleared marker: {exc}")
+                try:
+                    registry.record_marker_cleanup(
+                        repo_name,
+                        pr_number,
+                        thread_id,
+                        transition_root_comment_database_id,
+                    )
+                except Exception as persist_exc:
+                    logger.error(f"Could not record marker cleanup for reconciled thread {thread_id} on PR #{pr_number}; " f"the fail-closed rollback transition remains: {persist_exc}")
+                still_blocked.append(thread_id)
+                continue
+        try:
+            registry.clear(repo_name, thread_id)
+        except Exception as exc:
+            logger.error(f"Could not retire reconciled rollback transition for thread {thread_id} on PR #{pr_number}: {exc}")
             still_blocked.append(thread_id)
 
     for thread_id, root_comment_database_id in all_pending.items():

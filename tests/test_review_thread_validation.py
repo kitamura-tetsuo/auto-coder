@@ -6,6 +6,7 @@ import pytest
 from auto_coder.adversarial_validator import ReviewThreadDisposition
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
+    STALE_BLOCKER_CLEARED_MARKER,
     STALE_BLOCKER_MARKER,
     UNRESOLVE_ROLLBACK_MAX_ATTEMPTS,
     ClaimedReviewThread,
@@ -588,7 +589,7 @@ class TestStaleReviewThreadRegistry:
 
         assert registry.pending_for_pr("owner/repo", 42) == []
         assert registry.marker_cleanup_pending_for_pr("owner/repo", 42) == {}
-        assert registry.rollback_transitions_for_pr("owner/repo", 42) == ["thread-1"]
+        assert registry.rollback_transitions_for_pr("owner/repo", 42) == {"thread-1": 101}
 
     def test_malformed_entry_fails_closed_even_for_a_different_pr(self, tmp_path):
         """[P1] A structurally malformed entry anywhere in the file (e.g.
@@ -652,10 +653,10 @@ class TestStaleReviewThreadRegistry:
 
 
 class TestRetryPendingStaleReviewThreadRollbacks:
-    def test_dual_cleanup_failure_leaves_transition_that_never_unresolves_later_resolution(self, tmp_path):
+    def test_dual_cleanup_failure_reconciles_confirmed_unresolved_transition(self, tmp_path):
         """[P2] CLEAR and cleanup persistence may both fail after rollback.
-        The pre-mutation transition survives and blocks a fresh run without
-        mutating a later legitimate resolution."""
+        The pre-mutation transition survives and a fresh run retires it only
+        after the exact thread is authoritatively confirmed unresolved."""
         path = tmp_path / "stale.json"
         registry = StaleReviewThreadRegistry(path=path)
         first_client = MagicMock()
@@ -677,15 +678,14 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert resolved == []
         first_client.unresolve_review_thread.assert_called_once_with("thread-1")
-        assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == ["thread-1"]
+        assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == {"thread-1": 101}
 
         fresh_client = MagicMock()
         fresh_client.get_authenticated_user_login.return_value = "auto-coder[bot]"
-        fresh_client.get_pull_request_head_sha_strict.return_value = "sha3"
         fresh_client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
-                True,
+                False,
                 [
                     _comment(CODEX_LOGIN, "finding", database_id=101),
                     _comment("auto-coder[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
@@ -700,9 +700,9 @@ class TestRetryPendingStaleReviewThreadRollbacks:
             registry=StaleReviewThreadRegistry(path=path),
         )
 
-        assert still_blocked == ["thread-1"]
+        assert still_blocked == []
         fresh_client.unresolve_review_thread.assert_not_called()
-        fresh_client.reply_to_review_thread.assert_not_called()
+        fresh_client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 101, STALE_BLOCKER_CLEARED_MARKER)
 
     def test_retry_path_dual_cleanup_failure_keeps_fail_closed_transition(self, tmp_path):
         """The GitHub-only retry path establishes the same transition before
@@ -729,7 +729,62 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert still_blocked == ["thread-1"]
         first_client.unresolve_review_thread.assert_called_once_with("thread-1")
-        assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == ["thread-1"]
+        assert StaleReviewThreadRegistry(path=path).rollback_transitions_for_pr("owner/repo", 42) == {"thread-1": 101}
+
+    def test_restart_retries_transition_when_unresolve_never_ran(self, tmp_path):
+        """[P2] A crash after persisting the transition but before mutation
+        is reconciled as still resolved and retries the guarded rollback."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record_rollback_transition("owner/repo", 42, "thread-1", 101)
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [_thread("thread-1", True, [_comment(CODEX_LOGIN, "finding", database_id=101)])]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+        client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 101, STALE_BLOCKER_CLEARED_MARKER)
+        assert registry.rollback_transitions_for_pr("owner/repo", 42) == {}
+
+    def test_restart_retires_transition_when_unresolve_succeeded_before_crash(self, tmp_path):
+        """[P2] A crash after successful mutation but before outcome
+        persistence is reconciled from the exact unresolved thread state."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record_rollback_transition("owner/repo", 42, "thread-1", 101)
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [_thread("thread-1", False, [_comment(CODEX_LOGIN, "finding", database_id=101)])]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_not_called()
+        client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 101, STALE_BLOCKER_CLEARED_MARKER)
+        assert registry.rollback_transitions_for_pr("owner/repo", 42) == {}
+
+    @pytest.mark.parametrize(
+        "threads",
+        [
+            [],
+            [
+                _thread("thread-1", False, []),
+                _thread("thread-1", True, []),
+            ],
+        ],
+        ids=["missing", "duplicate"],
+    )
+    def test_restart_keeps_transition_blocking_when_exact_thread_state_is_ambiguous(self, tmp_path, threads):
+        """Missing or duplicate ID evidence cannot reconcile a transition."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        registry.record_rollback_transition("owner/repo", 42, "thread-1", 101)
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = threads
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == ["thread-1"]
+        client.unresolve_review_thread.assert_not_called()
+        client.reply_to_review_thread.assert_not_called()
+        assert registry.rollback_transitions_for_pr("owner/repo", 42) == {"thread-1": 101}
 
     def test_failed_clear_after_rollback_cannot_unresolve_later_legitimate_resolution(self, tmp_path):
         """[P2] H1 resolve -> H2 -> successful rollback -> failed CLEAR.

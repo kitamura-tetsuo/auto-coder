@@ -181,6 +181,33 @@ def test_strict_review_thread_gate_preserves_real_client_lookup_error(mock_githu
     assert state.lookup_error == "GraphQL Network Error"
 
 
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"isResolved": False},
+        {"id": "t1"},
+        {"id": "t1", "isResolved": None},
+    ],
+    ids=["missing-id", "missing-state", "non-boolean-state"],
+)
+def test_strict_review_thread_lookup_rejects_ambiguous_identity_or_state(mock_github_client, node):
+    mock_github_client.graphql_query.return_value = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [node],
+                    }
+                }
+            }
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="without a valid ID|without an explicit resolved state"):
+        mock_github_client.get_pr_review_threads_strict("owner/repo", 101)
+
+
 def test_has_unresolved_review_threads_helper(mock_github_client):
     mock_github_client.graphql_query.return_value = {
         "data": {

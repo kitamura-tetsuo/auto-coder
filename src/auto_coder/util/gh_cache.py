@@ -1144,6 +1144,12 @@ class GitHubClient:
             nodes = review_threads_data.get("nodes") or []
             for node in nodes:
                 if node:
+                    thread_id = node.get("id")
+                    is_resolved = node.get("isResolved")
+                    if not isinstance(thread_id, str) or not thread_id:
+                        raise RuntimeError(f"Review-thread response for PR #{pr_number} contained a thread without a valid ID")
+                    if not isinstance(is_resolved, bool):
+                        raise RuntimeError(f"Review-thread response for PR #{pr_number} contained thread {thread_id} without an explicit resolved state")
                     comments_data = node.get("comments") or {}
                     comment_nodes = comments_data.get("nodes") or []
                     comments = [
@@ -1158,8 +1164,8 @@ class GitHubClient:
                     comments_truncated = bool((comments_data.get("pageInfo") or {}).get("hasNextPage"))
                     threads.append(
                         ReviewThread(
-                            id=node.get("id", ""),
-                            is_resolved=bool(node.get("isResolved", False)),
+                            id=thread_id,
+                            is_resolved=is_resolved,
                             is_outdated=bool(node.get("isOutdated", False)),
                             comments=comments,
                             comments_truncated=comments_truncated,
