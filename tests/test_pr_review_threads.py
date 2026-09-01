@@ -245,7 +245,7 @@ def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, moc
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
     assert any("Skipping merge for PR #123 due to unresolved review threads" in a for a in result.actions_taken)
-    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {})
+    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {}, result)
 
 
 @patch("auto_coder.pr_processor._handle_pr_merge")
@@ -266,7 +266,7 @@ def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_labe
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
     assert any("Successfully merged PR #123" in a for a in result.actions_taken)
-    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {})
+    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {}, result)
     lm_instance.keep_label.assert_called_once()
 
 
