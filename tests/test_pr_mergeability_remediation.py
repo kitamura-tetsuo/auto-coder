@@ -10,6 +10,7 @@ def _client():
     client.get_pr_review_threads_strict.return_value = []
     return client
 
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _get_mergeable_state, _handle_pr_merge, _start_mergeability_remediation
 

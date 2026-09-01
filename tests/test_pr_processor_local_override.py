@@ -10,6 +10,8 @@ def _client():
     client = MagicMock()
     client.get_pr_review_threads_strict.return_value = []
     return client
+
+
 from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 
