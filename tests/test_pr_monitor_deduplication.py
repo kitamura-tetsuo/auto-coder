@@ -8,6 +8,12 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _active_monitors, _handle_pr_merge
 
 
+def _client():
+    client = MagicMock()
+    client.get_pr_review_threads_strict.return_value = []
+    return client
+
+
 class TestPRMonitorDeduplication:
     """Test cases for PR monitor deduplication logic."""
 
@@ -58,7 +64,7 @@ class TestPRMonitorDeduplication:
 
         # Call 1
         # Call 1
-        actions = _handle_pr_merge(MagicMock(), repo_name, pr_data, config, {})
+        actions = _handle_pr_merge(_client(), repo_name, pr_data, config, {})
 
         # Verify first call started thread
         # Verify first call started thread
@@ -68,7 +74,7 @@ class TestPRMonitorDeduplication:
         assert pr_number in _active_monitors
 
         # Call 2 (Simulating another thread or quick subsequent call)
-        _handle_pr_merge(MagicMock(), repo_name, pr_data, config, {})
+        _handle_pr_merge(_client(), repo_name, pr_data, config, {})
 
         # Verify second call DID NOT start thread or trigger workflow
         assert mock_thread.call_count == 1

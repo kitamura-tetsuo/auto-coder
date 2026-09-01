@@ -22,7 +22,7 @@ from auto_coder.pr_processor import (
     _handle_pr_merge,
     _send_adversarial_validation_feedback_to_codex_cloud,
 )
-from auto_coder.util.gh_cache import GitHubClient
+from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
@@ -36,6 +36,7 @@ def codex_review_summary(status: str, reviewed_sha: str = "original1") -> dict[s
 class TestCodexReviewState:
     def test_completed_summary_is_authoritative_without_reaction(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
 
         state = _get_codex_review_state(client, "owner/repo", 100)
@@ -46,6 +47,7 @@ class TestCodexReviewState:
 
     def test_summary_without_completed_status_is_still_running(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [codex_review_summary("👀 **In progress**")]
 
         state = _get_codex_review_state(client, "owner/repo", 100)
@@ -56,6 +58,7 @@ class TestCodexReviewState:
 
     def test_marker_from_non_codex_author_is_ignored(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         comment = codex_review_summary("✅ **Completed**")
         comment["user"] = {"login": "someone-else"}
         client.get_pr_comments.return_value = [comment]
@@ -85,6 +88,7 @@ class TestCodexReviewState:
 class TestAdversarialValidationEligibility:
     def test_issue_less_pr_mentioning_another_pr_is_not_eligible(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         pr_data = {"number": 100, "body": "Maintenance update; see PR #42 for background"}
 
         eligibility = _get_adversarial_validation_eligibility(client, "owner/repo", pr_data)
@@ -100,6 +104,7 @@ class TestAdversarialValidationEligibility:
     )
     def test_nonexistent_or_pull_request_candidate_is_not_an_oracle(self, candidate):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_issue.return_value = candidate
         pr_data = {"number": 100, "body": "Fixes #42"}
 
@@ -112,6 +117,7 @@ class TestAdversarialValidationEligibility:
 
     def test_verified_linked_issue_makes_validation_applicable(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_issue.return_value = {"number": 42, "title": "Behavioral contract"}
         pr_data = {"number": 100, "body": "Fixes #42"}
 
@@ -123,6 +129,7 @@ class TestAdversarialValidationEligibility:
 
     def test_title_inferred_issue_uses_same_verified_oracle_resolution(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_issue.return_value = {"number": 42, "title": "Behavioral contract", "body": "Required behavior"}
         pr_data = {"number": 100, "title": "Implement issue #42", "body": "Implementation details"}
 
@@ -214,6 +221,7 @@ class TestAdversarialValidationPRComment:
 
     def test_finds_native_review_from_dedicated_reviewer_app_for_exact_sha(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         result = AdversarialValidationResult(result="PASS", summary="Verified")
         rendered_body = format_adversarial_validation_comment(result, "abc123")
         client.get_pr_reviews_strict.return_value = [{"id": 1, "body": rendered_body, "user": {"login": "auto-coder-reviewer[bot]"}}]
@@ -225,6 +233,7 @@ class TestAdversarialValidationPRComment:
 
     def test_lookalike_review_from_another_author_is_not_authoritative(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         result = AdversarialValidationResult(result="PASS", summary="Verified")
         rendered_body = format_adversarial_validation_comment(result, "abc123")
         client.get_pr_reviews_strict.return_value = [{"id": 1, "body": rendered_body, "user": {"login": "someone-else[bot]"}}]
@@ -237,6 +246,7 @@ class TestAdversarialValidationPRComment:
 
     def test_native_review_lookup_fails_closed_on_reviews_api_error(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_reviews_strict.side_effect = RuntimeError("API unavailable")
 
         body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
@@ -246,6 +256,7 @@ class TestAdversarialValidationPRComment:
 
     def test_native_review_lookup_fails_closed_on_identity_resolution_error(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         with patch("auto_coder.pr_processor.resolve_reviewer_app_identity", side_effect=RuntimeError("no reviewer credentials")):
             body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
 
@@ -256,6 +267,7 @@ class TestAdversarialValidationPRComment:
     @pytest.mark.parametrize("status", ["PASS", "NEEDS_FIX", "BLOCKED", "INCONCLUSIVE", "ERROR"])
     def test_reads_published_status_for_exact_head_sha(self, status):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {
                 "body": format_adversarial_validation_comment(
@@ -277,6 +289,7 @@ class TestAdversarialValidationPRComment:
 
     def test_legacy_unversioned_result_does_not_suppress_revalidation(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {
                 "body": "\n".join(
@@ -302,6 +315,7 @@ class TestAdversarialValidationPRComment:
 
     def test_prior_status_lookup_failure_is_fail_closed(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.side_effect = RuntimeError("API unavailable")
 
         saved_status, error = _get_published_adversarial_validation_status(
@@ -316,6 +330,7 @@ class TestAdversarialValidationPRComment:
 
     def test_reads_published_status_from_native_review_over_legacy_comment(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_reviews_strict.return_value = [
             {
                 "body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Native verdict"), "abc123"),
@@ -335,6 +350,7 @@ class TestAdversarialValidationPRComment:
 class TestAdversarialValidationCodexFeedback:
     def test_sends_complete_report_as_custom_codex_cloud_followup(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = []
         cloud_client = MagicMock()
         cloud_client.continue_if_paused.return_value = True
@@ -373,6 +389,7 @@ class TestAdversarialValidationCodexFeedback:
 
     def test_missing_branch_metadata_blocks_feedback_instead_of_weak_prompt(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = []
         pr_data = {
             "number": 100,
@@ -393,6 +410,7 @@ class TestAdversarialValidationCodexFeedback:
 
     def test_delivery_marker_prevents_duplicate_codex_cloud_followup(self):
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
         pr_data = {
             "number": 100,
@@ -445,6 +463,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {
                 "body": format_adversarial_validation_comment(
@@ -486,6 +505,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {
                 "body": format_adversarial_validation_comment(
@@ -551,6 +571,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -604,6 +625,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
@@ -648,6 +670,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
@@ -683,6 +706,7 @@ class TestAdversarialValidationPRFlow:
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
 
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -721,6 +745,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -766,6 +791,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
@@ -806,6 +832,7 @@ class TestAdversarialValidationPRFlow:
 
         # Remote PR now has a newer commit "def987654321" pushed
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": "def987654321"}}
 
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -848,6 +875,7 @@ class TestAdversarialValidationPRFlow:
 
         # Remote verification API throws an exception
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.side_effect = RuntimeError("GitHub API rate limited")
 
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -884,6 +912,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_not_called()
@@ -923,6 +952,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
 
         actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
@@ -958,6 +988,7 @@ class TestAdversarialValidationPRFlow:
         head_sha = "maintenance123"
         pr_data = {"number": 100, "body": "Periodic documentation refresh", "labels": [], "head": {"ref": "docs-refresh", "sha": head_sha}}
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -993,6 +1024,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         pr_data = {"number": 100, "body": "Fixes #42", "labels": [], "head": {"ref": "feature-branch", "sha": "current-head"}}
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_issue.return_value = None
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -1026,6 +1058,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [codex_review_summary("👀 **In progress**")]
         config = AutomationConfig()
         config.AUTO_MERGE = True
@@ -1058,6 +1091,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "current2"}}
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_issue.return_value = {"number": 99, "title": "Specification"}
         client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**")]
         config = AutomationConfig()
@@ -1094,6 +1128,7 @@ class TestAdversarialValidationPRFlow:
         current_sha = "current-head-h2"
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": current_sha}}
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
         client.get_pull_request.return_value = {"head": {"sha": current_sha}}
         config = AutomationConfig()
@@ -1103,7 +1138,13 @@ class TestAdversarialValidationPRFlow:
         _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, current_sha)
-        mock_run_validation.assert_called_once_with("owner/repo", pr_data, config, github_client=client)
+        mock_run_validation.assert_called_once_with(
+            "owner/repo",
+            pr_data,
+            config,
+            github_client=client,
+            claimed_review_threads_section="(No claimed-addressed review threads for this run.)",
+        )
         mock_merge_pr.assert_called_once()
 
 
@@ -1130,6 +1171,7 @@ class TestAtomicMergeSHAPrecondition:
         mock_get_ghapi.return_value = mock_api
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.token = "fake-token"
 
         config = AutomationConfig()
@@ -1177,6 +1219,7 @@ class TestAtomicMergeSHAPrecondition:
         mock_get_ghapi.return_value = mock_api
 
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.token = "fake-token"
 
         config = AutomationConfig()
@@ -1228,6 +1271,7 @@ class TestMaxAdversarialValidationsGating:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
 
@@ -1266,6 +1310,7 @@ class TestMaxAdversarialValidationsGating:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "newcommit1234"
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
             {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha2 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
@@ -1314,6 +1359,7 @@ class TestMaxAdversarialValidationsGating:
 
         head_sha = "newcommit1234"
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {"body": "<!-- auto-coder-adversarial-validation:v4:oldsha1 -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
         ]
@@ -1354,6 +1400,7 @@ class TestMaxAdversarialValidationsGating:
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [
             {"body": f"<!-- auto-coder-adversarial-validation:v4:{head_sha} -->\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX"},
         ]
@@ -1373,3 +1420,266 @@ class TestMaxAdversarialValidationsGating:
         mock_merge_pr.assert_called_once()
         assert any("reached maximum adversarial review limit (1)" in action for action in actions)
         assert any("Successfully merged PR #100" in action for action in actions)
+
+
+class TestClaimedReviewThreadValidationFlow:
+    """End-to-end coverage for issue #1619: a claimed-addressed review thread
+    does not block merge outright; it is carried into a fresh adversarial
+    validation run and resolved only on a valid ADDRESSED disposition."""
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
+    @patch("auto_coder.pr_processor.resolve_addressed_review_threads")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_claimed_thread_allows_validation_and_gets_resolved(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_resolve,
+        mock_publish,
+        mock_adv_val,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_if_in_progress,
+    ):
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        claimed = ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1, root_author_login="chatgpt-codex-connector[bot]", original_finding="finding", discussion="discussion")
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(claimed=(claimed,), has_blocking_unresolved=False)
+        mock_merge_pr.return_value = True
+        mock_resolve.return_value = ["thread-1"]
+        mock_adv_val.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Pass",
+            findings=[],
+            thread_dispositions=[ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="Verified fix", evidence="Reproduced original path; now passes")],
+        )
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("claimed-addressed review thread" in a for a in actions)
+        mock_adv_val.assert_called_once()
+        _, call_kwargs = mock_adv_val.call_args
+        assert "thread-1" in call_kwargs["claimed_review_threads_section"]
+        mock_resolve.assert_called_once()
+        resolve_args = mock_resolve.call_args[0]
+        assert resolve_args[4] == (claimed,)
+        assert any("Resolved 1 claimed review thread" in a for a in actions)
+        assert any("Successfully merged PR #123" in a for a in actions)
+        mock_merge_pr.assert_called_once()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
+    @patch("auto_coder.pr_processor.resolve_addressed_review_threads")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_stale_resolution_rollback_failure_blocks_merge(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_resolve,
+        mock_publish,
+        mock_adv_val,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_if_in_progress,
+    ):
+        """[P1] A stale-resolution rollback that could not be confirmed must
+        block merge for this run rather than being logged and ignored."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread, StaleReviewThreadResolutionError
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        claimed = ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1, root_author_login="chatgpt-codex-connector[bot]", original_finding="finding", discussion="discussion")
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(claimed=(claimed,), has_blocking_unresolved=False)
+        mock_adv_val.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Pass",
+            findings=[],
+            thread_dispositions=[ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="Verified fix", evidence="Reproduced original path; now passes")],
+        )
+        mock_resolve.side_effect = StaleReviewThreadResolutionError("thread-1", "owner/repo", 123)
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("stale head" in a and "thread-1" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_persisted_stale_blocker_refuses_merge_on_a_later_run_and_clears_once_reverted(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] A rollback failure persisted by an earlier run must block a
+        later, separate `_handle_pr_merge()` invocation immediately —
+        bypassing CI/mergeability checks entirely, since GitHub's own
+        unresolved-thread state can no longer be trusted for this PR — and
+        must stop blocking only once a later retry is confirmed."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        from auto_coder.review_thread_validation import StaleReviewThreadRegistry
+
+        StaleReviewThreadRegistry().record("owner/repo", 123, "thread-1")
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        # Run 1: the blocker is still there and the rollback retry still fails.
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.unresolve_review_thread.side_effect = Exception("still failing")
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("thread(s) thread-1" in a and "stale head" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()  # blocked before even reaching CI checks
+        assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == ["thread-1"]
+
+        # Run 2: this time the retry succeeds, clearing the blocker; normal
+        # processing (CI checks, etc.) resumes.
+        mock_exit_if_in_progress.return_value = True
+        client2 = MagicMock()  # unresolve_review_thread succeeds
+        client2.get_pr_review_threads_strict.return_value = []
+        _handle_pr_merge(client2, "owner/repo", pr_data, config, {})
+
+        mock_exit_if_in_progress.assert_called_once()
+        assert StaleReviewThreadRegistry().pending_for_pr("owner/repo", 123) == []
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_corrupt_stale_registry_refuses_merge_rather_than_looking_empty(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] A registry file that exists but cannot be parsed must never be
+        treated as "no blockers" — it may be hiding a real stale-resolution
+        blocker — so merge must be refused before CI checks run."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        (tmp_path / ".auto-coder").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".auto-coder" / "stale_review_threads.json").write_text("{not valid json", encoding="utf-8")
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("registry could not be read" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_github_side_marker_alone_blocks_a_fresh_run_with_no_local_state(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] Models: resolve -> head advances -> unresolve retries exhausted
+        -> registry.record() itself also fails (disk full/permissions), so no
+        local state survives. A brand-new `_handle_pr_merge()` invocation with
+        an empty local registry (simulating a process restart) must still
+        discover the durable GitHub-side marker and refuse to merge until the
+        stale thread is confirmed unresolved."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        # No local registry file at all — models the write having failed and
+        # the process having restarted with zero in-memory state.
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
+        client.get_pr_review_threads_strict.return_value = [
+            ReviewThread(
+                id="thread-1",
+                is_resolved=True,  # GitHub still reports it resolved (the false-success state)
+                comments=[
+                    ReviewThreadComment(database_id=1, body="finding", author_login="chatgpt-codex-connector[bot]"),
+                    ReviewThreadComment(database_id=2, body="<!-- auto-coder-stale-review-thread-blocker:v1 -->", author_login="agent[bot]"),
+                ],
+            )
+        ]
+        client.unresolve_review_thread.side_effect = Exception("still failing")
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("thread(s) thread-1" in a and "stale head" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_github_marker_scan_failure_blocks_merge(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] Regression oracle: an empty local registry (nothing persisted
+        for this PR) plus a GitHub-side marker scan that raises must still
+        refuse to merge — the scan failure must fail closed exactly like a
+        corrupt local registry, never be silently treated as "no marker-only
+        blockers", since it may be the only surviving evidence of a stale
+        resolution."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        # No local registry file at all — empty local state.
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.side_effect = Exception("transient GitHub API error")
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("registry could not be read" in a or "stale-resolution markers" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    def test_blocking_unresolved_thread_still_blocks_merge(
+        self,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_if_in_progress,
+    ):
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(has_blocking_unresolved=True)
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("Skipping merge for PR #123 due to unresolved review threads" in a for a in actions)

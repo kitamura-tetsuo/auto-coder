@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
@@ -51,6 +51,7 @@ from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repa
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
+from .review_thread_validation import StaleReviewThreadRegistryError, StaleReviewThreadResolutionError, classify_review_threads, render_claimed_review_threads_section, resolve_addressed_review_threads, retry_pending_stale_review_thread_rollbacks
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
@@ -106,6 +107,73 @@ class ReviewThreadGateState:
 
     has_unresolved: bool = False
     lookup_error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ClaimedReviewThreadGateState:
+    """Unresolved-review-thread gate result that separates ordinary blockers
+    from threads explicitly claimed as addressed by a supported automated
+    reviewer's implementation agent (issue #1619, REQ-001/REQ-011)."""
+
+    claimed: Tuple[Any, ...] = ()
+    has_blocking_unresolved: bool = False
+    lookup_error: Optional[str] = None
+
+
+def _resolve_eligible_review_thread_logins(repo_name: str) -> Set[str]:
+    """Return logins whose review threads may be automatically adjudicated.
+
+    Always includes the Codex GitHub review bot. Also includes Auto-Coder's
+    own dedicated reviewer App identity when it can be resolved; if that
+    resolution fails, only the Codex bot is treated as eligible for this call
+    (fail-closed for the reviewer-App-authored threads, not for the whole
+    feature).
+    """
+    eligible = {CODEX_REVIEW_BOT_LOGIN}
+    try:
+        identity = resolve_reviewer_app_identity(repo_name)
+        if identity.login:
+            eligible.add(identity.login)
+    except Exception as e:
+        logger.warning(f"Could not resolve reviewer App identity for eligible review-thread authors: {e}")
+    return eligible
+
+
+def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_number: int) -> ClaimedReviewThreadGateState:
+    """Fetch review threads and separate ordinary blockers from claimed threads.
+
+    Reuses the existing ``_get_review_thread_gate_state`` boolean/lookup-error
+    result so every call site that has no unresolved threads (or a lookup
+    failure) behaves exactly as before. Only when at least one thread is
+    unresolved does this additionally fetch full thread detail (comments) to
+    determine whether every unresolved thread is an eligible, explicitly
+    claimed automated-review thread. Any failure in that additional lookup
+    fails closed to treating all unresolved threads as ordinary blockers.
+    """
+    gate = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+    if gate.lookup_error:
+        return ClaimedReviewThreadGateState(lookup_error=gate.lookup_error)
+    if not gate.has_unresolved:
+        return ClaimedReviewThreadGateState()
+
+    try:
+        client = github_client or GitHubClient.get_instance()
+        strict_getter = getattr(type(client), "get_pr_review_threads_strict", None)
+        if not callable(strict_getter):
+            # No detailed lookup available (e.g. a test double); fail closed
+            # to the ordinary "unresolved threads block merge" behavior.
+            return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
+        threads = client.get_pr_review_threads_strict(repo_name, pr_number)
+    except Exception as e:
+        logger.error(f"Failed detailed review-thread lookup for PR #{pr_number}: {e}")
+        return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
+
+    eligible_logins = _resolve_eligible_review_thread_logins(repo_name)
+    classification = classify_review_threads(threads, eligible_logins)
+    return ClaimedReviewThreadGateState(
+        claimed=tuple(classification.claimed),
+        has_blocking_unresolved=classification.blocking_unresolved_count > 0,
+    )
 
 
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
@@ -1757,6 +1825,25 @@ def _handle_pr_merge(
     pr_number = pr_data["number"]
 
     try:
+        # A stale review-thread resolution (issue #1619) that could not be
+        # rolled back in an earlier run is a persistent integrity failure:
+        # retry it on every processing run, and refuse to merge while any
+        # thread remains blocked, regardless of what CI/validation would
+        # otherwise decide this run (REQ-006, REQ-008).
+        stale_client = github_client or GitHubClient.get_instance()
+        try:
+            pending_stale_threads = retry_pending_stale_review_thread_rollbacks(stale_client, repo_name, pr_number)
+        except StaleReviewThreadRegistryError as e:
+            # The registry's storage cannot be trusted (corrupt, unreadable):
+            # it may be hiding a real stale-resolution blocker, so this must
+            # never be treated as "no blockers exist" (REQ-006, REQ-008).
+            logger.error(f"Stale-review-thread registry is unreadable for PR #{pr_number}: {e}")
+            actions.append(f"Skipping merge for PR #{pr_number}: stale-review-thread registry could not be read ({e})")
+            return actions
+        if pending_stale_threads:
+            actions.append(f"Skipping merge for PR #{pr_number}: review thread(s) {', '.join(pending_stale_threads)} were resolved against a stale head and could not be reverted")
+            return actions
+
         # Step 1: Check GitHub Actions status using utility function
         # Use switch_branch_on_in_progress=False to just skip instead of exit
         should_continue = check_github_actions_and_exit_if_in_progress(  # type: ignore[arg-type]
@@ -1882,14 +1969,21 @@ def _handle_pr_merge(
                 actions.append(f"Skipping merge for PR #{pr_number} due to 'disable-auto-merge' label")
                 return actions
 
-            # Check for unresolved review threads
-            review_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
-            if review_thread_state.lookup_error:
-                actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+            # Check for unresolved review threads. A thread explicitly claimed as
+            # addressed by a supported automated reviewer's implementation agent
+            # (REQ-001, REQ-011) does not block merge outright; it is instead
+            # carried into a fresh adversarial validation run so an independent
+            # disposition can decide whether to resolve it.
+            claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
+            if claimed_thread_state.lookup_error:
+                actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {claimed_thread_state.lookup_error}")
                 return actions
-            if review_thread_state.has_unresolved:
+            if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 return actions
+            claimed_review_threads = claimed_thread_state.claimed
+            if claimed_review_threads:
+                actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
 
             # Strong-model adversarial validation step. Issue-less PRs have no
             # independent specification oracle, so validation is not applicable.
@@ -1951,13 +2045,16 @@ def _handle_pr_merge(
                         actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
                         return actions
                     if codex_review.completed:
-                        post_codex_thread_state = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+                        post_codex_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
                         if post_codex_thread_state.lookup_error:
                             actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
                             return actions
-                        if post_codex_thread_state.has_unresolved:
+                        if post_codex_thread_state.has_blocking_unresolved:
                             actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
                             return actions
+                        # Codex may have just posted its own review threads; use the
+                        # freshest claimed-thread set for this validation run.
+                        claimed_review_threads = post_codex_thread_state.claimed
 
                     head_sha = pr_data.get("head", {}).get("sha", "")
 
@@ -2000,10 +2097,17 @@ def _handle_pr_merge(
                                     )
                             return actions
                     else:
+                        claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                                val_result = run_adversarial_validation(repo_name, pr_data, config, github_client=github_client)
+                                val_result = run_adversarial_validation(
+                                    repo_name,
+                                    pr_data,
+                                    config,
+                                    github_client=github_client,
+                                    claimed_review_threads_section=claimed_review_threads_section,
+                                )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
@@ -2013,6 +2117,33 @@ def _handle_pr_merge(
                                 diagnostic_category="validation_execution_error",
                                 diagnostic_reason=type(e).__name__,
                             )
+
+                        # Independent thread-completion validation (REQ-001..REQ-010): this
+                        # runs whenever a fresh validation pass produced dispositions,
+                        # regardless of the PR-level verdict (REQ-005 independence).
+                        if claimed_review_threads and val_result.thread_dispositions:
+                            try:
+                                resolved_thread_ids = resolve_addressed_review_threads(
+                                    github_client,
+                                    repo_name,
+                                    pr_number,
+                                    head_sha,
+                                    claimed_review_threads,
+                                    val_result.thread_dispositions,
+                                )
+                                if resolved_thread_ids:
+                                    actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
+                            except StaleReviewThreadResolutionError as e:
+                                # A thread is durably resolved against a stale head and
+                                # could not be rolled back: GitHub's authoritative
+                                # unresolved-thread gate can no longer be trusted for
+                                # this PR, so merge must not proceed this run even if
+                                # every other gate would otherwise allow it.
+                                logger.error(f"Stale review-thread resolution could not be rolled back for PR #{pr_number}: {e}")
+                                actions.append(f"Skipping merge for PR #{pr_number}: review thread {e.thread_id} was resolved against a stale head and could not be reverted")
+                                return actions
+                            except Exception as e:
+                                logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
 
                         publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                         if not publication.success:

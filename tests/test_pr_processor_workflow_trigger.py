@@ -10,6 +10,7 @@ from auto_coder.util.github_action import GitHubActionsStatusResult
 class TestWorkflowTrigger(unittest.TestCase):
     def setUp(self):
         self.github_client = MagicMock()
+        self.github_client.get_pr_review_threads_strict.return_value = []
         self.config = AutomationConfig()
         self.repo_name = "owner/repo"
         self.pr_data = {"number": 123, "head": {"ref": "feature-branch", "sha": "sha123"}}

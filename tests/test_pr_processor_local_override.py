@@ -4,6 +4,14 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _handle_pr_merge
+
+
+def _client():
+    client = MagicMock()
+    client.get_pr_review_threads_strict.return_value = []
+    return client
+
+
 from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 
@@ -71,7 +79,7 @@ class TestPRProcessorLocalOverride:
         mock_get_logs.return_value = "Error logs"
 
         # Execute
-        actions = _handle_pr_merge(MagicMock(), repo_name, pr_data, config, {})
+        actions = _handle_pr_merge(_client(), repo_name, pr_data, config, {})
 
         # Assert
         # 1. Should NOT send feedback to Jules

@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -22,10 +22,21 @@ logger = get_logger(__name__)
 
 
 @dataclass
+class ReviewThreadComment:
+    """One comment within a PR review thread, in chronological order."""
+
+    database_id: Optional[int] = None
+    body: str = ""
+    author_login: str = ""
+
+
+@dataclass
 class ReviewThread:
     id: str = ""
     is_resolved: bool = False
     is_outdated: bool = False
+    comments: List["ReviewThreadComment"] = field(default_factory=list)
+    comments_truncated: bool = False
 
 
 # Safety bound for paginated comment listings (100 comments per page).
@@ -501,6 +512,30 @@ class GitHubClient:
         except Exception as e:
             logger.warning(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
             return None
+
+    @retry_with_backoff()
+    def get_pull_request_head_sha_strict(self, repo_name: str, pr_number: int) -> str:
+        """Fetch the current PR head SHA directly, bypassing every cache.
+
+        Resolution-time safety checks must observe GitHub's live PR head and
+        must fail closed on lookup or schema errors.  In particular, neither
+        ``get_caching_client()`` nor ``get_ghapi_client()`` is suitable here,
+        because both cache GET responses.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+        response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        head = payload.get("head") if isinstance(payload, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        if not isinstance(head_sha, str) or not head_sha:
+            raise RuntimeError(f"GitHub did not return a current head SHA for PR #{pr_number} in {repo_name}")
+        return head_sha
 
     @retry_with_backoff()
     def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -1038,6 +1073,21 @@ class GitHubClient:
         """Get review threads while preserving lookup failures for merge gates."""
         return self._get_pr_review_threads(repo_name, pr_number)
 
+    def get_authenticated_user_login(self) -> str:
+        """Return the login proven by this client's GitHub credential.
+
+        Marker-based safety state may only trust comments authored through the
+        same credential Auto-Coder uses to write those markers.  Keep this a
+        strict lookup: an absent or malformed identity must not widen the set
+        of trusted comment authors.
+        """
+        api = get_ghapi_client(self.token)
+        user = api.users.get_authenticated()
+        login = user.get("login") if isinstance(user, dict) else getattr(user, "login", None)
+        if not isinstance(login, str) or not login:
+            raise RuntimeError("GitHub did not return the authenticated user's login")
+        return login
+
     def _get_pr_review_threads(self, repo_name: str, pr_number: int) -> List[ReviewThread]:
         """Fetch all review-thread pages and let callers decide error handling."""
         owner, repo = repo_name.split("/")
@@ -1054,6 +1104,18 @@ class GitHubClient:
                       id
                       isResolved
                       isOutdated
+                      comments(first: 50) {
+                        pageInfo {
+                          hasNextPage
+                        }
+                        nodes {
+                          databaseId
+                          body
+                          author {
+                            login
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -1082,11 +1144,31 @@ class GitHubClient:
             nodes = review_threads_data.get("nodes") or []
             for node in nodes:
                 if node:
+                    thread_id = node.get("id")
+                    is_resolved = node.get("isResolved")
+                    if not isinstance(thread_id, str) or not thread_id:
+                        raise RuntimeError(f"Review-thread response for PR #{pr_number} contained a thread without a valid ID")
+                    if not isinstance(is_resolved, bool):
+                        raise RuntimeError(f"Review-thread response for PR #{pr_number} contained thread {thread_id} without an explicit resolved state")
+                    comments_data = node.get("comments") or {}
+                    comment_nodes = comments_data.get("nodes") or []
+                    comments = [
+                        ReviewThreadComment(
+                            database_id=comment_node.get("databaseId"),
+                            body=str(comment_node.get("body", "") or ""),
+                            author_login=str(((comment_node.get("author") or {}) or {}).get("login") or ""),
+                        )
+                        for comment_node in comment_nodes
+                        if comment_node
+                    ]
+                    comments_truncated = bool((comments_data.get("pageInfo") or {}).get("hasNextPage"))
                     threads.append(
                         ReviewThread(
-                            id=node.get("id", ""),
-                            is_resolved=bool(node.get("isResolved", False)),
+                            id=thread_id,
+                            is_resolved=is_resolved,
                             is_outdated=bool(node.get("isOutdated", False)),
+                            comments=comments,
+                            comments_truncated=comments_truncated,
                         )
                     )
 
@@ -1113,6 +1195,65 @@ class GitHubClient:
         if not threads:
             return False
         return any(not thread.is_resolved for thread in threads)
+
+    def reply_to_review_thread(self, repo_name: str, pr_number: int, root_comment_database_id: int, body: str) -> None:
+        """Post a reply into an existing PR review-comment thread.
+
+        Raises on any failure so a caller cannot mistake a failed post for a
+        recorded explanation (fail-closed for automatic thread resolution).
+        """
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        api.pulls.create_reply_for_review_comment(owner, repo, pr_number, root_comment_database_id, body=body)
+
+    def resolve_review_thread(self, thread_id: str) -> None:
+        """Resolve a GitHub PR review thread via the ``resolveReviewThread`` mutation.
+
+        Raises on any failure, including a response that does not confirm
+        ``isResolved``, so a caller cannot treat an unresolved thread as
+        resolved (fail-closed for automatic thread resolution).
+        """
+        mutation = """
+            mutation($threadId: ID!) {
+              resolveReviewThread(input: {threadId: $threadId}) {
+                thread {
+                  id
+                  isResolved
+                }
+              }
+            }
+        """
+        response = self.graphql_query(mutation, {"threadId": thread_id})
+        thread = (((response or {}).get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
+        if thread.get("id") != thread_id or thread.get("isResolved") is not True:
+            raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as resolved")
+
+    def unresolve_review_thread(self, thread_id: str) -> None:
+        """Revert a GitHub PR review thread to unresolved via ``unresolveReviewThread``.
+
+        Used to undo a resolution performed against a PR head that turned out
+        to be stale by the time the mutation completed. Raises on any failure,
+        including a response that does not confirm the thread is no longer
+        resolved, so a caller cannot mistake a failed revert for success.
+        """
+        mutation = """
+            mutation($threadId: ID!) {
+              unresolveReviewThread(input: {threadId: $threadId}) {
+                thread {
+                  id
+                  isResolved
+                }
+              }
+            }
+        """
+        response = self.graphql_query(mutation, {"threadId": thread_id})
+        thread = (((response or {}).get("data") or {}).get("unresolveReviewThread") or {}).get("thread") or {}
+        # Fail closed on an ambiguous confirmation: a missing/empty payload or
+        # a payload missing "isResolved" must not be mistaken for success just
+        # because it happens to be falsy. Only an explicit match on this exact
+        # thread ID with isResolved literally False counts as confirmed.
+        if thread.get("id") != thread_id or thread.get("isResolved") is not False:
+            raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as unresolved")
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
         """Check if an issue has a linked pull request.

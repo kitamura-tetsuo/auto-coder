@@ -11,6 +11,7 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     IssueRequirement,
+    ReviewThreadDisposition,
     build_adversarial_validation_context,
     build_file_aware_diff,
     build_issue_requirement_manifest,
@@ -1623,6 +1624,137 @@ class TestRunAdversarialValidation:
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_followup_overturns_initial_addressed_disposition(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """The dynamic check disproves an initial ADDRESSED claim; the
+        follow-up's fresh STILL_VALID must win, never the stale initial one."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
+  ]
+}"""
+        mock_run_tests.return_value = {"success": False, "output": "FAILED tests/test_feature.py::test_reload", "errors": ""}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "PASS",
+  "summary": "Dynamic check disproves the claimed fix",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "The dynamic test reproduces the original defect", "evidence": "FAILED tests/test_feature.py::test_reload"}
+  ]
+}"""
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
+
+        assert len(result.thread_dispositions) == 1
+        assert result.thread_dispositions[0].status == "STILL_VALID"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_followup_confirms_initial_inconclusive_as_addressed(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """The dynamic check proves an initially INCONCLUSIVE thread is fixed."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "INCONCLUSIVE", "rationale": "Cannot tell from the diff alone", "evidence": "No dynamic evidence yet"}
+  ]
+}"""
+        mock_run_tests.return_value = {"success": True, "output": "PASSED tests/test_feature.py::test_reload", "errors": ""}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "PASS",
+  "summary": "Dynamic check proves the fix",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "The dynamic test now exercises and passes the original failing path", "evidence": "PASSED tests/test_feature.py::test_reload"}
+  ]
+}"""
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
+
+        assert len(result.thread_dispositions) == 1
+        assert result.thread_dispositions[0].status == "ADDRESSED"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_followup_omitting_dispositions_does_not_resurrect_stale_ones(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """If the follow-up response omits thread_dispositions entirely, the
+        claimed thread must fail closed to unresolved rather than silently
+        keep the initial (now unverified) disposition."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
+  ]
+}"""
+        mock_run_tests.return_value = {"success": True, "output": "PASSED", "errors": ""}
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        manager = MagicMock()
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = """{
+  "result": "PASS",
+  "summary": "Dynamic check passed",
+  "findings": []
+}"""
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=manager)
+
+        assert result.thread_dispositions == []
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
     def test_run_adversarial_validation_dynamic_check_failure_routes_to_reviewer(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """Failing dynamic check is sent to the reviewer for semantic determination against the counterexample."""
         mock_build_ctx.return_value = AdversarialValidationContext(
@@ -1721,3 +1853,192 @@ class TestRunAdversarialValidation:
         assert result.is_blocked
         assert result.result == "BLOCKED"
         assert "could not be completed" in result.summary
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    def test_dynamic_check_exception_discards_initial_thread_dispositions(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
+        """If the dynamic check that would re-adjudicate a claimed thread
+        fails before a final disposition is obtained, the provisional initial
+        disposition must not survive: it must never be able to resolve a
+        thread when the PR-level result itself is BLOCKED."""
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=["tests/test_feature.py"],
+            issue_context="Issue specification: Must do X.",
+        )
+        mock_run_prompt.return_value = """{
+  "result": "PASS",
+  "summary": "Need dynamic verification of claimed thread",
+  "dynamic_check_requested": "tests/test_feature.py",
+  "findings": [],
+  "thread_dispositions": [
+    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
+  ]
+}"""
+        mock_run_tests.side_effect = RuntimeError("Test runner crashed")
+
+        config = AutomationConfig()
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
+
+        assert result.result == "BLOCKED"
+        assert result.thread_dispositions == []
+
+
+class TestParseThreadDispositions:
+    """Tests for parsing the optional `thread_dispositions` field (issue #1619)."""
+
+    def test_valid_thread_dispositions_are_parsed(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {
+                        "thread_id": "thread-1",
+                        "status": "addressed",
+                        "rationale": "The counter reset bug is fixed in the current head",
+                        "evidence": "Traced the retry path in counter.py:42; it now resets before increment",
+                    }
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "PASS"
+        assert len(result.thread_dispositions) == 1
+        disposition = result.thread_dispositions[0]
+        assert disposition.thread_id == "thread-1"
+        assert disposition.status == "ADDRESSED"
+        assert "counter reset" in disposition.rationale
+
+    def test_missing_thread_dispositions_defaults_to_empty(self):
+        json_resp = '{"result": "PASS", "summary": "Looks good", "findings": []}'
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.thread_dispositions == []
+
+    def test_invalid_status_entry_is_dropped_without_failing_pr_verdict(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "FIXED", "rationale": "x", "evidence": "y"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "PASS"
+        assert result.thread_dispositions == []
+
+    def test_missing_rationale_or_evidence_entry_is_dropped(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "", "evidence": "y"},
+                    {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "x", "evidence": ""},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.thread_dispositions == []
+
+    def test_thread_dispositions_not_a_list_is_ignored(self):
+        json_resp = json.dumps({"result": "PASS", "summary": "Looks good", "findings": [], "thread_dispositions": "not-a-list"})
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "PASS"
+        assert result.thread_dispositions == []
+
+    def test_duplicate_thread_id_invalidates_the_thread(self):
+        """A contradictory/duplicate thread_id (e.g. ADDRESSED then STILL_VALID
+        for the same thread) must not resolve to whichever entry came first;
+        the thread must receive no valid disposition at all (fail-closed)."""
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "first", "evidence": "first"},
+                    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "second", "evidence": "second"},
+                    {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "ok", "evidence": "ok"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert [d.thread_id for d in result.thread_dispositions] == ["thread-2"]
+
+    def test_duplicate_thread_id_invalidates_thread_even_when_one_entry_is_malformed(self):
+        """A duplicate thread_id must be detected from the raw list before
+        per-entry validation: a valid ADDRESSED plus a malformed duplicate
+        (e.g. empty evidence) for the same ID must still yield no disposition
+        for that thread, not silently keep the one valid entry."""
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "valid", "evidence": "valid"},
+                    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "malformed dup", "evidence": ""},
+                    {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "ok", "evidence": "ok"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert [d.thread_id for d in result.thread_dispositions] == ["thread-2"]
+
+    def test_still_valid_and_inconclusive_statuses_parse(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "r1", "evidence": "e1"},
+                    {"thread_id": "thread-2", "status": "INCONCLUSIVE", "rationale": "r2", "evidence": "e2"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        statuses = {d.thread_id: d.status for d in result.thread_dispositions}
+        assert statuses == {"thread-1": "STILL_VALID", "thread-2": "INCONCLUSIVE"}
+
+    def test_a_thread_addressed_is_independent_of_pr_needs_fix(self):
+        """REQ-005 / AC-007: a thread may be ADDRESSED even when the PR itself
+        needs fixes for an unrelated defect."""
+        json_resp = json.dumps(
+            {
+                "result": "NEEDS_FIX",
+                "summary": "Unrelated defect found",
+                "findings": [
+                    {
+                        "requirement_id": "REQ-001",
+                        "violated_requirement": "Must validate input",
+                        "evidence_classification": "DEMONSTRATED",
+                        "reachability": "call foo() with bad input",
+                        "required_behavior": "reject bad input",
+                        "actual_behavior": "accepts bad input",
+                        "evidence": "foo.py:10",
+                        "counterexample": "Given bad input, when foo() runs, then it should reject, but it accepts, and tests still pass because no test covers it",
+                        "anchor_path": "foo.py",
+                    }
+                ],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "r1", "evidence": "e1"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "NEEDS_FIX"
+        assert result.thread_dispositions[0].status == "ADDRESSED"

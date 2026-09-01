@@ -33,6 +33,92 @@ class TestGitHubClient:
         assert client.token == mock_github_token
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_authenticated_user_login(self, mock_get_client, mock_github_token):
+        mock_api = Mock()
+        mock_api.users.get_authenticated.return_value = AttrDict({"login": "auto-coder[bot]"})
+        mock_get_client.return_value = mock_api
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        assert client.get_authenticated_user_login() == "auto-coder[bot]"
+        mock_api.users.get_authenticated.assert_called_once_with()
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_authenticated_user_login_rejects_missing_login(self, mock_get_client, mock_github_token):
+        mock_api = Mock()
+        mock_api.users.get_authenticated.return_value = AttrDict({})
+        mock_get_client.return_value = mock_api
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        with pytest.raises(RuntimeError, match="authenticated user's login"):
+            client.get_authenticated_user_login()
+
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_head_sha_strict_bypasses_cached_client(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {"head": {"sha": "live-head-sha"}}
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        head_sha = client.get_pull_request_head_sha_strict("owner/repo", 42)
+
+        assert head_sha == "live-head-sha"
+        mock_get.assert_called_once_with(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": f"Bearer {mock_github_token}",
+            },
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status.assert_called_once_with()
+
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_head_sha_strict_rejects_missing_sha(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {"head": {}}
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        with pytest.raises(RuntimeError, match="current head SHA"):
+            client.get_pull_request_head_sha_strict("owner/repo", 42)
+
+    def test_resolve_review_thread_rejects_wrong_returned_thread_id(self, mock_github_token):
+        client = GitHubClient.get_instance(mock_github_token)
+        response = {"data": {"resolveReviewThread": {"thread": {"id": "other-thread", "isResolved": True}}}}
+
+        with patch.object(client, "graphql_query", return_value=response):
+            with pytest.raises(RuntimeError, match="did not confirm review thread requested-thread"):
+                client.resolve_review_thread("requested-thread")
+
+    def test_resolve_review_thread_rejects_missing_returned_thread_id(self, mock_github_token):
+        client = GitHubClient.get_instance(mock_github_token)
+        response = {"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}}
+
+        with patch.object(client, "graphql_query", return_value=response):
+            with pytest.raises(RuntimeError, match="did not confirm review thread requested-thread"):
+                client.resolve_review_thread("requested-thread")
+
+    def test_resolve_review_thread_rejects_missing_resolved_state(self, mock_github_token):
+        client = GitHubClient.get_instance(mock_github_token)
+        response = {"data": {"resolveReviewThread": {"thread": {"id": "requested-thread"}}}}
+
+        with patch.object(client, "graphql_query", return_value=response):
+            with pytest.raises(RuntimeError, match="did not confirm review thread requested-thread"):
+                client.resolve_review_thread("requested-thread")
+
+    def test_resolve_review_thread_rejects_false_resolved_state(self, mock_github_token):
+        client = GitHubClient.get_instance(mock_github_token)
+        response = {"data": {"resolveReviewThread": {"thread": {"id": "requested-thread", "isResolved": False}}}}
+
+        with patch.object(client, "graphql_query", return_value=response):
+            with pytest.raises(RuntimeError, match="did not confirm review thread requested-thread"):
+                client.resolve_review_thread("requested-thread")
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_repository_success(self, mock_get_client, mock_github_token):
         """Test successful repository retrieval."""
         # Setup
