@@ -12,7 +12,7 @@ from auto_coder.pr_processor import (
     _take_pr_actions,
     has_unresolved_review_threads,
 )
-from auto_coder.util.gh_cache import GitHubClient, ReviewThread
+from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
@@ -346,3 +346,210 @@ def test_take_pr_actions_defers_on_unresolved_threads(mock_handle_merge):
 
     assert any("Skipping merge for PR #123 due to unresolved review threads" in a for a in actions)
     assert any("PR #123 processing deferred." in a for a in actions)
+
+
+def test_get_pr_review_threads_includes_comments(mock_github_client):
+    mock_response = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "t1",
+                                "isResolved": False,
+                                "isOutdated": False,
+                                "comments": {
+                                    "nodes": [
+                                        {"databaseId": 100, "body": "Original finding", "author": {"login": "chatgpt-codex-connector[bot]"}},
+                                        {"databaseId": 101, "body": "Fixed it", "author": {"login": "agent[bot]"}},
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    mock_github_client.graphql_query.return_value = mock_response
+
+    threads = mock_github_client.get_pr_review_threads("owner/repo", 101)
+    assert len(threads) == 1
+    assert len(threads[0].comments) == 2
+    assert threads[0].comments[0] == ReviewThreadComment(database_id=100, body="Original finding", author_login="chatgpt-codex-connector[bot]")
+    assert threads[0].comments[1].author_login == "agent[bot]"
+
+
+def test_get_pr_review_threads_missing_comments_field_defaults_empty(mock_github_client):
+    mock_response = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [{"id": "t1", "isResolved": False}],
+                    }
+                }
+            }
+        }
+    }
+    mock_github_client.graphql_query.return_value = mock_response
+
+    threads = mock_github_client.get_pr_review_threads("owner/repo", 101)
+    assert threads[0].comments == []
+
+
+def test_resolve_review_thread_success(mock_github_client):
+    mock_github_client.graphql_query.return_value = {"data": {"resolveReviewThread": {"thread": {"id": "t1", "isResolved": True}}}}
+    mock_github_client.resolve_review_thread("t1")  # should not raise
+    mock_github_client.graphql_query.assert_called_once()
+
+
+def test_resolve_review_thread_not_confirmed_raises(mock_github_client):
+    mock_github_client.graphql_query.return_value = {"data": {"resolveReviewThread": {"thread": {"id": "t1", "isResolved": False}}}}
+    with pytest.raises(RuntimeError):
+        mock_github_client.resolve_review_thread("t1")
+
+
+def test_resolve_review_thread_mutation_error_propagates(mock_github_client):
+    mock_github_client.graphql_query.side_effect = Exception("GraphQL mutation failed")
+    with pytest.raises(Exception):
+        mock_github_client.resolve_review_thread("t1")
+
+
+def test_reply_to_review_thread_uses_ghapi(mock_github_client):
+    with patch("auto_coder.util.gh_cache.get_ghapi_client") as mock_get_ghapi:
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+        mock_github_client.reply_to_review_thread("owner/repo", 5, 100, "explanation body")
+        mock_api.pulls.create_reply_for_review_comment.assert_called_once_with("owner", "repo", 5, 100, body="explanation body")
+
+
+def test_reply_to_review_thread_failure_propagates(mock_github_client):
+    with patch("auto_coder.util.gh_cache.get_ghapi_client") as mock_get_ghapi:
+        mock_api = MagicMock()
+        mock_api.pulls.create_reply_for_review_comment.side_effect = Exception("API error")
+        mock_get_ghapi.return_value = mock_api
+        with pytest.raises(Exception):
+            mock_github_client.reply_to_review_thread("owner/repo", 5, 100, "explanation body")
+
+
+class TestClaimedReviewThreadGateState:
+    def test_no_unresolved_threads_short_circuits(self):
+        from auto_coder.pr_processor import _get_claimed_review_thread_state
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.has_unresolved_review_threads.return_value = False
+
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate:
+            from auto_coder.pr_processor import ReviewThreadGateState
+
+            mock_gate.return_value = ReviewThreadGateState(has_unresolved=False)
+            state = _get_claimed_review_thread_state(client, "owner/repo", 101)
+
+        assert state.claimed == ()
+        assert state.has_blocking_unresolved is False
+        assert state.lookup_error is None
+        client.get_pr_review_threads_strict.assert_not_called()
+
+    def test_lookup_error_propagates(self):
+        from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state
+
+        client = MagicMock()
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate:
+            mock_gate.return_value = ReviewThreadGateState(lookup_error="boom")
+            state = _get_claimed_review_thread_state(client, "owner/repo", 101)
+
+        assert state.lookup_error == "boom"
+        assert state.claimed == ()
+
+    def test_claimed_thread_does_not_block(self):
+        from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state
+
+        client = GitHubClient(token="fake_token")
+        client.graphql_query = MagicMock(
+            return_value={
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "id": "t1",
+                                        "isResolved": False,
+                                        "isOutdated": False,
+                                        "comments": {
+                                            "nodes": [
+                                                {"databaseId": 1, "body": "finding", "author": {"login": "chatgpt-codex-connector[bot]"}},
+                                                {"databaseId": 2, "body": "Fixed.\n<!-- auto-coder-review-addressed:v1 -->", "author": {"login": "agent[bot]"}},
+                                            ]
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                }
+            }
+        )
+
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate, patch("auto_coder.pr_processor._resolve_eligible_review_thread_logins", return_value={"chatgpt-codex-connector[bot]"}):
+            mock_gate.return_value = ReviewThreadGateState(has_unresolved=True)
+            state = _get_claimed_review_thread_state(client, "owner/repo", 101)
+
+        assert state.lookup_error is None
+        assert state.has_blocking_unresolved is False
+        assert len(state.claimed) == 1
+        assert state.claimed[0].thread_id == "t1"
+
+    def test_blocking_thread_still_blocks_alongside_claimed(self):
+        from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state
+
+        client = GitHubClient(token="fake_token")
+        client.graphql_query = MagicMock(
+            return_value={
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "id": "t1",
+                                        "isResolved": False,
+                                        "comments": {"nodes": [{"databaseId": 1, "body": "finding", "author": {"login": "chatgpt-codex-connector[bot]"}}, {"databaseId": 2, "body": "Fixed.\n<!-- auto-coder-review-addressed:v1 -->", "author": {"login": "agent[bot]"}}]},
+                                    },
+                                    {
+                                        "id": "t2",
+                                        "isResolved": False,
+                                        "comments": {"nodes": [{"databaseId": 3, "body": "please rename this", "author": {"login": "a-human"}}]},
+                                    },
+                                ],
+                            }
+                        }
+                    }
+                }
+            }
+        )
+
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate, patch("auto_coder.pr_processor._resolve_eligible_review_thread_logins", return_value={"chatgpt-codex-connector[bot]"}):
+            mock_gate.return_value = ReviewThreadGateState(has_unresolved=True)
+            state = _get_claimed_review_thread_state(client, "owner/repo", 101)
+
+        assert state.has_blocking_unresolved is True
+        assert len(state.claimed) == 1
+
+    def test_no_strict_lookup_capability_fails_closed_to_blocking(self):
+        from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state
+
+        client = MagicMock()  # plain MagicMock has no class-level get_pr_review_threads_strict
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state") as mock_gate:
+            mock_gate.return_value = ReviewThreadGateState(has_unresolved=True)
+            state = _get_claimed_review_thread_state(client, "owner/repo", 101)
+
+        assert state.has_blocking_unresolved is True
+        assert state.claimed == ()

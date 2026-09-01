@@ -80,6 +80,26 @@ class RequirementCoverageEntry:
 
 
 @dataclass
+class ReviewThreadDisposition:
+    """Validator's independent disposition for one claimed-addressed review thread.
+
+    ``ADDRESSED`` means the original finding no longer holds on the validated
+    head; ``STILL_VALID`` means the defect remains; ``INCONCLUSIVE`` means the
+    available evidence could not establish either conclusion safely. This is
+    orthogonal to the PR-level ``result`` (a thread may be ADDRESSED while the
+    PR itself is NEEDS_FIX for an unrelated defect, and vice versa).
+    """
+
+    thread_id: str = ""
+    status: str = ""  # "ADDRESSED", "STILL_VALID", "INCONCLUSIVE"
+    rationale: str = ""
+    evidence: str = ""
+
+
+VALID_REVIEW_THREAD_DISPOSITION_STATUSES = {"ADDRESSED", "STILL_VALID", "INCONCLUSIVE"}
+
+
+@dataclass
 class SpecificationGap:
     """Material behavior for which the authoritative Issue defines no policy."""
 
@@ -109,6 +129,7 @@ class AdversarialValidationResult:
     diagnostic_reason: Optional[str] = None
     requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
     specification_gaps: List[SpecificationGap] = field(default_factory=list)
+    thread_dispositions: List[ReviewThreadDisposition] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
@@ -780,6 +801,39 @@ def _extract_finding_from_dict(f: Dict[str, Any]) -> Optional[AdversarialValidat
     return None
 
 
+def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition]:
+    """Parse review-thread dispositions leniently: a malformed entry is dropped.
+
+    A thread disposition is orthogonal metadata (REQ-005): a malformed or
+    incomplete entry must never corrupt the PR-level PASS/NEEDS_FIX verdict.
+    Dropping it simply means that thread receives no valid disposition and
+    therefore stays unresolved (REQ-004, REQ-008) rather than failing the
+    entire validator response closed.
+    """
+    if not isinstance(raw_value, list):
+        return []
+
+    dispositions: List[ReviewThreadDisposition] = []
+    seen_thread_ids: set[str] = set()
+    for item in raw_value:
+        if not isinstance(item, dict):
+            logger.warning("Dropping malformed thread_dispositions entry: not an object")
+            continue
+        thread_id = str(item.get("thread_id", "")).strip()
+        status = str(item.get("status", "")).strip().upper()
+        rationale = str(item.get("rationale", "")).strip()
+        evidence = str(item.get("evidence", "")).strip()
+        if not thread_id or status not in VALID_REVIEW_THREAD_DISPOSITION_STATUSES or not rationale or not evidence:
+            logger.warning(f"Dropping malformed thread_dispositions entry for thread_id={thread_id!r}: incomplete or invalid fields")
+            continue
+        if thread_id in seen_thread_ids:
+            logger.warning(f"Dropping duplicate thread_dispositions entry for thread_id={thread_id!r}")
+            continue
+        seen_thread_ids.add(thread_id)
+        dispositions.append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
+    return dispositions
+
+
 def _optional_positive_int(value: Any) -> Optional[int]:
     """Parse an optional positive JSON integer, rejecting booleans and strings."""
     if value is None:
@@ -1170,6 +1224,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         "result must be PASS, NEEDS_FIX, INCONCLUSIVE, or BLOCKED",
                     )
 
+                thread_dispositions = _extract_thread_dispositions(parsed.get("thread_dispositions", []))
+
                 return AdversarialValidationResult(
                     result=result_val,
                     summary=summary or ("Validation passed" if result_val == "PASS" else f"Validation status: {result_val}"),
@@ -1178,6 +1234,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     dynamic_check_requested=dynamic_check,
                     requirement_coverage=requirement_coverage,
                     specification_gaps=specification_gaps,
+                    thread_dispositions=thread_dispositions,
                 )
             else:
                 return _parse_error(
@@ -1353,6 +1410,7 @@ def run_adversarial_validation(
     github_client: Optional[Any] = None,
     backend_manager: Optional[BackendManager] = None,
     session_registry: Optional[ReviewerSessionRegistry] = None,
+    claimed_review_threads_section: Optional[str] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -1489,6 +1547,7 @@ def run_adversarial_validation(
         changed_files=changed_files_str,
         coverage_status=coverage_status,
         requirement_manifest=requirement_manifest,
+        claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
     )
 
     # 4. Invoke the strong model
@@ -1517,6 +1576,8 @@ def run_adversarial_validation(
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _apply_coverage_and_verdict_precedence(result, context)
+
+    initial_thread_dispositions = result.thread_dispositions
 
     # 6. Dynamic validation on suspicion (if requested)
     if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix:
@@ -1573,6 +1634,10 @@ def run_adversarial_validation(
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
             result = _apply_coverage_and_verdict_precedence(result, context)
+            if not result.thread_dispositions:
+                # The follow-up prompt does not re-request thread dispositions;
+                # retain the initial pass's independent thread verification.
+                result.thread_dispositions = initial_thread_dispositions
 
         except Exception as e:
             logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")

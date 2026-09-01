@@ -513,6 +513,13 @@ pr:
     Every VIOLATED requirement coverage entry MUST have a corresponding concrete finding. Reporting VIOLATED without a finding is a schema error and fails closed.
     Use only exact requirement IDs from the supplied manifest. Any missing, duplicate, or unknown ID is a schema error and fails closed.
 
+    CLAIMED-ADDRESSED REVIEW THREAD VALIDATION:
+    A cloud implementation agent may have replied to an unresolved PR review thread claiming it fixed the original finding, without resolving the thread itself. The "Claimed-Addressed Review Threads" section below lists every such thread eligible for this run. For EACH thread listed there, independently determine whether the ORIGINAL finding described in that thread is actually corrected on the CURRENT PR head, and return exactly one entry in `thread_dispositions` for it:
+    - `ADDRESSED`: the original defect or violated invariant is demonstrably no longer present on the current head.
+    - `STILL_VALID`: the defect or violated invariant remains, on the reported path or an equivalent reachable one.
+    - `INCONCLUSIVE`: the available evidence cannot safely establish either conclusion.
+    Never derive `ADDRESSED` merely because: the implementation agent asserted it is fixed; a thread became GitHub `outdated` or its original line moved/disappeared from the diff; a newly added or renamed test passes; or a commit was pushed. Only actual demonstrated correction of the original reported behavior on the current head justifies `ADDRESSED`. A regression test that does not exercise the originally failing state transition or invariant does not justify `ADDRESSED` either. Every disposition requires a concrete `rationale` grounded in the current implementation and specific `evidence` (a code path, patch excerpt, or dynamic-check result). Only produce a disposition for a thread ID that is exactly listed in the Claimed-Addressed Review Threads section below; never invent a disposition for any other thread. This determination is completely independent of the PR-level `result`: a thread may be ADDRESSED even when the PR overall is NEEDS_FIX for an unrelated defect, and the PR may otherwise PASS while a claimed thread remains STILL_VALID or INCONCLUSIVE.
+
     OUTPUT FORMAT:
     Respond with a JSON object in the following format:
 
@@ -554,6 +561,14 @@ pr:
           "affected_scope": "<Behavior or merge decision affected>",
           "candidate_options": ["<Optional neutral policy descriptions; never requirements>"]
         }
+      ],
+      "thread_dispositions": [
+        {
+          "thread_id": "<exact thread ID from the Claimed-Addressed Review Threads section>",
+          "status": "ADDRESSED" | "STILL_VALID" | "INCONCLUSIVE",
+          "rationale": "<Concrete rationale grounded in the current implementation>",
+          "evidence": "<Specific code path, patch excerpt, or dynamic-check result>"
+        }
       ]
     }
     ```
@@ -571,7 +586,8 @@ pr:
           "evidence": "The supplied patch and tests directly establish this requirement"
         }
       ],
-      "findings": []
+      "findings": [],
+      "thread_dispositions": []
     }
     ```
 
@@ -600,6 +616,9 @@ pr:
 
     File-Aware PR Patch Evidence:
     $pr_diff
+
+    Claimed-Addressed Review Threads (produce a thread_dispositions entry for each; return an empty thread_dispositions list if this says there are none):
+    $claimed_review_threads
 
   adversarial_validation_initial_review: |-
     Your mission: Falsify the implementation of this Pull Request against the original issue specification and acceptance criteria.

@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -22,10 +22,20 @@ logger = get_logger(__name__)
 
 
 @dataclass
+class ReviewThreadComment:
+    """One comment within a PR review thread, in chronological order."""
+
+    database_id: Optional[int] = None
+    body: str = ""
+    author_login: str = ""
+
+
+@dataclass
 class ReviewThread:
     id: str = ""
     is_resolved: bool = False
     is_outdated: bool = False
+    comments: List["ReviewThreadComment"] = field(default_factory=list)
 
 
 # Safety bound for paginated comment listings (100 comments per page).
@@ -1054,6 +1064,15 @@ class GitHubClient:
                       id
                       isResolved
                       isOutdated
+                      comments(first: 50) {
+                        nodes {
+                          databaseId
+                          body
+                          author {
+                            login
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -1082,11 +1101,22 @@ class GitHubClient:
             nodes = review_threads_data.get("nodes") or []
             for node in nodes:
                 if node:
+                    comment_nodes = ((node.get("comments") or {}).get("nodes")) or []
+                    comments = [
+                        ReviewThreadComment(
+                            database_id=comment_node.get("databaseId"),
+                            body=str(comment_node.get("body", "") or ""),
+                            author_login=str(((comment_node.get("author") or {}) or {}).get("login") or ""),
+                        )
+                        for comment_node in comment_nodes
+                        if comment_node
+                    ]
                     threads.append(
                         ReviewThread(
                             id=node.get("id", ""),
                             is_resolved=bool(node.get("isResolved", False)),
                             is_outdated=bool(node.get("isOutdated", False)),
+                            comments=comments,
                         )
                     )
 
@@ -1113,6 +1143,38 @@ class GitHubClient:
         if not threads:
             return False
         return any(not thread.is_resolved for thread in threads)
+
+    def reply_to_review_thread(self, repo_name: str, pr_number: int, root_comment_database_id: int, body: str) -> None:
+        """Post a reply into an existing PR review-comment thread.
+
+        Raises on any failure so a caller cannot mistake a failed post for a
+        recorded explanation (fail-closed for automatic thread resolution).
+        """
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        api.pulls.create_reply_for_review_comment(owner, repo, pr_number, root_comment_database_id, body=body)
+
+    def resolve_review_thread(self, thread_id: str) -> None:
+        """Resolve a GitHub PR review thread via the ``resolveReviewThread`` mutation.
+
+        Raises on any failure, including a response that does not confirm
+        ``isResolved``, so a caller cannot treat an unresolved thread as
+        resolved (fail-closed for automatic thread resolution).
+        """
+        mutation = """
+            mutation($threadId: ID!) {
+              resolveReviewThread(input: {threadId: $threadId}) {
+                thread {
+                  id
+                  isResolved
+                }
+              }
+            }
+        """
+        response = self.graphql_query(mutation, {"threadId": thread_id})
+        thread = (((response or {}).get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
+        if not thread.get("isResolved"):
+            raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as resolved")
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
         """Check if an issue has a linked pull request.

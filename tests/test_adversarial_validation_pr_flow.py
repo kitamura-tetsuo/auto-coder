@@ -1103,7 +1103,13 @@ class TestAdversarialValidationPRFlow:
         _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, current_sha)
-        mock_run_validation.assert_called_once_with("owner/repo", pr_data, config, github_client=client)
+        mock_run_validation.assert_called_once_with(
+            "owner/repo",
+            pr_data,
+            config,
+            github_client=client,
+            claimed_review_threads_section="(No claimed-addressed review threads for this run.)",
+        )
         mock_merge_pr.assert_called_once()
 
 
@@ -1373,3 +1379,91 @@ class TestMaxAdversarialValidationsGating:
         mock_merge_pr.assert_called_once()
         assert any("reached maximum adversarial review limit (1)" in action for action in actions)
         assert any("Successfully merged PR #100" in action for action in actions)
+
+
+class TestClaimedReviewThreadValidationFlow:
+    """End-to-end coverage for issue #1619: a claimed-addressed review thread
+    does not block merge outright; it is carried into a fresh adversarial
+    validation run and resolved only on a valid ADDRESSED disposition."""
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", ""))
+    @patch("auto_coder.pr_processor.resolve_addressed_review_threads")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_claimed_thread_allows_validation_and_gets_resolved(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_resolve,
+        mock_publish,
+        mock_adv_val,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_if_in_progress,
+    ):
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
+        claimed = ClaimedReviewThread(thread_id="thread-1", root_comment_database_id=1, root_author_login="chatgpt-codex-connector[bot]", original_finding="finding", discussion="discussion")
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(claimed=(claimed,), has_blocking_unresolved=False)
+        mock_merge_pr.return_value = True
+        mock_resolve.return_value = ["thread-1"]
+        mock_adv_val.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Pass",
+            findings=[],
+            thread_dispositions=[ReviewThreadDisposition(thread_id="thread-1", status="ADDRESSED", rationale="Verified fix", evidence="Reproduced original path; now passes")],
+        )
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("claimed-addressed review thread" in a for a in actions)
+        mock_adv_val.assert_called_once()
+        _, call_kwargs = mock_adv_val.call_args
+        assert "thread-1" in call_kwargs["claimed_review_threads_section"]
+        mock_resolve.assert_called_once()
+        resolve_args = mock_resolve.call_args[0]
+        assert resolve_args[4] == (claimed,)
+        assert any("Resolved 1 claimed review thread" in a for a in actions)
+        assert any("Successfully merged PR #123" in a for a in actions)
+        mock_merge_pr.assert_called_once()
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._get_claimed_review_thread_state")
+    def test_blocking_unresolved_thread_still_blocks_merge(
+        self,
+        mock_claimed_state,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_if_in_progress,
+    ):
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_claimed_state.return_value = ClaimedReviewThreadGateState(has_blocking_unresolved=True)
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+        client = MagicMock()
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("Skipping merge for PR #123 due to unresolved review threads" in a for a in actions)

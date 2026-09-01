@@ -11,6 +11,7 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     IssueRequirement,
+    ReviewThreadDisposition,
     build_adversarial_validation_context,
     build_file_aware_diff,
     build_issue_requirement_manifest,
@@ -1721,3 +1722,133 @@ class TestRunAdversarialValidation:
         assert result.is_blocked
         assert result.result == "BLOCKED"
         assert "could not be completed" in result.summary
+
+
+class TestParseThreadDispositions:
+    """Tests for parsing the optional `thread_dispositions` field (issue #1619)."""
+
+    def test_valid_thread_dispositions_are_parsed(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {
+                        "thread_id": "thread-1",
+                        "status": "addressed",
+                        "rationale": "The counter reset bug is fixed in the current head",
+                        "evidence": "Traced the retry path in counter.py:42; it now resets before increment",
+                    }
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "PASS"
+        assert len(result.thread_dispositions) == 1
+        disposition = result.thread_dispositions[0]
+        assert disposition.thread_id == "thread-1"
+        assert disposition.status == "ADDRESSED"
+        assert "counter reset" in disposition.rationale
+
+    def test_missing_thread_dispositions_defaults_to_empty(self):
+        json_resp = '{"result": "PASS", "summary": "Looks good", "findings": []}'
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.thread_dispositions == []
+
+    def test_invalid_status_entry_is_dropped_without_failing_pr_verdict(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "FIXED", "rationale": "x", "evidence": "y"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "PASS"
+        assert result.thread_dispositions == []
+
+    def test_missing_rationale_or_evidence_entry_is_dropped(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "", "evidence": "y"},
+                    {"thread_id": "thread-2", "status": "ADDRESSED", "rationale": "x", "evidence": ""},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.thread_dispositions == []
+
+    def test_thread_dispositions_not_a_list_is_ignored(self):
+        json_resp = json.dumps({"result": "PASS", "summary": "Looks good", "findings": [], "thread_dispositions": "not-a-list"})
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "PASS"
+        assert result.thread_dispositions == []
+
+    def test_duplicate_thread_id_second_entry_dropped(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "first", "evidence": "first"},
+                    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "second", "evidence": "second"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert len(result.thread_dispositions) == 1
+        assert result.thread_dispositions[0].rationale == "first"
+
+    def test_still_valid_and_inconclusive_statuses_parse(self):
+        json_resp = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Looks good",
+                "findings": [],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "STILL_VALID", "rationale": "r1", "evidence": "e1"},
+                    {"thread_id": "thread-2", "status": "INCONCLUSIVE", "rationale": "r2", "evidence": "e2"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        statuses = {d.thread_id: d.status for d in result.thread_dispositions}
+        assert statuses == {"thread-1": "STILL_VALID", "thread-2": "INCONCLUSIVE"}
+
+    def test_a_thread_addressed_is_independent_of_pr_needs_fix(self):
+        """REQ-005 / AC-007: a thread may be ADDRESSED even when the PR itself
+        needs fixes for an unrelated defect."""
+        json_resp = json.dumps(
+            {
+                "result": "NEEDS_FIX",
+                "summary": "Unrelated defect found",
+                "findings": [
+                    {
+                        "requirement_id": "REQ-001",
+                        "violated_requirement": "Must validate input",
+                        "evidence_classification": "DEMONSTRATED",
+                        "reachability": "call foo() with bad input",
+                        "required_behavior": "reject bad input",
+                        "actual_behavior": "accepts bad input",
+                        "evidence": "foo.py:10",
+                        "counterexample": "Given bad input, when foo() runs, then it should reject, but it accepts, and tests still pass because no test covers it",
+                        "anchor_path": "foo.py",
+                    }
+                ],
+                "thread_dispositions": [
+                    {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "r1", "evidence": "e1"},
+                ],
+            }
+        )
+        result = parse_adversarial_validation_response(json_resp)
+        assert result.result == "NEEDS_FIX"
+        assert result.thread_dispositions[0].status == "ADDRESSED"
