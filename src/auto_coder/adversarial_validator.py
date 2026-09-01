@@ -30,7 +30,7 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v7"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v8"
 CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
 TEST_ORACLE_GAP_STATUSES = {"OPEN", "RESOLVED", "INVALID"}
 TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
@@ -45,6 +45,7 @@ class AdversarialValidationFinding:
     """Demonstrated specification violation identified during validation."""
 
     requirement_id: str = ""
+    requirement_ids: List[str] = field(default_factory=list)
     violated_requirement: str = ""
     reachability: str = ""
     required_behavior: str = ""
@@ -58,6 +59,11 @@ class AdversarialValidationFinding:
     anchor_line: Optional[int] = None
     anchor_side: str = "RIGHT"
     anchor_start_line: Optional[int] = None
+
+    @property
+    def all_requirement_ids(self) -> List[str]:
+        """Return every requirement implicated by this concrete finding."""
+        return list(dict.fromkeys([requirement_id for requirement_id in [self.requirement_id, *self.requirement_ids] if requirement_id]))
 
 
 @dataclass
@@ -305,7 +311,8 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     if result.findings:
         lines.extend(["", f"### Findings ({len(result.findings)})"])
         for index, finding in enumerate(result.findings, start=1):
-            requirement_label = f"`{finding.requirement_id}`: " if finding.requirement_id else ""
+            requirement_label = ", ".join(f"`{requirement_id}`" for requirement_id in finding.all_requirement_ids)
+            requirement_label = f"{requirement_label}: " if requirement_label else ""
             lines.extend(["", f"#### {index}. Violated requirement", f"{requirement_label}{_bounded_comment_field(finding.violated_requirement) or 'Not specified.'}"])
             if finding.counterexample.strip():
                 lines.extend(["", "**Counterexample**", "", _bounded_comment_field(finding.counterexample)])
@@ -411,19 +418,7 @@ def format_adversarial_review_summary(
     if unresolved_dispositions:
         body += "\n\n### Unresolved review-thread dispositions"
         for disposition in unresolved_dispositions:
-            body += "\n\n" + "\n".join(
-                [
-                    f"#### `{_bounded_comment_field(disposition.thread_id)}`: {disposition.status}",
-                    "",
-                    "**Rationale**",
-                    "",
-                    _bounded_comment_field(disposition.rationale),
-                    "",
-                    "**Evidence**",
-                    "",
-                    _bounded_comment_field(disposition.evidence),
-                ]
-            )
+            body += f"\n- `{_bounded_comment_field(disposition.thread_id)}`: **{disposition.status}** (details remain in the existing thread)"
     return body
 
 
@@ -490,7 +485,8 @@ def format_change_provenance_disposition(disposition: ReviewThreadDisposition, v
 
 def format_adversarial_finding_comment(finding: AdversarialValidationFinding) -> str:
     """Render all actionable data for one independently resolvable thread."""
-    requirement_label = f"`{finding.requirement_id}`: " if finding.requirement_id else ""
+    requirement_label = ", ".join(f"`{requirement_id}`" for requirement_id in finding.all_requirement_ids)
+    requirement_label = f"{requirement_label}: " if requirement_label else ""
     lines = [
         "### Auto-Coder adversarial finding",
         "",
@@ -1441,7 +1437,6 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             continue
 
                         required_fields = {
-                            "requirement_id": str(item.get("requirement_id", "")).strip(),
                             "violated_requirement": str(item.get("violated_requirement", "")).strip(),
                             "reachability": str(item.get("reachability", "")).strip(),
                             "required_behavior": str(item.get("required_behavior", "")).strip(),
@@ -1450,6 +1445,21 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             "counterexample": str(item.get("counterexample", "")).strip(),
                             "anchor_path": str(item.get("anchor_path", "")).strip(),
                         }
+                        raw_finding_requirement_ids = item.get("requirement_ids", [])
+                        if not isinstance(raw_finding_requirement_ids, list):
+                            return _parse_error(raw_response, "schema_error", "Malformed finding requirement IDs", "requirement_ids must be a list")
+                        finding_requirement_ids = list(
+                            dict.fromkeys(
+                                requirement_id
+                                for requirement_id in [
+                                    str(item.get("requirement_id", "")).strip(),
+                                    *(str(value).strip() for value in raw_finding_requirement_ids),
+                                ]
+                                if requirement_id
+                            )
+                        )
+                        if not finding_requirement_ids:
+                            required_fields["requirement_ids"] = ""
                         missing_fields = [name for name, value in required_fields.items() if not value]
                         if missing_fields:
                             return _parse_error(
@@ -1466,7 +1476,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                         findings.append(
                             AdversarialValidationFinding(
-                                requirement_id=required_fields["requirement_id"],
+                                requirement_id=finding_requirement_ids[0],
+                                requirement_ids=finding_requirement_ids,
                                 violated_requirement=req,
                                 reachability=required_fields["reachability"],
                                 required_behavior=required_fields["required_behavior"],
@@ -1482,6 +1493,31 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                                 anchor_start_line=_optional_positive_int(item.get("anchor_start_line")),
                             )
                         )
+
+                # A finding is a concrete counterexample, not a requirement
+                # perspective. Compact duplicate perspectives while retaining
+                # independent findings whose observable path or fix differs.
+                compacted_findings: List[AdversarialValidationFinding] = []
+                findings_by_counterexample: Dict[tuple[str, ...], AdversarialValidationFinding] = {}
+                for finding in findings:
+                    identity = (
+                        finding.anchor_path,
+                        str(finding.anchor_line or ""),
+                        finding.reachability,
+                        finding.required_behavior,
+                        finding.actual_behavior,
+                        finding.evidence,
+                        finding.counterexample,
+                        finding.suggested_regression_scenario,
+                    )
+                    existing = findings_by_counterexample.get(identity)
+                    if existing is None:
+                        findings_by_counterexample[identity] = finding
+                        compacted_findings.append(finding)
+                        continue
+                    existing.requirement_ids = list(dict.fromkeys([*existing.all_requirement_ids, *finding.all_requirement_ids]))
+                    existing.violated_requirement = " ".join(dict.fromkeys(value for value in [existing.violated_requirement, finding.violated_requirement] if value))
+                findings = compacted_findings
 
                 if unverified_suspicion and not findings:
                     for entry in requirement_coverage:
@@ -1714,7 +1750,7 @@ def _apply_coverage_and_verdict_precedence(
     unresolved_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status not in {"VERIFIED", "IRRELEVANT"})
     incomplete_requirement_ids = missing_requirement_ids + unresolved_requirement_ids
     violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
-    finding_requirement_ids = {finding.requirement_id for finding in result.findings}
+    finding_requirement_ids = {requirement_id for finding in result.findings for requirement_id in finding.all_requirement_ids}
     unknown_finding_requirement_ids = sorted(finding_requirement_ids - expected_requirement_ids)
     gap_requirement_ids = {gap.requirement_id for gap in result.test_oracle_gaps}
     unknown_gap_requirement_ids = sorted(gap_requirement_ids - expected_requirement_ids)
@@ -1772,6 +1808,14 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = "Contradictory validator response: violated requirements were reported without concrete findings"
         result.diagnostic_category = "violated_requirement_without_finding"
         result.diagnostic_reason = reason
+        return result
+
+    unrepresented_violated_ids = sorted(set(violated_requirement_ids) - finding_requirement_ids)
+    if unrepresented_violated_ids:
+        result.result = "ERROR"
+        result.summary = "Contradictory validator response: violated requirements lacked a matching concrete finding"
+        result.diagnostic_category = "violated_requirement_without_matching_finding"
+        result.diagnostic_reason = f"No finding references: {', '.join(unrepresented_violated_ids)}"
         return result
 
     if result.findings:

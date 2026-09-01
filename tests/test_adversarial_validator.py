@@ -119,9 +119,74 @@ def test_review_summary_publishes_concrete_still_valid_provenance(rationale: str
     body = format_adversarial_review_summary(result, "abc123")
 
     assert "Issue requirements remain verified" in body
-    assert "`provenance-1`: STILL_VALID" in body
-    assert rationale in body
-    assert evidence in body
+    assert "`provenance-1`: **STILL_VALID**" in body
+    assert rationale not in body
+    assert evidence not in body
+    assert "details remain in the existing thread" in body
+
+
+def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None:
+    shared = {
+        "evidence_classification": "DEMONSTRATED",
+        "reachability": "The status handler reaches the exception branch",
+        "required_behavior": "Propagate fatal lookup failure",
+        "actual_behavior": "Returns success without setting failed status",
+        "evidence": "handler.py:42 catches and returns",
+        "counterexample": "Given a lookup error, when status runs, then failure is required, but success is returned, and tests omit errors",
+        "anchor_path": "handler.py",
+        "suggested_regression_scenario": "Raise from lookup and assert failed status",
+    }
+    response = json.dumps(
+        {
+            "result": "NEEDS_FIX",
+            "findings": [
+                {**shared, "requirement_id": "REQ-001", "violated_requirement": "Failures propagate"},
+                {**shared, "requirement_id": "REQ-002", "violated_requirement": "Status distinguishes failure"},
+            ],
+        }
+    )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert len(result.findings) == 1
+    assert result.findings[0].all_requirement_ids == ["REQ-001", "REQ-002"]
+    assert "Failures propagate" in result.findings[0].violated_requirement
+    assert "Status distinguishes failure" in result.findings[0].violated_requirement
+
+
+def test_requirement_coverage_stays_violated_for_grouped_current_finding() -> None:
+    context = AdversarialValidationContext(issue_requirements=[IssueRequirement("REQ-001", "Propagate"), IssueRequirement("REQ-002", "Distinguish")])
+    result = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "NEEDS_FIX",
+                "requirement_coverage": [
+                    {"requirement_id": "REQ-001", "status": "VIOLATED", "evidence": "path B"},
+                    {"requirement_id": "REQ-002", "status": "VIOLATED", "evidence": "path B"},
+                ],
+                "findings": [
+                    {
+                        "requirement_ids": ["REQ-001", "REQ-002"],
+                        "violated_requirement": "Failure path B violates both contracts",
+                        "evidence_classification": "DEMONSTRATED",
+                        "reachability": "entry -> path B",
+                        "required_behavior": "report failure distinctly",
+                        "actual_behavior": "reports success",
+                        "evidence": "path_b.py:10",
+                        "counterexample": "Given failure B, when invoked, failure is required, but success occurs, and tests omit B",
+                        "anchor_path": "path_b.py",
+                    }
+                ],
+                "thread_dispositions": [{"thread_id": "path-a", "status": "ADDRESSED", "rationale": "A is fixed", "evidence": "path_a.py now propagates"}],
+            }
+        )
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "NEEDS_FIX"
+    assert [entry.status for entry in checked.requirement_coverage] == ["VIOLATED", "VIOLATED"]
+    assert checked.thread_dispositions[0].status == "ADDRESSED"
 
 
 class TestExtractChangedTestFiles:

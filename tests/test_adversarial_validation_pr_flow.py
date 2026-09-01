@@ -1473,8 +1473,9 @@ class TestClaimedReviewThreadValidationFlow:
         assert unresolved == {"provenance-1"}
         assert result.result == "INCONCLUSIVE"
         assert result.summary.startswith("All Issue requirements remain verified.")
-        assert rationale in published_body
-        assert evidence in published_body
+        assert rationale not in published_body
+        assert evidence not in published_body
+        assert "details remain in the existing thread" in published_body
 
     def test_new_provenance_reply_revalidates_and_passes_same_sha(self):
         from auto_coder.adversarial_validator import ReviewThreadDisposition
