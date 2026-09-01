@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -822,7 +822,37 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
         assert still_blocked == []
+        assert client.get_pull_request_head_sha_strict.call_count == 2
         client.unresolve_review_thread.assert_not_called()
+
+    def test_head_change_during_marker_scan_fails_closed_without_mutation(self, tmp_path):
+        """[P1] H1 may match the marker at comparison time while H2 lands
+        before the scan returns. The post-scan authoritative read must catch
+        that race and prevent the H1 marker from being dismissed on H2."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
+        client.get_pull_request_head_sha_strict.side_effect = ["sha1", "sha2"]
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                ],
+            )
+        ]
+
+        with pytest.raises(StaleReviewThreadRegistryError, match="Could not scan GitHub review threads"):
+            retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert client.get_pull_request_head_sha_strict.call_args_list == [
+            call("owner/repo", 42),
+            call("owner/repo", 42),
+        ]
+        client.unresolve_review_thread.assert_not_called()
+        client.reply_to_review_thread.assert_not_called()
 
     def test_marker_with_stale_head_is_still_pending(self, tmp_path):
         """The head-aware comparison only suppresses staleness when nothing
@@ -872,13 +902,16 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert still_blocked == []
         client.get_pull_request.assert_not_called()
-        client.get_pull_request_head_sha_strict.assert_called_once_with("owner/repo", 42)
+        assert client.get_pull_request_head_sha_strict.call_args_list == [
+            call("owner/repo", 42),
+            call("owner/repo", 42),
+        ]
         client.unresolve_review_thread.assert_called_once_with("thread-1")
 
     def test_head_aware_marker_lookup_failure_fails_closed(self, tmp_path):
         """If the current-head lookup itself fails, the marker's staleness
-        cannot be ruled out, so the thread must remain treated as pending
-        (fail closed) rather than being silently skipped."""
+        cannot be ruled out, so processing must stop without mutating the
+        thread rather than silently skipping or guessing its state."""
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
         client.get_authenticated_user_login.return_value = "agent[bot]"
@@ -894,10 +927,10 @@ class TestRetryPendingStaleReviewThreadRollbacks:
             )
         ]
 
-        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+        with pytest.raises(StaleReviewThreadRegistryError, match="Could not scan GitHub review threads"):
+            retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
-        assert still_blocked == []
-        client.unresolve_review_thread.assert_called_once_with("thread-1")
+        client.unresolve_review_thread.assert_not_called()
 
     def test_no_pending_blockers_is_a_no_op(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")

@@ -292,8 +292,11 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
     close-out ``STALE_BLOCKER_CLEARED_MARKER`` write from making a
     still-valid, current-head resolution look stale on a later run. A bare,
     headless ``STALE_BLOCKER_MARKER`` (legacy/unknown provenance) or a
-    failure to determine the current head is always treated as pending,
-    fail-closed.
+    failure to determine the current head fails the scan closed. When a
+    head-bound marker is compared with the current head, a second
+    authoritative lookup after every thread has been scanned must return the
+    same head. This brackets the marker decision with a stable head snapshot
+    so a push during the scan cannot make a just-dismissed marker stale.
     """
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
     pending: dict[str, Optional[int]] = {}
@@ -307,11 +310,7 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
         nonlocal current_head_sha, current_head_fetched
         if not current_head_fetched:
             current_head_fetched = True
-            try:
-                current_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
-            except Exception as exc:
-                logger.error(f"Could not determine current PR head while scanning stale-resolution markers on PR #{pr_number}: {exc}")
-                current_head_sha = None
+            current_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
         return current_head_sha
 
     def _trusted_marker_author() -> str:
@@ -357,6 +356,11 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
             # Nothing has changed since this marker was posted; not stale.
             continue
         pending[thread.id] = root_comment_database_id
+
+    if current_head_fetched:
+        final_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
+        if final_head_sha != current_head_sha:
+            raise RuntimeError(f"PR #{pr_number} head changed while scanning stale-resolution markers " f"({current_head_sha} -> {final_head_sha})")
     return pending, incomplete_thread_ids
 
 
