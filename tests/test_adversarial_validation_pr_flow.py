@@ -1600,6 +1600,79 @@ class TestClaimedReviewThreadValidationFlow:
         merge_pr.assert_called_once()
         assert any("Successfully merged PR #123" in action for action in second_actions)
 
+    def test_ambiguous_publication_pass_does_not_merge_reopened_thread_without_revalidation(self, tmp_path, monkeypatch):
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread, change_provenance_reply_fingerprint
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        head_sha = "same-head-ambiguous-publication"
+        claimed = ClaimedReviewThread(
+            thread_id="provenance-1",
+            root_comment_database_id=51,
+            root_author_login="auto-coder-reviewer[bot]",
+            original_finding="Explain generated.bin provenance",
+            discussion="agent[bot]: Generated from the required source.\n<!-- auto-coder-review-addressed:v1 -->",
+            is_change_provenance=True,
+            claim_evidence="agent[bot]: Generated from the required source.\n<!-- auto-coder-review-addressed:v1 -->",
+        )
+        fingerprint = change_provenance_reply_fingerprint([claimed])
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Provenance independently verified",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="provenance-1",
+                    status="ADDRESSED",
+                    rationale="The generated artifact matches its intentional source",
+                    evidence="The source and generated output diffs correspond exactly",
+                )
+            ],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_issue.return_value = {"number": 99, "title": "Contract", "body": "Required behavior"}
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": head_sha}}
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
+            patch(
+                "auto_coder.pr_processor._get_published_adversarial_validation_status",
+                side_effect=[("INCONCLUSIVE", None), ("INCONCLUSIVE", None), ("PASS", None)],
+            ),
+            patch(
+                "auto_coder.pr_processor._get_published_adversarial_validation_comment",
+                side_effect=[("old INCONCLUSIVE review", None), (f"new durable PASS\n{fingerprint}", None)],
+            ),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch(
+                "auto_coder.pr_processor.publish_adversarial_review",
+                side_effect=[
+                    ReviewPublicationResult(False, "APPROVE", "response timeout after POST"),
+                    ReviewPublicationResult(True, "APPROVE", ""),
+                ],
+            ),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["provenance-1"]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
+        ):
+            first_actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+            assert merge_pr.call_count == 0
+            second_actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("Reopened 1 review thread" in action for action in first_actions)
+        assert any("saved PASS still has an unresolved provenance thread" in action for action in second_actions)
+        assert run_validation.call_count == 2
+        assert resolve_threads.call_count == 2
+        merge_pr.assert_called_once()
+        assert any("Successfully merged PR #123" in action for action in second_actions)
+
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")

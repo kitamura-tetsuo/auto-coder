@@ -159,6 +159,41 @@ def _enforce_unresolved_provenance_gate(
     return unresolved_ids
 
 
+def _reconcile_failed_adversarial_publication(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    result: AdversarialValidationResult,
+) -> Tuple[bool, Optional[str]]:
+    """Determine whether a failed client call nevertheless durably published."""
+    status, status_error = _get_published_adversarial_validation_status(
+        github_client,
+        repo_name,
+        pr_number,
+        head_sha,
+    )
+    if status_error:
+        return False, status_error
+    expected_status = result.result.strip().upper()
+    if expected_status == "PASS" and result.specification_gaps:
+        expected_status = "PASS_WITH_SPECIFICATION_GAPS"
+    if status != expected_status:
+        return False, None
+    if result.clarification_reply_fingerprint:
+        report, report_error = _get_published_adversarial_validation_comment(
+            github_client,
+            repo_name,
+            pr_number,
+            head_sha,
+        )
+        if report_error:
+            return False, report_error
+        if not report or result.clarification_reply_fingerprint not in report:
+            return False, None
+    return True, None
+
+
 def _resolve_eligible_review_thread_ids(repo_name: str) -> Set[int]:
     """Return configured stable identity IDs eligible for adjudication."""
     configured_ids = get_pr_review_allowlist_from_config(repo_name=repo_name)
@@ -2102,6 +2137,7 @@ def _handle_pr_merge(
                         return actions
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
                     has_new_provenance_evidence = False
+                    saved_pass_has_unresolved_provenance = published_status == "PASS" and bool(provenance_fingerprint)
                     if published_status and provenance_fingerprint:
                         published_report, report_error = _get_published_adversarial_validation_comment(
                             github_client,
@@ -2112,7 +2148,7 @@ def _handle_pr_merge(
                         if report_error:
                             actions.append(f"Could not compare prior provenance evidence for PR #{pr_number}: {report_error}; validation not started")
                             return actions
-                        has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report)
+                        has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report) or saved_pass_has_unresolved_provenance
 
                     if published_status and not has_new_provenance_evidence:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
@@ -2140,7 +2176,10 @@ def _handle_pr_merge(
                             return actions
                     else:
                         if has_new_provenance_evidence:
-                            actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} using new implementer provenance evidence")
+                            if saved_pass_has_unresolved_provenance:
+                                actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} because a saved PASS still has an unresolved provenance thread")
+                            else:
+                                actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} using new implementer provenance evidence")
                         claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
@@ -2201,7 +2240,17 @@ def _handle_pr_merge(
 
                         publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                         if not publication.success:
-                            if resolved_thread_ids:
+                            publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
+                                github_client,
+                                repo_name,
+                                pr_number,
+                                head_sha,
+                                val_result,
+                            )
+                            if publication_confirmed:
+                                published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
+                                actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
+                            elif resolved_thread_ids:
                                 reopened_thread_ids = reopen_review_threads_after_publication_failure(
                                     github_client,
                                     repo_name,
@@ -2213,10 +2262,13 @@ def _handle_pr_merge(
                                     actions.append(f"Reopened {len(reopened_thread_ids)} review thread(s) after adversarial review publication failed")
                                 if len(reopened_thread_ids) != len(resolved_thread_ids):
                                     actions.append("Some review-thread publication rollbacks remain pending and will be retried before later merge processing")
-                            actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}")
-                            logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
-                            return actions
-                        actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+                            if not publication_confirmed:
+                                reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
+                                actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
+                                logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                                return actions
+                        else:
+                            actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
 
                     if published_status == "PASS":
                         pass
