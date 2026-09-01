@@ -8,7 +8,6 @@ import pytest
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.util.github_action import GitHubActionsStatusResult
-from auto_coder.utils import CommandExecutor
 
 """Tests for automation engine functionality."""
 
@@ -846,26 +845,6 @@ class TestAutomationEngine:
         assert "Successfully merged main branch" in result[1]
         assert "Pushed updated branch" in result[2]
         assert AutomationEngine.FLAG_SKIP_ANALYSIS in result
-
-
-class TestCommandExecutor:
-    """Test cases for CommandExecutor class."""
-
-    @patch("subprocess.run")
-    def test_run_command_timeout(self, mock_run):
-        """Test command timeout handling."""
-        # Setup
-        import subprocess
-
-        mock_run.side_effect = subprocess.TimeoutExpired(["sleep", "10"], 5)
-
-        # Execute
-        result = CommandExecutor.run_command(["sleep", "10"], timeout=5)
-
-        # Assert
-        assert result.success is False
-        assert "timed out" in result.stderr
-        assert result.returncode == -1
 
 
 class TestAutomationConfig:

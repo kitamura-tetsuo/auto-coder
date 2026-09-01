@@ -89,12 +89,12 @@ class TestCloudRunPersistence:
             repo = CloudRunRepository("owner/repo", storage_path=storage_path)
             assert repo.get(issue_number=999, attempt=0) is None
 
-    def test_from_dict_converts_supported_json_number_values(self):
+    def test_from_dict_parses_numeric_strings_from_json(self):
         run = CloudRun.from_dict(
             {
                 "repo_name": "owner/repo",
                 "issue_number": "100",
-                "attempt": 2,
+                "attempt": "2",
                 "provider": "codex-cloud",
                 "task_id": "task-A",
                 "pull_request_numbers": ["200", 201],
@@ -106,12 +106,12 @@ class TestCloudRunPersistence:
         assert run.pull_request_numbers == [200, 201]
 
     def test_from_dict_rejects_non_list_pull_request_numbers(self):
-        with pytest.raises(ValueError, match="pull_request_numbers.*list"):
+        with pytest.raises(TypeError, match="pull_request_numbers must be a list"):
             CloudRun.from_dict(
                 {
                     "repo_name": "owner/repo",
                     "issue_number": 100,
-                    "attempt": 2,
+                    "attempt": 0,
                     "provider": "codex-cloud",
                     "task_id": "task-A",
                     "pull_request_numbers": "200",

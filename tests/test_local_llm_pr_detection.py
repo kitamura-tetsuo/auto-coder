@@ -130,7 +130,12 @@ class TestCreatePrForIssueMarker:
         config = AutomationConfig()
         config.PR_LABEL_COPYING_ENABLED = False
 
-        with patch("auto_coder.issue_processor.get_ghapi_client", return_value=mock_api), patch("auto_coder.issue_processor.validate_issue_references"):
+        with (
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.issue_processor.run_llm_noedit_prompt", side_effect=RuntimeError("No test backend configured")),
+            patch("auto_coder.issue_processor.get_ghapi_client", return_value=mock_api),
+            patch("auto_coder.issue_processor.validate_issue_references"),
+        ):
             res = _create_pr_for_issue(
                 repo_name="owner/repo",
                 issue_data={"number": 10, "title": "Test Issue", "body": "Issue details"},

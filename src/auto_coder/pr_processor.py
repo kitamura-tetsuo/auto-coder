@@ -4029,8 +4029,8 @@ def _poll_pr_mergeable(
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
 
-        deadline = datetime.now().timestamp() + timeout_seconds
-        while datetime.now().timestamp() < deadline:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
             try:
                 pr_info = api.pulls.get(owner, repo, pr_number)
                 if pr_info.get("mergeable") is True:

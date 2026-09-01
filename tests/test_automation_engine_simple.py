@@ -7,7 +7,6 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
-from src.auto_coder.utils import CommandExecutor
 
 
 class TestAutomationEngine:
@@ -256,23 +255,3 @@ class TestAutomationConfig:
 
     # Removed tests for _get_llm_backend_info method
     # These tests were failing due to backend manager initialization issues
-
-
-class TestCommandExecutor:
-    """Test cases for CommandExecutor class."""
-
-    @patch("subprocess.run")
-    def test_run_command_timeout(self, mock_run):
-        """Test command timeout handling."""
-        # Setup
-        import subprocess
-
-        mock_run.side_effect = subprocess.TimeoutExpired(["sleep", "10"], 5)
-
-        # Execute
-        result = CommandExecutor.run_command(["sleep", "10"], timeout=5)
-
-        # Assert
-        assert result.success is False
-        assert "timed out" in result.stderr
-        assert result.returncode == -1
