@@ -207,3 +207,68 @@ class TestCodexCloudPRCIFlow:
             actions = result.actions_taken
             assert any("Codex-created PR, sending continuation request to Codex Cloud" in a for a in actions)
             assert any("Codex Cloud will handle fixing PR #200, skipping local fixes" in a for a in actions)
+
+    @pytest.mark.parametrize(
+        ("check_labels", "current_branch"),
+        [
+            (False, "feature-branch"),
+            (True, "feature-branch"),
+        ],
+        ids=["wip-resumption-or-only", "already-on-pr-branch"],
+    )
+    def test_codex_cloud_origin_prevents_local_ci_repair(
+        self,
+        config,
+        mock_github_client,
+        check_labels,
+        current_branch,
+    ):
+        """Codex Cloud routing is independent of label mode and checkout state."""
+        from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
+
+        config.CHECK_LABELS = check_labels
+        pr_data = {
+            "number": 201,
+            "title": "Implement cloud feature",
+            "body": "https://chatgpt.com/codex/tasks/task_e_pr201",
+            "state": "open",
+            "user": {"login": "octocat"},
+            "head": {"ref": "feature-branch", "sha": "abcdef123456"},
+            "base": {"ref": "main"},
+            "mergeable": True,
+            "draft": False,
+        }
+        mock_checks = GitHubActionsStatusResult(success=False, ids=[1002], in_progress=False)
+        mock_detailed = DetailedChecksResult(
+            success=False,
+            total_checks=1,
+            failed_checks=[{"name": "Tests", "conclusion": "failure"}],
+            all_checks=[{"name": "Tests", "conclusion": "failure"}],
+            has_in_progress=False,
+        )
+
+        with (
+            patch("auto_coder.pr_processor.CommandExecutor.run_command") as run_command,
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=mock_checks),
+            patch("auto_coder.pr_processor.get_detailed_checks_from_history", return_value=mock_detailed),
+            patch("auto_coder.pr_processor._send_codex_cloud_error_feedback", return_value=["delegated"]) as feedback,
+            patch("auto_coder.pr_processor._checkout_pr_branch") as checkout,
+            patch("auto_coder.pr_processor.BranchManager") as branch_manager,
+            patch("auto_coder.pr_processor._fix_pr_issues_with_testing") as local_repair,
+        ):
+            run_command.return_value = MagicMock(success=True, stdout=current_branch)
+
+            result = process_pull_request(
+                github_client=mock_github_client,
+                config=config,
+                repo_name="owner/repo",
+                pr_data=pr_data,
+            )
+
+        assert result.actions_taken[-2:] == ["delegated", "Codex Cloud will handle fixing PR #201, skipping local fixes"]
+        run_command.assert_not_called()
+        feedback.assert_called_once()
+        checkout.assert_not_called()
+        branch_manager.assert_not_called()
+        local_repair.assert_not_called()

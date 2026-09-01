@@ -2249,6 +2249,17 @@ def _handle_pr_merge(
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
+        # Codex Cloud owns corrective work for its PRs regardless of the local
+        # checkout state. Resolve this execution origin before inspecting the
+        # branch: CHECK_LABELS=False is used by WIP resumption and --only
+        # processing, and must not turn cloud-originated work into local repair.
+        if _is_codex_pr(pr_data):
+            actions.append(f"PR #{pr_number} is a Codex-created PR, sending continuation request to Codex Cloud")
+            codex_feedback_actions = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+            actions.extend(codex_feedback_actions)
+            actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
+            return actions
+
         # Check if we are already on the PR branch before checkout.
         #
         # In WIP-resumption mode (CHECK_LABELS=False), assume we are already on the PR branch
@@ -2283,14 +2294,6 @@ def _handle_pr_merge(
             jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
             actions.extend(jules_feedback_actions)
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
-            return actions
-
-        # Check if this is a Codex PR.
-        if _is_codex_pr(pr_data) and not already_on_pr_branch:
-            actions.append(f"PR #{pr_number} is a Codex-created PR, sending continuation request to Codex Cloud")
-            codex_feedback_actions = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
-            actions.extend(codex_feedback_actions)
-            actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
             return actions
 
         # Step 5: Skip to process PR if it is dependabot PR
