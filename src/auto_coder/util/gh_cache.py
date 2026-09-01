@@ -1219,7 +1219,7 @@ class GitHubClient:
         """
         response = self.graphql_query(mutation, {"threadId": thread_id})
         thread = (((response or {}).get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
-        if not thread.get("isResolved"):
+        if thread.get("id") != thread_id or thread.get("isResolved") is not True:
             raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as resolved")
 
     def unresolve_review_thread(self, thread_id: str) -> None:
