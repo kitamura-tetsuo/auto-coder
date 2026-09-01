@@ -53,7 +53,16 @@ from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repa
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
-from .review_thread_validation import StaleReviewThreadRegistryError, StaleReviewThreadResolutionError, classify_review_threads, render_claimed_review_threads_section, resolve_addressed_review_threads, retry_pending_stale_review_thread_rollbacks
+from .review_thread_validation import (
+    StaleReviewThreadRegistryError,
+    StaleReviewThreadResolutionError,
+    change_provenance_reply_fingerprint,
+    classify_review_threads,
+    is_change_provenance_thread,
+    render_claimed_review_threads_section,
+    resolve_addressed_review_threads,
+    retry_pending_stale_review_thread_rollbacks,
+)
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
@@ -1667,7 +1676,7 @@ def _find_authoritative_adversarial_review(
         logger.error(f"Failed to read PR reviews for PR #{pr_number}: {e}")
         return None, str(e)
 
-    for review in reviews:
+    for review in reversed(reviews):
         login = _comment_value(_comment_value(review, "user") or {}, "login", "")
         body = _comment_value(review, "body", "")
         if login == identity.login and isinstance(body, str) and body.startswith(marker):
@@ -1966,14 +1975,19 @@ def _handle_pr_merge(
                 return actions
             if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
-                actions.extend(
-                    _delegate_codex_cloud_review_thread_repair(
-                        repo_name,
-                        pr_data,
-                        github_client=github_client,
-                        unresolved_threads=claimed_thread_state.blocking_unresolved,
+                pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
+                repair_threads = tuple(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
+                if pending_provenance:
+                    actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
+                if repair_threads:
+                    actions.extend(
+                        _delegate_codex_cloud_review_thread_repair(
+                            repo_name,
+                            pr_data,
+                            github_client=github_client,
+                            unresolved_threads=repair_threads,
+                        )
                     )
-                )
                 return actions
             claimed_review_threads = claimed_thread_state.claimed
             if claimed_review_threads:
@@ -2008,7 +2022,8 @@ def _handle_pr_merge(
                         actions.append(f"Could not check prior adversarial validation count for PR #{pr_number}: {e}; validation not started")
                         return actions
 
-                    if adv_review_count >= max_adv_reviews:
+                    provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
                         current_head_sha = pr_data.get("head", {}).get("sha", "")
@@ -2026,6 +2041,8 @@ def _handle_pr_merge(
                             return actions
                         should_run_validation = False
                     else:
+                        if adv_review_count >= max_adv_reviews:
+                            actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True
                 else:
                     should_run_validation = True
@@ -2066,7 +2083,21 @@ def _handle_pr_merge(
                     if lookup_error:
                         actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
                         return actions
-                    if published_status:
+                    provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
+                    has_new_provenance_evidence = False
+                    if published_status and provenance_fingerprint:
+                        published_report, report_error = _get_published_adversarial_validation_comment(
+                            github_client,
+                            repo_name,
+                            pr_number,
+                            head_sha,
+                        )
+                        if report_error:
+                            actions.append(f"Could not compare prior provenance evidence for PR #{pr_number}: {report_error}; validation not started")
+                            return actions
+                        has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report)
+
+                    if published_status and not has_new_provenance_evidence:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status != "PASS":
                             actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
@@ -2091,6 +2122,8 @@ def _handle_pr_merge(
                                     )
                             return actions
                     else:
+                        if has_new_provenance_evidence:
+                            actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} using new implementer provenance evidence")
                         claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
@@ -2112,9 +2145,16 @@ def _handle_pr_merge(
                                 diagnostic_reason=type(e).__name__,
                             )
 
+                        val_result.clarification_reply_fingerprint = provenance_fingerprint
+                        if provenance_fingerprint:
+                            # The existing aggregated clarification thread remains
+                            # authoritative until independently resolved.
+                            val_result.publish_clarification_thread = False
+
                         # Independent thread-completion validation (REQ-001..REQ-010): this
                         # runs whenever a fresh validation pass produced dispositions,
                         # regardless of the PR-level verdict (REQ-005 independence).
+                        resolved_thread_ids: List[str] = []
                         if claimed_review_threads and val_result.thread_dispositions:
                             try:
                                 resolved_thread_ids = resolve_addressed_review_threads(
@@ -2138,6 +2178,13 @@ def _handle_pr_merge(
                                 return actions
                             except Exception as e:
                                 logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
+
+                        unresolved_provenance_ids = {thread.thread_id for thread in claimed_review_threads if thread.is_change_provenance} - set(resolved_thread_ids)
+                        if unresolved_provenance_ids and val_result.is_pass:
+                            val_result.result = "INCONCLUSIVE"
+                            val_result.summary = "Change-provenance clarification remains unresolved after independent validation"
+                            val_result.diagnostic_category = "change_provenance_clarification"
+                            val_result.diagnostic_reason = f"Unresolved clarification thread(s): {', '.join(sorted(unresolved_provenance_ids))}"
 
                         publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                         if not publication.success:

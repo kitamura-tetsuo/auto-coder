@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 
 
@@ -155,6 +155,41 @@ def test_each_finding_is_an_independent_review_comment_with_safe_anchors(tmp_pat
     assert "Suggested regression scenario" in payload["comments"][0]["body"]
     assert payload["comments"][1]["subject_type"] == "file"
     assert "Preserve the value" not in payload["body"]
+
+
+def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = auth_responses()
+    responses.insert(
+        -1,
+        response(
+            200,
+            [
+                {"filename": "uv.lock", "patch": "@@ -1 +1 @@\n-old\n+new"},
+                {"filename": "pyproject.toml", "patch": "@@ -1 +1 @@\n-old\n+new"},
+            ],
+        ),
+    )
+    client = RecordingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Issue requirements verified; provenance needs clarification",
+        unexplained_changes=[
+            ChangeProvenanceItem(paths=["uv.lock", "pyproject.toml"], change_group="Dependency metadata", why_unexplained="No causal dependency edit is evident"),
+            ChangeProvenanceItem(paths=["scripts/example.sh"], change_group="Example script", why_unexplained="The Issue does not mention this script"),
+        ],
+    )
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", result)
+
+    assert publication.success is True
+    assert publication.event == "COMMENT"
+    comments = client.calls[-1][2]["json"]["comments"]
+    assert len(comments) == 1
+    assert comments[0]["path"] == "uv.lock"
+    assert "uv.lock" in comments[0]["body"]
+    assert "pyproject.toml" in comments[0]["body"]
+    assert "scripts/example.sh" in comments[0]["body"]
 
 
 def test_invalid_line_falls_back_to_file_level_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

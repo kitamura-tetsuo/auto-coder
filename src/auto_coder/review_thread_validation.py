@@ -23,6 +23,7 @@ Fail-closed by construction:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,7 +32,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Set
 
-from .adversarial_validator import ReviewThreadDisposition
+from .adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, ReviewThreadDisposition
 from .logger_config import get_logger
 from .review_feedback_marker import reply_claims_review_addressed
 from .util.gh_cache import ReviewThread
@@ -510,6 +511,8 @@ class ClaimedReviewThread:
     root_author_login: str = ""
     original_finding: str = ""
     discussion: str = ""
+    is_change_provenance: bool = False
+    claim_evidence: str = ""
 
 
 @dataclass(frozen=True)
@@ -549,7 +552,8 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_author_ids
 
         root = comments[0]
         is_eligible = root.author_id is not None and root.author_id in eligible_author_ids
-        has_claim = any(reply_claims_review_addressed(comment.body) for comment in comments[1:])
+        claim_comments = [comment for comment in comments[1:] if reply_claims_review_addressed(comment.body)]
+        has_claim = bool(claim_comments)
 
         if is_eligible and has_claim:
             discussion = "\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments)
@@ -560,12 +564,28 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_author_ids
                     root_author_login=root.author_login,
                     original_finding=root.body,
                     discussion=discussion,
+                    is_change_provenance=CHANGE_PROVENANCE_CLARIFICATION_MARKER in root.body,
+                    claim_evidence="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in claim_comments),
                 )
             )
         else:
             blocking_unresolved_count += 1
 
     return ReviewThreadClassification(claimed=tuple(claimed), blocking_unresolved_count=blocking_unresolved_count)
+
+
+def is_change_provenance_thread(thread: ReviewThread) -> bool:
+    """Return whether an unresolved thread is an implementer provenance question."""
+    return bool(thread.comments and CHANGE_PROVENANCE_CLARIFICATION_MARKER in thread.comments[0].body)
+
+
+def change_provenance_reply_fingerprint(claimed: Sequence[ClaimedReviewThread]) -> str:
+    """Return a durable marker for the exact provenance replies reviewed this run."""
+    discussions = [f"{thread.thread_id}\n{thread.claim_evidence}" for thread in claimed if thread.is_change_provenance]
+    if not discussions:
+        return ""
+    digest = hashlib.sha256("\n\n".join(sorted(discussions)).encode("utf-8", errors="replace")).hexdigest()[:20]
+    return f"<!-- auto-coder-change-provenance-evidence:v1:{digest} -->"
 
 
 def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]) -> str:
@@ -583,7 +603,7 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
         blocks.append(
             "\n".join(
                 [
-                    f"### Claimed-addressed review thread: {thread.thread_id}",
+                    f"### {'Change-provenance clarification' if thread.is_change_provenance else 'Claimed-addressed review thread'}: {thread.thread_id}",
                     f"Original review finding (thread root, author: {thread.root_author_login or 'unknown'}):",
                     thread.original_finding or "(empty)",
                     "",

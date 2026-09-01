@@ -30,7 +30,8 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v6"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v7"
+CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
 
 
 @dataclass
@@ -111,6 +112,15 @@ class SpecificationGap:
 
 
 @dataclass
+class ChangeProvenanceItem:
+    """One material changed file or related group whose PR provenance is unknown."""
+
+    paths: List[str] = field(default_factory=list)
+    change_group: str = ""
+    why_unexplained: str = ""
+
+
+@dataclass
 class AdversarialValidationResult:
     """Outcome of adversarial PR validation against the specification oracle.
 
@@ -130,6 +140,9 @@ class AdversarialValidationResult:
     requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
     specification_gaps: List[SpecificationGap] = field(default_factory=list)
     thread_dispositions: List[ReviewThreadDisposition] = field(default_factory=list)
+    unexplained_changes: List[ChangeProvenanceItem] = field(default_factory=list)
+    clarification_reply_fingerprint: str = ""
+    publish_clarification_thread: bool = True
 
     @property
     def is_pass(self) -> bool:
@@ -338,9 +351,49 @@ def format_adversarial_review_summary(result: AdversarialValidationResult, head_
         specification_gaps=result.specification_gaps,
     )
     body = format_adversarial_validation_comment(summary_result, head_sha)
+    if result.clarification_reply_fingerprint:
+        body += f"\n{result.clarification_reply_fingerprint}"
     if result.findings:
         body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
+    if result.unexplained_changes and result.publish_clarification_thread:
+        body += "\n\nOne change-provenance clarification thread is attached to this review."
     return body
+
+
+def format_change_provenance_clarification(items: List[ChangeProvenanceItem]) -> str:
+    """Render one aggregated, non-defect clarification thread."""
+    lines = [
+        CHANGE_PROVENANCE_CLARIFICATION_MARKER,
+        "### Auto-Coder change-provenance clarification",
+        "",
+        "The Issue requirements were verified, but the reviewer could not independently establish why every material change below belongs to this PR. This is a clarification blocker, not an instruction to change code or create a commit.",
+        "",
+        "Please explain each item and classify it as:",
+        "",
+        "- intentional and directly required by the PR, including the causal reason;",
+        "- generated or mechanically derived from another intentional change, including that causal change; or",
+        "- unrelated or accidental.",
+    ]
+    for index, item in enumerate(items, start=1):
+        paths = ", ".join(f"`{path}`" for path in item.paths)
+        lines.extend(
+            [
+                "",
+                f"{index}. **{_bounded_comment_field(item.change_group)}** — {paths}",
+                f"   - Why clarification is needed: {_bounded_comment_field(item.why_unexplained)}",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Reply in this thread with the requested provenance. End a material provenance reply with the following marker on its own line so Auto-Coder can independently revalidate this same commit:",
+            "",
+            "`<!-- auto-coder-review-addressed:v1 -->`",
+            "",
+            "Your explanation is an unverified claim and navigation aid; the adversarial reviewer will compare it independently with the diff, repository state, and relevant tests before clearing this blocker.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def format_adversarial_finding_comment(finding: AdversarialValidationFinding) -> str:
@@ -1070,6 +1123,26 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", "each specification gap requires all four descriptive fields and candidate_options must be a list of non-empty strings")
                     specification_gaps.append(SpecificationGap(**values, candidate_options=[option.strip() for option in options]))
 
+                raw_unexplained_changes = parsed.get("unexplained_changes", [])
+                if not isinstance(raw_unexplained_changes, list):
+                    return _parse_error(raw_response, "schema_error", "Malformed validator schema: unexplained_changes must be a list", "unexplained_changes must be a list")
+                unexplained_changes: List[ChangeProvenanceItem] = []
+                for item in raw_unexplained_changes:
+                    if not isinstance(item, dict):
+                        return _parse_error(raw_response, "schema_error", "Malformed unexplained change entry", "unexplained change entries must be objects")
+                    paths = item.get("paths", [])
+                    change_group = str(item.get("change_group", "")).strip()
+                    why_unexplained = str(item.get("why_unexplained", "")).strip()
+                    if not isinstance(paths, list) or not paths or any(not isinstance(path, str) or not path.strip() for path in paths) or not change_group or not why_unexplained:
+                        return _parse_error(raw_response, "schema_error", "Malformed unexplained change entry", "each unexplained change requires paths, change_group, and why_unexplained")
+                    unexplained_changes.append(
+                        ChangeProvenanceItem(
+                            paths=[path.strip() for path in paths],
+                            change_group=change_group,
+                            why_unexplained=why_unexplained,
+                        )
+                    )
+
                 raw_requirement_coverage = parsed.get("requirement_coverage", [])
                 if not isinstance(raw_requirement_coverage, list):
                     return _parse_error(
@@ -1250,6 +1323,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     requirement_coverage=requirement_coverage,
                     specification_gaps=specification_gaps,
                     thread_dispositions=thread_dispositions,
+                    unexplained_changes=unexplained_changes,
                 )
             else:
                 return _parse_error(
@@ -1375,6 +1449,7 @@ def _apply_coverage_and_verdict_precedence(
         return result
 
     if result.findings:
+        result.unexplained_changes = []
         result.result = "NEEDS_FIX"
         incomplete_coverage: List[str] = []
         coverage_details: List[str] = []
@@ -1397,6 +1472,18 @@ def _apply_coverage_and_verdict_precedence(
             result.diagnostic_category = result.diagnostic_category or "incomplete_evidence_coverage"
             result.diagnostic_reason = result.diagnostic_reason or "; ".join(coverage_details)
         return result
+
+    if context.has_complete_file_coverage and expected_requirement_ids and not incomplete_requirement_ids and result.unexplained_changes:
+        result.result = "INCONCLUSIVE"
+        result.diagnostic_category = "change_provenance_clarification"
+        result.diagnostic_reason = "Material changed-file purpose or provenance requires implementer clarification"
+        return result
+
+    if result.unexplained_changes:
+        # A provenance question is only authoritative after the Issue contract
+        # itself is completely adjudicated. Other missing evidence retains its
+        # existing diagnostic and must not be mislabeled as implementer provenance.
+        result.unexplained_changes = []
 
     if result.result.strip().upper() == "PASS" and not context.has_complete_file_coverage:
         reason = f"Material changed-file evidence was incomplete for: {', '.join(context.unverified_files)}"

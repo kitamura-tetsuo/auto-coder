@@ -18,6 +18,7 @@ from .adversarial_validator import (
     AdversarialValidationResult,
     format_adversarial_finding_comment,
     format_adversarial_review_summary,
+    format_change_provenance_clarification,
 )
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
@@ -200,7 +201,7 @@ class GitHubAppReviewer:
             if not validated_head_sha or current_sha != validated_head_sha:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
             comments: list[dict[str, object]] = []
-            if result.needs_fix:
+            if result.needs_fix or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files: dict[str, object] = {}
                 page = 1
                 while True:
@@ -212,6 +213,17 @@ class GitHubAppReviewer:
                         break
                     page += 1
                 comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
+                if result.unexplained_changes and result.publish_clarification_thread:
+                    anchor_path = next((path for item in result.unexplained_changes for path in item.paths if path in changed_files), "")
+                    if not anchor_path:
+                        raise ValueError("Change-provenance clarification must anchor to a changed file")
+                    comments.append(
+                        {
+                            "path": anchor_path,
+                            "body": format_change_provenance_clarification(result.unexplained_changes),
+                            "subject_type": "file",
+                        }
+                    )
             self._request(
                 "POST",
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",

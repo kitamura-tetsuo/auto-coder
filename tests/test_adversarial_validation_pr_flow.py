@@ -159,7 +159,7 @@ class TestAdversarialValidationPRComment:
 
         comment = format_adversarial_validation_comment(result, "abc123")
 
-        assert comment.startswith("<!-- auto-coder-adversarial-validation:v6:abc123 -->")
+        assert comment.startswith("<!-- auto-coder-adversarial-validation:v7:abc123 -->")
         assert "adversarial validation: NEEDS_FIX" in comment
         assert "Summary" in comment
         assert "Required behavior" in comment
@@ -230,6 +230,20 @@ class TestAdversarialValidationPRComment:
 
         assert error is None
         assert body == rendered_body
+
+    def test_latest_native_review_for_same_sha_is_authoritative(self):
+        client = MagicMock()
+        first = format_adversarial_validation_comment(AdversarialValidationResult(result="INCONCLUSIVE"), "abc123")
+        latest = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), "abc123")
+        client.get_pr_reviews_strict.return_value = [
+            {"id": 1, "body": first, "user": {"login": "auto-coder-reviewer[bot]"}},
+            {"id": 2, "body": latest, "user": {"login": "auto-coder-reviewer[bot]"}},
+        ]
+
+        body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
+
+        assert error is None
+        assert body == latest
 
     def test_lookalike_review_from_another_author_is_not_authoritative(self):
         client = MagicMock()
@@ -1426,6 +1440,63 @@ class TestClaimedReviewThreadValidationFlow:
     """End-to-end coverage for issue #1619: a claimed-addressed review thread
     does not block merge outright; it is carried into a fresh adversarial
     validation run and resolved only on a valid ADDRESSED disposition."""
+
+    def test_new_provenance_reply_revalidates_and_passes_same_sha(self):
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread
+
+        head_sha = "same-head-123"
+        claimed = ClaimedReviewThread(
+            thread_id="provenance-1",
+            root_comment_database_id=1,
+            root_author_login="auto-coder-reviewer[bot]",
+            original_finding="Explain uv.lock provenance",
+            discussion="agent[bot]: Generated from dependency X.\n<!-- auto-coder-review-addressed:v1 -->",
+            is_change_provenance=True,
+            claim_evidence="agent[bot]: Generated from dependency X.\n<!-- auto-coder-review-addressed:v1 -->",
+        )
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Provenance independently verified",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="provenance-1",
+                    status="ADDRESSED",
+                    rationale="The dependency diff causally regenerates the lockfile",
+                    evidence="pyproject.toml adds X and uv.lock contains the corresponding resolution only",
+                )
+            ],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_issue.return_value = {"number": 99, "title": "Contract", "body": "Required behavior"}
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": head_sha}}
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
+            patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("INCONCLUSIVE", None)),
+            patch("auto_coder.pr_processor._get_published_adversarial_validation_comment", return_value=("prior review without this reply", None)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "APPROVE", "")) as publish,
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["provenance-1"]),
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True),
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        run_validation.assert_called_once()
+        published_result = publish.call_args.args[3]
+        assert published_result.clarification_reply_fingerprint.startswith("<!-- auto-coder-change-provenance-evidence:v1:")
+        assert published_result.publish_clarification_thread is False
+        assert any("unchanged commit" in action and "new implementer provenance evidence" in action for action in actions)
+        assert any("Successfully merged PR #123" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
