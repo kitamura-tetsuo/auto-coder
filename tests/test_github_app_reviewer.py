@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition, TestOracleGap
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 
 
@@ -172,6 +172,40 @@ def test_each_finding_is_an_independent_review_comment_with_safe_anchors(tmp_pat
     assert payload["comments"][1]["line"] == 10
     assert payload["comments"][1]["side"] == "RIGHT"
     assert "Preserve the value" not in payload["body"]
+
+
+def test_open_test_oracle_gap_requests_changes_without_claiming_a_violation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    gap = TestOracleGap(
+        gap_id="TOG-123",
+        requirement_id="REQ-001",
+        requirement_text="Validate at the server mutation boundary",
+        authoritative_boundary="GridMutation.apply_candidate",
+        invariant="Rejected input preserves state and revision",
+        plausible_incorrect_implementation="Delete the server guard",
+        why_tests_still_pass="Existing tests stop at client validation",
+        material_consequence="Invalid state can be persisted",
+        focused_regression_scenario="Invoke the server boundary and assert rejection and unchanged persistence",
+        anchor_path="src/example.py",
+        anchor_line=1,
+    )
+    responses = auth_responses()
+    responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
+    client = RecordingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+
+    publication = reviewer.publish(
+        "owner/repo",
+        42,
+        "sha-a",
+        AdversarialValidationResult(result="NEEDS_TESTS", test_oracle_gaps=[gap]),
+    )
+
+    assert publication.success is True
+    assert publication.event == "REQUEST_CHANGES"
+    payload = client.calls[-1][2]["json"]
+    assert payload["event"] == "REQUEST_CHANGES"
+    assert "does **not** claim that current production behavior violates" in payload["comments"][0]["body"]
+    assert "Add only the focused regression protection" in payload["comments"][0]["body"]
 
 
 def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

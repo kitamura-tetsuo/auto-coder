@@ -508,10 +508,14 @@ pr:
     but the current implementation can produce X,
     and the current tests would still pass because ...
 
-    A finding may block only when its counterexample and reachable production path are demonstrated from the supplied implementation evidence or confirmed by a focused dynamic check. Plausible, theoretical, assumption-dependent, test-gap-only, maintainability, robustness, and hardening concerns are not blocking findings.
+    A production-violation finding may block only when its counterexample and reachable production path are demonstrated from the supplied implementation evidence or confirmed by a focused dynamic check. Plausible, theoretical, assumption-dependent, maintainability, robustness, and hardening concerns are not blocking production-violation findings. A missing test oracle is never a production-violation finding; use the distinct material test-oracle-gap schema below when every required criterion is satisfied.
     If a material suspicion cannot be proven reachable, return INCONCLUSIVE with no finding and request a focused dynamic check where practical. Never guess missing reachability evidence.
     Every VIOLATED requirement coverage entry MUST have a corresponding concrete finding. Reporting VIOLATED without a finding is a schema error and fails closed.
     Use only exact requirement IDs from the supplied manifest. Any missing, duplicate, or unknown ID is a schema error and fails closed.
+
+    MATERIAL TEST-ORACLE GAP STANDARD:
+    A test-oracle gap does not claim that current production behavior is wrong. Report one only when ALL of these are established: it maps to an exact explicit Issue requirement; it identifies an exact reachable production boundary/state transition and invariant; it gives a minimal plausible incorrect implementation; it explains why all available tests remain green under that implementation; the missed regression materially affects persisted state, authorization, synchronization, server-side enforcement, data integrity, or a primary compatibility contract; and it specifies one focused regression scenario that closes the gap. Consolidate the same boundary and underlying missing oracle into one gap. Never report extra input variants, combinations, hardening, defense in depth, or stronger assertions already protected by the focused scenario.
+    The stable gap identity is derived from requirement_id + authoritative_boundary + invariant. On an initial review omit gap_id or use the exact stable ID if known. On rereview preserve every prior identity and scope exactly.
 
     CLAIMED-ADDRESSED REVIEW THREAD VALIDATION:
     A cloud implementation agent may have replied to an unresolved PR review thread claiming it fixed the original finding, without resolving the thread itself. The "Claimed-Addressed Review Threads" section below lists every such thread eligible for this run. For EACH thread listed there, independently determine whether the ORIGINAL finding described in that thread is actually corrected on the CURRENT PR head, and return exactly one entry in `thread_dispositions` for it:
@@ -519,13 +523,14 @@ pr:
     - `STILL_VALID`: the defect or violated invariant remains, on the reported path or an equivalent reachable one.
     - `INCONCLUSIVE`: the available evidence cannot safely establish either conclusion.
     Never derive `ADDRESSED` merely because: the implementation agent asserted it is fixed; a thread became GitHub `outdated` or its original line moved/disappeared from the diff; a newly added or renamed test passes; or a commit was pushed. Only actual demonstrated correction of the original reported behavior on the current head justifies `ADDRESSED`. A regression test that does not exercise the originally failing state transition or invariant does not justify `ADDRESSED` either. Every disposition requires a concrete `rationale` grounded in the current implementation and specific `evidence` (a code path, patch excerpt, or dynamic-check result). Only produce a disposition for a thread ID that is exactly listed in the Claimed-Addressed Review Threads section below; never invent a disposition for any other thread. This determination is completely independent of the PR-level `result`: a thread may be ADDRESSED even when the PR overall is NEEDS_FIX for an unrelated defect, and the PR may otherwise PASS while a claimed thread remains STILL_VALID or INCONCLUSIVE.
+    Exception for a root thread explicitly labeled `Auto-Coder material test-oracle gap`: its original blocker is missing regression protection, not incorrect current production behavior. Return ADDRESSED only when the matching persisted gap is RESOLVED because a committed test directly exercises the recorded boundary and invariant, or INVALID with evidence that the original report failed the material-gap criteria. A merely passing, renamed, indirect, skipped, bypassed, or mock-only test is insufficient. Return STILL_VALID while the matching gap remains OPEN.
 
     OUTPUT FORMAT:
     Respond with a JSON object in the following format:
 
     ```json
     {
-      "result": "PASS" | "NEEDS_FIX" | "INCONCLUSIVE",
+      "result": "PASS" | "NEEDS_FIX" | "NEEDS_TESTS" | "INCONCLUSIVE",
       "summary": "<Clear explanation of determination>",
       "dynamic_check_requested": "<optional test file/path to execute if dynamic verification is required to confirm a suspected defect, or null>",
       "requirement_coverage": [
@@ -551,6 +556,28 @@ pr:
           "anchor_line": "<Optional changed line number, or null for a file-level thread>",
           "anchor_side": "RIGHT or LEFT",
           "anchor_start_line": "<Optional start of a changed line range, or null>"
+        }
+      ],
+      "test_oracle_gaps": [
+        {
+          "gap_id": "<omit on initial discovery, otherwise exact prior stable ID>",
+          "requirement_id": "<exact stable ID from the requirement manifest>",
+          "requirement_text": "<exact explicit Issue requirement protected by the missing oracle>",
+          "authoritative_boundary": "<exact reachable production entry point or state transition>",
+          "invariant": "<exact material state/authorization/synchronization/enforcement/integrity/compatibility invariant>",
+          "plausible_incorrect_implementation": "<minimal implementation omission or mutation that would violate the requirement>",
+          "why_tests_still_pass": "<specific available tests and why they do not observe this boundary and invariant>",
+          "material_consequence": "<material missed regression consequence>",
+          "focused_regression_scenario": "<one focused direct scenario that closes this underlying gap>",
+          "anchor_path": "<exact changed file path concerning the boundary>",
+          "anchor_line": "<optional changed line number, or null>",
+          "anchor_side": "RIGHT or LEFT",
+          "anchor_start_line": "<optional start line, or null>",
+          "discovery_phase": "INITIAL" | "REREVIEW",
+          "rereview_exception_reason": "NONE" | "CORRECTIVE_DIFF_NEW_BOUNDARY" | "PROTECTION_WEAKENED" | "REVALIDATION_EXPOSED_UNTESTED_BOUNDARY",
+          "rereview_exception_evidence": "<required for a new REREVIEW gap: exact corrective diff or required-revalidation evidence; empty for INITIAL and prior gaps>",
+          "status": "OPEN" | "RESOLVED" | "INVALID",
+          "resolution_evidence": "<required for RESOLVED or INVALID; empty for OPEN>"
         }
       ],
       "unexplained_changes": [
@@ -594,12 +621,13 @@ pr:
         }
       ],
       "findings": [],
+      "test_oracle_gaps": [],
       "unexplained_changes": [],
       "thread_dispositions": []
     }
     ```
 
-    Every finding must cite an exact stable requirement ID from the supplied manifest. Never create a finding for an invented invariant, hardening opportunity, maintainability concern, or test gap. Classify a specification gap only when a reachable, materially relevant case is exposed, the authoritative linked Issue does not define its required behavior, and correctness would require choosing a new product or workflow policy. Missing evidence for behavior the Issue does define is UNVERIFIED/INCONCLUSIVE, not a gap. Gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and determine the verdict solely from defined requirements. You may describe neutral candidate options, but PR discussion, reviewer preferences, repository conventions, implementation choices, and those options are not requirements. Do not select or promote a policy.
+    Every finding and test-oracle gap must cite an exact stable requirement ID from the supplied manifest. Never create a production-violation finding for an invented invariant, hardening opportunity, maintainability concern, or missing test. Classify a specification gap only when a reachable, materially relevant case is exposed, the authoritative linked Issue does not define its required behavior, and correctness would require choosing a new product or workflow policy. Missing evidence for behavior the Issue does define is UNVERIFIED/INCONCLUSIVE, not a specification gap. Specification gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and determine the production verdict solely from defined requirements. You may describe neutral candidate options, but PR discussion, reviewer preferences, repository conventions, implementation choices, and those options are not requirements. Do not select or promote a policy.
 
     CHANGE-PROVENANCE CLARIFICATION: After every applicable Issue requirement is VERIFIED or justified IRRELEVANT, independently account for every material changed file or related change group. If repository evidence does not establish why one or more groups belong to the PR, return INCONCLUSIVE with no findings and aggregate all such groups in `unexplained_changes`. Missing change rationale is not an Issue requirement violation and must never be placed in `findings` or change requirement coverage to VIOLATED/UNVERIFIED. Use exact changed paths and group mechanically related files together. Do not request a code change or new commit merely to obtain an explanation. If a Claimed-Addressed Review Thread is a change-provenance clarification, treat the implementation-agent reply only as an unverified claim and navigation aid: independently compare every claim with the current diff, repository state, generation inputs/outputs, and relevant tests. Return ADDRESSED only when all listed provenance is verified; return STILL_VALID when the reply identifies an accidental change or repository evidence contradicts it, naming the concrete change to remove or correct; otherwise return INCONCLUSIVE. Do not emit a new `unexplained_changes` entry for the same unresolved clarification set already represented by that thread.
 
@@ -632,6 +660,9 @@ pr:
     Claimed-Addressed Review Threads (produce a thread_dispositions entry for each; return an empty thread_dispositions list if this says there are none):
     $claimed_review_threads
 
+    Persisted Material Test-Oracle Gap Registry (the deterministic lifecycle authority for rereview; initial review says none):
+    $prior_test_oracle_gaps
+
   adversarial_validation_initial_review: |-
     Your mission: Falsify the implementation of this Pull Request against the original issue specification and acceptance criteria.
 
@@ -656,6 +687,9 @@ pr:
     5. Does the implementation only work for the common path while failing for valid edge cases covered by the spec?
     6. Has the implementation introduced an unintended regression or violated an invariant?
     7. Is the implementation satisfying the symptom via a workaround/special case rather than implementing the true intended behavior?
+
+    INITIAL TEST-ORACLE DISCOVERY:
+    This initial authoritative review may report a small, bounded set of OPEN material test-oracle gaps that satisfy every criterion in the material test-oracle-gap standard. Use discovery_phase INITIAL, rereview_exception_reason NONE, and empty rereview_exception_evidence. Do not mark requirement coverage VIOLATED merely because its implementation is correct but its regression oracle is missing. If one or more such gaps remain and there is no demonstrated implementation violation, return NEEDS_TESTS. Ask only for the focused regression scenario, not a production-code change.
 
   adversarial_validation_rereview: |-
     Previous reviewed head: $previous_head_sha
@@ -702,6 +736,12 @@ pr:
        persistence, state, authorization, or synchronization is incorrect; data
        can be lost or corrupted; a documented supported variant breaks; or an
        equivalently significant correctness defect exists.
+
+    TEST-ORACLE GAP CONVERGENCE:
+    - Re-evaluate every entry in the Persisted Material Test-Oracle Gap Registry. Emit the exact prior identity and scope again. An OPEN gap stays OPEN until a committed regression test directly exercises its recorded boundary and invariant; correct production behavior or reviewer inspection on the same SHA cannot resolve it. Mark it RESOLVED only with specific committed-test evidence. Mark it INVALID only when independent rereview establishes which required material-gap criterion the original report failed.
+    - Do not reopen a prior RESOLVED or INVALID scope, request variants, or strengthen assertions outside its recorded boundary and invariant.
+    - Do NOT actively search for other pre-existing test-oracle gaps. A genuinely new OPEN gap is permitted only when it independently satisfies every material-gap criterion and the corrective diff introduced a new production boundary (CORRECTIVE_DIFF_NEW_BOUNDARY), weakened/removed/skipped/bypassed/over-mocked protection (PROTECTION_WEAKENED), or revalidation required for an existing finding directly exposed an entirely untested authoritative material boundary (REVALIDATION_EXPOSED_UNTESTED_BOUNDARY). Use discovery_phase REREVIEW, the exact applicable exception, and specific rereview_exception_evidence naming the corrective diff or required revalidation trace. Deterministic processing rejects a new rereview gap with NONE, an unsupported reason, or missing exception evidence.
+    - When prior gaps are resolved, corrective changes introduced no permitted new gap, and all other gates pass, return PASS without looking for additional test improvements.
 
     Low-impact boundary conditions, speculative robustness concerns, additional
     hardening, and test improvements MUST NOT produce NEEDS_FIX unless they meet
@@ -805,7 +845,7 @@ pr:
     ```
 
   adversarial_validation_fix: |-
-    Auto-Coder's adversarial validation found concrete specification violations in PR #$pr_number in $repo_name at commit $head_sha.
+    Auto-Coder's adversarial validation produced blocking corrective feedback for PR #$pr_number in $repo_name at commit $head_sha. The report distinguishes demonstrated production-code violations from material test-oracle gaps. For a test-oracle gap, add only the focused committed regression protection requested; do not change production code unless a separate demonstrated violation requires it.
 
     Apply fixes for every concrete finding below, add strict regression tests for the counterexamples, and update the existing PR branch. Re-read the linked Issue specification before editing. Specification gaps in the report are non-actionable metadata: do not implement, select, or promote any candidate policy solely to resolve a gap, and do not create or modify an Issue because of one. Do not dismiss findings merely because the current tests pass. Run the repository test script after making the changes. Do not post general PR comments.
 

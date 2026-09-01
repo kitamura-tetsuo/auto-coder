@@ -1765,7 +1765,7 @@ def _get_legacy_adversarial_validation_comment(
 
 def _parse_adversarial_validation_status(body: str) -> str:
     """Extract the verdict recorded in a validation marker body."""
-    match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
+    match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|NEEDS_TESTS|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
     if not match:
         return "ERROR"
     if match.group(1) == "PASS" and "### Specification gaps (" in body:
@@ -2091,6 +2091,9 @@ def _handle_pr_merge(
                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
                             actions.append(f"Automatic merge disabled for PR #{pr_number}: unresolved specification gaps require human policy review")
                             return actions
+                        if saved_status == "NEEDS_TESTS":
+                            actions.append(f"Automatic merge disabled for PR #{pr_number}: unresolved material test-oracle gaps require focused regression tests")
+                            return actions
                         should_run_validation = False
                     else:
                         if adv_review_count >= max_adv_reviews:
@@ -2154,7 +2157,7 @@ def _handle_pr_merge(
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status != "PASS":
                             actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
-                            if published_status == "NEEDS_FIX":
+                            if published_status in {"NEEDS_FIX", "NEEDS_TESTS"}:
                                 published_report, report_error = _get_published_adversarial_validation_comment(
                                     github_client,
                                     repo_name,
@@ -2285,6 +2288,21 @@ def _handle_pr_merge(
                             )
                         )
                         actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
+                        return actions
+
+                    elif val_result.needs_tests:
+                        actions.append(f"Adversarial validation requested focused regression protection for PR #{pr_number}: {len(val_result.open_test_oracle_gaps)} material test-oracle gap(s)")
+                        logger.warning(f"PR #{pr_number} has material test-oracle gaps: {val_result.summary}")
+                        actions.extend(
+                            _send_adversarial_validation_feedback_to_codex_cloud(
+                                repo_name,
+                                pr_data,
+                                head_sha,
+                                format_adversarial_validation_comment(val_result, head_sha),
+                                github_client,
+                            )
+                        )
+                        actions.append(f"Awaiting focused regression tests for PR #{pr_number}; production-code changes were not requested by test-oracle gaps")
                         return actions
 
                     elif not val_result.is_pass:

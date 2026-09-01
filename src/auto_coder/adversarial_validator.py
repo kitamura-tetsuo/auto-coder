@@ -19,7 +19,7 @@ from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linke
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry
+from .reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
@@ -32,6 +32,12 @@ ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
 ADVERSARIAL_VALIDATION_CACHE_VERSION = "v7"
 CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
+TEST_ORACLE_GAP_STATUSES = {"OPEN", "RESOLVED", "INVALID"}
+TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
+    "CORRECTIVE_DIFF_NEW_BOUNDARY",
+    "PROTECTION_WEAKENED",
+    "REVALIDATION_EXPOSED_UNTESTED_BOUNDARY",
+}
 
 
 @dataclass
@@ -130,7 +136,7 @@ class AdversarialValidationResult:
     - Empty, malformed, 'BLOCKED', 'INCONCLUSIVE', or 'ERROR' evaluates to is_blocked=True.
     """
 
-    result: str = "ERROR"  # "PASS", "NEEDS_FIX", "BLOCKED", "INCONCLUSIVE", "ERROR"
+    result: str = "ERROR"  # "PASS", "NEEDS_FIX", "NEEDS_TESTS", "BLOCKED", "INCONCLUSIVE", "ERROR"
     summary: str = ""
     findings: List[AdversarialValidationFinding] = field(default_factory=list)
     raw_response: str = ""
@@ -139,6 +145,7 @@ class AdversarialValidationResult:
     diagnostic_reason: Optional[str] = None
     requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
     specification_gaps: List[SpecificationGap] = field(default_factory=list)
+    test_oracle_gaps: List[TestOracleGap] = field(default_factory=list)
     thread_dispositions: List[ReviewThreadDisposition] = field(default_factory=list)
     unexplained_changes: List[ChangeProvenanceItem] = field(default_factory=list)
     clarification_reply_fingerprint: str = ""
@@ -148,7 +155,12 @@ class AdversarialValidationResult:
     @property
     def is_pass(self) -> bool:
         """Return whether all defined requirements passed (gaps are orthogonal)."""
-        return self.result.strip().upper() == "PASS" and len(self.findings) == 0
+        return self.result.strip().upper() == "PASS" and len(self.findings) == 0 and not self.open_test_oracle_gaps
+
+    @property
+    def open_test_oracle_gaps(self) -> List[TestOracleGap]:
+        """Return material test-oracle gaps that still require regression protection."""
+        return [gap for gap in self.test_oracle_gaps if gap.status == "OPEN"]
 
     @property
     def allows_auto_merge(self) -> bool:
@@ -161,9 +173,14 @@ class AdversarialValidationResult:
         return self.result.strip().upper() == "NEEDS_FIX" and len(self.findings) > 0
 
     @property
+    def needs_tests(self) -> bool:
+        """Return True when focused regression protection is still required."""
+        return self.result.strip().upper() in {"NEEDS_TESTS", "NEEDS_FIX"} and bool(self.open_test_oracle_gaps)
+
+    @property
     def is_blocked(self) -> bool:
         """Return True if validation could not complete or produced non-pass status."""
-        return not self.is_pass and not self.needs_fix
+        return not self.is_pass and not self.needs_fix and not self.needs_tests
 
 
 @dataclass
@@ -301,6 +318,29 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
             if finding.suggested_regression_scenario.strip():
                 lines.extend(["", "**Suggested regression scenario**", "", _bounded_comment_field(finding.suggested_regression_scenario)])
 
+    if result.open_test_oracle_gaps:
+        lines.extend(
+            [
+                "",
+                f"### Material test-oracle gaps ({len(result.open_test_oracle_gaps)})",
+                "",
+                "These are missing regression protections, not demonstrated production-code violations. " "Automatic merge remains blocked pending the focused tests below.",
+            ]
+        )
+        for index, oracle_gap in enumerate(result.open_test_oracle_gaps, start=1):
+            lines.extend(
+                [
+                    "",
+                    f"#### Gap {index}: `{oracle_gap.gap_id}` (`{oracle_gap.requirement_id}`)",
+                    f"- **Authoritative boundary:** {_bounded_comment_field(oracle_gap.authoritative_boundary)}",
+                    f"- **Invariant:** {_bounded_comment_field(oracle_gap.invariant)}",
+                    f"- **Incorrect implementation that can pass:** {_bounded_comment_field(oracle_gap.plausible_incorrect_implementation)}",
+                    f"- **Why tests remain green:** {_bounded_comment_field(oracle_gap.why_tests_still_pass)}",
+                    f"- **Material consequence:** {_bounded_comment_field(oracle_gap.material_consequence)}",
+                    f"- **Focused regression scenario:** {_bounded_comment_field(oracle_gap.focused_regression_scenario)}",
+                ]
+            )
+
     if result.specification_gaps:
         lines.extend(
             [
@@ -356,6 +396,8 @@ def format_adversarial_review_summary(result: AdversarialValidationResult, head_
         body += f"\n{result.clarification_reply_fingerprint}"
     if result.findings:
         body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
+    if result.open_test_oracle_gaps:
+        body += f"\n\n{len(result.open_test_oracle_gaps)} focused regression-test request thread(s) are attached to this review."
     if result.unexplained_changes and result.publish_clarification_thread:
         body += "\n\nOne change-provenance clarification thread is attached to this review."
     unresolved_dispositions = [disposition for disposition in result.thread_dispositions if disposition.status != "ADDRESSED"]
@@ -462,6 +504,49 @@ def format_adversarial_finding_comment(finding: AdversarialValidationFinding) ->
         if value.strip():
             lines.extend(["", f"**{heading}**", "", _bounded_comment_field(value)])
     return "\n".join(lines)
+
+
+def format_test_oracle_gap_comment(gap: TestOracleGap) -> str:
+    """Render one independently resolvable focused regression-test request."""
+    return "\n".join(
+        [
+            "### Auto-Coder material test-oracle gap",
+            "",
+            f"Gap identity: `{gap.gap_id}`",
+            "",
+            "This finding does **not** claim that current production behavior violates the Issue. " "It identifies missing regression protection for an explicit material requirement.",
+            "",
+            "**Issue requirement**",
+            "",
+            f"`{gap.requirement_id}`: {_bounded_comment_field(gap.requirement_text)}",
+            "",
+            "**Authoritative boundary**",
+            "",
+            _bounded_comment_field(gap.authoritative_boundary),
+            "",
+            "**Protected invariant**",
+            "",
+            _bounded_comment_field(gap.invariant),
+            "",
+            "**Minimal plausible incorrect implementation**",
+            "",
+            _bounded_comment_field(gap.plausible_incorrect_implementation),
+            "",
+            "**Why the available tests would still pass**",
+            "",
+            _bounded_comment_field(gap.why_tests_still_pass),
+            "",
+            "**Material consequence**",
+            "",
+            _bounded_comment_field(gap.material_consequence),
+            "",
+            "**Focused regression scenario requested**",
+            "",
+            _bounded_comment_field(gap.focused_regression_scenario),
+            "",
+            "Add only the focused regression protection described above; do not change production code unless a separate demonstrated violation requires it.",
+        ]
+    )
 
 
 def is_test_file(file_path: str) -> bool:
@@ -1094,6 +1179,74 @@ def _log_contextual_parse_diagnostics(
     )
 
 
+def _stable_test_oracle_gap_id(requirement_id: str, authoritative_boundary: str, invariant: str) -> str:
+    """Derive a stable identity from the authoritative missing-oracle scope."""
+    normalized = "\0".join(re.sub(r"\s+", " ", value.strip()).casefold() for value in (requirement_id, authoritative_boundary, invariant))
+    return f"TOG-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[List[TestOracleGap], Optional[AdversarialValidationResult]]:
+    """Parse and consolidate the distinct material test-oracle-gap schema."""
+    if not isinstance(raw_value, list):
+        return [], _parse_error(raw_response, "schema_error", "Malformed validator schema: test_oracle_gaps must be a list", "test_oracle_gaps must be a list")
+
+    gaps: List[TestOracleGap] = []
+    seen_ids: set[str] = set()
+    required_fields = (
+        "requirement_id",
+        "requirement_text",
+        "authoritative_boundary",
+        "invariant",
+        "plausible_incorrect_implementation",
+        "why_tests_still_pass",
+        "material_consequence",
+        "focused_regression_scenario",
+        "anchor_path",
+    )
+    for item in raw_value:
+        if not isinstance(item, dict):
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap entry", "test-oracle gap entries must be objects")
+        values = {name: str(item.get(name, "")).strip() for name in required_fields}
+        missing = [name for name, value in values.items() if not value]
+        if missing:
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap entry", f"test-oracle gap is missing: {', '.join(missing)}")
+
+        status = str(item.get("status", "OPEN")).strip().upper()
+        phase = str(item.get("discovery_phase", "INITIAL")).strip().upper()
+        exception_reason = str(item.get("rereview_exception_reason", "NONE")).strip().upper()
+        exception_evidence = str(item.get("rereview_exception_evidence", "")).strip()
+        resolution_evidence = str(item.get("resolution_evidence", "")).strip()
+        if status not in TEST_ORACLE_GAP_STATUSES:
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap status", f"unsupported test-oracle gap status: {status}")
+        if phase not in {"INITIAL", "REREVIEW"}:
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap discovery phase", f"unsupported discovery phase: {phase}")
+        if status in {"RESOLVED", "INVALID"} and not resolution_evidence:
+            return [], _parse_error(raw_response, "schema_error", "Resolved test-oracle gap lacks evidence", f"{status} requires resolution_evidence")
+
+        derived_id = _stable_test_oracle_gap_id(values["requirement_id"], values["authoritative_boundary"], values["invariant"])
+        supplied_id = str(item.get("gap_id", "")).strip()
+        if supplied_id and supplied_id != derived_id:
+            return [], _parse_error(raw_response, "schema_error", "Unstable test-oracle gap identity", f"gap_id must be {derived_id} for the supplied scope")
+        if derived_id in seen_ids:
+            continue
+        seen_ids.add(derived_id)
+        gaps.append(
+            TestOracleGap(
+                gap_id=derived_id,
+                **values,
+                anchor_line=_optional_positive_int(item.get("anchor_line")),
+                anchor_side=str(item.get("anchor_side", "RIGHT")).strip().upper(),
+                anchor_start_line=_optional_positive_int(item.get("anchor_start_line")),
+                discovery_phase=phase,
+                rereview_exception_reason=exception_reason,
+                rereview_exception_evidence=exception_evidence,
+                status=status,
+                resolution_evidence=resolution_evidence,
+            )
+        )
+    return gaps, None
+
+
 def parse_adversarial_validation_response(response: str) -> AdversarialValidationResult:
     """Parse the strong model's adversarial validation output.
 
@@ -1165,6 +1318,10 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     if any(not value for value in values.values()) or not isinstance(options, list) or any(not isinstance(option, str) or not option.strip() for option in options):
                         return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", "each specification gap requires all four descriptive fields and candidate_options must be a list of non-empty strings")
                     specification_gaps.append(SpecificationGap(**values, candidate_options=[option.strip() for option in options]))
+
+                test_oracle_gaps, gap_parse_error = _extract_test_oracle_gaps(parsed.get("test_oracle_gaps", []), raw_response)
+                if gap_parse_error is not None:
+                    return gap_parse_error
 
                 raw_unexplained_changes = parsed.get("unexplained_changes", [])
                 if not isinstance(raw_unexplained_changes, list):
@@ -1325,10 +1482,11 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             entry.status = "UNVERIFIED"
 
                 # Determine result - enforce consistency and fail-closed
+                has_open_test_oracle_gaps = any(gap.status == "OPEN" for gap in test_oracle_gaps)
                 if raw_result == "PASS":
                     # Valid concrete findings outrank the contradictory top-level
                     # label. Malformed findings have already failed schema parsing.
-                    result_val = "NEEDS_FIX" if findings else "INCONCLUSIVE" if unverified_suspicion else "PASS"
+                    result_val = "NEEDS_FIX" if findings else "INCONCLUSIVE" if unverified_suspicion else "NEEDS_TESTS" if has_open_test_oracle_gaps else "PASS"
                 elif raw_result == "NEEDS_FIX":
                     if not findings:
                         if unverified_suspicion:
@@ -1343,6 +1501,18 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             )
                     else:
                         result_val = "NEEDS_FIX"
+                elif raw_result == "NEEDS_TESTS":
+                    if findings:
+                        result_val = "NEEDS_FIX"
+                    elif not has_open_test_oracle_gaps:
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Reviewer claimed NEEDS_TESTS without an open material test-oracle gap",
+                            "NEEDS_TESTS requires at least one OPEN test_oracle_gaps entry",
+                        )
+                    else:
+                        result_val = "NEEDS_TESTS"
                 elif raw_result in ("INCONCLUSIVE", "BLOCKED"):
                     # A proven counterexample outranks uncertainty or an
                     # infrastructure diagnostic. Never discard concrete findings.
@@ -1352,7 +1522,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         raw_response,
                         "schema_error",
                         f"Unrecognized validator result: {raw_result or '<missing>'}",
-                        "result must be PASS, NEEDS_FIX, INCONCLUSIVE, or BLOCKED",
+                        "result must be PASS, NEEDS_FIX, NEEDS_TESTS, INCONCLUSIVE, or BLOCKED",
                     )
 
                 thread_dispositions = _extract_thread_dispositions(parsed.get("thread_dispositions", []))
@@ -1365,6 +1535,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     dynamic_check_requested=dynamic_check,
                     requirement_coverage=requirement_coverage,
                     specification_gaps=specification_gaps,
+                    test_oracle_gaps=test_oracle_gaps,
                     thread_dispositions=thread_dispositions,
                     unexplained_changes=unexplained_changes,
                 )
@@ -1451,11 +1622,90 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     )
 
 
+def _same_test_oracle_gap_scope(left: TestOracleGap, right: TestOracleGap) -> bool:
+    """Return whether two lifecycle entries describe the same missing oracle."""
+    return all(
+        getattr(left, name) == getattr(right, name)
+        for name in (
+            "gap_id",
+            "requirement_id",
+            "requirement_text",
+            "authoritative_boundary",
+            "invariant",
+            "plausible_incorrect_implementation",
+            "why_tests_still_pass",
+            "material_consequence",
+            "focused_regression_scenario",
+        )
+    )
+
+
+def _reconcile_test_oracle_gap_lifecycle(
+    result: AdversarialValidationResult,
+    stored_session: Optional[ReviewerSession],
+    head_sha: str,
+) -> AdversarialValidationResult:
+    """Enforce bounded initial discovery and deterministic rereview convergence."""
+    if stored_session is None:
+        for gap in result.test_oracle_gaps:
+            gap.discovery_phase = "INITIAL"
+            gap.rereview_exception_reason = "NONE"
+            gap.rereview_exception_evidence = ""
+            gap.status = "OPEN"
+            gap.resolution_evidence = ""
+        return result
+
+    prior_by_id = {gap.gap_id: gap for gap in stored_session.test_oracle_gaps}
+    current_by_id = {gap.gap_id: gap for gap in result.test_oracle_gaps}
+    reconciled: List[TestOracleGap] = []
+    rejected_new_ids: List[str] = []
+
+    for gap_id, prior in prior_by_id.items():
+        current = current_by_id.pop(gap_id, None)
+        if current is None or not _same_test_oracle_gap_scope(prior, current):
+            reconciled.append(prior)
+            continue
+        if prior.status in {"RESOLVED", "INVALID"}:
+            # Once independently closed, variants cannot reopen the same scope.
+            reconciled.append(prior)
+            continue
+        current.discovery_phase = prior.discovery_phase
+        current.rereview_exception_reason = prior.rereview_exception_reason
+        current.rereview_exception_evidence = prior.rereview_exception_evidence
+        if current.status == "RESOLVED" and stored_session.last_head_sha == head_sha:
+            # Correct current behavior on an unchanged commit cannot create the
+            # committed regression protection required to close an open gap.
+            reconciled.append(prior)
+            continue
+        reconciled.append(current)
+
+    for gap in current_by_id.values():
+        if gap.status != "OPEN" or gap.discovery_phase != "REREVIEW" or gap.rereview_exception_reason not in TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS or not gap.rereview_exception_evidence:
+            rejected_new_ids.append(gap.gap_id)
+            continue
+        reconciled.append(gap)
+
+    result.test_oracle_gaps = reconciled
+    if result.result != "ERROR":
+        if result.findings:
+            result.result = "NEEDS_FIX"
+        elif result.open_test_oracle_gaps:
+            result.result = "NEEDS_TESTS"
+        elif result.result == "NEEDS_TESTS":
+            result.result = "PASS"
+    if rejected_new_ids:
+        note = "Rereview discarded newly invented test-oracle gaps without a permitted corrective-diff or required-revalidation exception: " + ", ".join(sorted(rejected_new_ids))
+        result.summary = f"{result.summary.rstrip()} {note}".strip()
+    return result
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
 ) -> AdversarialValidationResult:
     """Apply deterministic finding-first and complete-coverage verdict rules."""
+    if result.result == "ERROR" and result.diagnostic_category:
+        return result
     expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
     coverage_by_id = {entry.requirement_id: entry for entry in result.requirement_coverage}
     unknown_requirement_ids = sorted(coverage_by_id.keys() - expected_requirement_ids)
@@ -1465,6 +1715,11 @@ def _apply_coverage_and_verdict_precedence(
     violated_requirement_ids = sorted(requirement_id for requirement_id in expected_requirement_ids & coverage_by_id.keys() if coverage_by_id[requirement_id].status == "VIOLATED")
     finding_requirement_ids = {finding.requirement_id for finding in result.findings}
     unknown_finding_requirement_ids = sorted(finding_requirement_ids - expected_requirement_ids)
+    gap_requirement_ids = {gap.requirement_id for gap in result.test_oracle_gaps}
+    unknown_gap_requirement_ids = sorted(gap_requirement_ids - expected_requirement_ids)
+    invalid_gap_anchors = sorted({gap.anchor_path for gap in result.open_test_oracle_gaps if gap.anchor_path not in context.all_changed_files})
+    requirement_text_by_id = {requirement.requirement_id: requirement.text for requirement in context.issue_requirements}
+    mismatched_gap_requirement_text_ids = sorted({gap.requirement_id for gap in result.test_oracle_gaps if gap.requirement_id in requirement_text_by_id and gap.requirement_text != requirement_text_by_id[gap.requirement_id]})
 
     if unknown_finding_requirement_ids:
         reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
@@ -1472,6 +1727,33 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = "Invalid validator response: findings referenced unknown stable requirement IDs"
         result.findings = []
         result.diagnostic_category = "unknown_finding_requirement_id"
+        result.diagnostic_reason = reason
+        return result
+
+    if unknown_gap_requirement_ids:
+        reason = f"Test-oracle gaps reference IDs outside the deterministic manifest: {', '.join(unknown_gap_requirement_ids)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: test-oracle gaps referenced unknown stable requirement IDs"
+        result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.requirement_id in expected_requirement_ids]
+        result.diagnostic_category = "unknown_test_oracle_gap_requirement_id"
+        result.diagnostic_reason = reason
+        return result
+
+    if invalid_gap_anchors:
+        reason = f"Open test-oracle gaps must anchor to changed files: {', '.join(invalid_gap_anchors)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: test-oracle gaps used invalid changed-file anchors"
+        result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.anchor_path in context.all_changed_files]
+        result.diagnostic_category = "invalid_test_oracle_gap_anchor"
+        result.diagnostic_reason = reason
+        return result
+
+    if mismatched_gap_requirement_text_ids:
+        reason = f"Test-oracle gaps did not reproduce the exact manifest text for: {', '.join(mismatched_gap_requirement_text_ids)}"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: test-oracle gaps did not map to exact Issue requirements"
+        result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.requirement_id in requirement_text_by_id and gap.requirement_text == requirement_text_by_id[gap.requirement_id]]
+        result.diagnostic_category = "test_oracle_gap_requirement_text_mismatch"
         result.diagnostic_reason = reason
         return result
 
@@ -1515,6 +1797,9 @@ def _apply_coverage_and_verdict_precedence(
             result.diagnostic_category = result.diagnostic_category or "incomplete_evidence_coverage"
             result.diagnostic_reason = result.diagnostic_reason or "; ".join(coverage_details)
         return result
+
+    if result.open_test_oracle_gaps:
+        result.result = "NEEDS_TESTS"
 
     if context.has_complete_file_coverage and expected_requirement_ids and not incomplete_requirement_ids and result.unexplained_changes:
         result.result = "INCONCLUSIVE"
@@ -1669,7 +1954,7 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
-    if stored_session is not None and stored_session.last_head_sha != head_sha:
+    if stored_session is not None:
         review_policy = render_prompt(
             "pr.adversarial_validation_rereview",
             previous_head_sha=stored_session.last_head_sha,
@@ -1677,6 +1962,14 @@ def run_adversarial_validation(
         )
     else:
         review_policy = render_prompt("pr.adversarial_validation_initial_review")
+
+    prior_test_oracle_gaps = "(No material test-oracle gaps have been recorded for this PR.)"
+    if stored_session and stored_session.test_oracle_gaps:
+        prior_test_oracle_gaps = json.dumps(
+            [gap.__dict__ for gap in stored_session.test_oracle_gaps],
+            indent=2,
+            sort_keys=True,
+        )
 
     prompt = render_prompt(
         "pr.adversarial_validation",
@@ -1692,6 +1985,7 @@ def run_adversarial_validation(
         coverage_status=coverage_status,
         requirement_manifest=requirement_manifest,
         claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
+        prior_test_oracle_gaps=prior_test_oracle_gaps,
     )
 
     # 4. Invoke the strong model
@@ -1703,28 +1997,17 @@ def run_adversarial_validation(
 
     used_backend, used_type, used_model = manager_identity()
     provider_session_id = getattr(backend_manager, "_last_session_id", None)
-    if used_backend and isinstance(provider_session_id, str) and provider_session_id:
-        registry.save(
-            ReviewerSession(
-                repository=repo_name,
-                pr_number=pr_number,
-                backend_name=used_backend,
-                backend_type=used_type,
-                model_name=used_model,
-                session_id=provider_session_id,
-                last_head_sha=head_sha,
-            )
-        )
 
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
+    result = _reconcile_test_oracle_gap_lifecycle(result, stored_session, head_sha)
     result = _apply_coverage_and_verdict_precedence(result, context)
 
     initial_thread_dispositions = result.thread_dispositions
 
     # 6. Dynamic validation on suspicion (if requested)
-    if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix:
+    if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix and not result.needs_tests:
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
         try:
@@ -1780,6 +2063,7 @@ def run_adversarial_validation(
                     raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
             result = parse_adversarial_validation_response(followup_response)
             _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
+            result = _reconcile_test_oracle_gap_lifecycle(result, stored_session, head_sha)
             result = _apply_coverage_and_verdict_precedence(result, context)
             if initial_thread_dispositions and not result.thread_dispositions:
                 # The follow-up prompt explicitly asks for a final disposition
@@ -1806,6 +2090,21 @@ def run_adversarial_validation(
                 result.thread_dispositions = []
 
     result = _apply_coverage_and_verdict_precedence(result, context)
+
+    persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
+    if used_backend and persisted_session_id:
+        registry.save(
+            ReviewerSession(
+                repository=repo_name,
+                pr_number=pr_number,
+                backend_name=used_backend,
+                backend_type=used_type,
+                model_name=used_model,
+                session_id=persisted_session_id,
+                last_head_sha=head_sha,
+                test_oracle_gaps=result.test_oracle_gaps,
+            )
+        )
 
     get_trace_logger().log(
         "Adversarial Validation Result",

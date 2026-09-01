@@ -1,6 +1,6 @@
 """Tests for PR-scoped persistent adversarial reviewer sessions."""
 
-from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry
+from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 
 
 def test_sessions_are_isolated_by_pr_and_backend_and_survive_reload(tmp_path):
@@ -32,3 +32,19 @@ def test_remove_pr_removes_all_of_only_that_pr(tmp_path):
     assert registry.get("owner/repo", 123, "claude", "claude", "opus") is None
     assert registry.get("owner/repo", 123, "codex", "codex", "gpt") is None
     assert registry.get("owner/repo", 124, "claude", "claude", "opus") is not None
+
+
+def test_material_test_oracle_gap_identity_and_scope_survive_reload(tmp_path):
+    registry = ReviewerSessionRegistry(tmp_path / "sessions.json")
+    gap = TestOracleGap(
+        gap_id="TOG-123",
+        requirement_id="REQ-001",
+        authoritative_boundary="GridMutation.apply_candidate",
+        invariant="Rejection preserves stored state and revision",
+        status="OPEN",
+    )
+    session = ReviewerSession("owner/repo", 123, "codex", "codex", "gpt", "s1", "sha-a", [gap])
+
+    registry.save(session)
+
+    assert ReviewerSessionRegistry(registry.path).get("owner/repo", 123, "codex", "codex", "gpt") == session

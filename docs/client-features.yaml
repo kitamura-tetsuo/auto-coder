@@ -4,6 +4,25 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Configuration
 
+#### Bounded material test-oracle review
+
+The initial authoritative adversarial review may report a small, consolidated
+set of material test-oracle gaps separately from demonstrated implementation
+violations and specification gaps. Each gap is tied to an explicit Issue
+requirement, an exact production boundary and invariant, a plausible incorrect
+implementation that existing tests would miss, and one focused regression
+scenario. An open gap produces `NEEDS_TESTS`, requests only committed regression
+protection, and blocks automatic merge without claiming that current production
+behavior is wrong.
+
+Gap identities and scopes persist with the PR-scoped reviewer session. Rereviews
+revalidate recorded gaps and the corrective diff instead of restarting broad
+test exploration. New rereview gaps are accepted only when the corrective diff
+introduced a boundary, weakened protection, or required revalidation directly
+exposed an entirely untested authoritative material boundary. Closed gaps cannot
+be reopened for input variants or stronger assertions outside their original
+boundary and invariant.
+
 #### Dedicated adversarial reviewer GitHub App
 
 Adversarial validation verdicts are published as native pull-request reviews using
@@ -11,7 +30,8 @@ the separately configured `auto-coder-reviewer` GitHub App. Configure its `app_i
 and optional `client_id` under `[github-app-auto-coder-reviewer]` in
 `~/.auto-coder/config.toml`; keep the private key at
 `~/.auto-coder/auto-coder-reviewer.pem`. `PASS` maps to `APPROVE`, `NEEDS_FIX`
-maps to `REQUEST_CHANGES`, and other outcomes map deterministically to `COMMENT`.
+and `NEEDS_TESTS` map to `REQUEST_CHANGES`, and other outcomes map
+deterministically to `COMMENT`.
 Publication is pinned to the validated head SHA and fails closed without falling
 back to the normal user credential.
 
