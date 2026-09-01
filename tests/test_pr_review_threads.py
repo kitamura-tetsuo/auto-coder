@@ -260,6 +260,7 @@ def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_un
     pr_data = {"number": 123, "labels": []}
 
     client = MagicMock()
+    client.get_pr_review_threads_strict.return_value = []
     actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
     assert any("All GitHub Actions checks passed for PR #123" in a for a in actions)
@@ -281,7 +282,10 @@ def test_handle_pr_merge_fails_closed_when_real_review_thread_lookup_fails(mock_
 
     actions = _handle_pr_merge(mock_github_client, "owner/repo", pr_data, config, {})
 
-    assert any("review threads could not be checked" in action for action in actions)
+    # The stale-review-thread GitHub-marker scan (which reuses the same
+    # review-thread lookup) now fails closed even earlier than the ordinary
+    # unresolved-thread gate, for the same underlying lookup failure.
+    assert any("registry could not be read" in action or "review threads could not be checked" in action for action in actions)
     mock_validation.assert_not_called()
     mock_merge_pr.assert_not_called()
 
@@ -309,6 +313,7 @@ def test_handle_pr_merge_proceeds_when_all_threads_resolved(mock_merge_pr, mock_
 
     client = MagicMock()
     client.get_pull_request.return_value = {"head": {"sha": "123abc456"}}
+    client.get_pr_review_threads_strict.return_value = []
     actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
     assert any("Successfully merged PR #123" in a for a in actions)

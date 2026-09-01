@@ -204,7 +204,9 @@ class TestResolveAddressedReviewThreads:
         resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
 
         assert resolved == ["t1"]
-        client.reply_to_review_thread.assert_called_once()
+        # Resolver explanation, the pre-resolve durability marker, and the
+        # post-resolve cleared marker.
+        assert client.reply_to_review_thread.call_count == 3
         client.resolve_review_thread.assert_called_once_with("t1")
 
     def test_still_valid_disposition_is_never_resolved(self):
@@ -431,6 +433,74 @@ class TestResolveAddressedReviewThreads:
         assert len(marker_calls) == 1
         assert marker_calls[0].args[2] == 42  # root_comment_database_id
 
+    def test_pre_resolve_marker_post_failure_skips_thread_without_resolving(self):
+        """[P2] Durability-before-risk: if the pre-resolve intent marker
+        itself cannot be posted, the thread must never enter the risky
+        "resolved-but-possibly-stale" state in the first place — the resolve
+        mutation must not even be attempted, and the thread stays unresolved
+        (which the ordinary unresolved-thread gate already handles safely)."""
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.reply_to_review_thread.side_effect = [
+            None,  # resolver explanation succeeds
+            Exception("could not post durable pre-resolve marker"),
+        ]
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        assert resolved == []
+        client.resolve_review_thread.assert_not_called()
+
+    def test_both_durable_writes_failing_still_survives_via_predresolve_marker(self, tmp_path, monkeypatch):
+        """[P2] Regression oracle for the "both durable writes fail" scenario:
+        the local registry write AND the post-rollback cleared-marker write
+        both fail, but because the pre-resolve intent marker was posted
+        successfully *before* the risky resolve mutation, a fresh process
+        invocation (empty in-memory state, new registry) can still discover
+        the durable GitHub-side record and refuse to treat the thread as
+        settled."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha2-newer"}},
+        ]
+        client.unresolve_review_thread.side_effect = Exception("persistent error")
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+        registry = MagicMock()
+        registry.record.side_effect = OSError("disk full")
+
+        with pytest.raises(StaleReviewThreadResolutionError):
+            resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions, stale_registry=registry)
+
+        # The pre-resolve durable marker was posted before the risky resolve
+        # mutation, independent of the local registry write that failed above.
+        marker_calls = [call for call in client.reply_to_review_thread.call_args_list if "auto-coder-stale-review-thread-blocker:v1" in call.args[3]]
+        assert len(marker_calls) == 1
+
+        # A fresh process invocation (new registry, no in-memory state) must
+        # still discover the durable GitHub-side marker independently.
+        fresh_registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        fresh_client = MagicMock()
+        fresh_client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "t1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=42),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->"),
+                ],
+            )
+        ]
+        fresh_client.unresolve_review_thread.side_effect = Exception("still failing")
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(fresh_client, "owner/repo", 1, registry=fresh_registry)
+
+        assert still_blocked == ["t1"]
+
     def test_exhausted_rollback_still_raises_even_if_persisting_the_blocker_fails(self):
         """[P1] A write failure while persisting the blocker (disk full,
         permissions, ...) must not turn into a silently-continuing ordinary
@@ -636,6 +706,66 @@ class TestRetryPendingStaleReviewThreadRollbacks:
 
         assert still_blocked == []
         client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 1, "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->")
+
+    def test_truncated_comments_with_no_visible_marker_is_still_pending(self, tmp_path):
+        """[P1] A truncated review-thread discussion can hide the marker on a
+        page that was never fetched. The visible first page has no marker at
+        all, but the thread is conservatively treated as pending rather than
+        assumed clear, since the actual blocker may be on a later page."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [_comment(CODEX_LOGIN, "finding", database_id=1)],
+                comments_truncated=True,
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+
+    def test_github_marker_scan_failure_fails_closed(self, tmp_path):
+        """[P1] The GitHub-side marker scan may be the only surviving evidence
+        of a stale resolution when the local registry write itself failed.
+        A failure while performing that scan must propagate rather than be
+        silently treated as "no marker-only blockers"."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.side_effect = Exception("transient GitHub API error")
+
+        with pytest.raises(StaleReviewThreadRegistryError):
+            retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        client.unresolve_review_thread.assert_not_called()
+
+    def test_blocker_cleared_blocker_sequence_remains_pending(self, tmp_path):
+        """[P2] State must be derived chronologically: the latest marker wins.
+        A thread blocked, then cleared, then blocked again by an unrelated
+        later incident must still be reported pending, not cleared just
+        because a CLEARED marker appears earlier in the discussion."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->"),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->"),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
 
     def test_github_marker_with_later_cleared_reply_is_not_pending(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")

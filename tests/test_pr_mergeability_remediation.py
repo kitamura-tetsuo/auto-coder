@@ -2,6 +2,14 @@
 
 from unittest.mock import Mock, patch
 
+
+def _client():
+    """A Mock GitHub client pre-configured so the stale-review-thread
+    rollback retry at the top of _handle_pr_merge is a no-op."""
+    client = Mock()
+    client.get_pr_review_threads_strict.return_value = []
+    return client
+
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _get_mergeable_state, _handle_pr_merge, _start_mergeability_remediation
 
@@ -13,7 +21,7 @@ def test_non_mergeable_detection_is_reported(mock_check_progress):
     config = AutomationConfig()
     pr_data = {"number": 42, "mergeable": False}
 
-    actions = _handle_pr_merge(Mock(), "owner/repo", pr_data, config, {})
+    actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
     assert any("not mergeable" in action.lower() for action in actions)
 
@@ -40,7 +48,7 @@ def test_mergeability_remediation_flow_invoked(mock_github_client, mock_get_ghap
     config.ENABLE_MERGEABILITY_REMEDIATION = True
     pr_data = {"number": 99, "mergeable": False}
 
-    actions = _handle_pr_merge(Mock(), "owner/repo", pr_data, config, {})
+    actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
     # Verify that remediation flow was invoked and skip-analysis flag was set
     assert any("Starting mergeability remediation" in action for action in actions)
@@ -70,7 +78,7 @@ def test_mergeability_remediation_success_path(mock_github_client, mock_get_ghap
     config.ENABLE_MERGEABILITY_REMEDIATION = True
     pr_data = {"number": 100, "mergeable": False}
 
-    actions = _handle_pr_merge(Mock(), "owner/repo", pr_data, config, {})
+    actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
     # Verify success
     assert any("Starting mergeability remediation" in action for action in actions)
@@ -98,7 +106,7 @@ def test_mergeability_remediation_checkout_fails(mock_github_client, mock_get_gh
     config.ENABLE_MERGEABILITY_REMEDIATION = True
     pr_data = {"number": 101, "mergeable": False}
 
-    actions = _handle_pr_merge(Mock(), "owner/repo", pr_data, config, {})
+    actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
     # Verify failure is handled
     assert any("Starting mergeability remediation" in action for action in actions)
@@ -129,7 +137,7 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
     config.ENABLE_MERGEABILITY_REMEDIATION = True
     pr_data = {"number": 102, "mergeable": False}
 
-    actions = _handle_pr_merge(Mock(), "owner/repo", pr_data, config, {})
+    actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
     # Verify failure is handled
     assert any("Starting mergeability remediation" in action for action in actions)

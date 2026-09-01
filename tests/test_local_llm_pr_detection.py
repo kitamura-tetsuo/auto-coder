@@ -165,6 +165,7 @@ class TestHandlePrMergeFixLimitation:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         github_client = MagicMock()
+        github_client.get_pr_review_threads_strict.return_value = []
 
         # 1. Local PR with passing checks
         local_pr = {
@@ -203,6 +204,7 @@ class TestHandlePrMergeFixLimitation:
         config = AutomationConfig()
         config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
         github_client = MagicMock()
+        github_client.get_pr_review_threads_strict.return_value = []
 
         local_pr = {
             "number": 101,
@@ -230,6 +232,7 @@ class TestHandlePrMergeFixLimitation:
         """Non-local PR with CI failure skips local LLM fix loop."""
         config = AutomationConfig()
         github_client = MagicMock()
+        github_client.get_pr_review_threads_strict.return_value = []
 
         non_local_pr = {
             "number": 102,

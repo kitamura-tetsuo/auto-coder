@@ -31,6 +31,7 @@ class TestCloseStaleJulesPR:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_closes_pr_and_increments_attempt_after_timeout(self, mock_increment, mock_remove_sessions):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=13)
@@ -53,6 +54,7 @@ class TestCloseStaleJulesPR:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_keeps_pr_open_before_timeout(self, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=11)
@@ -69,6 +71,7 @@ class TestCloseStaleJulesPR:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_keeps_pr_open_when_ci_passed(self, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=48)
@@ -85,6 +88,7 @@ class TestCloseStaleJulesPR:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_keeps_pr_open_while_ci_in_progress(self, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=48)
@@ -101,6 +105,7 @@ class TestCloseStaleJulesPR:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_ignores_non_jules_pr(self, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=48)
@@ -119,6 +124,7 @@ class TestCloseStaleJulesPR:
     def test_ignores_claude_pr(self, mock_increment):
         """Claude PRs must not be closed by Jules staleness check, and attempt must not be incremented."""
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=48)
@@ -137,6 +143,7 @@ class TestCloseStaleJulesPR:
     def test_ignores_claude_routine_session_pr(self, mock_increment):
         """PRs with Claude routine session links must not be closed by Jules staleness check."""
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=48)
@@ -155,6 +162,7 @@ class TestCloseStaleJulesPR:
     def test_ignores_already_closed_pr(self, mock_increment):
         """A PR closed by an earlier run must not be closed (and counted) twice."""
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=30)
@@ -171,6 +179,7 @@ class TestCloseStaleJulesPR:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_resolves_issue_when_body_has_no_link(self, mock_increment, mock_resolve):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=13)
@@ -215,6 +224,7 @@ class TestHandlePrMergeJulesPR:
         from src.auto_coder.utils import CommandResult
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=13)
@@ -258,6 +268,7 @@ class TestHandlePrMergeJulesPR:
         from src.auto_coder.utils import CommandResult
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=1)
@@ -293,6 +304,7 @@ class TestStaleJulesPRWithAutoCoderLabel:
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     def test_process_pull_request_closes_labelled_stale_jules_pr(self, mock_check_status, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=30)
@@ -313,6 +325,7 @@ class TestStaleJulesPRWithAutoCoderLabel:
         from src.auto_coder.automation_engine import AutomationEngine
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=30)
@@ -339,6 +352,7 @@ class TestStaleJulesPRWithAutoCoderLabel:
         from src.auto_coder.automation_engine import AutomationEngine
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=30)
@@ -369,6 +383,7 @@ class TestUnlockAndRetryLinkedIssue:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_close_releases_issue_label_and_reports_issue(self, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=13)
@@ -384,6 +399,7 @@ class TestUnlockAndRetryLinkedIssue:
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_close_keeps_issue_label_when_labels_disabled(self, mock_increment):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         config.DISABLE_LABELS = True
@@ -403,6 +419,7 @@ class TestUnlockAndRetryLinkedIssue:
         from src.auto_coder.automation_engine import AutomationEngine
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=30)
@@ -431,6 +448,7 @@ class TestUnlockAndRetryLinkedIssue:
         from src.auto_coder.automation_engine import AutomationEngine
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         config.JULES_PR_CI_TIMEOUT_HOURS = 12
         pr_data = _jules_pr_data(hours_old=30)
@@ -457,6 +475,7 @@ class TestShouldSkipWaitingForJules:
 
     def _client_with_wait_comment(self, comment_age_hours: float) -> Mock:
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         comment_time = (datetime.now(timezone.utc) - timedelta(hours=comment_age_hours)).isoformat()
         github_client.get_pr_comments.return_value = [{"body": target_message, "created_at": comment_time}]
@@ -490,6 +509,7 @@ class TestSingleTargetTypeDetection:
         from src.auto_coder.automation_engine import AutomationEngine
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
         # 404 for a PR lookup surfaces as an empty payload, not an exception
@@ -509,6 +529,7 @@ class TestSingleTargetTypeDetection:
         from src.auto_coder.automation_engine import AutomationEngine
 
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         github_client.get_pull_request.return_value = {}
         github_client.get_pr_details.return_value = {}
@@ -538,6 +559,7 @@ class TestLinkedPRSkipUsesOpenPRs:
 
     def test_issue_with_only_closed_linked_pr_is_collected(self):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         github_client.get_open_prs_json.return_value = []
         github_client.get_open_issues_json.return_value = [self._issue([4643])]
@@ -550,6 +572,7 @@ class TestLinkedPRSkipUsesOpenPRs:
 
     def test_issue_with_open_linked_pr_is_skipped(self):
         github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
         open_pr = {"number": 4643, "title": "Fix", "labels": [], "draft": False, "created_at": "2026-08-02T16:22:10Z", "head": {"ref": "b", "sha": "s"}, "body": ""}
         github_client.get_open_prs_json.return_value = [open_pr]

@@ -1632,6 +1632,31 @@ class TestClaimedReviewThreadValidationFlow:
         mock_merge_pr.assert_not_called()
         mock_exit_if_in_progress.assert_not_called()
 
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_github_marker_scan_failure_blocks_merge(self, mock_merge_pr, mock_exit_if_in_progress, tmp_path, monkeypatch):
+        """[P1] Regression oracle: an empty local registry (nothing persisted
+        for this PR) plus a GitHub-side marker scan that raises must still
+        refuse to merge — the scan failure must fail closed exactly like a
+        corrupt local registry, never be silently treated as "no marker-only
+        blockers", since it may be the only surviving evidence of a stale
+        resolution."""
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        # No local registry file at all — empty local state.
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": "123abc456"}}
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.side_effect = Exception("transient GitHub API error")
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("registry could not be read" in a or "stale-resolution markers" in a for a in actions)
+        mock_merge_pr.assert_not_called()
+        mock_exit_if_in_progress.assert_not_called()
+
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
