@@ -2124,6 +2124,9 @@ def _handle_pr_merge(
                     codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
                     if codex_review.lookup_error:
                         actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = codex_review.lookup_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
                     if codex_review.present and not codex_review.completed:
                         actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
