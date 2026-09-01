@@ -691,7 +691,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
                         self.stdout = MockStream("")
                         self.stderr = MockStream("")
                         self.pid = 0
-                        self.returncode = None
+                        # Stubbed commands complete immediately. CommandExecutor polls
+                        # returncode and only calls wait() during cleanup, so leaving this
+                        # as None makes every stub run until its production timeout.
+                        self.returncode = 0
 
                     def wait(self, timeout=None):
                         if self.returncode is None:

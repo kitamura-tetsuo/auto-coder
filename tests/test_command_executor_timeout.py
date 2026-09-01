@@ -1,9 +1,21 @@
 import subprocess
 import time
+from unittest.mock import patch
 
 import pytest
 
 from auto_coder.utils import CommandExecutor
+
+
+@patch.object(CommandExecutor, "_run_with_streaming", side_effect=subprocess.TimeoutExpired(["sleep", "10"], 5))
+def test_run_command_timeout(mock_run_with_streaming):
+    """Test timeout conversion without waiting for a real process."""
+    result = CommandExecutor.run_command(["sleep", "10"], timeout=5)
+
+    assert result.success is False
+    assert result.stderr == "Command timed out after 5s"
+    assert result.returncode == -1
+    mock_run_with_streaming.assert_called_once()
 
 
 def test_command_executor_idle_timeout():

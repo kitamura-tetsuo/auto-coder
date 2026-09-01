@@ -48,7 +48,8 @@ class TestPollPrMergeable:
 
     @patch("src.auto_coder.pr_processor.GitHubClient")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
-    def test_poll_returns_false_on_timeout(self, mock_get_ghapi_client, mock_github_client_class, config):
+    @patch("src.auto_coder.pr_processor.time.monotonic", side_effect=[0, 0, 1, 2, 3])
+    def test_poll_returns_false_on_timeout(self, mock_monotonic, mock_get_ghapi_client, mock_github_client_class, config):
         """Test that polling returns False when timeout is reached."""
         # Setup
         mock_github_client = MagicMock()
@@ -65,12 +66,13 @@ class TestPollPrMergeable:
 
         # Verify
         assert result is False
-        # Should have made multiple attempts within timeout
-        assert mock_api.pulls.get.call_count >= 2
+        assert mock_api.pulls.get.call_count == 3
+        assert mock_monotonic.call_count == 5
 
     @patch("src.auto_coder.pr_processor.GitHubClient")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
-    def test_poll_handles_api_errors_gracefully(self, mock_get_ghapi_client, mock_github_client_class, config):
+    @patch("src.auto_coder.pr_processor.time.monotonic", side_effect=[0, 0, 1, 2, 3])
+    def test_poll_handles_api_errors_gracefully(self, mock_monotonic, mock_get_ghapi_client, mock_github_client_class, config):
         """Test that polling handles API errors gracefully and returns False."""
         # Setup
         mock_github_client = MagicMock()
@@ -87,6 +89,8 @@ class TestPollPrMergeable:
 
         # Verify
         assert result is False
+        assert mock_api.pulls.get.call_count == 3
+        assert mock_monotonic.call_count == 5
 
     @patch("src.auto_coder.pr_processor.GitHubClient")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")

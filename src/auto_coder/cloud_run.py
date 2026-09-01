@@ -27,6 +27,24 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def _parse_stored_int(value: object, field_name: str) -> int:
+    """Parse an integer stored in the JSON repository."""
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value)
+    raise TypeError(f"{field_name} must be an integer")
+
+
+def _parse_stored_int_list(value: object, field_name: str) -> List[int]:
+    """Parse an integer list stored in the JSON repository."""
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} must be a list")
+    return [_parse_stored_int(item, field_name) for item in value]
+
+
 @dataclass
 class CloudRun:
     """A durable record of one cloud provider run for a single Issue attempt.
@@ -63,11 +81,11 @@ class CloudRun:
     def from_dict(data: Dict[str, object]) -> "CloudRun":
         return CloudRun(
             repo_name=str(data["repo_name"]),
-            issue_number=int(data["issue_number"]),  # type: ignore[arg-type]
-            attempt=int(data["attempt"]),  # type: ignore[arg-type]
+            issue_number=_parse_stored_int(data["issue_number"], "issue_number"),
+            attempt=_parse_stored_int(data["attempt"], "attempt"),
             provider=str(data["provider"]),
             task_id=str(data["task_id"]),
-            pull_request_numbers=[int(n) for n in data.get("pull_request_numbers", [])],  # type: ignore[union-attr]
+            pull_request_numbers=_parse_stored_int_list(data.get("pull_request_numbers", []), "pull_request_numbers"),
         )
 
 
@@ -168,7 +186,7 @@ class CloudRunRepository:
         """List all persisted runs (across attempts) for an issue, ordered by attempt."""
         with self._lock:
             data = self._read_all()
-            runs = [CloudRun.from_dict(raw) for raw in data.values() if int(raw.get("issue_number", -1)) == issue_number]  # type: ignore[arg-type]
+            runs = [CloudRun.from_dict(raw) for raw in data.values() if _parse_stored_int(raw.get("issue_number", -1), "issue_number") == issue_number]
             runs.sort(key=lambda r: r.attempt)
             return runs
 

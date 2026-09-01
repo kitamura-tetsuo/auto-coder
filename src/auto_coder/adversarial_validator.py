@@ -1466,8 +1466,7 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
-    is_rereview = stored_session is not None and stored_session.last_head_sha != head_sha
-    if is_rereview:
+    if stored_session is not None and stored_session.last_head_sha != head_sha:
         review_policy = render_prompt(
             "pr.adversarial_validation_rereview",
             previous_head_sha=stored_session.last_head_sha,
