@@ -10,14 +10,18 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationContext,
     AdversarialValidationFinding,
     AdversarialValidationResult,
+    ChangeProvenanceItem,
     IssueRequirement,
     ReviewThreadDisposition,
+    _apply_coverage_and_verdict_precedence,
     build_adversarial_validation_context,
     build_file_aware_diff,
     build_issue_requirement_manifest,
     extract_all_changed_files,
     extract_changed_test_files,
     extract_issue_requirements,
+    format_adversarial_review_summary,
+    format_change_provenance_clarification,
     is_test_file,
     parse_adversarial_validation_response,
     run_adversarial_validation,
@@ -27,6 +31,97 @@ from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.reviewer_session_registry import ReviewerSession
 from auto_coder.trace_logger import get_trace_logger
+
+
+def test_parses_aggregated_change_provenance_clarification() -> None:
+    response = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "Requirements pass, but lockfile provenance is unknown",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Implementation and test evidence"}],
+            "findings": [],
+            "unexplained_changes": [
+                {
+                    "paths": ["uv.lock", "pyproject.toml"],
+                    "change_group": "Dependency metadata",
+                    "why_unexplained": "No dependency source change establishes why both files changed",
+                }
+            ],
+            "thread_dispositions": [],
+        }
+    )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert result.result == "INCONCLUSIVE"
+    assert result.findings == []
+    assert result.requirement_coverage[0].status == "VERIFIED"
+    assert result.unexplained_changes == [
+        ChangeProvenanceItem(
+            paths=["uv.lock", "pyproject.toml"],
+            change_group="Dependency metadata",
+            why_unexplained="No dependency source change establishes why both files changed",
+        )
+    ]
+
+
+def test_change_provenance_thread_requests_classification_without_code_change() -> None:
+    body = format_change_provenance_clarification([ChangeProvenanceItem(paths=["uv.lock"], change_group="Lockfile", why_unexplained="Generator input is not evident")])
+
+    assert body.count("Auto-Coder change-provenance clarification") == 1
+    assert "intentional and directly required" in body
+    assert "generated or mechanically derived" in body
+    assert "unrelated or accidental" in body
+    assert "not an instruction to change code or create a commit" in body
+    assert "auto-coder-review-addressed:v1" in body
+    assert "unverified claim" in body
+
+
+def test_complete_requirements_with_unexplained_changes_becomes_clarification_blocker() -> None:
+    parsed = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "PASS",
+                "summary": "The Issue contract is satisfied",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Focused test and implementation path"}],
+                "findings": [],
+                "unexplained_changes": [{"paths": ["uv.lock"], "change_group": "Lockfile", "why_unexplained": "Its generating change is unclear"}],
+            }
+        )
+    )
+    context = AdversarialValidationContext(
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Required behavior")],
+        all_changed_files=["uv.lock"],
+    )
+
+    result = _apply_coverage_and_verdict_precedence(parsed, context)
+
+    assert result.result == "INCONCLUSIVE"
+    assert result.diagnostic_category == "change_provenance_clarification"
+    assert result.requirement_coverage[0].status == "VERIFIED"
+    assert len(result.unexplained_changes) == 1
+
+
+@pytest.mark.parametrize(
+    ("rationale", "evidence"),
+    [
+        ("scripts/example.sh was unrelated work accidentally left in the branch", "The implementer identifies the script change as accidental"),
+        ("The generated-file claim is contradicted by manual edits", "generated.json changes keys that are absent from generator input and output"),
+    ],
+)
+def test_review_summary_publishes_concrete_still_valid_provenance(rationale: str, evidence: str) -> None:
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Issue requirements remain verified",
+        thread_dispositions=[ReviewThreadDisposition(thread_id="provenance-1", status="STILL_VALID", rationale=rationale, evidence=evidence)],
+    )
+
+    body = format_adversarial_review_summary(result, "abc123")
+
+    assert "Issue requirements remain verified" in body
+    assert "`provenance-1`: STILL_VALID" in body
+    assert rationale in body
+    assert evidence in body
 
 
 class TestExtractChangedTestFiles:

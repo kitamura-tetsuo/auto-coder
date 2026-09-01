@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from auto_coder.adversarial_validator import ReviewThreadDisposition
+from auto_coder.adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, ReviewThreadDisposition
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
     STALE_BLOCKER_CLEARED_MARKER,
@@ -13,7 +13,9 @@ from auto_coder.review_thread_validation import (
     StaleReviewThreadRegistry,
     StaleReviewThreadRegistryError,
     StaleReviewThreadResolutionError,
+    change_provenance_reply_fingerprint,
     classify_review_threads,
+    is_change_provenance_thread,
     render_claimed_review_threads_section,
     resolve_addressed_review_threads,
     retry_pending_stale_review_thread_rollbacks,
@@ -63,6 +65,45 @@ class TestClassifyReviewThreads:
         assert claimed.root_comment_database_id == 42
         assert claimed.root_author_login == CODEX_LOGIN
         assert "counter never resets" in claimed.original_finding
+
+    def test_provenance_reply_is_claimed_and_fingerprinted(self):
+        thread = _thread(
+            "provenance-1",
+            False,
+            [
+                _comment(REVIEWER_APP_LOGIN, f"{CHANGE_PROVENANCE_CLARIFICATION_MARKER}\nWhy did uv.lock change?"),
+                _comment("agent[bot]", f"Generated from the dependency addition.\n{REVIEW_ADDRESSED_MARKER}"),
+            ],
+        )
+
+        result = classify_review_threads([thread], ELIGIBLE_AUTHOR_IDS)
+
+        assert result.blocking_unresolved_count == 0
+        assert result.claimed[0].is_change_provenance is True
+        assert is_change_provenance_thread(thread) is True
+        fingerprint = change_provenance_reply_fingerprint(result.claimed)
+        assert fingerprint.startswith("<!-- auto-coder-change-provenance-evidence:v1:")
+        assert fingerprint.endswith(" -->")
+
+        thread.comments.append(_comment("observer", "Thanks, I am following this discussion"))
+        unchanged_material_reply = classify_review_threads([thread], ELIGIBLE_AUTHOR_IDS)
+        assert change_provenance_reply_fingerprint(unchanged_material_reply.claimed) == fingerprint
+
+    def test_provenance_thread_without_material_marker_remains_blocking(self):
+        thread = _thread(
+            "provenance-1",
+            False,
+            [
+                _comment(REVIEWER_APP_LOGIN, f"{CHANGE_PROVENANCE_CLARIFICATION_MARKER}\nWhy did uv.lock change?"),
+                _comment("agent[bot]", "I will investigate"),
+            ],
+        )
+
+        result = classify_review_threads([thread], ELIGIBLE_AUTHOR_IDS)
+
+        assert result.claimed == ()
+        assert result.blocking_unresolved_count == 1
+        assert change_provenance_reply_fingerprint(result.claimed) == ""
 
     def test_unresolved_eligible_thread_without_marker_is_blocking(self):
         threads = [

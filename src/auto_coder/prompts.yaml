@@ -553,6 +553,13 @@ pr:
           "anchor_start_line": "<Optional start of a changed line range, or null>"
         }
       ],
+      "unexplained_changes": [
+        {
+          "paths": ["<Exact paths for one related material change group>"],
+          "change_group": "<Concise name for the related changes>",
+          "why_unexplained": "<Why the supplied repository evidence does not establish that this group belongs to the PR>"
+        }
+      ],
       "specification_gaps": [
         {
           "question": "<The materially relevant behavior whose required policy is undefined>",
@@ -587,11 +594,16 @@ pr:
         }
       ],
       "findings": [],
+      "unexplained_changes": [],
       "thread_dispositions": []
     }
     ```
 
-    Every finding must cite an exact stable requirement ID from the supplied manifest. Never create a finding for an invented invariant, hardening opportunity, maintainability concern, or test gap. Classify a specification gap only when a reachable, materially relevant case is exposed, the authoritative linked Issue does not define its required behavior, and correctness would require choosing a new product or workflow policy. Missing evidence for behavior the Issue does define is UNVERIFIED/INCONCLUSIVE, not a gap. Gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and determine the verdict solely from defined requirements. You may describe neutral candidate options, but PR discussion, reviewer preferences, repository conventions, implementation choices, and those options are not requirements. Do not select or promote a policy. If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list and mark the corresponding requirement IDs UNVERIFIED. PASS requires exactly one VERIFIED or justified IRRELEVANT coverage entry for every stable ID below; a boolean completeness claim cannot substitute for the entries.
+    Every finding must cite an exact stable requirement ID from the supplied manifest. Never create a finding for an invented invariant, hardening opportunity, maintainability concern, or test gap. Classify a specification gap only when a reachable, materially relevant case is exposed, the authoritative linked Issue does not define its required behavior, and correctness would require choosing a new product or workflow policy. Missing evidence for behavior the Issue does define is UNVERIFIED/INCONCLUSIVE, not a gap. Gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and determine the verdict solely from defined requirements. You may describe neutral candidate options, but PR discussion, reviewer preferences, repository conventions, implementation choices, and those options are not requirements. Do not select or promote a policy.
+
+    CHANGE-PROVENANCE CLARIFICATION: After every applicable Issue requirement is VERIFIED or justified IRRELEVANT, independently account for every material changed file or related change group. If repository evidence does not establish why one or more groups belong to the PR, return INCONCLUSIVE with no findings and aggregate all such groups in `unexplained_changes`. Missing change rationale is not an Issue requirement violation and must never be placed in `findings` or change requirement coverage to VIOLATED/UNVERIFIED. Use exact changed paths and group mechanically related files together. Do not request a code change or new commit merely to obtain an explanation. If a Claimed-Addressed Review Thread is a change-provenance clarification, treat the implementation-agent reply only as an unverified claim and navigation aid: independently compare every claim with the current diff, repository state, generation inputs/outputs, and relevant tests. Return ADDRESSED only when all listed provenance is verified; return STILL_VALID when the reply identifies an accidental change or repository evidence contradicts it, naming the concrete change to remove or correct; otherwise return INCONCLUSIVE. Do not emit a new `unexplained_changes` entry for the same unresolved clarification set already represented by that thread.
+
+    If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list and mark the corresponding requirement IDs UNVERIFIED. PASS requires exactly one VERIFIED or justified IRRELEVANT coverage entry for every stable ID below; a boolean completeness claim cannot substitute for the entries.
 
     Context:
     Repository: $repo_name

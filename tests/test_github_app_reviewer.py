@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 
 
@@ -17,6 +17,21 @@ class RecordingClient:
     def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
         self.calls.append((method, url, kwargs))
         return self.responses.pop(0)
+
+
+class ReviewSchemaValidatingClient(RecordingClient):
+    """Reject nested review-comment shapes that GitHub's reviews API rejects."""
+
+    def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        if method == "POST" and url.endswith("/reviews"):
+            payload = kwargs["json"]
+            assert isinstance(payload, dict)
+            allowed = {"path", "position", "body", "line", "side", "start_line", "start_side"}
+            for comment in payload.get("comments", []):
+                assert set(comment) <= allowed
+                assert "path" in comment and "body" in comment
+                assert "position" in comment or "line" in comment
+        return super().request(method, url, **kwargs)
 
 
 def response(status: int, data: dict[str, object]) -> httpx.Response:
@@ -102,7 +117,8 @@ def test_publishes_native_review_with_installation_token_and_exact_sha(tmp_path:
     assert payload["commit_id"] == "sha-a"
     assert "Validated commit: `sha-a`" in payload["body"]
     if result.needs_fix:
-        assert payload["comments"][0]["subject_type"] == "file"
+        assert payload["comments"][0]["line"] == 1
+        assert payload["comments"][0]["side"] == "RIGHT"
     assert review_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
 
 
@@ -153,11 +169,109 @@ def test_each_finding_is_an_independent_review_comment_with_safe_anchors(tmp_pat
     assert payload["comments"][0]["side"] == "RIGHT"
     assert "REQ-001" in payload["comments"][0]["body"]
     assert "Suggested regression scenario" in payload["comments"][0]["body"]
-    assert payload["comments"][1]["subject_type"] == "file"
+    assert payload["comments"][1]["line"] == 10
+    assert payload["comments"][1]["side"] == "RIGHT"
     assert "Preserve the value" not in payload["body"]
 
 
-def test_invalid_line_falls_back_to_file_level_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = auth_responses()
+    responses.insert(
+        -1,
+        response(
+            200,
+            [
+                {"filename": "assets/generated.bin", "patch": None},
+                {"filename": "src/host.py", "patch": "@@ -1 +1 @@\n-old\n+new"},
+            ],
+        ),
+    )
+    client = ReviewSchemaValidatingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Issue requirements verified; provenance needs clarification",
+        unexplained_changes=[
+            ChangeProvenanceItem(paths=["assets/generated.bin"], change_group="Generated binary artifact", why_unexplained="No generating source change is evident"),
+        ],
+    )
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", result)
+
+    assert publication.success is True
+    assert publication.event == "COMMENT"
+    comments = client.calls[-1][2]["json"]["comments"]
+    assert len(comments) == 1
+    assert comments[0]["path"] == "src/host.py"
+    assert comments[0]["line"] == 1
+    assert comments[0]["side"] == "RIGHT"
+    assert "subject_type" not in comments[0]
+    assert "assets/generated.bin" in comments[0]["body"]
+
+
+def test_binary_only_clarification_uses_app_authenticated_file_comment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = auth_responses()[:-1]
+    responses.extend(
+        [
+            response(200, [{"filename": "assets/generated.bin", "patch": None}]),
+            response(201, {"id": 81}),
+            response(200, {"id": 9}),
+        ]
+    )
+    client = ReviewSchemaValidatingClient(responses)
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Binary provenance needs clarification",
+        unexplained_changes=[
+            ChangeProvenanceItem(paths=["assets/generated.bin"], change_group="Generated binary artifact", why_unexplained="No generator input is evident"),
+        ],
+    )
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", result)
+
+    assert publication.success is True
+    file_comment_call = next(call for call in client.calls if call[0] == "POST" and call[1].endswith("/pulls/42/comments"))
+    assert file_comment_call[2]["json"] == {
+        "path": "assets/generated.bin",
+        "body": file_comment_call[2]["json"]["body"],
+        "commit_id": "sha-a",
+        "subject_type": "file",
+    }
+    assert "change-provenance clarification" in file_comment_call[2]["json"]["body"]
+    assert file_comment_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
+    review_call = next(call for call in client.calls if call[0] == "POST" and call[1].endswith("/pulls/42/reviews"))
+    assert "comments" not in review_call[2]["json"]
+
+
+def test_provenance_disposition_reply_uses_reviewer_app_installation_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = RecordingClient(auth_responses() + [response(201, {"id": 82})])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = AdversarialValidationResult(
+        result="INCONCLUSIVE",
+        summary="Issue requirements remain verified",
+        thread_dispositions=[
+            ReviewThreadDisposition(
+                thread_id="provenance-1",
+                status="STILL_VALID",
+                rationale="The binary was accidental branch residue",
+                evidence="The implementer confirms it has no causal relationship to the Issue",
+            )
+        ],
+        provenance_thread_comment_ids={"provenance-1": 456},
+    )
+
+    publication = reviewer.publish("owner/repo", 42, "sha-a", result)
+
+    assert publication.success is True
+    reply_call = next(call for call in client.calls if call[1].endswith("/pulls/42/comments/456/replies"))
+    assert reply_call[0] == "POST"
+    assert reply_call[2]["headers"]["Authorization"] == "Bearer fake-installation-token"  # type: ignore[index]
+    assert "STILL_VALID" in reply_call[2]["json"]["body"]
+    assert "accidental branch residue" in reply_call[2]["json"]["body"]
+
+
+def test_invalid_line_falls_back_to_valid_diff_line_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     responses = auth_responses()
     responses.insert(-1, response(200, [{"filename": "src/example.py", "patch": "@@ -1 +1 @@\n-old\n+new"}]))
     reviewer = configured_reviewer(tmp_path, RecordingClient(responses), monkeypatch)
@@ -167,7 +281,12 @@ def test_invalid_line_falls_back_to_file_level_anchor(tmp_path: Path, monkeypatc
 
     assert publication.success is True
     comment = reviewer._client.calls[-1][2]["json"]["comments"][0]  # type: ignore[attr-defined,index]
-    assert comment == {"path": "src/example.py", "body": "### Auto-Coder adversarial finding\n\n**Violated requirement**\n\nRequirement", "subject_type": "file"}
+    assert comment == {
+        "path": "src/example.py",
+        "body": "### Auto-Coder adversarial finding\n\n**Violated requirement**\n\nRequirement",
+        "line": 1,
+        "side": "RIGHT",
+    }
 
 
 def test_missing_changed_file_anchor_fails_without_submitting_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

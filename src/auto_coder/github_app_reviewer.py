@@ -18,6 +18,8 @@ from .adversarial_validator import (
     AdversarialValidationResult,
     format_adversarial_finding_comment,
     format_adversarial_review_summary,
+    format_change_provenance_clarification,
+    format_change_provenance_disposition,
 )
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
@@ -200,7 +202,8 @@ class GitHubAppReviewer:
             if not validated_head_sha or current_sha != validated_head_sha:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
             comments: list[dict[str, object]] = []
-            if result.needs_fix:
+            file_level_clarification: Optional[dict[str, object]] = None
+            if result.needs_fix or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files: dict[str, object] = {}
                 page = 1
                 while True:
@@ -212,6 +215,39 @@ class GitHubAppReviewer:
                         break
                     page += 1
                 comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
+                if result.unexplained_changes and result.publish_clarification_thread:
+                    clarification_body = format_change_provenance_clarification(result.unexplained_changes)
+                    unexplained_paths = [path for item in result.unexplained_changes for path in item.paths if path in changed_files]
+                    anchor = next(
+                        ((path, diff_anchor) for path in unexplained_paths for diff_anchor in [_first_diff_anchor(changed_files[path])] if diff_anchor is not None),
+                        None,
+                    )
+                    if anchor is None:
+                        anchor = next(((path, diff_anchor) for path, patch in changed_files.items() for diff_anchor in [_first_diff_anchor(patch)] if diff_anchor is not None), None)
+                    if anchor is not None:
+                        anchor_path, (anchor_line, anchor_side) = anchor
+                        comments.append({"path": anchor_path, "body": clarification_body, "line": anchor_line, "side": anchor_side})
+                    elif unexplained_paths:
+                        file_level_clarification = {
+                            "path": unexplained_paths[0],
+                            "body": clarification_body,
+                            "commit_id": validated_head_sha,
+                            "subject_type": "file",
+                        }
+                    else:
+                        raise ValueError("Change-provenance clarification must reference a changed file")
+
+            # A standalone file-level review comment is the only supported REST
+            # shape when no changed file exposes a represented diff line. Create
+            # it before the durable verdict so a failed comment request cannot
+            # leave a saved same-SHA result that suppresses the required thread.
+            if file_level_clarification is not None:
+                self._request(
+                    "POST",
+                    f"/repos/{repo_name}/pulls/{pr_number}/comments",
+                    token,
+                    json=file_level_clarification,
+                )
             self._request(
                 "POST",
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",
@@ -223,6 +259,22 @@ class GitHubAppReviewer:
                     **({"comments": comments} if comments else {}),
                 },
             )
+            for disposition in result.thread_dispositions:
+                root_comment_id = result.provenance_thread_comment_ids.get(disposition.thread_id)
+                if disposition.status == "ADDRESSED" or root_comment_id is None:
+                    continue
+                try:
+                    self._request(
+                        "POST",
+                        f"/repos/{repo_name}/pulls/{pr_number}/comments/{root_comment_id}/replies",
+                        token,
+                        json={"body": format_change_provenance_disposition(disposition, validated_head_sha)},
+                    )
+                except Exception:
+                    # The App-authored authoritative review above already carries
+                    # the same concrete rationale/evidence. Never fall back to the
+                    # ordinary GitHub credential for reviewer output.
+                    logger.error(f"Dedicated reviewer GitHub App could not reply to provenance thread {disposition.thread_id}")
             return ReviewPublicationResult(True, event, "")
         except Exception:
             # Deliberately omit exception text: HTTP errors and auth libraries can
@@ -232,7 +284,7 @@ class GitHubAppReviewer:
 
     @staticmethod
     def _finding_comment(finding: AdversarialValidationFinding, changed_files: dict[str, object]) -> dict[str, object]:
-        """Build one review comment, safely degrading invalid lines to file level."""
+        """Build one review comment anchored to a line accepted by nested reviews."""
         if not finding.anchor_path or finding.anchor_path not in changed_files:
             raise ValueError("Every actionable finding must anchor to a changed file")
         comment: dict[str, object] = {
@@ -247,7 +299,11 @@ class GitHubAppReviewer:
             if finding.anchor_start_line in valid_lines and finding.anchor_start_line != finding.anchor_line and finding.anchor_start_line < finding.anchor_line:
                 comment.update({"start_line": finding.anchor_start_line, "start_side": side})
         else:
-            comment["subject_type"] = "file"
+            fallback_anchor = _first_diff_anchor(patch if isinstance(patch, str) else "")
+            if fallback_anchor is None:
+                raise ValueError("Every nested review comment must anchor to a represented diff line")
+            line, fallback_side = fallback_anchor
+            comment.update({"line": line, "side": fallback_side})
         return comment
 
 
@@ -274,6 +330,19 @@ def _diff_lines(patch: str, side: str) -> set[int]:
                 represented.add(new_line)
             new_line += 1
     return represented
+
+
+def _first_diff_anchor(patch: object) -> Optional[tuple[int, str]]:
+    """Choose a valid nested-review anchor, preferring the current-file side."""
+    if not isinstance(patch, str):
+        return None
+    right_lines = _diff_lines(patch, "RIGHT")
+    if right_lines:
+        return min(right_lines), "RIGHT"
+    left_lines = _diff_lines(patch, "LEFT")
+    if left_lines:
+        return min(left_lines), "LEFT"
+    return None
 
 
 def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
