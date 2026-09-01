@@ -514,6 +514,30 @@ class GitHubClient:
             return None
 
     @retry_with_backoff()
+    def get_pull_request_head_sha_strict(self, repo_name: str, pr_number: int) -> str:
+        """Fetch the current PR head SHA directly, bypassing every cache.
+
+        Resolution-time safety checks must observe GitHub's live PR head and
+        must fail closed on lookup or schema errors.  In particular, neither
+        ``get_caching_client()`` nor ``get_ghapi_client()`` is suitable here,
+        because both cache GET responses.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+        response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        head = payload.get("head") if isinstance(payload, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        if not isinstance(head_sha, str) or not head_sha:
+            raise RuntimeError(f"GitHub did not return a current head SHA for PR #{pr_number} in {repo_name}")
+        return head_sha
+
+    @retry_with_backoff()
     def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get open pull requests from repository using REST API (cached).
 

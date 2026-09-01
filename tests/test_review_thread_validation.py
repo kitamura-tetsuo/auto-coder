@@ -198,7 +198,7 @@ class TestResolveAddressedReviewThreads:
 
     def test_addressed_thread_is_resolved(self):
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
 
@@ -212,7 +212,7 @@ class TestResolveAddressedReviewThreads:
 
     def test_still_valid_disposition_is_never_resolved(self):
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed()]
         dispositions = [self._disposition(status="STILL_VALID")]
 
@@ -223,7 +223,7 @@ class TestResolveAddressedReviewThreads:
 
     def test_inconclusive_disposition_is_never_resolved(self):
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed()]
         dispositions = [self._disposition(status="INCONCLUSIVE")]
 
@@ -235,7 +235,7 @@ class TestResolveAddressedReviewThreads:
     def test_head_changed_since_validation_blocks_resolution(self):
         """AC-009: the PR advanced to a new head before resolution runs."""
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha2-newer"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
 
@@ -245,9 +245,25 @@ class TestResolveAddressedReviewThreads:
         client.reply_to_review_thread.assert_not_called()
         client.resolve_review_thread.assert_not_called()
 
+    def test_cached_h1_cannot_hide_authoritative_h2_before_resolution(self):
+        """[P1] REQ-006/AC-009: the ordinary cached PR read may still expose
+        H1, but only the uncached authoritative H2 may drive resolution."""
+        client = MagicMock()
+        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        assert resolved == []
+        client.get_pull_request.assert_not_called()
+        client.get_pull_request_head_sha_strict.assert_called_once_with("owner/repo", 1)
+        client.resolve_review_thread.assert_not_called()
+
     def test_head_lookup_failure_fails_closed(self):
         client = MagicMock()
-        client.get_pull_request.side_effect = Exception("network error")
+        client.get_pull_request_head_sha_strict.side_effect = Exception("network error")
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
 
@@ -259,7 +275,7 @@ class TestResolveAddressedReviewThreads:
     def test_reply_failure_prevents_resolution(self):
         """AC-010: recording the explanation must succeed before resolving."""
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         client.reply_to_review_thread.side_effect = Exception("GitHub API error")
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -272,7 +288,7 @@ class TestResolveAddressedReviewThreads:
     def test_resolve_mutation_failure_leaves_thread_unresolved(self):
         """AC-010: the resolve mutation itself failing must not be masked as success."""
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         client.resolve_review_thread.side_effect = Exception("mutation rejected")
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -286,7 +302,7 @@ class TestResolveAddressedReviewThreads:
         never resolved (only threads the run actually offered for adjudication
         may be auto-resolved)."""
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed: list[ClaimedReviewThread] = []
         dispositions = [self._disposition(thread_id="unknown-thread")]
 
@@ -303,11 +319,11 @@ class TestResolveAddressedReviewThreads:
         resolved = resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
 
         assert resolved == []
-        client.get_pull_request.assert_not_called()
+        client.get_pull_request_head_sha_strict.assert_not_called()
 
     def test_two_independent_addressed_threads_both_resolved(self):
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
         dispositions = [self._disposition("t1"), self._disposition("t2")]
 
@@ -321,9 +337,9 @@ class TestResolveAddressedReviewThreads:
         H2 before the resolve mutation — re-checked immediately before that
         mutation, not just once at the start of the loop."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},  # initial check before the loop
-            {"head": {"sha": "sha2-newer"}},  # re-check right before resolving
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",  # initial check before the loop
+            "sha2-newer",  # re-check right before resolving
         ]
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -341,10 +357,10 @@ class TestResolveAddressedReviewThreads:
         resolution must be reverted (unresolve_review_thread) and the thread
         must not be reported as resolved."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},  # initial check before the loop
-            {"head": {"sha": "sha1"}},  # pre-mutation re-check
-            {"head": {"sha": "sha2-newer"}},  # post-mutation re-check
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",  # initial check before the loop
+            "sha1",  # pre-mutation re-check
+            "sha2-newer",  # post-mutation re-check
         ]
         claimed = [self._claimed()]
         dispositions = [self._disposition()]
@@ -359,10 +375,10 @@ class TestResolveAddressedReviewThreads:
         """The first two unresolve attempts fail, the third succeeds: the
         thread is still not reported as resolved, and no exception escapes."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha2-newer"}},
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",
+            "sha1",
+            "sha2-newer",
         ]
         client.unresolve_review_thread.side_effect = [Exception("transient error 1"), Exception("transient error 2"), None]
         claimed = [self._claimed()]
@@ -379,10 +395,10 @@ class TestResolveAddressedReviewThreads:
         so the failure must surface as a blocking exception rather than being
         silently absorbed."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha2-newer"}},
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",
+            "sha1",
+            "sha2-newer",
         ]
         client.unresolve_review_thread.side_effect = Exception("persistent error")
         claimed = [self._claimed()]
@@ -398,10 +414,10 @@ class TestResolveAddressedReviewThreads:
         """[P1] Exhausting rollback attempts must persist the failure, not
         just raise an in-memory exception, so it survives past this run."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha2-newer"}},
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",
+            "sha1",
+            "sha2-newer",
         ]
         client.unresolve_review_thread.side_effect = Exception("persistent error")
         claimed = [self._claimed()]
@@ -418,10 +434,10 @@ class TestResolveAddressedReviewThreads:
         blocker survives even a local registry write failure combined with
         a process restart."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha2-newer"}},
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",
+            "sha1",
+            "sha2-newer",
         ]
         client.unresolve_review_thread.side_effect = Exception("persistent error")
         claimed = [self._claimed()]
@@ -441,7 +457,7 @@ class TestResolveAddressedReviewThreads:
         mutation must not even be attempted, and the thread stays unresolved
         (which the ordinary unresolved-thread gate already handles safely)."""
         client = MagicMock()
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         client.reply_to_review_thread.side_effect = [
             None,  # resolver explanation succeeds
             Exception("could not post durable pre-resolve marker"),
@@ -463,10 +479,10 @@ class TestResolveAddressedReviewThreads:
         the durable GitHub-side record and refuse to treat the thread as
         settled."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha2-newer"}},
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",
+            "sha1",
+            "sha2-newer",
         ]
         client.unresolve_review_thread.side_effect = Exception("persistent error")
         claimed = [self._claimed()]
@@ -509,10 +525,10 @@ class TestResolveAddressedReviewThreads:
         exception — this run must still fail closed with
         StaleReviewThreadResolutionError."""
         client = MagicMock()
-        client.get_pull_request.side_effect = [
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha1"}},
-            {"head": {"sha": "sha2-newer"}},
+        client.get_pull_request_head_sha_strict.side_effect = [
+            "sha1",
+            "sha1",
+            "sha2-newer",
         ]
         client.unresolve_review_thread.side_effect = Exception("persistent error")
         claimed = [self._claimed()]
@@ -630,7 +646,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
         client.get_authenticated_user_login.return_value = "agent[bot]"
-        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -657,7 +673,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
         client.get_authenticated_user_login.return_value = "agent[bot]"
-        client.get_pull_request.return_value = {"head": {"sha": "sha2-newer"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",
@@ -674,6 +690,32 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         assert still_blocked == []
         client.unresolve_review_thread.assert_called_once_with("thread-1")
 
+    def test_cached_h1_cannot_dismiss_h1_marker_when_authoritative_head_is_h2(self, tmp_path):
+        """[P1] The stale-marker oracle must bypass a cached H1 PR response;
+        live H2 makes the trusted H1 marker pending and triggers rollback."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_authenticated_user_login.return_value = "agent[bot]"
+        client.get_pull_request.return_value = {"head": {"sha": "sha1"}}
+        client.get_pull_request_head_sha_strict.return_value = "sha2-newer"
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", f"{STALE_BLOCKER_MARKER}\n<!-- resolved-against-head: sha1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.get_pull_request.assert_not_called()
+        client.get_pull_request_head_sha_strict.assert_called_once_with("owner/repo", 42)
+        client.unresolve_review_thread.assert_called_once_with("thread-1")
+
     def test_head_aware_marker_lookup_failure_fails_closed(self, tmp_path):
         """If the current-head lookup itself fails, the marker's staleness
         cannot be ruled out, so the thread must remain treated as pending
@@ -681,7 +723,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
         client.get_authenticated_user_login.return_value = "agent[bot]"
-        client.get_pull_request.side_effect = Exception("network error")
+        client.get_pull_request_head_sha_strict.side_effect = Exception("network error")
         client.get_pr_review_threads_strict.return_value = [
             _thread(
                 "thread-1",

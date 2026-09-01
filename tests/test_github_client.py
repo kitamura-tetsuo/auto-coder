@@ -54,6 +54,38 @@ class TestGitHubClient:
         with pytest.raises(RuntimeError, match="authenticated user's login"):
             client.get_authenticated_user_login()
 
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_head_sha_strict_bypasses_cached_client(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {"head": {"sha": "live-head-sha"}}
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        head_sha = client.get_pull_request_head_sha_strict("owner/repo", 42)
+
+        assert head_sha == "live-head-sha"
+        mock_get.assert_called_once_with(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": f"Bearer {mock_github_token}",
+            },
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status.assert_called_once_with()
+
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_head_sha_strict_rejects_missing_sha(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {"head": {}}
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        with pytest.raises(RuntimeError, match="current head SHA"):
+            client.get_pull_request_head_sha_strict("owner/repo", 42)
+
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_repository_success(self, mock_get_client, mock_github_token):
         """Test successful repository retrieval."""

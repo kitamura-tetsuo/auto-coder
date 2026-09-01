@@ -245,8 +245,7 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
         if not current_head_fetched:
             current_head_fetched = True
             try:
-                current_pr = github_client.get_pull_request(repo_name, pr_number)
-                current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+                current_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
             except Exception as exc:
                 logger.error(f"Could not determine current PR head while scanning stale-resolution markers on PR #{pr_number}: {exc}")
                 current_head_sha = None
@@ -515,8 +514,7 @@ def resolve_addressed_review_threads(
         before each resolve mutation, since a new commit can land at any
         point during this loop (REQ-006, AC-009)."""
         try:
-            current_pr = github_client.get_pull_request(repo_name, pr_number)
-            current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+            current_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
         except Exception as exc:
             logger.error(f"Could not verify current PR head before resolving review threads on PR #{pr_number}: {exc}")
             return False
