@@ -39,6 +39,13 @@ logger = get_logger(__name__)
 
 RESOLVER_EXPLANATION_MARKER = "<!-- auto-coder-review-thread-resolved:v1 -->"
 
+# Posted into the affected GitHub thread itself as an independent durability
+# layer for a stale-resolution blocker: unlike the local JSON registry, a
+# GitHub comment survives a local disk failure or process restart, because
+# it lives in a different failure domain (REQ-006, REQ-008).
+STALE_BLOCKER_MARKER = "<!-- auto-coder-stale-review-thread-blocker:v1 -->"
+STALE_BLOCKER_CLEARED_MARKER = "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->"
+
 # Bounded attempts to revert a stale resolution (REQ-006/REQ-008): a single
 # failed rollback attempt must not permanently leave a thread resolved
 # against a disposition for a head that is no longer current.
@@ -144,16 +151,62 @@ class StaleReviewThreadRegistry:
             self._save(data)
 
     def pending_for_pr(self, repository: str, pr_number: int) -> List[str]:
-        """Return every still-pending stale thread ID for this PR."""
+        """Return every still-pending stale thread ID for this PR.
+
+        Every entry in the file is validated structurally, not just entries
+        matching this PR: a syntactically valid JSON object containing a
+        malformed entry (missing/mistyped fields, e.g. from a bug or manual
+        edit) could otherwise silently hide a real blocker for this or any
+        other PR, which is exactly the false-success this registry exists
+        to prevent (REQ-006, REQ-008).
+        """
         with self._lock:
             data = self._load()
         thread_ids: List[str] = []
-        for value in data.values():
-            if isinstance(value, dict) and value.get("repository") == repository and value.get("pr_number") == pr_number:
-                thread_id = value.get("thread_id")
-                if isinstance(thread_id, str) and thread_id:
-                    thread_ids.append(thread_id)
+        for key, value in data.items():
+            if not isinstance(value, dict) or not isinstance(value.get("repository"), str) or not isinstance(value.get("pr_number"), int) or isinstance(value.get("pr_number"), bool) or not isinstance(value.get("thread_id"), str) or not value.get("thread_id"):
+                raise StaleReviewThreadRegistryError(f"Stale-review-thread registry at {self.path} contains a malformed entry for key {key!r}")
+            if value["repository"] == repository and value["pr_number"] == pr_number:
+                thread_ids.append(str(value["thread_id"]))
         return thread_ids
+
+
+def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: int) -> dict[str, Optional[int]]:
+    """Scan every review thread for an unmatched ``STALE_BLOCKER_MARKER``.
+
+    Returns the pending thread IDs (mapped to their root comment's database
+    ID, for posting the cleared-marker reply later, when available). This is
+    an independent durability layer that lives on GitHub rather than local
+    disk: a marker reply survives a local registry write failure and a
+    process restart because it is in a different failure domain. A thread
+    counts as pending only if the marker appears with no later
+    ``STALE_BLOCKER_CLEARED_MARKER`` reply in the same thread.
+
+    This rediscovery pass is deliberately best-effort, not itself fail-closed:
+    the local registry (see ``StaleReviewThreadRegistry``) is the primary,
+    strictly fail-closed source of truth and already raises on its own
+    corruption. A failure scanning GitHub here (network error, unexpected
+    client) only means this extra rediscovery opportunity is skipped for
+    this run, not that merge is blocked — the local registry's own
+    guarantees are unaffected.
+    """
+    try:
+        threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+        pending: dict[str, Optional[int]] = {}
+        for thread in threads:
+            comments = thread.comments or []
+            marker_index = next((index for index, comment in enumerate(comments) if STALE_BLOCKER_MARKER in comment.body), None)
+            if marker_index is None:
+                continue
+            cleared = any(STALE_BLOCKER_CLEARED_MARKER in comment.body for comment in comments[marker_index + 1 :])
+            if cleared:
+                continue
+            root_comment_database_id = comments[0].database_id if comments else None
+            pending[thread.id] = root_comment_database_id
+        return pending
+    except Exception as exc:
+        logger.warning(f"Could not scan GitHub review threads for stale-resolution markers on PR #{pr_number}; relying on the local registry only this run: {exc}")
+        return {}
 
 
 def retry_pending_stale_review_thread_rollbacks(
@@ -165,23 +218,45 @@ def retry_pending_stale_review_thread_rollbacks(
     """Retry every persisted stale-resolution rollback for this PR.
 
     Called on every processing run so a rollback failure from an earlier run
-    is retried rather than forgotten. A thread's blocker is cleared only once
-    GitHub explicitly confirms it is unresolved; every failure or unconfirmed
-    response leaves it recorded. Returns the thread IDs that are still
-    blocked after this attempt — callers must refuse to merge while this is
-    non-empty (REQ-006, REQ-008).
+    is retried rather than forgotten. Blockers are gathered from both the
+    local registry and an independent GitHub-side marker scan, so a rollback
+    failure survives even a local registry write failure combined with a
+    process restart (REQ-006, REQ-008). A thread's blocker is cleared only
+    once GitHub explicitly confirms it is unresolved; every failure or
+    unconfirmed response leaves it recorded. Returns the thread IDs that are
+    still blocked after this attempt — callers must refuse to merge while
+    this is non-empty.
     """
     registry = registry or StaleReviewThreadRegistry()
-    pending = registry.pending_for_pr(repo_name, pr_number)
+    local_pending = registry.pending_for_pr(repo_name, pr_number)
+    github_pending = _find_github_stale_blockers(github_client, repo_name, pr_number)
+
+    all_pending: dict[str, Optional[int]] = dict.fromkeys(local_pending, None)
+    all_pending.update(github_pending)
+
     still_blocked: List[str] = []
-    for thread_id in pending:
+    for thread_id, root_comment_database_id in all_pending.items():
         try:
             github_client.unresolve_review_thread(thread_id)
         except Exception as exc:
             logger.error(f"Retry to revert stale resolution of thread {thread_id} on PR #{pr_number} failed: {exc}")
             still_blocked.append(thread_id)
             continue
-        registry.clear(repo_name, thread_id)
+
+        try:
+            registry.clear(repo_name, thread_id)
+        except Exception as exc:
+            logger.error(f"Reverted thread {thread_id} on PR #{pr_number} but could not clear its local registry entry: {exc}")
+
+        if root_comment_database_id is not None:
+            try:
+                github_client.reply_to_review_thread(repo_name, pr_number, root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
+            except Exception as exc:
+                # Best effort: the GitHub-side marker staying unmatched would
+                # only cause a harmless extra retry next run, never a missed
+                # block (the local registry entry, if it existed, is already
+                # cleared; the mutation itself is what matters for safety).
+                logger.error(f"Reverted thread {thread_id} on PR #{pr_number} but could not post the cleared marker: {exc}")
     return still_blocked
 
 
@@ -408,6 +483,15 @@ def resolve_addressed_review_threads(
                     # has to block immediately below regardless of whether
                     # the record survives for a later run to see.
                     logger.error(f"Failed to persist stale-resolution blocker for thread {thread_id} on PR #{pr_number}; this run still blocks, but a later run may not remember this failure: {persist_exc}")
+                # Independent durability layer: also mark the thread itself on
+                # GitHub. Unlike the local registry, this survives a local
+                # disk failure combined with a process restart, since it
+                # lives in a different failure domain (REQ-006, REQ-008).
+                if claimed_thread.root_comment_database_id is not None:
+                    try:
+                        github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, STALE_BLOCKER_MARKER)
+                    except Exception as marker_exc:
+                        logger.error(f"Failed to post the GitHub-side stale-resolution marker for thread {thread_id} on PR #{pr_number}: {marker_exc}")
                 raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
             return resolved
 

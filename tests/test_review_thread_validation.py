@@ -410,6 +410,27 @@ class TestResolveAddressedReviewThreads:
 
         registry.record.assert_called_once_with("owner/repo", 1, "t1")
 
+    def test_exhausted_rollback_posts_a_github_side_durable_marker(self):
+        """[P1] An independent GitHub-side marker must be posted too, so the
+        blocker survives even a local registry write failure combined with
+        a process restart."""
+        client = MagicMock()
+        client.get_pull_request.side_effect = [
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha1"}},
+            {"head": {"sha": "sha2-newer"}},
+        ]
+        client.unresolve_review_thread.side_effect = Exception("persistent error")
+        claimed = [self._claimed()]
+        dispositions = [self._disposition()]
+
+        with pytest.raises(StaleReviewThreadResolutionError):
+            resolve_addressed_review_threads(client, "owner/repo", 1, "sha1", claimed, dispositions)
+
+        marker_calls = [call for call in client.reply_to_review_thread.call_args_list if "auto-coder-stale-review-thread-blocker:v1" in call.args[3]]
+        assert len(marker_calls) == 1
+        assert marker_calls[0].args[2] == 42  # root_comment_database_id
+
     def test_exhausted_rollback_still_raises_even_if_persisting_the_blocker_fails(self):
         """[P1] A write failure while persisting the blocker (disk full,
         permissions, ...) must not turn into a silently-continuing ordinary
@@ -462,6 +483,25 @@ class TestStaleReviewThreadRegistry:
 
         assert registry.pending_for_pr("owner/repo", 42) == ["thread-2"]
 
+    def test_malformed_entry_fails_closed_even_for_a_different_pr(self, tmp_path):
+        """[P1] A structurally malformed entry anywhere in the file (e.g.
+        from a bug or manual edit) must never be silently skipped — it could
+        be hiding a real blocker for this or any other PR."""
+        path = tmp_path / "stale.json"
+        path.write_text('{"k1": {"repository": "owner/repo", "pr_number": "not-an-int", "thread_id": "t1"}}', encoding="utf-8")
+        registry = StaleReviewThreadRegistry(path=path)
+
+        with pytest.raises(StaleReviewThreadRegistryError):
+            registry.pending_for_pr("owner/repo", 42)
+
+    def test_missing_thread_id_field_fails_closed(self, tmp_path):
+        path = tmp_path / "stale.json"
+        path.write_text('{"k1": {"repository": "owner/repo", "pr_number": 42}}', encoding="utf-8")
+        registry = StaleReviewThreadRegistry(path=path)
+
+        with pytest.raises(StaleReviewThreadRegistryError):
+            registry.pending_for_pr("owner/repo", 42)
+
     def test_survives_across_registry_instances(self, tmp_path):
         """The blocker is durable: a fresh registry instance pointed at the
         same file still sees it (models a later, separate processing run)."""
@@ -508,6 +548,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
     def test_no_pending_blockers_is_a_no_op(self, tmp_path):
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
@@ -518,6 +559,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record("owner/repo", 42, "thread-1")
         client = MagicMock()  # unresolve_review_thread succeeds (no exception)
+        client.get_pr_review_threads_strict.return_value = []
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
 
@@ -528,6 +570,7 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
         registry.record("owner/repo", 42, "thread-1")
         client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
         client.unresolve_review_thread.side_effect = Exception("still failing")
 
         still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
@@ -542,11 +585,74 @@ class TestRetryPendingStaleReviewThreadRollbacks:
         registry.record("owner/repo", 42, "thread-1")
 
         failing_client = MagicMock()
+        failing_client.get_pr_review_threads_strict.return_value = []
         failing_client.unresolve_review_thread.side_effect = Exception("still failing")
         first_run_result = retry_pending_stale_review_thread_rollbacks(failing_client, "owner/repo", 42, registry=registry)
         assert first_run_result == ["thread-1"]
 
         succeeding_client = MagicMock()
+        succeeding_client.get_pr_review_threads_strict.return_value = []
         second_run_result = retry_pending_stale_review_thread_rollbacks(succeeding_client, "owner/repo", 42, registry=registry)
         assert second_run_result == []
         assert registry.pending_for_pr("owner/repo", 42) == []
+
+    def test_github_side_marker_alone_is_discovered_and_blocks(self, tmp_path):
+        """[P1] A blocker that exists only as a GitHub marker reply (e.g. the
+        local registry write failed) must still be discovered and retried,
+        with no local registry state at all."""
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,  # the thread is (incorrectly) resolved on GitHub
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->"),
+                ],
+            )
+        ]
+        client.unresolve_review_thread.side_effect = Exception("still failing")
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == ["thread-1"]
+
+    def test_github_side_marker_cleared_after_successful_retry(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->", database_id=2),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.reply_to_review_thread.assert_called_once_with("owner/repo", 42, 1, "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->")
+
+    def test_github_marker_with_later_cleared_reply_is_not_pending(self, tmp_path):
+        registry = StaleReviewThreadRegistry(path=tmp_path / "stale.json")
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = [
+            _thread(
+                "thread-1",
+                True,
+                [
+                    _comment(CODEX_LOGIN, "finding", database_id=1),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker:v1 -->"),
+                    _comment("agent[bot]", "<!-- auto-coder-stale-review-thread-blocker-cleared:v1 -->"),
+                ],
+            )
+        ]
+
+        still_blocked = retry_pending_stale_review_thread_rollbacks(client, "owner/repo", 42, registry=registry)
+
+        assert still_blocked == []
+        client.unresolve_review_thread.assert_not_called()
