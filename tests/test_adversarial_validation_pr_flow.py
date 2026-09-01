@@ -906,6 +906,29 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
+    def test_ci_status_retrieval_error_is_structured_failure(
+        self,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """A status API failure is internal, unlike an expected pending-check gate."""
+        mock_checks.return_value = GitHubActionsStatusResult(error="GitHub API unavailable")
+        config = AutomationConfig()
+        pr_data = {"number": 77, "head": {"sha": "abc123"}, "labels": []}
+        status = ProcessedPRResult(pr_data=pr_data)
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, status)
+
+        assert actions == ["Could not determine CI status for PR #77: GitHub API unavailable"]
+        assert status.error == "GitHub API unavailable"
+        assert status.outcome is PRProcessingOutcome.FAILED
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")

@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -139,6 +139,81 @@ class TestAutomationEngine:
 
         assert result["errors"] == ["Error processing pr #5266: GitHub API rate limited"]
         assert result["prs_processed"] == [{"pr_data": candidate.data, "actions_taken": [diagnostic], "outcome": "failed"}]
+
+    def test_process_single_propagates_ci_status_retrieval_failure_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must classify a status API error as failed."""
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 77, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(error="GitHub API unavailable")),
+        ):
+            result = engine.process_single("owner/repo", "pr", 77)
+
+        diagnostic = "Could not determine CI status for PR #77: GitHub API unavailable"
+        assert result["errors"] == ["Error processing pr #77: GitHub API unavailable"]
+        assert result["prs_processed"] == [{"pr_data": pr_data, "actions_taken": [diagnostic], "outcome": "failed"}]
+
+    def test_process_single_preserves_unresolved_review_thread_gate_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must preserve an expected gate as deferred."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 78, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                return_value=ClaimedReviewThreadGateState(has_blocking_unresolved=True),
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 78)
+
+        diagnostic = "Skipping merge for PR #78 due to unresolved review threads"
+        assert result["errors"] == []
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #78", diagnostic, "PR #78 processing deferred."],
+                "outcome": "deferred",
+            }
+        ]
 
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py

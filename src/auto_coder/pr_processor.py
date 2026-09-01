@@ -1938,6 +1938,9 @@ def _handle_pr_merge(
         if github_checks.error:
             actions.append(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
             logger.error(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
+            if processing_status is not None:
+                processing_status.error = github_checks.error
+                processing_status.outcome = PRProcessingOutcome.FAILED
             return actions
 
         # Check if no actions have started for the latest commit
