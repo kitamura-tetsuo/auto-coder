@@ -609,14 +609,17 @@ class TestAdversarialValidationPRFlow:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+        status = ProcessedPRResult(pr_data=pr_data)
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, status)
 
         mock_run_validation.assert_not_called()
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
         assert actions.adversarial_validation_error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
         assert any("already validated as ERROR" in action for action in actions)
+        assert status.error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
+        assert status.outcome is PRProcessingOutcome.FAILED
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

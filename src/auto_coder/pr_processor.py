@@ -2204,7 +2204,11 @@ def _handle_pr_merge(
                     if published_status and not has_new_provenance_evidence:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
-                            actions.adversarial_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
+                            saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
+                            actions.adversarial_validation_error = saved_validation_error
+                            if processing_status is not None:
+                                processing_status.error = saved_validation_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                         if published_status != "PASS":
                             actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
                             if published_status in {"NEEDS_FIX", "NEEDS_TESTS"}:
