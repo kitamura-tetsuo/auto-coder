@@ -123,6 +123,14 @@ class AdversarialValidationEligibility:
         return bool(self.issue_numbers)
 
 
+class PRActionList(list[str]):
+    """PR actions plus machine-readable failure state for caller propagation."""
+
+    def __init__(self, values: Sequence[str] = (), adversarial_validation_error: Optional[str] = None) -> None:
+        super().__init__(values)
+        self.adversarial_validation_error = adversarial_validation_error
+
+
 @dataclass(frozen=True)
 class ReviewThreadGateState:
     """Tri-state review-thread result used by merge gates."""
@@ -1322,7 +1330,11 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
+        actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
+        processed_pr.actions_taken = actions
+        validation_error = getattr(actions, "adversarial_validation_error", None)
+        if validation_error:
+            processed_pr.error = validation_error
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -1353,6 +1365,9 @@ def _process_pr_for_fixes(
             try:
                 actions = _take_pr_actions(github_client, repo_name, pr_data, config)
                 processed_pr.actions_taken = actions
+                validation_error = getattr(actions, "adversarial_validation_error", None)
+                if validation_error:
+                    processed_pr.error = validation_error
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
                     should_process.keep_label()
@@ -1368,9 +1383,9 @@ def _take_pr_actions(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-) -> List[str]:
+) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
-    actions = []
+    actions = PRActionList()
     pr_number = pr_data["number"]
 
     try:
@@ -1378,6 +1393,7 @@ def _take_pr_actions(
         # This doesn't depend on Gemini analysis
         merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
         actions.extend(merge_actions)
+        actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
 
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
@@ -1866,9 +1882,9 @@ def _handle_pr_merge(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     analysis: Dict[str, Any],
-) -> List[str]:
+) -> PRActionList:
     """Handle PR merge process following the intended flow."""
-    actions = []
+    actions = PRActionList()
     pr_number = pr_data["number"]
 
     try:
@@ -2155,6 +2171,8 @@ def _handle_pr_merge(
 
                     if published_status and not has_new_provenance_evidence:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+                        if published_status == "ERROR":
+                            actions.adversarial_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
                         if published_status != "PASS":
                             actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
                             if published_status in {"NEEDS_FIX", "NEEDS_TESTS"}:
@@ -2198,13 +2216,15 @@ def _handle_pr_merge(
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
                             val_result = AdversarialValidationResult(
-                                result="BLOCKED",
+                                result="ERROR",
                                 summary="Adversarial validation execution failed; see the structured interaction log for details",
                                 diagnostic_category="validation_execution_error",
                                 diagnostic_reason=type(e).__name__,
                             )
 
                         val_result.clarification_reply_fingerprint = provenance_fingerprint
+                        if val_result.result.strip().upper() == "ERROR":
+                            actions.adversarial_validation_error = val_result.summary
                         if provenance_fingerprint:
                             # The existing aggregated clarification thread remains
                             # authoritative until independently resolved.
@@ -2271,7 +2291,10 @@ def _handle_pr_merge(
                                 logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
                                 return actions
                         else:
-                            actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+                            if val_result.result.strip().upper() == "ERROR":
+                                actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
+                            else:
+                                actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
 
                     if published_status == "PASS":
                         pass
@@ -2307,7 +2330,10 @@ def _handle_pr_merge(
 
                     elif not val_result.is_pass:
                         # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
-                        actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
+                        if val_result.result.strip().upper() == "ERROR":
+                            actions.append(f"ERROR: Adversarial validation failed for PR #{pr_number}: {val_result.summary}")
+                        else:
+                            actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
                         return actions
                     elif not val_result.allows_auto_merge:

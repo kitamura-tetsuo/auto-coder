@@ -530,6 +530,10 @@ pr:
     OUTPUT FORMAT:
     Respond with a JSON object in the following format:
 
+    `anchor_line` and `anchor_start_line` MUST each be a positive JSON integer or
+    JSON `null`; never quote a real line number. The numeric examples below show
+    the machine-readable type, while `null` represents a file-level anchor.
+
     ```json
     {
       "result": "PASS" | "NEEDS_FIX" | "NEEDS_TESTS" | "INCONCLUSIVE",
@@ -556,9 +560,9 @@ pr:
           "test_gap": "<Why the existing test suite fails to detect this defect>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>",
           "anchor_path": "<Exact path of a changed file that this finding concerns>",
-          "anchor_line": "<Optional changed line number, or null for a file-level thread>",
+          "anchor_line": 1817,
           "anchor_side": "RIGHT or LEFT",
-          "anchor_start_line": "<Optional start of a changed line range, or null>"
+          "anchor_start_line": null
         }
       ],
       "test_oracle_gaps": [
@@ -573,9 +577,9 @@ pr:
           "material_consequence": "<material missed regression consequence>",
           "focused_regression_scenario": "<one focused direct scenario that closes this underlying gap>",
           "anchor_path": "<exact changed file path concerning the boundary>",
-          "anchor_line": "<optional changed line number, or null>",
+          "anchor_line": 1817,
           "anchor_side": "RIGHT or LEFT",
-          "anchor_start_line": "<optional start line, or null>",
+          "anchor_start_line": null,
           "discovery_phase": "INITIAL" | "REREVIEW",
           "rereview_exception_reason": "NONE" | "CORRECTIVE_DIFF_NEW_BOUNDARY" | "PROTECTION_WEAKENED" | "REVALIDATION_EXPOSED_UNTESTED_BOUNDARY",
           "rereview_exception_evidence": "<required for a new REREVIEW gap: exact corrective diff or required-revalidation evidence; empty for INITIAL and prior gaps>",
@@ -834,9 +838,9 @@ pr:
           "test_gap": "<Why the test suite failed to catch this>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>",
           "anchor_path": "<Exact path of a changed file that this finding concerns>",
-          "anchor_line": "<Optional changed line number, or null for a file-level thread>",
+          "anchor_line": 1817,
           "anchor_side": "RIGHT or LEFT",
-          "anchor_start_line": "<Optional start of a changed line range, or null>"
+          "anchor_start_line": null
         }
       ],
       "thread_dispositions": [
