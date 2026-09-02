@@ -12,6 +12,23 @@ as red CI, merge gates, and cloud-task waits remain deferred rather than failure
 
 ## Configuration
 
+#### Authoritative Issue dispatch type guard
+
+Before any Issue implementation side effect (backend start, CloudRun
+creation/persistence, attempt increment, work branch creation, or Issue
+task-start comment), Auto-Coder establishes the target's authoritative
+GitHub item type with an uncached lookup. GitHub's Issues API represents
+pull requests as issue-like objects, so a caller-supplied candidate type
+(from collection, an explicit `target_type="issue"` request, a retry path,
+or another internal enqueue path) is never trusted on its own. A target
+that resolves to a pull request is rejected from Issue dispatch even when
+it carries the `@auto-coder` label or a Codex Cloud task reference; it
+remains eligible for the normal PR-processing lifecycle. A failed or
+ambiguous type lookup fails closed: no Issue backend task or lifecycle
+state may be started. Genuine Issue processing (backend selection, CloudRun
+duplicate-dispatch protection, attempt handling, task comments) is
+unaffected.
+
 #### Bounded material test-oracle review
 
 The initial authoritative adversarial review may report a small, consolidated
