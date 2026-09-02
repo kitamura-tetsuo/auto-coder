@@ -965,7 +965,7 @@ Recent configuration schema changes that require migration:
       - "If any review thread is unresolved (isResolved == False):"
         - "The PR is not merged and remains open."
         - "When the PR is associated with an existing Codex Cloud task, Auto-Coder assigns the unresolved review work to that same task through a follow-up. The prompt pins work to the current PR head/base branches, requires fixes and tests to be pushed to the existing PR, and forbids replacement branches or PRs."
-        - "Codex Cloud review-repair delivery is durably deduplicated by repository, PR, task, head SHA, and unresolved-thread discussion state. Unchanged polling does not resend work; a new head or changed review discussion may be assigned again."
+        - "Codex Cloud repair delivery uses shared per-finding identities across adversarial-validation and unresolved-review-thread paths, keyed by repository, PR, task, and stable GitHub review identity. Confirmed deliveries are recorded in the local registry and as PR-side receipts attributed to Auto-Coder's authenticated GitHub identity, so forged markers from implementers are ignored and a local persistence failure or restart cannot cause cross-path redelivery. A head change or implementation-agent reply does not redeliver an old finding; each genuinely new finding is sent once, and failed/unconfirmed attempts remain retryable."
         - "Linked issue attempt counters are not incremented."
         - "The condition is treated as deferred processing rather than an execution failure."
         - "Future runs re-check the review threads and merge once all threads are resolved."

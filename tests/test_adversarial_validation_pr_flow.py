@@ -1,5 +1,6 @@
 """Integration tests for adversarial validation in the PR processor flow."""
 
+import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
     CodexReviewState,
     PRActionList,
+    _delegate_codex_cloud_review_thread_repair,
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
@@ -382,9 +384,112 @@ class TestAdversarialValidationPRComment:
 
 
 class TestAdversarialValidationCodexFeedback:
+    def test_successful_adversarial_delivery_deduplicates_review_thread_path(self, tmp_path):
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(
+            id="PRRT_adversarial",
+            is_resolved=False,
+            comments=[ReviewThreadComment(database_id=301, body=finding, author_login="auto-coder-reviewer[bot]")],
+        )
+        client.get_pr_review_threads_strict.return_value = [thread]
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", "report", client, [finding])
+            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+
+        cloud_client.continue_if_paused.assert_called_once()
+        cloud_client.send_followup.assert_not_called()
+        assert "already requested" in actions[0]
+
+    def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(
+            id="PRRT_adversarial",
+            comments=[ReviewThreadComment(database_id=301, body=finding, author_login="auto-coder-reviewer[bot]")],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pr_review_threads_strict.return_value = [thread]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+            "user": {"login": "codex"},
+        }
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{finding}", client)
+            # The delegate reloads the file, modelling a later process instance.
+            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+
+        cloud_client.continue_if_paused.assert_called_once()
+        cloud_client.send_followup.assert_not_called()
+        assert state_path.exists()
+        assert "already requested" in actions[0]
+
+    def test_saved_report_retry_excludes_resolved_historical_feedback(self, tmp_path):
+        historical = "### Auto-Coder adversarial finding\n\nHistorical defect"
+        current = "### Auto-Coder adversarial finding\n\nCurrent defect"
+        threads = [
+            ReviewThread(
+                id="PRRT_historical",
+                is_resolved=True,
+                comments=[ReviewThreadComment(database_id=300, body=historical)],
+            ),
+            ReviewThread(
+                id="PRRT_current",
+                is_resolved=False,
+                comments=[ReviewThreadComment(database_id=301, body=current)],
+            ),
+        ]
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pr_review_threads_strict.return_value = threads
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{current}", client)
+
+        prompt = cloud_client.continue_if_paused.call_args.kwargs["prompt"]
+        assert current in prompt
+        assert historical not in prompt
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert len(state["delivered_feedback"]) == 1
+
     def test_sends_complete_report_as_custom_codex_cloud_followup(self):
         client = MagicMock()
-        client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = []
         cloud_client = MagicMock()
         cloud_client.continue_if_paused.return_value = True
@@ -395,6 +500,8 @@ class TestAdversarialValidationCodexFeedback:
             "base": {"ref": "main"},
         }
         report = "## Auto-Coder adversarial validation: NEEDS_FIX\n\nConcrete counterexample"
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        client.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_current", comments=[ReviewThreadComment(database_id=301, body=finding)])]
 
         with patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client):
             actions = _send_adversarial_validation_feedback_to_codex_cloud(
@@ -403,6 +510,7 @@ class TestAdversarialValidationCodexFeedback:
                 "head123",
                 report,
                 client,
+                [finding],
             )
 
         cloud_client.continue_if_paused.assert_called_once()
@@ -411,7 +519,8 @@ class TestAdversarialValidationCodexFeedback:
         assert task_id == "task_e_abc123"
         assert "PR #100" in prompt
         assert "head123" in prompt
-        assert report in prompt
+        assert finding in prompt
+        assert "## Auto-Coder adversarial validation: NEEDS_FIX" not in prompt
         assert "add strict regression tests" in prompt
         assert "codex/issue-99" in prompt
         assert "Do not create a new branch." in prompt
@@ -423,7 +532,8 @@ class TestAdversarialValidationCodexFeedback:
 
     def test_missing_branch_metadata_blocks_feedback_instead_of_weak_prompt(self):
         client = MagicMock()
-        client.get_pr_review_threads_strict.return_value = []
+        finding = "### Auto-Coder adversarial finding\n\nreport"
+        client.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_current", comments=[ReviewThreadComment(database_id=301, body=finding)])]
         client.get_pr_comments.return_value = []
         pr_data = {
             "number": 100,
@@ -437,12 +547,13 @@ class TestAdversarialValidationCodexFeedback:
                 "head123",
                 "report",
                 client,
+                [finding],
             )
 
         cloud_client_type.assert_not_called()
         assert any("PR head/base branch metadata is unavailable" in action for action in actions)
 
-    def test_delivery_marker_prevents_duplicate_codex_cloud_followup(self):
+    def test_delivery_marker_does_not_replace_actionable_feedback_identity(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
@@ -462,7 +573,86 @@ class TestAdversarialValidationCodexFeedback:
 
         cloud_client_type.assert_not_called()
         client.add_comment_to_pr.assert_not_called()
-        assert actions == ["Skipped duplicate adversarial feedback to Codex Cloud for PR #100 at head123"]
+        client.get_pr_comments.assert_not_called()
+        assert actions == ["Cannot identify actionable adversarial feedback for PR #100; delivery was not attempted"]
+
+    def test_same_head_marker_does_not_suppress_new_actionable_feedback(self, tmp_path):
+        first = "### Auto-Coder adversarial finding\n\nFirst defect"
+        second = "### Auto-Coder adversarial finding\n\nDistinct later defect"
+        first_thread = ReviewThread(
+            id="PRRT_first",
+            comments=[ReviewThreadComment(database_id=301, body=first)],
+        )
+        second_thread = ReviewThread(
+            id="PRRT_second",
+            comments=[ReviewThreadComment(database_id=302, body=second)],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pr_review_threads_strict.return_value = [first_thread]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", first, client, [first])
+            client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
+            client.get_pr_review_threads_strict.return_value = [first_thread, second_thread]
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", second, client, [second])
+            actions = _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", second, client, [second])
+
+        assert cloud_client.continue_if_paused.call_count == 2
+        second_prompt = cloud_client.continue_if_paused.call_args_list[1].kwargs["prompt"]
+        assert second in second_prompt
+        assert first not in second_prompt
+        assert "all actionable feedback was already delivered" in actions[0]
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert len(state["delivered_feedback"]) == 2
+
+    def test_pr_receipt_prevents_cross_path_redelivery_when_local_persistence_fails(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(
+            id="PRRT_adversarial",
+            comments=[ReviewThreadComment(database_id=301, body=finding, author_login="auto-coder-reviewer[bot]")],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_authenticated_user_login.return_value = "auto-coder-bot"
+        client.get_pr_review_threads_strict.return_value = [thread]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+            "user": {"login": "codex"},
+        }
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.pr_processor._record_delivered_review_feedback", side_effect=OSError("disk full")),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, client, [finding])
+            durable_receipt = client.add_comment_to_pr.call_args.args[2]
+            client.get_pr_comments.return_value = [{"body": durable_receipt, "user": {"login": "auto-coder-bot"}}]
+            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+
+        cloud_client.continue_if_paused.assert_called_once()
+        cloud_client.send_followup.assert_not_called()
+        assert "auto-coder-cloud-review-feedback:v1:" in durable_receipt
+        assert "already requested" in actions[0]
 
 
 class TestAdversarialValidationPRFlow:
