@@ -171,10 +171,50 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
     assert "must become FAILED" in result.findings[0].counterexample
 
 
+def test_missing_finding_identity_fails_closed_instead_of_under_compacting() -> None:
+    shared = {
+        "evidence_classification": "DEMONSTRATED",
+        "reachability": "The status handler reaches the exception branch",
+        "evidence": "handler.py:42 catches and returns",
+        "anchor_path": "handler.py",
+        "suggested_regression_scenario": "Raise from lookup and assert failed status",
+    }
+    response = json.dumps(
+        {
+            "result": "NEEDS_FIX",
+            "findings": [
+                {
+                    **shared,
+                    "requirement_id": "REQ-001",
+                    "violated_requirement": "Failures propagate",
+                    "required_behavior": "Propagate the fatal lookup failure",
+                    "actual_behavior": "Returns success",
+                    "counterexample": "Given a lookup error, status must propagate failure but returns success",
+                },
+                {
+                    **shared,
+                    "requirement_id": "REQ-002",
+                    "violated_requirement": "Status distinguishes failure",
+                    "required_behavior": "Record FAILED structured status",
+                    "actual_behavior": "Leaves the previous SUCCESS status",
+                    "counterexample": "Given the same lookup error, status must become FAILED but remains SUCCESS",
+                },
+            ],
+        }
+    )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "schema_error"
+    assert result.diagnostic_reason == "DEMONSTRATED finding is missing: finding_identity"
+    assert result.findings == []
+
+
 def test_materially_different_corrections_are_not_compacted() -> None:
     common = {
-        "finding_identity": "handler-operation-failure",
         "requirement_ids": ["REQ-001"],
+        "finding_identity": "test-finding",
         "violated_requirement": "Failures propagate",
         "evidence_classification": "DEMONSTRATED",
         "reachability": "The handler reaches an exception branch",
@@ -203,6 +243,7 @@ def test_materially_different_corrections_are_not_compacted() -> None:
 def test_different_observable_failure_contracts_are_not_compacted(contract_field: str) -> None:
     common = {
         "requirement_ids": ["REQ-001"],
+        "finding_identity": "test-finding",
         "violated_requirement": "Operation failures must be reported",
         "evidence_classification": "DEMONSTRATED",
         "reachability": "The same public handler reaches this return",
@@ -215,6 +256,7 @@ def test_different_observable_failure_contracts_are_not_compacted(contract_field
         # matching the dangerous case from AC-005.
     }
     different_contract = dict(common)
+    different_contract["finding_identity"] = f"different-{contract_field}"
     different_contract[contract_field] = f"Materially different {contract_field}"
     response = json.dumps({"result": "NEEDS_FIX", "findings": [common, different_contract]})
 
@@ -236,6 +278,7 @@ def test_requirement_coverage_stays_violated_for_grouped_current_finding() -> No
                 "findings": [
                     {
                         "requirement_ids": ["REQ-001", "REQ-002"],
+                        "finding_identity": "test-finding",
                         "violated_requirement": "Failure path B violates both contracts",
                         "evidence_classification": "DEMONSTRATED",
                         "reachability": "entry -> path B",
@@ -390,6 +433,7 @@ class TestParseAdversarialValidationResponse:
   "summary": "Found 1 subtle specification violation in edge case handling.",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "State must be persisted before event dispatch",
       "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
@@ -426,6 +470,7 @@ class TestParseAdversarialValidationResponse:
   "dynamic_check_requested": "tests/test_cache.py::test_production_entry_point",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "REQ-001 requires fresh state",
       "evidence_classification": "UNVERIFIED",
       "counterexample": "A theoretical stale-cache path"
@@ -447,7 +492,8 @@ class TestParseAdversarialValidationResponse:
   "summary": "The implementation appears correct, but one material path is unverified",
   "findings": [{
     "requirement_id": "REQ-001-test",
-    "violated_requirement": "REQ-001 requires fresh state",
+    "finding_identity": "test-finding",
+      "violated_requirement": "REQ-001 requires fresh state",
     "evidence_classification": "UNVERIFIED",
     "counterexample": "A suspected stale-cache path"
   }]
@@ -465,6 +511,7 @@ class TestParseAdversarialValidationResponse:
     )
     def test_demonstrated_finding_requires_complete_reachability_evidence(self, missing_field):
         finding = {
+            "finding_identity": "test-finding",
             "violated_requirement": "REQ-001 requires rejection",
             "requirement_id": "REQ-001-test",
             "evidence_classification": "DEMONSTRATED",
@@ -488,6 +535,7 @@ class TestParseAdversarialValidationResponse:
   "summary": "One file was unavailable, but a required test category is absent",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "The Issue requires an HTTP-level regression test",
       "evidence_classification": "UNVERIFIED",
       "counterexample": "Given the complete test manifest, when coverage is inspected, then the specification requires an HTTP test, but only a service test exists, and current tests pass because they never cross the HTTP boundary",
@@ -516,6 +564,7 @@ class TestParseAdversarialValidationResponse:
   "summary": "Says pass but listed a bug",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "Spec requirement R",
           "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
@@ -564,7 +613,8 @@ class TestParseAdversarialValidationResponse:
         json_resp = """{
   "result": "NEEDS_FIX",
   "findings": [
-    {"violated_requirement": "Maybe caching is wrong"}
+    {"finding_identity": "test-finding",
+      "violated_requirement": "Maybe caching is wrong"}
   ]
 }"""
         result = parse_adversarial_validation_response(json_resp)
@@ -1341,6 +1391,7 @@ class TestRunAdversarialValidation:
   "summary": "Found violation",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "Spec X",
           "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
@@ -1545,6 +1596,7 @@ class TestRunAdversarialValidation:
   "dynamic_check_requested": "tests/test_feature.py",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "State reload invariant",
           "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
@@ -1764,6 +1816,7 @@ class TestRunAdversarialValidation:
                 "findings": [
                     {
                         "requirement_id": "REQ-999-invented",
+                        "finding_identity": "test-finding",
                         "violated_requirement": "All caches should have extra defensive guards",
                         "evidence_classification": "DEMONSTRATED",
                         "reachability": "The cache entry point accepts an empty key",
@@ -1837,7 +1890,8 @@ class TestRunAdversarialValidation:
   "result": "INCONCLUSIVE",
   "summary": "Implementation file is partial, but required HTTP coverage is absent",
   "findings": [{
-    "violated_requirement": "HTTP-level tests are required",
+    "finding_identity": "test-finding",
+      "violated_requirement": "HTTP-level tests are required",
     "evidence_classification": "UNVERIFIED",
     "counterexample": "Given the complete test manifest, when required categories are compared, then an HTTP test is required, but only a service test exists, and CI passes because no HTTP test runs",
     "test_gap": "The changed-test manifest has no HTTP test",
@@ -2014,6 +2068,7 @@ class TestRunAdversarialValidation:
   "summary": "Test failure confirmed the suspected specification violation",
   "findings": [
     {
+      "finding_identity": "test-finding",
       "violated_requirement": "State reload invariant",
           "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
@@ -2044,7 +2099,8 @@ class TestRunAdversarialValidation:
   "result": "NEEDS_FIX",
   "summary": "Test failure confirmed the suspected specification violation",
   "findings": [{
-    "violated_requirement": "State reload invariant",
+    "finding_identity": "test-finding",
+      "violated_requirement": "State reload invariant",
           "requirement_id": "REQ-001-test",
       "evidence_classification": "DEMONSTRATED",
           "reachability": "The focused reload test executes the production reload path",
@@ -2259,6 +2315,7 @@ class TestParseThreadDispositions:
                 "findings": [
                     {
                         "requirement_id": "REQ-001",
+                        "finding_identity": "test-finding",
                         "violated_requirement": "Must validate input",
                         "evidence_classification": "DEMONSTRATED",
                         "reachability": "call foo() with bad input",

@@ -1450,6 +1450,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             continue
 
                         required_fields = {
+                            "finding_identity": str(item.get("finding_identity", "")).strip(),
                             "violated_requirement": str(item.get("violated_requirement", "")).strip(),
                             "reachability": str(item.get("reachability", "")).strip(),
                             "required_behavior": str(item.get("required_behavior", "")).strip(),
@@ -1491,7 +1492,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             AdversarialValidationFinding(
                                 requirement_id=finding_requirement_ids[0],
                                 requirement_ids=finding_requirement_ids,
-                                finding_identity=str(item.get("finding_identity", "")).strip(),
+                                finding_identity=required_fields["finding_identity"],
                                 violated_requirement=req,
                                 reachability=required_fields["reachability"],
                                 required_behavior=required_fields["required_behavior"],
@@ -1514,10 +1515,9 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 compacted_findings: List[AdversarialValidationFinding] = []
                 findings_by_counterexample: Dict[tuple[str, ...], AdversarialValidationFinding] = {}
                 for finding in findings:
-                    # An explicit root-defect identity permits requirement
-                    # perspectives to describe different consequences. Without
-                    # one, require the complete observable contract to match so
-                    # independently actionable defects cannot be discarded.
+                    # The required root-defect identity permits requirement
+                    # perspectives to describe different consequences without
+                    # conflating findings that need different corrections.
                     shared_identity = (
                         finding.anchor_path,
                         str(finding.anchor_line or ""),
@@ -1525,17 +1525,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         finding.evidence,
                         finding.suggested_regression_scenario,
                     )
-                    identity = (
-                        ("explicit", finding.finding_identity, *shared_identity)
-                        if finding.finding_identity
-                        else (
-                            "implicit",
-                            *shared_identity,
-                            finding.required_behavior,
-                            finding.actual_behavior,
-                            finding.counterexample,
-                        )
-                    )
+                    identity = (finding.finding_identity, *shared_identity)
                     existing = findings_by_counterexample.get(identity)
                     if existing is None:
                         findings_by_counterexample[identity] = finding
