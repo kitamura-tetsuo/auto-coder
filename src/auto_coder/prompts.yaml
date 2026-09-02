@@ -510,7 +510,7 @@ pr:
 
     A production-violation finding may block only when its counterexample and reachable production path are demonstrated from the supplied implementation evidence or confirmed by a focused dynamic check. Plausible, theoretical, assumption-dependent, maintainability, robustness, and hardening concerns are not blocking production-violation findings. A missing test oracle is never a production-violation finding; use the distinct material test-oracle-gap schema below when every required criterion is satisfied.
     If a material suspicion cannot be proven reachable, return INCONCLUSIVE with no finding and request a focused dynamic check where practical. Never guess missing reachability evidence.
-    Every VIOLATED requirement coverage entry MUST have a corresponding concrete finding. Reporting VIOLATED without a finding is a schema error and fails closed.
+    Every VIOLATED requirement coverage entry MUST be named in the `requirement_ids` of a corresponding concrete finding. Reporting VIOLATED without a matching finding is a schema error and fails closed. Requirement coverage is independent of finding lifecycle: a requirement remains VIOLATED while any current counterexample names it, even when a different historical finding for that requirement is ADDRESSED.
     Use only exact requirement IDs from the supplied manifest. Any missing, duplicate, or unknown ID is a schema error and fails closed.
 
     MATERIAL TEST-ORACLE GAP STANDARD:
@@ -519,14 +519,20 @@ pr:
 
     CLAIMED-ADDRESSED REVIEW THREAD VALIDATION:
     A cloud implementation agent may have replied to an unresolved PR review thread claiming it fixed the original finding, without resolving the thread itself. The "Claimed-Addressed Review Threads" section below lists every such thread eligible for this run. For EACH thread listed there, independently determine whether the ORIGINAL finding described in that thread is actually corrected on the CURRENT PR head, and return exactly one entry in `thread_dispositions` for it:
-    - `ADDRESSED`: the original defect or violated invariant is demonstrably no longer present on the current head.
-    - `STILL_VALID`: the defect or violated invariant remains, on the reported path or an equivalent reachable one.
+    - `ADDRESSED`: the thread's exact recorded counterexample is demonstrably no longer reproducible on the current head.
+    - `STILL_VALID`: that exact recorded counterexample remains reproducible, or its claimed correction is incomplete on that same path.
     - `INCONCLUSIVE`: the available evidence cannot safely establish either conclusion.
-    Never derive `ADDRESSED` merely because: the implementation agent asserted it is fixed; a thread became GitHub `outdated` or its original line moved/disappeared from the diff; a newly added or renamed test passes; or a commit was pushed. Only actual demonstrated correction of the original reported behavior on the current head justifies `ADDRESSED`. A regression test that does not exercise the originally failing state transition or invariant does not justify `ADDRESSED` either. Every disposition requires a concrete `rationale` grounded in the current implementation and specific `evidence` (a code path, patch excerpt, or dynamic-check result). Only produce a disposition for a thread ID that is exactly listed in the Claimed-Addressed Review Threads section below; never invent a disposition for any other thread. This determination is completely independent of the PR-level `result`: a thread may be ADDRESSED even when the PR overall is NEEDS_FIX for an unrelated defect, and the PR may otherwise PASS while a claimed thread remains STILL_VALID or INCONCLUSIVE.
+    Never derive `ADDRESSED` merely because: the implementation agent asserted it is fixed; a thread became GitHub `outdated` or its original line moved/disappeared from the diff; a newly added or renamed test passes; or a commit was pushed. Only actual demonstrated correction of the original reported behavior on the current head justifies `ADDRESSED`. A different path violating overlapping requirements does NOT keep the old thread STILL_VALID: mark the old concrete finding ADDRESSED and emit the different current counterexample as a new finding. Likewise, never reopen an addressed finding merely because an equivalent failure exists elsewhere; reopen it only if its own counterexample regresses. A regression test that does not exercise the originally failing state transition or invariant does not justify `ADDRESSED` either. Every disposition requires a concrete `rationale` grounded in the current implementation and specific `evidence` (a code path, patch excerpt, or dynamic-check result). Only produce a disposition for a thread ID that is exactly listed in the Claimed-Addressed Review Threads section below; never invent a disposition for any other thread. This determination is completely independent of the PR-level `result`: a thread may be ADDRESSED even when the PR overall is NEEDS_FIX for an unrelated defect, and the PR may otherwise PASS while a claimed thread remains STILL_VALID or INCONCLUSIVE.
+
+    FINDING COMPACTION: One concrete production path/root defect normally produces exactly one finding, even when its consequences violate several requirements. Every demonstrated finding must include non-empty `finding_identity` and `correction_identity`; omission of either is a schema error. Give every perspective on the same root defect the same concise finding identity and, when they share the same required fix and regression oracle, the same correction identity. Prose differences in reachability, evidence, or regression-scenario descriptions do not change those identities. List every implicated stable ID in `requirement_ids`, and preserve all requirement-specific descriptions in the grouped finding. `finding_identity` identifies the concrete path/root defect, never a requirement ID or broad invariant. `correction_identity` identifies the independently actionable correction and test oracle; use a different correction identity for materially different fixes or observable failure contracts even when a root identity is shared. Sibling branches may share both identities only when they have the same root failure, required correction, and test oracle, and the finding explicitly enumerates every demonstrated branch. Current findings must describe only currently reproducible counterexamples, never restate resolved historical findings.
     Exception for a root thread explicitly labeled `Auto-Coder material test-oracle gap`: its original blocker is missing regression protection, not incorrect current production behavior. Return ADDRESSED only when the matching persisted gap is RESOLVED because a committed test directly exercises the recorded boundary and invariant, or INVALID with evidence that the original report failed the material-gap criteria. A merely passing, renamed, indirect, skipped, bypassed, or mock-only test is insufficient. Return STILL_VALID while the matching gap remains OPEN.
 
     OUTPUT FORMAT:
     Respond with a JSON object in the following format:
+
+    `anchor_line` and `anchor_start_line` MUST each be a positive JSON integer or
+    JSON `null`; never quote a real line number. The numeric examples below show
+    the machine-readable type, while `null` represents a file-level anchor.
 
     ```json
     {
@@ -542,8 +548,10 @@ pr:
       ],
       "findings": [
         {
-          "requirement_id": "<exact stable ID from the requirement manifest>",
-          "violated_requirement": "<The exact explicit Issue requirement violated>",
+          "finding_identity": "<concise concrete production path/root defect identity shared only by requirement perspectives of this finding>",
+          "correction_identity": "<concise independently actionable correction and regression-oracle identity>",
+          "requirement_ids": ["<every exact stable ID from the requirement manifest violated by this counterexample>"],
+          "violated_requirement": "<The exact explicit Issue requirements violated by this counterexample>",
           "evidence_classification": "DEMONSTRATED",
           "reachability": "<Concrete state/action path, including entry point and branches, established by supplied code or dynamic execution>",
           "required_behavior": "<Behavior explicitly required by the Issue requirement>",
@@ -553,9 +561,9 @@ pr:
           "test_gap": "<Why the existing test suite fails to detect this defect>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>",
           "anchor_path": "<Exact path of a changed file that this finding concerns>",
-          "anchor_line": "<Optional changed line number, or null for a file-level thread>",
+          "anchor_line": 1817,
           "anchor_side": "RIGHT or LEFT",
-          "anchor_start_line": "<Optional start of a changed line range, or null>"
+          "anchor_start_line": null
         }
       ],
       "test_oracle_gaps": [
@@ -570,9 +578,9 @@ pr:
           "material_consequence": "<material missed regression consequence>",
           "focused_regression_scenario": "<one focused direct scenario that closes this underlying gap>",
           "anchor_path": "<exact changed file path concerning the boundary>",
-          "anchor_line": "<optional changed line number, or null>",
+          "anchor_line": 1817,
           "anchor_side": "RIGHT or LEFT",
-          "anchor_start_line": "<optional start line, or null>",
+          "anchor_start_line": null,
           "discovery_phase": "INITIAL" | "REREVIEW",
           "rereview_exception_reason": "NONE" | "CORRECTIVE_DIFF_NEW_BOUNDARY" | "PROTECTION_WEAKENED" | "REVALIDATION_EXPOSED_UNTESTED_BOUNDARY",
           "rereview_exception_evidence": "<required for a new REREVIEW gap: exact corrective diff or required-revalidation evidence; empty for INITIAL and prior gaps>",
@@ -627,7 +635,7 @@ pr:
     }
     ```
 
-    Every finding and test-oracle gap must cite an exact stable requirement ID from the supplied manifest. Never create a production-violation finding for an invented invariant, hardening opportunity, maintainability concern, or missing test. Classify a specification gap only when a reachable, materially relevant case is exposed, the authoritative linked Issue does not define its required behavior, and correctness would require choosing a new product or workflow policy. Missing evidence for behavior the Issue does define is UNVERIFIED/INCONCLUSIVE, not a specification gap. Specification gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and determine the production verdict solely from defined requirements. You may describe neutral candidate options, but PR discussion, reviewer preferences, repository conventions, implementation choices, and those options are not requirements. Do not select or promote a policy.
+    Every finding must cite all implicated exact stable requirement IDs in `requirement_ids`; every test-oracle gap cites one exact stable ID. Never create a production-violation finding for an invented invariant, hardening opportunity, maintainability concern, or missing test. Classify a specification gap only when a reachable, materially relevant case is exposed, the authoritative linked Issue does not define its required behavior, and correctness would require choosing a new product or workflow policy. Missing evidence for behavior the Issue does define is UNVERIFIED/INCONCLUSIVE, not a specification gap. Specification gaps are orthogonal metadata: continue reviewing every defined requirement, retain all findings, and determine the production verdict solely from defined requirements. You may describe neutral candidate options, but PR discussion, reviewer preferences, repository conventions, implementation choices, and those options are not requirements. Do not select or promote a policy.
 
     CHANGE-PROVENANCE CLARIFICATION: After every applicable Issue requirement is VERIFIED or justified IRRELEVANT, independently account for every material changed file or related change group. If repository evidence does not establish why one or more groups belong to the PR, return INCONCLUSIVE with no findings and aggregate all such groups in `unexplained_changes`. Missing change rationale is not an Issue requirement violation and must never be placed in `findings` or change requirement coverage to VIOLATED/UNVERIFIED. Use exact changed paths and group mechanically related files together. Do not request a code change or new commit merely to obtain an explanation. If a Claimed-Addressed Review Thread is a change-provenance clarification, treat the implementation-agent reply only as an unverified claim and navigation aid: independently compare every claim with the current diff, repository state, generation inputs/outputs, and relevant tests. Return ADDRESSED only when all listed provenance is verified; return STILL_VALID when the reply identifies an accidental change or repository evidence contradicts it, naming the concrete change to remove or correct; otherwise return INCONCLUSIVE. Do not emit a new `unexplained_changes` entry for the same unresolved clarification set already represented by that thread.
 
@@ -705,11 +713,13 @@ pr:
     The original Issue Requirements remain the source of truth throughout every
     review iteration. Apply this convergence policy in order:
 
-    1. For EACH previously blocking finding, classify the current implementation
-       as FIXED, STILL_VIOLATED, or REGRESSED. A finding is not FIXED merely
-       because its reported example now passes: check equivalent reachable paths
-       for the same requirement and reject workaround-only or symptom-masking
-       changes.
+    1. For EACH previously blocking finding, classify the current implementation's
+       handling of its exact recorded counterexample as FIXED, STILL_VIOLATED, or REGRESSED. Do not keep it open
+       because a different path violates overlapping requirements. Report that
+       different path as a new, independently actionable finding while keeping
+       requirement coverage VIOLATED. A finding is REGRESSED only when its own
+       counterexample reproduces again; reject workaround-only or symptom-masking
+       changes on that recorded path.
     2. Determine which Issue Requirements may be affected by the changes between
        the previous reviewed head and the current head. Revalidate every such
        requirement on the current head, including requirements implicated by a
@@ -817,7 +827,9 @@ pr:
       ],
       "findings": [
         {
-          "requirement_id": "<exact stable ID from the requirement manifest>",
+          "finding_identity": "<concise concrete production path/root defect identity shared only by requirement perspectives of this finding>",
+          "correction_identity": "<concise independently actionable correction and regression-oracle identity>",
+          "requirement_ids": ["<every exact stable ID from the requirement manifest violated by this counterexample>"],
           "violated_requirement": "<Exact explicit Issue requirement violated>",
           "evidence_classification": "DEMONSTRATED",
           "reachability": "<State/action path confirmed by the dynamic execution or supplied implementation>",
@@ -828,9 +840,9 @@ pr:
           "test_gap": "<Why the test suite failed to catch this>",
           "suggested_regression_scenario": "<Specific test scenario to expose this bug>",
           "anchor_path": "<Exact path of a changed file that this finding concerns>",
-          "anchor_line": "<Optional changed line number, or null for a file-level thread>",
+          "anchor_line": 1817,
           "anchor_side": "RIGHT or LEFT",
-          "anchor_start_line": "<Optional start of a changed line range, or null>"
+          "anchor_start_line": null
         }
       ],
       "thread_dispositions": [

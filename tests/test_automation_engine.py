@@ -396,7 +396,7 @@ class TestAutomationEngine:
 
         assert result["errors"] == ["Error processing pr #92: validator subprocess crashed"]
         assert result["prs_processed"][0]["outcome"] == "failed"
-        assert any("Adversarial validation blocked PR #92" in action for action in result["prs_processed"][0]["actions_taken"])
+        assert any("ERROR: Adversarial validation failed for PR #92" in action for action in result["prs_processed"][0]["actions_taken"])
 
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py
