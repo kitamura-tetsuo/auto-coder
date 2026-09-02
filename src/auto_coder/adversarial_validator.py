@@ -30,7 +30,7 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v8"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v9"
 CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
 TEST_ORACLE_GAP_STATUSES = {"OPEN", "RESOLVED", "INVALID"}
 TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
@@ -46,6 +46,7 @@ class AdversarialValidationFinding:
 
     requirement_id: str = ""
     requirement_ids: List[str] = field(default_factory=list)
+    finding_identity: str = ""
     violated_requirement: str = ""
     reachability: str = ""
     required_behavior: str = ""
@@ -1490,6 +1491,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                             AdversarialValidationFinding(
                                 requirement_id=finding_requirement_ids[0],
                                 requirement_ids=finding_requirement_ids,
+                                finding_identity=str(item.get("finding_identity", "")).strip(),
                                 violated_requirement=req,
                                 reachability=required_fields["reachability"],
                                 required_behavior=required_fields["required_behavior"],
@@ -1517,15 +1519,23 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     # evidence cannot establish semantic equivalence: retaining
                     # required/actual behavior and the counterexample prevents
                     # an independently actionable defect from being discarded.
-                    identity = (
+                    shared_identity = (
                         finding.anchor_path,
                         str(finding.anchor_line or ""),
                         finding.reachability,
-                        finding.required_behavior,
-                        finding.actual_behavior,
                         finding.evidence,
-                        finding.counterexample,
                         finding.suggested_regression_scenario,
+                    )
+                    identity = (
+                        ("explicit", finding.finding_identity, *shared_identity)
+                        if finding.finding_identity
+                        else (
+                            "implicit",
+                            *shared_identity,
+                            finding.required_behavior,
+                            finding.actual_behavior,
+                            finding.counterexample,
+                        )
                     )
                     existing = findings_by_counterexample.get(identity)
                     if existing is None:
@@ -1533,7 +1543,9 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         compacted_findings.append(finding)
                         continue
                     existing.requirement_ids = list(dict.fromkeys([*existing.all_requirement_ids, *finding.all_requirement_ids]))
-                    existing.violated_requirement = " ".join(dict.fromkeys(value for value in [existing.violated_requirement, finding.violated_requirement] if value))
+                    for field_name in ("violated_requirement", "required_behavior", "actual_behavior", "counterexample", "test_gap"):
+                        merged_values = list(dict.fromkeys(value for value in [getattr(existing, field_name), getattr(finding, field_name)] if value))
+                        setattr(existing, field_name, "\n\n".join(merged_values))
                 findings = compacted_findings
 
                 if unverified_suspicion and not findings:

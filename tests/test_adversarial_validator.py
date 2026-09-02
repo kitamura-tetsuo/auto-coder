@@ -126,12 +126,10 @@ def test_review_summary_publishes_concrete_still_valid_provenance(rationale: str
 
 def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None:
     shared = {
+        "finding_identity": "status-handler-lookup-failure",
         "evidence_classification": "DEMONSTRATED",
         "reachability": "The status handler reaches the exception branch",
-        "required_behavior": "Propagate the fatal lookup failure and record FAILED",
-        "actual_behavior": "Returns success while leaving the previous success status",
         "evidence": "handler.py:42 catches and returns",
-        "counterexample": "Given a lookup error, when status runs, then failure must propagate as FAILED, but SUCCESS remains, and tests omit errors",
         "anchor_path": "handler.py",
         "suggested_regression_scenario": "Raise from lookup and assert failed status",
     }
@@ -143,11 +141,17 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
                     **shared,
                     "requirement_id": "REQ-001",
                     "violated_requirement": "Failures propagate",
+                    "required_behavior": "Propagate the fatal lookup failure",
+                    "actual_behavior": "Returns success",
+                    "counterexample": "Given a lookup error, status must propagate failure but returns success",
                 },
                 {
                     **shared,
                     "requirement_id": "REQ-002",
                     "violated_requirement": "Status distinguishes failure",
+                    "required_behavior": "Record FAILED structured status",
+                    "actual_behavior": "Leaves the previous SUCCESS status",
+                    "counterexample": "Given the same lookup error, status must become FAILED but remains SUCCESS",
                 },
             ],
         }
@@ -159,10 +163,17 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
     assert result.findings[0].all_requirement_ids == ["REQ-001", "REQ-002"]
     assert "Failures propagate" in result.findings[0].violated_requirement
     assert "Status distinguishes failure" in result.findings[0].violated_requirement
+    assert "Propagate the fatal lookup failure" in result.findings[0].required_behavior
+    assert "Record FAILED structured status" in result.findings[0].required_behavior
+    assert "Returns success" in result.findings[0].actual_behavior
+    assert "Leaves the previous SUCCESS status" in result.findings[0].actual_behavior
+    assert "must propagate failure" in result.findings[0].counterexample
+    assert "must become FAILED" in result.findings[0].counterexample
 
 
 def test_materially_different_corrections_are_not_compacted() -> None:
     common = {
+        "finding_identity": "handler-operation-failure",
         "requirement_ids": ["REQ-001"],
         "violated_requirement": "Failures propagate",
         "evidence_classification": "DEMONSTRATED",
