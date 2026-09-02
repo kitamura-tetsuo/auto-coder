@@ -214,6 +214,37 @@ class TestAutomationEngine:
         assert json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))["issue:100"]["implementation_prs"] == [108]
         assert slots.reserve(ImplementationOwner("issue", 200)) is False
 
+    def test_source_less_recurrent_pr_continues_under_provider_owner(self, tmp_path):
+        github = MagicMock()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        recurrent_owner = ImplementationOwner("recurrent", 12345)
+        assert slots.reserve_new(recurrent_owner) is True
+        assert slots.record_provider_session(recurrent_owner, "session-abc") is True
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="pr",
+            data={
+                "number": 123,
+                "title": "Recurrent implementation",
+                "body": "Created by https://jules.google.com/session/session-abc",
+            },
+            priority=0,
+        )
+
+        def process_reserved(*_args):
+            assert slots.active_owners() == (recurrent_owner,)
+            assert slots.reserve(ImplementationOwner("issue", 200)) is False
+            return CandidateProcessingResult(type="pr", number=123, title="Recurrent implementation", success=True)
+
+        engine._process_single_candidate_reserved = Mock(side_effect=process_reserved)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        assert slots.resolve_owner("pr", candidate.data, github) == recurrent_owner
+        assert slots.active_owners() == (recurrent_owner,)
+
     def test_startup_discovers_branch_linked_pr_before_reconciliation(self, tmp_path):
         """Restart discovery must protect an unrecorded branch-linked PR."""
 

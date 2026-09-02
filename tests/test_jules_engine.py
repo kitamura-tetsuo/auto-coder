@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.jules_engine import (
     SESSION_STATE_STOPPED,
+    _recurrent_implementation_owner,
     check_and_restart_recurrent_jules_task_for_pr,
     check_and_resume_or_archive_sessions,
     check_and_start_recurrent_jules_tasks,
@@ -403,6 +404,54 @@ Maintain the application.""",
 
             mock_jules_client.start_session.assert_called_once()
             self.assertEqual(slots.active_owners()[0].kind, "recurrent")
+
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_terminal_recurrent_session_releases_and_reuses_owner(self, mock_jules_client_cls, mock_github_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+            self.assertTrue(slots.reserve_new(owner))
+            self.assertTrue(slots.record_provider_session(owner, "old-session"))
+
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = [
+                {
+                    "name": "sessions/old-session",
+                    "state": "COMPLETED",
+                    "prompt": prompt,
+                    "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}},
+                }
+            ]
+            jules.start_session.return_value = "new-session"
+            mock_github_client_cls.get_instance.return_value.get_pull_request.return_value = {
+                "number": 123,
+                "state": "closed",
+                "merged": True,
+            }
+
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.start_session.assert_called_once()
+            restarted_slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            self.assertEqual(restarted_slots.active_owners(), (owner,))
+            source_less_pr_owner = restarted_slots.resolve_owner(
+                "pr",
+                {"number": 123, "body": "No Issue reference"},
+                MagicMock(issues=[]),
+            )
+            self.assertEqual(source_less_pr_owner, owner)
 
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")

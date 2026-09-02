@@ -74,6 +74,30 @@ def test_standalone_pr_has_independent_owner(tmp_path):
     assert slots.reserve(owner) is False
 
 
+def test_source_less_provider_pr_reuses_durable_recurrent_owner(tmp_path):
+    slots = repository(tmp_path)
+    recurrent_owner = ImplementationOwner("recurrent", 12345)
+    assert slots.reserve_new(recurrent_owner) is True
+    assert slots.record_provider_session(recurrent_owner, "session-abc") is True
+
+    github = GitHubState()
+    owner_from_session = slots.resolve_owner(
+        "pr",
+        {"number": 123, "body": "Created by https://jules.google.com/session/session-abc"},
+        github,
+    )
+    assert owner_from_session == recurrent_owner
+    assert slots.reserve(owner_from_session) is True
+
+    assert slots.record_implementation_pr(recurrent_owner, 123) is True
+    owner_after_restart = repository(tmp_path).resolve_owner(
+        "pr",
+        {"number": 123, "body": "No source Issue or session metadata"},
+        github,
+    )
+    assert owner_after_restart == recurrent_owner
+
+
 def test_reconciliation_releases_terminal_but_retains_uncertain_owner(tmp_path):
     slots = repository(tmp_path, limit=2)
     terminal = ImplementationOwner("issue", 100)

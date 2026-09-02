@@ -6,6 +6,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -68,7 +69,31 @@ class ImplementationSlotRepository:
             # A PR can mention several Issues, but the authoritative/root owner is
             # the first relationship selected by the shared hierarchical resolver.
             return ImplementationOwner("issue", resolution.issues[0].number)
+        provider_owner = self._provider_owner_for_pr(number, data.get("body", ""))
+        if provider_owner is not None:
+            return provider_owner
         return ImplementationOwner("pr", number)
+
+    def _provider_owner_for_pr(self, pr_number: int, body: object) -> Optional[ImplementationOwner]:
+        """Resolve a source-less PR from durable provider-run membership."""
+        session_ids: set[str] = set()
+        if isinstance(body, str):
+            session_ids.update(re.findall(r"jules\.google\.com/(?:session|task)/([A-Za-z0-9_-]+)", body))
+            session_ids.update(re.findall(r"\bSession ID:\s*([A-Za-z0-9_-]+)", body, re.IGNORECASE))
+        with self._state_lock():
+            records = self._read()
+        for key, record in records.items():
+            kind = record.get("kind")
+            number = record.get("number")
+            implementation_prs = record.get("implementation_prs", [])
+            provider_sessions = record.get("provider_sessions", [])
+            if not isinstance(implementation_prs, list) or any(isinstance(value, bool) or not isinstance(value, int) for value in implementation_prs) or not isinstance(provider_sessions, list) or any(not isinstance(value, str) for value in provider_sessions):
+                raise ImplementationSlotUnavailable("Cannot safely parse provider implementation membership")
+            if pr_number in implementation_prs or session_ids.intersection(provider_sessions):
+                if not isinstance(kind, str) or isinstance(number, bool) or not isinstance(number, int):
+                    raise ImplementationSlotUnavailable(f"Cannot safely parse implementation owner {key}")
+                return ImplementationOwner(kind, number)
+        return None
 
     @contextmanager
     def _state_lock(self) -> Iterator[None]:
@@ -106,8 +131,8 @@ class ImplementationSlotRepository:
 
     def reserve(self, owner: ImplementationOwner, implementation_pr: Optional[int] = None) -> bool:
         """Reserve *owner* and durably record a PR known to belong to it."""
-        if implementation_pr is not None and (owner.kind != "issue" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
-            raise ValueError("implementation_pr must identify a PR belonging to an Issue owner")
+        if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
+            raise ValueError("implementation_pr must identify a PR belonging to a non-PR implementation owner")
         with self._state_lock():
             owners = self._read()
             if owner.key in owners:
@@ -126,6 +151,7 @@ class ImplementationSlotRepository:
                 "kind": owner.kind,
                 "number": owner.number,
                 "implementation_prs": [implementation_pr] if implementation_pr is not None else [],
+                "provider_sessions": [],
             }
             self._write(owners)
             return True
@@ -140,6 +166,7 @@ class ImplementationSlotRepository:
                 "kind": owner.kind,
                 "number": owner.number,
                 "implementation_prs": [],
+                "provider_sessions": [],
             }
             self._write(owners)
             return True
@@ -152,8 +179,8 @@ class ImplementationSlotRepository:
 
     def record_implementation_pr(self, owner: ImplementationOwner, pr_number: int) -> bool:
         """Record PR membership only when *owner* is already reserved."""
-        if owner.kind != "issue" or isinstance(pr_number, bool) or not isinstance(pr_number, int):
-            raise ValueError("pr_number must identify a PR belonging to an Issue owner")
+        if isinstance(pr_number, bool) or not isinstance(pr_number, int):
+            raise ValueError("pr_number must identify a PR belonging to an implementation owner")
         with self._state_lock():
             owners = self._read()
             record = owners.get(owner.key)
@@ -164,6 +191,23 @@ class ImplementationSlotRepository:
                 raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
             if pr_number not in known_prs:
                 known_prs.append(pr_number)
+                self._write(owners)
+            return True
+
+    def record_provider_session(self, owner: ImplementationOwner, session_id: str) -> bool:
+        """Persist a provider session as evidence of logical ownership."""
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            provider_sessions = record.setdefault("provider_sessions", [])
+            if not isinstance(provider_sessions, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse provider session membership")
+            if session_id not in provider_sessions:
+                provider_sessions.append(session_id)
                 self._write(owners)
             return True
 

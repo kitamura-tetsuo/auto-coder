@@ -1114,7 +1114,7 @@ class AutomationEngine:
             result.error = str(exc)
             return result
 
-        implementation_pr = item_number if candidate.type == "pr" and owner.kind == "issue" else None
+        implementation_pr = item_number if candidate.type == "pr" and owner.kind != "pr" else None
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
