@@ -510,12 +510,26 @@ class GitHubClient:
             per_page = min(limit, 100) if limit else 100
             url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=created&direction=asc&per_page={per_page}"
 
-            resp = client.request("GET", url, headers=headers)
-            resp.raise_for_status()
-            pr_list = resp.json()
-
-            if limit:
-                pr_list = pr_list[:limit]
+            pr_list: List[Any] = []
+            visited_urls = set()
+            while url:
+                if url in visited_urls or len(visited_urls) >= 1000:
+                    raise RuntimeError("GitHub open-PR pagination did not terminate safely")
+                visited_urls.add(url)
+                resp = client.request("GET", url, headers=headers)
+                resp.raise_for_status()
+                page = resp.json()
+                if not isinstance(page, list):
+                    raise RuntimeError("GitHub open-PR response was not a list")
+                pr_list.extend(page)
+                if limit and len(pr_list) >= limit:
+                    pr_list = pr_list[:limit]
+                    break
+                next_link = getattr(resp, "links", {}).get("next", {})
+                next_url = next_link.get("url") if isinstance(next_link, dict) else None
+                if next_url is not None and not isinstance(next_url, str):
+                    raise RuntimeError("GitHub open-PR pagination link was invalid")
+                url = next_url
 
             logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)")
             return pr_list

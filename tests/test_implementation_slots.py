@@ -1,5 +1,6 @@
 """Tests for durable logical implementation ownership."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -240,6 +241,38 @@ def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, 
     assert restarted_slots.active_owners() == (issue_owner,)
     assert restarted_slots.reserve(ImplementationOwner("issue", 200)) is False
     assert restarted_slots.resolve_owner("pr", branch_linked_pr, github) == issue_owner
+    assert restarted_slots.reserve(issue_owner, implementation_pr=108) is True
+
+
+def test_startup_reconciliation_discovers_unrecorded_branch_linked_pr(tmp_path):
+    slots = repository(tmp_path)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner) is True
+
+    class StartupGitHub(GitHubState):
+        def get_open_pull_requests(self, _repo):
+            return [
+                {
+                    "number": 108,
+                    "title": "Implementation",
+                    "body": "",
+                    "head": {"ref": "issue-100-work"},
+                }
+            ]
+
+    github = StartupGitHub(
+        issues={100: {"number": 100, "state": "closed", "title": "Source Issue"}},
+        prs={108: {"number": 108, "state": "open", "merged": False}},
+        linked_prs={100: []},
+    )
+
+    restarted_slots = repository(tmp_path)
+    restarted_slots.reconcile(github, discover_open_prs=True)
+
+    assert restarted_slots.active_owners() == (issue_owner,)
+    state = json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))
+    assert state["issue:100"]["implementation_prs"] == [108]
+    assert restarted_slots.reserve(ImplementationOwner("issue", 200)) is False
     assert restarted_slots.reserve(issue_owner, implementation_pr=108) is True
 
 
