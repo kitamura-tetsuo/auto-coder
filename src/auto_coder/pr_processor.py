@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
@@ -109,6 +109,15 @@ class CodexCloudFeedbackResult:
     delivered: bool = False
     retryable: bool = False
     actions: Tuple[str, ...] = ()
+
+
+@dataclass
+class UnsafeCodexCloudPRResult:
+    """Outcome of rejecting a Codex Cloud PR with an unsafe remote head."""
+
+    closed: bool = False
+    reissue_delivered: bool = False
+    actions: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -481,6 +490,15 @@ def process_pull_request(
         )
 
         pr_number = pr_data["number"]
+
+        # Resolve the execution origin before any diff, CI, merge, or checkout
+        # behavior. ``work`` is Codex Cloud's shared/transient branch identity,
+        # not a safe identity for an independently managed task.
+        unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, pr_data, config)
+        if unsafe_branch_result.closed:
+            processed_pr.actions_taken = unsafe_branch_result.actions
+            processed_pr.priority = "close"
+            return processed_pr
 
         # Close PRs with zero effective diff before any further processing.
         # This runs before the @auto-coder label check so empty PRs left from earlier
@@ -889,6 +907,97 @@ def _is_cloud_run_retry_blocked(
         return False
 
 
+def _retry_linked_issue_after_cloud_reissue_failure(
+    github_client: Any,
+    repo_name: str,
+    issue_number: int,
+    pr_number: int,
+    config: AutomationConfig,
+    actions: List[str],
+) -> None:
+    """Release a linked issue to the ordinary attempt policy after failed delivery."""
+    try:
+        issue_obj = github_client.get_issue(repo_name, issue_number)
+        state = issue_obj.get("state") if isinstance(issue_obj, dict) else getattr(issue_obj, "state", None)
+        if state == "closed":
+            github_client.reopen_issue(
+                repo_name,
+                issue_number,
+                f"Auto-Coder: Reopening issue #{issue_number} because Codex Cloud could not reissue PR #{pr_number}.",
+            )
+            actions.append(f"Reopened closed issue #{issue_number}")
+    except Exception as exc:
+        logger.error(f"Failed to check/reopen issue #{issue_number}: {exc}")
+
+    try:
+        new_attempt = increment_attempt(repo_name, issue_number)
+        actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+    except Exception as exc:
+        logger.error(f"Failed to increment attempt for issue #{issue_number}: {exc}")
+        actions.append(f"Failed to increment attempt for issue #{issue_number}: {exc}")
+
+    if _release_issue_processing_label(github_client, repo_name, issue_number, config):
+        actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
+
+
+def _reject_unsafe_codex_cloud_pr(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+) -> UnsafeCodexCloudPRResult:
+    """Close a Codex Cloud PR published from the shared remote ``work`` branch.
+
+    The originating task, rather than Auto-Coder's local checkout, must create
+    the replacement branch and PR. Successful delivery deliberately retains
+    each issue's processing label and attempt so no competing implementation is
+    started. Failed task resolution or delivery releases the issue to the
+    existing retry path.
+    """
+    result = UnsafeCodexCloudPRResult()
+    if not _is_unsafe_codex_cloud_branch(pr_data) or pr_data.get("state") == "closed":
+        return result
+
+    pr_number = int(pr_data["number"])
+    issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+    client = github_client or GitHubClient.get_instance()
+    client.close_pr(
+        repo_name,
+        pr_number,
+        "Auto-Coder: Closing this Codex Cloud PR because its remote head branch `work` is a shared, transient identity. A replacement PR must be published from a task-specific branch.",
+    )
+    _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
+    result.closed = True
+    result.actions.append(f"Closed unsafe Codex Cloud PR #{pr_number} on shared remote branch 'work'")
+
+    task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
+    delivered = False
+    if task_id:
+        prompt = Template(get_prompt_template("codex_cloud.unsafe_work_branch_reissue")).safe_substitute(
+            pr_number=pr_number,
+            issue_numbers=", ".join(f"#{number}" for number in issue_numbers) or "the linked issue",
+        )
+        try:
+            from .codex_cloud_client import CodexCloudClient
+
+            delivered = CodexCloudClient(repo_name=repo_name).send_followup(task_id, prompt)
+        except Exception as exc:
+            logger.warning(f"Could not request Codex Cloud reissue for PR #{pr_number}: {exc}")
+            result.actions.append(f"Failed to request Codex Cloud reissue for PR #{pr_number}: {exc}")
+    else:
+        result.actions.append(f"Cannot request Codex Cloud reissue for PR #{pr_number}: no originating task found")
+
+    if delivered:
+        result.reissue_delivered = True
+        result.actions.append(f"Requested Codex Cloud task '{task_id}' to publish a replacement PR from a task-specific branch")
+        for issue_number in issue_numbers:
+            result.actions.append(f"Preserved issue #{issue_number} in the in-flight Codex Cloud reissue flow")
+    else:
+        for issue_number in issue_numbers:
+            _retry_linked_issue_after_cloud_reissue_failure(client, repo_name, issue_number, pr_number, config, result.actions)
+    return result
+
+
 def _close_empty_pr(
     github_client: Any,
     repo_name: str,
@@ -924,6 +1033,15 @@ def _close_empty_pr(
         if pr_data.get("state") == "closed":
             _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
             logger.debug(f"PR #{pr_number} is already closed, skipping empty PR check")
+            return result
+
+        # The Codex Cloud branch-safety recovery owns these PRs, including
+        # empty ones. AutomationEngine calls this helper while collecting and
+        # dispatching candidates before process_pull_request reaches its safety
+        # gate, so closing here would bypass the originating-task follow-up and
+        # incorrectly release the linked issue for a competing implementation.
+        if _is_unsafe_codex_cloud_branch(pr_data):
+            logger.debug(f"Deferring empty PR #{pr_number} to Codex Cloud unsafe-branch recovery")
             return result
 
         if not _is_empty_pr(pr_data, repo_name=repo_name, github_client=github_client):
@@ -3172,6 +3290,13 @@ def _is_codex_pr(pr_data: Dict[str, Any]) -> bool:
         return True
 
     return False
+
+
+def _is_unsafe_codex_cloud_branch(pr_data: Dict[str, Any]) -> bool:
+    """Return whether a Codex Cloud PR uses a forbidden remote head identity."""
+    head = pr_data.get("head") or {}
+    remote_head = head.get("ref") or pr_data.get("head_branch") or ""
+    return remote_head == "work" and _is_codex_pr(pr_data)
 
 
 def _is_claude_pr(pr_data: Dict[str, Any]) -> bool:
