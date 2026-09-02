@@ -140,6 +140,30 @@ def test_new_reviewer_reply_is_delivered_once_without_redelivering_thread_root(t
     assert "Implemented and tested" not in second_prompt
 
 
+def test_distinct_findings_with_identical_text_are_each_delivered_once(tmp_path) -> None:
+    state_path = tmp_path / "review-repairs.json"
+    first = ReviewThread(
+        id="PRRT_thread_1",
+        comments=[ReviewThreadComment(database_id=101, body="Same actionable text", author_login="reviewer")],
+    )
+    second = ReviewThread(
+        id="PRRT_thread_2",
+        comments=[ReviewThreadComment(database_id=201, body="Same actionable text", author_login="reviewer")],
+    )
+
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(first,))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(first, second))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(first, second))
+
+    assert send_followup.call_count == 2
+    assert "Thread `PRRT_thread_2`:\nSame actionable text" in send_followup.call_args.args[1]
+    assert "Thread `PRRT_thread_1`" not in send_followup.call_args.args[1]
+
+
 def test_failed_review_feedback_delivery_remains_retryable(tmp_path) -> None:
     state_path = tmp_path / "review-repairs.json"
     with (
