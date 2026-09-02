@@ -135,6 +135,23 @@ class ImplementationSlotRepository:
             if owners.pop(owner.key, None) is not None:
                 self._write(owners)
 
+    def record_implementation_pr(self, owner: ImplementationOwner, pr_number: int) -> bool:
+        """Record PR membership only when *owner* is already reserved."""
+        if owner.kind != "issue" or isinstance(pr_number, bool) or not isinstance(pr_number, int):
+            raise ValueError("pr_number must identify a PR belonging to an Issue owner")
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            known_prs = record.setdefault("implementation_prs", [])
+            if not isinstance(known_prs, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+            if pr_number not in known_prs:
+                known_prs.append(pr_number)
+                self._write(owners)
+            return True
+
     def active_owners(self) -> tuple[ImplementationOwner, ...]:
         with self._state_lock():
             records = self._read()
@@ -147,8 +164,30 @@ class ImplementationSlotRepository:
             owners.append(ImplementationOwner(kind, number))
         return tuple(owners)
 
-    def reconcile(self, github_client: Any) -> None:
+    def _record_open_pr_memberships(self, github_client: Any) -> None:
+        """Persist supported PR ownership oracles before startup reconciliation."""
+        active_owner_keys = {owner.key for owner in self.active_owners()}
+        for pull_request in github_client.get_open_pull_requests(self.repo_name):
+            owner = self.resolve_owner("pr", pull_request, github_client)
+            pr_number = pull_request.get("number")
+            if owner.kind != "issue" or owner.key not in active_owner_keys:
+                continue
+            if isinstance(pr_number, bool) or not isinstance(pr_number, int):
+                raise ImplementationOwnerResolutionError("Open pull request has no valid numeric identity")
+            if not self.record_implementation_pr(owner, pr_number):
+                raise ImplementationSlotUnavailable(f"Could not retain active implementation owner {owner.key}")
+
+    def reconcile(self, github_client: Any, discover_open_prs: bool = False) -> None:
         """Release only owners whose complete authoritative lifecycle is terminal."""
+        if discover_open_prs:
+            try:
+                self._record_open_pr_memberships(github_client)
+            except Exception as exc:
+                # Startup has not yet discovered candidates. If the complete
+                # open-PR set or any supported ownership oracle is unavailable,
+                # no existing reservation can safely be declared terminal.
+                logger.warning(f"Could not discover open implementation PRs; retaining all slots: {exc}")
+                return
         for owner in self.active_owners():
             try:
                 if owner.kind == "issue":

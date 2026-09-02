@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -202,6 +203,58 @@ class TestAutomationEngine:
         assert slots.active_owners() == (issue_owner,)
         assert json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))["issue:100"]["implementation_prs"] == [108]
         assert slots.reserve(ImplementationOwner("issue", 200)) is False
+
+    def test_startup_discovers_branch_linked_pr_before_reconciliation(self, tmp_path):
+        """Restart discovery must protect an unrecorded branch-linked PR."""
+
+        class GitHubStub:
+            def get_open_pull_requests(self, _repo_name):
+                return [
+                    {
+                        "number": 108,
+                        "title": "Implementation",
+                        "body": "",
+                        "head": {"ref": "issue-100-work"},
+                    }
+                ]
+
+            def get_issue(self, _repo_name, number):
+                return {"number": number, "state": "closed", "title": "Source Issue"}
+
+            def get_issue_details(self, issue):
+                return issue
+
+            def get_linked_prs(self, _repo_name, _issue_number, strict=False):
+                assert strict is True
+                return []
+
+            def get_pull_request(self, _repo_name, number):
+                assert number == 108
+                return {"number": number, "state": "open", "merged": False}
+
+            def get_pr_details(self, pull_request):
+                return pull_request
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        issue_owner = ImplementationOwner("issue", 100)
+        assert slots.reserve(issue_owner) is True
+        engine.implementation_slots = slots
+        reconcile = slots.reconcile
+
+        def verify_startup_reconciliation(client, discover_open_prs=False):
+            assert discover_open_prs is True
+            reconcile(client, discover_open_prs=discover_open_prs)
+            assert slots.active_owners() == (issue_owner,)
+            assert json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))["issue:100"]["implementation_prs"] == [108]
+            assert slots.reserve(ImplementationOwner("issue", 200)) is False
+            raise RuntimeError("startup verified")
+
+        slots.reconcile = Mock(side_effect=verify_startup_reconciliation)
+
+        with pytest.raises(RuntimeError, match="startup verified"):
+            asyncio.run(engine.start_automation("owner/repo", concurrency=0))
 
     def test_issue_dispatch_fails_closed_when_type_lookup_fails(self):
         """An unavailable authoritative type lookup must not authorize Issue work."""

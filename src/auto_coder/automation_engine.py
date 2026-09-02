@@ -145,7 +145,11 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
-        self._get_implementation_slots(repo_name).reconcile(self.github)
+        # Discover open PR ownership before releasing startup reservations.
+        # A PR linked only by branch metadata has no Issue timeline event and
+        # may not have been recorded if the previous process stopped before its
+        # first candidate scan.
+        self._get_implementation_slots(repo_name).reconcile(self.github, discover_open_prs=True)
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
