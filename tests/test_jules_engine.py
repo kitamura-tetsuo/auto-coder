@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
-from auto_coder.jules_client import JulesSessionRejectedError
+from auto_coder.jules_client import JulesClient, JulesSessionRejectedError
 from auto_coder.jules_engine import (
     SESSION_STATE_STOPPED,
     _recurrent_implementation_owner,
@@ -533,6 +533,52 @@ Maintain the application."""
             jules.start_session.assert_called_once()
             state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
             self.assertEqual(state[owner.key]["provider_sessions"], ["accepted-despite-timeout"])
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_server_error_after_recurrent_submission_retains_slot_until_recovery(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+
+            # Exercise the production HTTP status classification while keeping
+            # provider discovery deterministic for this lifecycle regression.
+            with patch("auto_coder.jules_client.get_llm_config") as get_config:
+                backend = MagicMock(options=[], options_for_noedit=[], api_key=None)
+                get_config.return_value.get_backend_config.return_value = backend
+                jules = JulesClient()
+            response = MagicMock(status_code=500, text="committed before response failed")
+            jules.session.post = MagicMock(return_value=response)
+            jules.list_sessions = MagicMock(return_value=[])
+            mock_jules_client_cls.return_value = jules
+
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+                self.assertEqual(slots.active_owners(), (owner,))
+                self.assertFalse(slots.reserve(ImplementationOwner("issue", 200)))
+
+                jules.list_sessions.return_value = [
+                    {
+                        "name": "sessions/accepted-despite-server-error",
+                        "state": "ACTIVE",
+                        "prompt": prompt,
+                    }
+                ]
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.session.post.assert_called_once()
+            state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
+            self.assertEqual(state[owner.key]["provider_sessions"], ["accepted-despite-server-error"])
 
     @patch("auto_coder.jules_engine.JulesClient")
     def test_authoritative_recurrent_rejection_releases_slot(self, mock_jules_client_cls):

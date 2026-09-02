@@ -223,6 +223,23 @@ class TestJulesClient:
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
+    def test_start_session_treats_server_error_as_uncertain(self, mock_post, mock_get_config):
+        """A server error does not prove that Jules rejected the session."""
+        mock_config = Mock()
+        mock_backend_config = Mock(options=[], options_for_noedit=[], api_key=None)
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        mock_response = Mock(status_code=500, text="Internal Server Error")
+        mock_post.return_value = mock_response
+
+        client = JulesClient()
+
+        with pytest.raises(JulesSessionOutcomeUncertainError, match="HTTP 500"):
+            client.start_session("Test prompt", "owner/repo", "main")
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
     def test_start_session_handles_network_error(self, mock_post, mock_get_config):
         """Test that start_session raises error on network failure."""
         # Mock config
