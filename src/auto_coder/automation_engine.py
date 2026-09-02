@@ -1098,7 +1098,6 @@ class AutomationEngine:
 
         slots = self._get_implementation_slots(repo_name)
         try:
-            slots.reconcile(self.github)
             owner = slots.resolve_owner(candidate.type, candidate.data, self.github)
         except ImplementationOwnerResolutionError as exc:
             result.error = f"Cannot safely resolve logical implementation owner: {exc}"
@@ -1108,7 +1107,15 @@ class AutomationEngine:
             return result
 
         implementation_pr = item_number if candidate.type == "pr" and owner.kind == "issue" else None
-        if not slots.reserve(owner, implementation_pr=implementation_pr):
+        # Try to reuse an existing owner before reconciliation.  In particular,
+        # this atomically records a newly discovered branch-linked PR while its
+        # Issue owner still exists.  Reconciling first could release that owner
+        # when the closed Issue has no timeline relationship for the PR.
+        reserved = slots.reserve(owner, implementation_pr=implementation_pr)
+        if not reserved:
+            slots.reconcile(self.github)
+            reserved = slots.reserve(owner, implementation_pr=implementation_pr)
+        if not reserved:
             result.actions = [f"Deferred - logical implementation limit is occupied ({owner.key})"]
             return result
 

@@ -151,6 +151,58 @@ class TestAutomationEngine:
         assert slots.active_owners() == ()
         assert slots.reserve(ImplementationOwner("issue", 200)) is True
 
+    def test_first_branch_linked_pr_discovery_protects_existing_owner_before_reconciliation(self, tmp_path):
+        """A newly discovered PR must record membership before its Issue can be released."""
+
+        class GitHubStub:
+            def get_issue(self, _repo_name, number):
+                return {"number": number, "state": "closed", "title": "Source Issue"}
+
+            def get_issue_details(self, issue):
+                return issue
+
+            def get_linked_prs(self, _repo_name, _issue_number, strict=False):
+                assert strict is True
+                return []
+
+            def get_pull_request(self, _repo_name, number):
+                assert number == 108
+                return {"number": number, "state": "open", "merged": False}
+
+            def get_pr_details(self, pull_request):
+                return pull_request
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        issue_owner = ImplementationOwner("issue", 100)
+        assert slots.reserve(issue_owner) is True
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="pr",
+            data={
+                "number": 108,
+                "title": "Implementation",
+                "body": "",
+                "head": {"ref": "issue-100-work"},
+            },
+            priority=0,
+        )
+
+        def process_reserved(*_args):
+            assert slots.active_owners() == (issue_owner,)
+            assert slots.reserve(ImplementationOwner("issue", 200)) is False
+            return CandidateProcessingResult(type="pr", number=108, title="Implementation", success=True)
+
+        engine._process_single_candidate_reserved = Mock(side_effect=process_reserved)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        assert slots.active_owners() == (issue_owner,)
+        assert json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))["issue:100"]["implementation_prs"] == [108]
+        assert slots.reserve(ImplementationOwner("issue", 200)) is False
+
     def test_issue_dispatch_fails_closed_when_type_lookup_fails(self):
         """An unavailable authoritative type lookup must not authorize Issue work."""
 
