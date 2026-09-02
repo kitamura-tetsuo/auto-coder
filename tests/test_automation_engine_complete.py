@@ -2,7 +2,7 @@ import json
 import os
 from unittest.mock import Mock, patch
 
-from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, PRProcessingOutcome
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -63,6 +63,36 @@ class TestAutomationEngine:
 
             # Verify report was saved
             engine._save_report.assert_called_once()
+
+    def test_run_serializes_successful_and_deferred_pr_outcomes(self, mock_github_client):
+        """Batch results retain the structured distinction between success and deferral."""
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidates = [
+            Candidate(type="pr", data={"number": 10}, priority=1),
+            Candidate(type="pr", data={"number": 11}, priority=1),
+        ]
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._get_llm_backend_info = Mock(return_value={"backend": "codex", "provider": "codex", "model": "test"})
+        engine._get_candidates = Mock(side_effect=[candidates, []])
+        engine._process_single_candidate = Mock(
+            side_effect=[
+                CandidateProcessingResult(type="pr", number=10, success=True, outcome=PRProcessingOutcome.SUCCESS),
+                CandidateProcessingResult(type="pr", number=11, success=True, outcome=PRProcessingOutcome.DEFERRED),
+            ]
+        )
+        engine._save_report = Mock()
+
+        with (
+            patch("src.auto_coder.automation_engine.check_for_updates_and_restart"),
+            patch("src.auto_coder.automation_engine.invalidate_jules_sessions_cache"),
+            patch("src.auto_coder.automation_engine.check_and_resume_or_archive_sessions"),
+            patch.object(engine, "handle_stale_jules_issue_sessions"),
+            patch("src.auto_coder.automation_engine.check_and_start_recurrent_jules_tasks"),
+            patch("src.auto_coder.automation_engine.git_pull"),
+        ):
+            result = engine.run("owner/repo")
+
+        assert [item["outcome"] for item in result["prs_processed"]] == ["success", "deferred"]
 
     def test_run_with_error(
         self,

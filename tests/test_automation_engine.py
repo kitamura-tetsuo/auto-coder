@@ -1,11 +1,11 @@
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -91,6 +91,401 @@ class TestAutomationEngine:
             True,
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_error_count"),
+        [(PRProcessingOutcome.SUCCESS, 0), (PRProcessingOutcome.DEFERRED, 0)],
+    )
+    def test_process_single_preserves_nonfailure_pr_outcome(self, mock_github_client, outcome, expected_error_count):
+        """Action wording must not override a successful or deferred structured outcome."""
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="pr", data={"number": 123, "title": "PR"}, priority=1)
+        action = "Error budget information only" if outcome is PRProcessingOutcome.SUCCESS else "Skipping merge for unresolved review threads"
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        engine._process_single_candidate_unified = Mock(
+            return_value=CandidateProcessingResult(
+                type="pr",
+                number=123,
+                success=True,
+                actions=[action],
+                outcome=outcome,
+            )
+        )
+
+        result = engine.process_single("owner/repo", "pr", 123)
+
+        assert len(result["errors"]) == expected_error_count
+        assert result["prs_processed"] == [{"pr_data": candidate.data, "actions_taken": [action], "outcome": outcome.value}]
+
+    def test_process_single_propagates_remote_head_verification_failure(self, mock_github_client):
+        """A nested caught merge-stage exception must reach top-level errors."""
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="pr", data={"number": 5266, "title": "PR"}, priority=1)
+        diagnostic = "Failed to verify remote head SHA for PR #5266: GitHub API rate limited; merge aborted."
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with patch(
+            "auto_coder.automation_engine.process_pull_request",
+            return_value=ProcessedPRResult(
+                pr_data=candidate.data,
+                actions_taken=[diagnostic],
+                error="GitHub API rate limited",
+                outcome=PRProcessingOutcome.FAILED,
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 5266)
+
+        assert result["errors"] == ["Error processing pr #5266: GitHub API rate limited"]
+        assert result["prs_processed"] == [{"pr_data": candidate.data, "actions_taken": [diagnostic], "outcome": "failed"}]
+
+    def test_process_single_propagates_ci_status_retrieval_failure_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must classify a status API error as failed."""
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 77, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(error="GitHub API unavailable")),
+        ):
+            result = engine.process_single("owner/repo", "pr", 77)
+
+        diagnostic = "Could not determine CI status for PR #77: GitHub API unavailable"
+        assert result["errors"] == ["Error processing pr #77: GitHub API unavailable"]
+        assert result["prs_processed"] == [{"pr_data": pr_data, "actions_taken": [diagnostic], "outcome": "failed"}]
+
+    def test_process_single_preserves_unresolved_review_thread_gate_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must preserve an expected gate as deferred."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 78, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                return_value=ClaimedReviewThreadGateState(has_blocking_unresolved=True),
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 78)
+
+        diagnostic = "Skipping merge for PR #78 due to unresolved review threads"
+        assert result["errors"] == []
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #78", diagnostic, "PR #78 processing deferred."],
+                "outcome": "deferred",
+            }
+        ]
+
+    def test_process_single_propagates_review_thread_lookup_failure_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must classify a failed gate lookup as failed."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 79, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                return_value=ClaimedReviewThreadGateState(lookup_error="GraphQL Network Error"),
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 79)
+
+        diagnostic = "Skipping merge for PR #79 because review threads could not be checked: GraphQL Network Error"
+        assert result["errors"] == ["Error processing pr #79: GraphQL Network Error"]
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #79", diagnostic],
+                "outcome": "failed",
+            }
+        ]
+
+    def test_process_single_propagates_detailed_review_thread_lookup_failure(self):
+        """Failure of the detailed lookup after an unresolved gate must be structured."""
+        from auto_coder.pr_processor import ReviewThreadGateState
+        from auto_coder.util.gh_cache import GitHubClient
+
+        github_client = GitHubClient(token="fake_token")
+        github_client.get_pr_review_threads_strict = MagicMock(side_effect=RuntimeError("detailed GraphQL lookup failed"))
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        engine = AutomationEngine(github_client, config=config)
+        pr_data = {"number": 80, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_review_thread_gate_state", return_value=ReviewThreadGateState(has_unresolved=True)),
+        ):
+            result = engine.process_single("owner/repo", "pr", 80)
+
+        diagnostic = "Skipping merge for PR #80 because review threads could not be checked: detailed GraphQL lookup failed"
+        assert result["errors"] == ["Error processing pr #80: detailed GraphQL lookup failed"]
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #80", diagnostic],
+                "outcome": "failed",
+            }
+        ]
+
+    def test_process_single_propagates_codex_review_state_failure_from_pr_processor(self, mock_github_client):
+        """The real PR-processing chain must classify a failed Codex-state lookup as failed."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState, CodexReviewState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 90, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
+            patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState(lookup_error="comments API unavailable")),
+        ):
+            result = engine.process_single("owner/repo", "pr", 90)
+
+        diagnostic = "Could not determine Codex review state for PR #90: comments API unavailable; validation not started"
+        assert result["errors"] == ["Error processing pr #90: comments API unavailable"]
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #90", diagnostic],
+                "outcome": "failed",
+            }
+        ]
+
+    def test_process_single_propagates_published_validation_status_failure(self, mock_github_client):
+        """A failed prior-validation lookup must reach the completion boundary."""
+        from auto_coder.pr_processor import AdversarialValidationEligibility, ClaimedReviewThreadGateState, CodexReviewState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 91, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
+            patch(
+                "auto_coder.pr_processor._get_adversarial_validation_eligibility",
+                return_value=AdversarialValidationEligibility(issue_numbers=(99,)),
+            ),
+            patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState()),
+            patch(
+                "auto_coder.pr_processor._get_published_adversarial_validation_status",
+                return_value=(None, "reviews API unavailable"),
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 91)
+
+        diagnostic = "Could not check prior adversarial validation for PR #91: reviews API unavailable; validation not started"
+        assert result["errors"] == ["Error processing pr #91: reviews API unavailable"]
+        assert result["prs_processed"] == [
+            {
+                "pr_data": pr_data,
+                "actions_taken": ["All GitHub Actions checks passed for PR #91", diagnostic],
+                "outcome": "failed",
+            }
+        ]
+
+    def test_process_single_propagates_adversarial_validation_execution_failure(self, mock_github_client):
+        """A validator crash must reach the completion boundary as a failure."""
+        from auto_coder.pr_processor import AdversarialValidationEligibility, ClaimedReviewThreadGateState, CodexReviewState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 92, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
+            patch(
+                "auto_coder.pr_processor._get_adversarial_validation_eligibility",
+                return_value=AdversarialValidationEligibility(issue_numbers=(99,)),
+            ),
+            patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState()),
+            patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=(None, None)),
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor.run_adversarial_validation", side_effect=RuntimeError("validator subprocess crashed")),
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=Mock(success=True, event="submitted")),
+        ):
+            result = engine.process_single("owner/repo", "pr", 92)
+
+        assert result["errors"] == ["Error processing pr #92: validator subprocess crashed"]
+        assert result["prs_processed"][0]["outcome"] == "failed"
+        assert any("ERROR: Adversarial validation failed for PR #92" in action for action in result["prs_processed"][0]["actions_taken"])
+
+    def test_process_single_propagates_saved_adversarial_error(self, mock_github_client):
+        """A saved ERROR verdict must remain a structured processing failure."""
+        from auto_coder.pr_processor import AdversarialValidationEligibility, ClaimedReviewThreadGateState, CodexReviewState
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        engine = AutomationEngine(mock_github_client, config=config)
+        pr_data = {"number": 93, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123456789"}, "mergeable": True}
+        candidate = Candidate(type="pr", data=pr_data, priority=1)
+        open_result = Mock(closed=False)
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+
+        with (
+            patch("auto_coder.label_manager.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=open_result),
+            patch("auto_coder.pr_processor._should_skip_waiting_for_jules", return_value=False),
+            patch("auto_coder.pr_processor._link_jules_pr_to_issue", return_value=True),
+            patch("auto_coder.pr_processor._link_codex_cloud_pr_to_issue"),
+            patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
+            patch(
+                "auto_coder.pr_processor._get_adversarial_validation_eligibility",
+                return_value=AdversarialValidationEligibility(issue_numbers=(99,)),
+            ),
+            patch("auto_coder.pr_processor._get_codex_review_state", return_value=CodexReviewState()),
+            patch("auto_coder.pr_processor._get_published_adversarial_validation_status", return_value=("ERROR", None)),
+            patch("auto_coder.pr_processor.run_adversarial_validation") as mock_run_validation,
+        ):
+            result = engine.process_single("owner/repo", "pr", 93)
+
+        saved_error = "Adversarial validation previously failed for PR #93 at SHA abc12345"
+        mock_run_validation.assert_not_called()
+        assert result["errors"] == [f"Error processing pr #93: {saved_error}"]
+        assert result["prs_processed"][0]["outcome"] == "failed"
+        assert any("already validated as ERROR" in action for action in result["prs_processed"][0]["actions_taken"])
 
     # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py
@@ -178,7 +573,9 @@ class TestAutomationEngine:
 
             # Assert
             assert result["repository"] == "test/repo"
-            assert len(result["prs_processed"]) == 0
+            assert len(result["prs_processed"]) == 1
+            assert result["prs_processed"][0]["outcome"] == "failed"
+            assert result["prs_processed"][0]["actions_taken"] == ["Processing failed: Processing failed"]
             assert len(result["errors"]) == 1
             assert "Processing failed" in result["errors"][0]
             mock_take_actions.assert_called_once()

@@ -37,7 +37,7 @@ from .adversarial_validator import (
     run_adversarial_validation,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
-from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, StaleJulesPRResult
+from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
 from .branch_manager import BranchManager
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
@@ -216,8 +216,9 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
     failure) behaves exactly as before. Only when at least one thread is
     unresolved does this additionally fetch full thread detail (comments) to
     determine whether every unresolved thread is an eligible, explicitly
-    claimed automated-review thread. Any failure in that additional lookup
-    fails closed to treating all unresolved threads as ordinary blockers.
+    claimed automated-review thread. Any failure in that additional lookup is
+    returned as a structured lookup error so callers can distinguish an API
+    failure from an ordinary unresolved-thread blocker.
     """
     gate = _get_review_thread_gate_state(github_client, repo_name, pr_number)
     if gate.lookup_error:
@@ -235,7 +236,7 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
         threads = client.get_pr_review_threads_strict(repo_name, pr_number)
     except Exception as e:
         logger.error(f"Failed detailed review-thread lookup for PR #{pr_number}: {e}")
-        return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
+        return ClaimedReviewThreadGateState(lookup_error=str(e))
 
     eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
     classification = classify_review_threads(threads, eligible_author_ids)
@@ -585,6 +586,7 @@ def process_pull_request(
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
+                processed_pr.outcome = processed_pr_result.outcome
                 # Copy error if it was set
                 if processed_pr_result.error:
                     processed_pr.error = processed_pr_result.error
@@ -606,6 +608,8 @@ def process_pull_request(
             actions_taken=[f"Error processing PR: {str(e)}"],
             priority="error",
             analysis=None,
+            error=str(e),
+            outcome=PRProcessingOutcome.FAILED,
         )
 
 
@@ -1330,11 +1334,7 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
-        processed_pr.actions_taken = actions
-        validation_error = getattr(actions, "adversarial_validation_error", None)
-        if validation_error:
-            processed_pr.error = validation_error
+        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -1363,17 +1363,18 @@ def _process_pr_for_fixes(
         # Use the existing PR actions logic for fixing issues
         with ProgressStage("Fixing issues"):
             try:
-                actions = _take_pr_actions(github_client, repo_name, pr_data, config)
+                processing_status = ProcessedPRResult(pr_data=pr_data)
+                actions = _take_pr_actions(github_client, repo_name, pr_data, config, processing_status)
                 processed_pr.actions_taken = actions
-                validation_error = getattr(actions, "adversarial_validation_error", None)
-                if validation_error:
-                    processed_pr.error = validation_error
+                processed_pr.error = processing_status.error
+                processed_pr.outcome = processing_status.outcome
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
                     should_process.keep_label()
             except Exception as e:
-                # Set error in result instead of adding to actions
                 processed_pr.error = f"Processing failed: {str(e)}"
+                processed_pr.actions_taken.append(processed_pr.error)
+                processed_pr.outcome = PRProcessingOutcome.FAILED
 
     return processed_pr
 
@@ -1383,6 +1384,7 @@ def _take_pr_actions(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
+    processing_status: Optional[ProcessedPRResult] = None,
 ) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
     actions = PRActionList()
@@ -1391,18 +1393,21 @@ def _take_pr_actions(
     try:
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
+        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processing_status)
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
 
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
             actions.append(f"PR #{pr_number} was merged.")
-        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions) or any("Skipping merge" in action for action in merge_actions):
+        elif (processing_status is None or processing_status.outcome is not PRProcessingOutcome.FAILED) and ("ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions) or any("Skipping merge" in action for action in merge_actions)):
             actions.append(f"PR #{pr_number} processing deferred.")
 
     except Exception as e:
         actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
+        if processing_status is not None:
+            processing_status.error = str(e)
+            processing_status.outcome = PRProcessingOutcome.FAILED
 
     return actions
 
@@ -1882,6 +1887,7 @@ def _handle_pr_merge(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     analysis: Dict[str, Any],
+    processing_status: Optional[ProcessedPRResult] = None,
 ) -> PRActionList:
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
@@ -1942,6 +1948,9 @@ def _handle_pr_merge(
         if github_checks.error:
             actions.append(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
             logger.error(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
+            if processing_status is not None:
+                processing_status.error = github_checks.error
+                processing_status.outcome = PRProcessingOutcome.FAILED
             return actions
 
         # Check if no actions have started for the latest commit
@@ -2040,6 +2049,9 @@ def _handle_pr_merge(
             claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
             if claimed_thread_state.lookup_error:
                 actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {claimed_thread_state.lookup_error}")
+                if processing_status is not None:
+                    processing_status.error = claimed_thread_state.lookup_error
+                    processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
             if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
@@ -2069,6 +2081,9 @@ def _handle_pr_merge(
                 adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if adversarial_eligibility.lookup_error:
                     actions.append(f"Could not verify adversarial-validation eligibility for PR #{pr_number}: {adversarial_eligibility.lookup_error}; merge not attempted")
+                    if processing_status is not None:
+                        processing_status.error = adversarial_eligibility.lookup_error
+                        processing_status.outcome = PRProcessingOutcome.FAILED
                     return actions
 
             adversarial_validation_applicable = adversarial_eligibility.is_applicable
@@ -2088,6 +2103,9 @@ def _handle_pr_merge(
                     except Exception as e:
                         logger.error(f"Failed to check adversarial validation count for PR #{pr_number}: {e}")
                         actions.append(f"Could not check prior adversarial validation count for PR #{pr_number}: {e}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = str(e)
+                            processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
 
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
@@ -2103,6 +2121,9 @@ def _handle_pr_merge(
                         )
                         if saved_status_error:
                             actions.append(f"Could not check unresolved specification gaps for PR #{pr_number}: {saved_status_error}; merge not attempted")
+                            if processing_status is not None:
+                                processing_status.error = saved_status_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
                             actions.append(f"Automatic merge disabled for PR #{pr_number}: unresolved specification gaps require human policy review")
@@ -2122,6 +2143,9 @@ def _handle_pr_merge(
                     codex_review = _get_codex_review_state(github_client, repo_name, pr_number)
                     if codex_review.lookup_error:
                         actions.append(f"Could not determine Codex review state for PR #{pr_number}: {codex_review.lookup_error}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = codex_review.lookup_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
                     if codex_review.present and not codex_review.completed:
                         actions.append(f"Waiting for Codex GitHub review to complete for PR #{pr_number}; adversarial validation not started")
@@ -2130,6 +2154,9 @@ def _handle_pr_merge(
                         post_codex_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
                         if post_codex_thread_state.lookup_error:
                             actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
+                            if processing_status is not None:
+                                processing_status.error = post_codex_thread_state.lookup_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
                         if post_codex_thread_state.has_blocking_unresolved:
                             actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
@@ -2153,6 +2180,9 @@ def _handle_pr_merge(
                     )
                     if lookup_error:
                         actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = lookup_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
                     has_new_provenance_evidence = False
@@ -2166,13 +2196,20 @@ def _handle_pr_merge(
                         )
                         if report_error:
                             actions.append(f"Could not compare prior provenance evidence for PR #{pr_number}: {report_error}; validation not started")
+                            if processing_status is not None:
+                                processing_status.error = report_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
                         has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report) or saved_pass_has_unresolved_provenance
 
                     if published_status and not has_new_provenance_evidence:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
-                            actions.adversarial_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
+                            saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
+                            actions.adversarial_validation_error = saved_validation_error
+                            if processing_status is not None:
+                                processing_status.error = saved_validation_error
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                         if published_status != "PASS":
                             actions.append(f"Adversarial validation remains non-pass for PR #{pr_number}: {published_status}")
                             if published_status in {"NEEDS_FIX", "NEEDS_TESTS"}:
@@ -2184,6 +2221,9 @@ def _handle_pr_merge(
                                 )
                                 if report_error:
                                     actions.append(f"Could not read the published adversarial report for Codex Cloud: {report_error}")
+                                    if processing_status is not None:
+                                        processing_status.error = report_error
+                                        processing_status.outcome = PRProcessingOutcome.FAILED
                                 elif published_report:
                                     actions.extend(
                                         _send_adversarial_validation_feedback_to_codex_cloud(
@@ -2215,6 +2255,9 @@ def _handle_pr_merge(
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
+                            if processing_status is not None:
+                                processing_status.error = str(e)
+                                processing_status.outcome = PRProcessingOutcome.FAILED
                             val_result = AdversarialValidationResult(
                                 result="ERROR",
                                 summary="Adversarial validation execution failed; see the structured interaction log for details",
@@ -2364,6 +2407,9 @@ def _handle_pr_merge(
             except Exception as e:
                 actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
                 logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
+                if processing_status is not None:
+                    processing_status.error = str(e)
+                    processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
 
             merge_result = _merge_pr(
@@ -2376,6 +2422,8 @@ def _handle_pr_merge(
             )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
+                if processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.SUCCESS
                 _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
 
                 # Clean up old PRs if this is a Jules PR with a session ID
@@ -2561,7 +2609,11 @@ def _handle_pr_merge(
                     actions.append(f"PR #{pr_number} processing completed")
 
     except Exception as e:
-        actions.append(f"Error handling PR merge for PR #{pr_number}: {e}")
+        diagnostic = f"Error handling PR merge for PR #{pr_number}: {e}"
+        actions.append(diagnostic)
+        if processing_status is not None:
+            processing_status.error = str(e)
+            processing_status.outcome = PRProcessingOutcome.FAILED
 
     return actions
 

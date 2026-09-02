@@ -318,6 +318,26 @@ class TestPRProcessorBackendSwitching:
 class TestKeepLabelOnPRMerge:
     """Test that keep_label() is called on successful PR merge."""
 
+    def test_merge_handler_propagates_caught_internal_error_structurally(self):
+        """A caught merge exception is both diagnostic and machine-readable."""
+        from unittest.mock import Mock, patch
+
+        from src.auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
+        from src.auto_coder.pr_processor import _handle_pr_merge
+
+        pr_data = {"number": 5266}
+        status = ProcessedPRResult(pr_data=pr_data)
+
+        with patch(
+            "src.auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks",
+            side_effect=RuntimeError("Failed to switch to branch 'work'"),
+        ):
+            actions = _handle_pr_merge(Mock(), "owner/repo", pr_data, AutomationConfig(), {}, status)
+
+        assert status.outcome is PRProcessingOutcome.FAILED
+        assert status.error == "Failed to switch to branch 'work'"
+        assert actions == ["Error handling PR merge for PR #5266: Failed to switch to branch 'work'"]
+
     def test_process_pr_for_merge_calls_keep_label_on_successful_merge(self):
         """Test that _process_pr_for_merge calls keep_label when PR is successfully merged."""
         from contextlib import contextmanager
