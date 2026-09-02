@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from auto_coder.adversarial_validator import (
+    ADVERSARIAL_VALIDATION_CACHE_VERSION,
     ADVERSARIAL_VALIDATION_COMMENT_LIMIT,
     AdversarialValidationFinding,
     AdversarialValidationResult,
@@ -175,7 +176,7 @@ class TestAdversarialValidationPRComment:
 
         comment = format_adversarial_validation_comment(result, "abc123")
 
-        assert comment.startswith("<!-- auto-coder-adversarial-validation:v7:abc123 -->")
+        assert comment.startswith(f"<!-- auto-coder-adversarial-validation:{ADVERSARIAL_VALIDATION_CACHE_VERSION}:abc123 -->")
         assert "adversarial validation: NEEDS_FIX" in comment
         assert "Summary" in comment
         assert "Required behavior" in comment
