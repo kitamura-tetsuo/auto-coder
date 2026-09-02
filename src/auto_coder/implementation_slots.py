@@ -130,6 +130,20 @@ class ImplementationSlotRepository:
             self._write(owners)
             return True
 
+    def reserve_new(self, owner: ImplementationOwner) -> bool:
+        """Atomically reserve *owner* only when it is not already active."""
+        with self._state_lock():
+            owners = self._read()
+            if owner.key in owners or len(owners) >= self.max_implementations:
+                return False
+            owners[owner.key] = {
+                "kind": owner.kind,
+                "number": owner.number,
+                "implementation_prs": [],
+            }
+            self._write(owners)
+            return True
+
     def release(self, owner: ImplementationOwner) -> None:
         with self._state_lock():
             owners = self._read()
@@ -230,11 +244,11 @@ class ImplementationSlotRepository:
                     if details.get("state", "").lower() == "closed" or details.get("merged") is True:
                         self.release(owner)
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
-                elif owner.kind != "recurrent":
-                    raise ImplementationSlotUnavailable(f"Unknown implementation owner kind: {owner.kind}")
-                # Recurrent Jules ownership is reconciled by the Jules scan,
-                # which has the provider session evidence needed to decide
-                # whether that implementation is terminal. Retain it here.
+                else:
+                    # Provider-owned implementations are reconciled by their
+                    # provider lifecycle scanner. Uncertain lifecycle evidence
+                    # must retain capacity rather than be treated as a PR.
+                    continue
             except Exception as exc:
                 logger.warning(f"Could not reconcile logical implementation {owner.key}; retaining its slot: {exc}")
 

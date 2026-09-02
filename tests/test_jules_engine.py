@@ -364,6 +364,48 @@ Maintain the repository."""
 
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_recurrent_task_respects_and_durably_claims_implementation_limit(self, mock_jules_client_cls, mock_glob, mock_isdir):
+        mock_isdir.return_value = True
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = []
+
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt_path.write_text(
+                """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application.""",
+                encoding="utf-8",
+            )
+            mock_glob.return_value = [str(prompt_path)]
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            occupied_owner = ImplementationOwner("issue", 100)
+            self.assertTrue(slots.reserve(occupied_owner))
+
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_not_called()
+            self.assertEqual(slots.active_owners(), (occupied_owner,))
+
+            slots.release(occupied_owner)
+
+            def assert_reserved_before_start(**_kwargs):
+                owners = slots.active_owners()
+                self.assertEqual(len(owners), 1)
+                self.assertEqual(owners[0].kind, "recurrent")
+                return "session-1"
+
+            mock_jules_client.start_session.side_effect = assert_reserved_before_start
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_called_once()
+            self.assertEqual(slots.active_owners()[0].kind, "recurrent")
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
     @patch("builtins.open", new_callable=MagicMock)
     @patch("auto_coder.jules_engine.JulesClient")
     def test_check_and_start_recurrent_jules_tasks_already_running(self, mock_jules_client_cls, mock_open, mock_glob, mock_isdir):

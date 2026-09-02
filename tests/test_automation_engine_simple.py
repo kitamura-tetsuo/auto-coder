@@ -203,9 +203,12 @@ class TestAutomationEngine:
             # Execute
             result = engine.run(test_repo_name)
 
-            # The recurrent-task boundary must share the engine's durable
-            # implementation-slot repository.
-            mock_check_recurrent.assert_called_once_with(test_repo_name, engine.implementation_slots)
+            # The synchronous loop must enforce the same instance-wide
+            # implementation limit as the asynchronous producer loop.
+            mock_check_recurrent.assert_called_once_with(
+                test_repo_name,
+                engine._get_implementation_slots(test_repo_name),
+            )
 
     @pytest.mark.asyncio
     async def test_producer_loop_calls_recurrent_jules_tasks(self, mock_github_client):

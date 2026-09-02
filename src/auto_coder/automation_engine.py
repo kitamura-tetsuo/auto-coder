@@ -1443,7 +1443,10 @@ class AutomationEngine:
                 self.handle_stale_jules_issue_sessions(repo_name)
 
                 # Check and start recurrent Jules tasks
-                check_and_start_recurrent_jules_tasks(repo_name, self._get_implementation_slots(repo_name))
+                check_and_start_recurrent_jules_tasks(
+                    repo_name,
+                    self._get_implementation_slots(repo_name),
+                )
 
                 # Pull latest changes for monitored repository
                 try:

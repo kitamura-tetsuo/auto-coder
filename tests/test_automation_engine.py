@@ -23,6 +23,16 @@ class TestAutomationEngine:
         engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
+
+    @patch("auto_coder.automation_engine.check_and_start_recurrent_jules_tasks")
+    def test_recurrent_jules_step_receives_instance_slot_repository(self, start_recurrent, tmp_path):
+        engine = AutomationEngine(Mock(), config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+
+        asyncio.run(engine.check_and_start_recurrent_jules_tasks_async("owner/repo"))
+
+        start_recurrent.assert_called_once_with("owner/repo", slots)
         assert engine.config.REPORTS_DIR == "reports"
 
     # Note: Tests for deprecated process_issues and related functions have been removed

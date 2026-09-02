@@ -296,6 +296,16 @@ def test_atomic_reservation_never_exceeds_limit(tmp_path):
     assert len(repository(tmp_path).active_owners()) == 1
 
 
+def test_reserve_new_rejects_existing_owner_and_occupied_capacity(tmp_path):
+    slots = repository(tmp_path, limit=1)
+    owner = ImplementationOwner("recurrent", 10)
+
+    assert slots.reserve_new(owner) is True
+    assert slots.reserve_new(owner) is False
+    assert slots.reserve_new(ImplementationOwner("issue", 200)) is False
+    assert slots.active_owners() == (owner,)
+
+
 def test_configuration_rejects_non_positive_limit(tmp_path):
     with pytest.raises(ValueError, match="positive integer"):
         repository(tmp_path, limit=0)
