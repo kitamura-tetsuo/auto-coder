@@ -413,6 +413,39 @@ class TestAdversarialValidationCodexFeedback:
         cloud_client.send_followup.assert_not_called()
         assert "already requested" in actions[0]
 
+    def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(
+            id="PRRT_adversarial",
+            comments=[ReviewThreadComment(database_id=301, body=finding, author_login="auto-coder-reviewer[bot]")],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pr_review_threads_strict.return_value = [thread]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+            "user": {"login": "codex"},
+        }
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", "saved NEEDS_FIX report", client)
+            # The delegate reloads the file, modelling a later process instance.
+            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+
+        cloud_client.continue_if_paused.assert_called_once()
+        cloud_client.send_followup.assert_not_called()
+        assert state_path.exists()
+        assert "already requested" in actions[0]
+
     def test_sends_complete_report_as_custom_codex_cloud_followup(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -434,6 +467,7 @@ class TestAdversarialValidationCodexFeedback:
                 "head123",
                 report,
                 client,
+                [report],
             )
 
         cloud_client.continue_if_paused.assert_called_once()
@@ -468,6 +502,7 @@ class TestAdversarialValidationCodexFeedback:
                 "head123",
                 "report",
                 client,
+                ["report"],
             )
 
         cloud_client_type.assert_not_called()

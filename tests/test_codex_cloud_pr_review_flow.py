@@ -25,6 +25,7 @@ def _pr_data(head_sha: str = "head-1") -> dict:
         "head": {"ref": "codex/review-5262", "sha": head_sha},
         "base": {"ref": "main", "sha": "base-1"},
         "labels": [],
+        "user": {"login": "maintainer"},
     }
 
 
@@ -116,6 +117,27 @@ def test_new_review_finding_is_delivered_without_redelivering_old_finding(tmp_pa
     second_prompt = send_followup.call_args.args[1]
     assert "Handle whitespace-only input" in second_prompt
     assert "This misses the empty-input case" not in second_prompt
+
+
+def test_new_reviewer_reply_is_delivered_once_without_redelivering_thread_root(tmp_path) -> None:
+    state_path = tmp_path / "review-repairs.json"
+    original = _thread("Implemented and tested")
+    with_new_review = _thread("Implemented and tested")
+    with_new_review.comments.append(ReviewThreadComment(database_id=103, body="Whitespace-only input is still broken", author_login="reviewer"))
+
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(original,))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data("head-2"), unresolved_threads=(with_new_review,))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data("head-2"), unresolved_threads=(with_new_review,))
+
+    assert send_followup.call_count == 2
+    second_prompt = send_followup.call_args.args[1]
+    assert "Whitespace-only input is still broken" in second_prompt
+    assert "This misses the empty-input case" not in second_prompt
+    assert "Implemented and tested" not in second_prompt
 
 
 def test_failed_review_feedback_delivery_remains_retryable(tmp_path) -> None:
