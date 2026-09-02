@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from src.auto_coder.util.gh_cache import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient, resolve_authoritative_item_type
 
 
 class TestGetItemTypeStrict:
@@ -79,3 +79,46 @@ class TestGetItemTypeStrict:
 
             with pytest.raises(httpx.HTTPStatusError):
                 client.get_item_type_strict("owner/repo", 5266)
+
+
+class TestResolveAuthoritativeItemType:
+    """resolve_authoritative_item_type() must never fall back to a cached response.
+
+    A client that cannot perform the cache-bypassing lookup has not established the
+    type; it must not be treated as confirmation the target is an Issue.
+    """
+
+    def test_uses_get_item_type_strict_when_available(self):
+        client = MagicMock()
+        client.get_item_type_strict.return_value = "pr"
+
+        result = resolve_authoritative_item_type(client, "owner/repo", 5266)
+
+        assert result == "pr"
+        client.get_item_type_strict.assert_called_once_with("owner/repo", 5266)
+
+    def test_raises_when_get_item_type_strict_returns_an_unrecognized_value(self):
+        client = MagicMock()
+        client.get_item_type_strict.return_value = "something-else"
+
+        with pytest.raises(ValueError):
+            resolve_authoritative_item_type(client, "owner/repo", 5266)
+
+    def test_raises_instead_of_falling_back_to_a_cached_stale_issue_response(self):
+        """A client lacking the authoritative lookup must fail closed, not use get_issue().
+
+        get_issue() here returns a stale, issue-shaped object for a number GitHub
+        currently identifies as a pull request. Because the client has no
+        get_item_type_strict method, resolve_authoritative_item_type must raise rather
+        than trust that cached representation -- and no caller may treat this as
+        confirmation the target is an Issue.
+        """
+
+        class GitHubClientWithoutStrictLookup:
+            def get_issue(self, repo_name, item_number):
+                return {"number": item_number, "title": "Actually a PR now", "state": "open"}
+
+        client = GitHubClientWithoutStrictLookup()
+
+        with pytest.raises(ValueError):
+            resolve_authoritative_item_type(client, "owner/repo", 5266)

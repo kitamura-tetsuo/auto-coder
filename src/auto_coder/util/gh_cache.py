@@ -280,34 +280,21 @@ def resolve_authoritative_item_type(github_client: Any, repo_name: str, item_num
     that can start Issue implementation work (the shared candidate-dispatch boundary,
     explicit target_type="issue" requests, retry/resumption paths such as the stale
     Jules session fallback, and any other internal enqueue path) must call this before
-    performing an Issue lifecycle side effect. A caller-supplied type or a cached issue
-    response is not authoritative on its own: GitHub's Issues API represents pull
-    requests as issue-like objects, and cached data can be stale. Any lookup failure or
-    ambiguous result raises rather than being treated as confirmation the target is an
-    Issue.
+    performing an Issue lifecycle side effect. A caller-supplied type is not
+    authoritative on its own: GitHub's Issues API represents pull requests as
+    issue-like objects. Only a genuinely cache-bypassing lookup
+    (``get_item_type_strict``) counts as authoritative; a client that cannot perform
+    one has not established the type, so this fails closed (raises) rather than
+    falling back to a cached ``get_issue()`` response that could be stale.
     """
-    strict_type_getter = getattr(type(github_client), "get_item_type_strict", None)
-    if strict_type_getter is not None:
-        item_type = strict_type_getter(github_client, repo_name, item_number)
-        if item_type not in ("issue", "pr"):
-            raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
-        return item_type
+    strict_type_getter = getattr(github_client, "get_item_type_strict", None)
+    if strict_type_getter is None:
+        raise ValueError(f"GitHub client does not implement an authoritative, cache-bypassing item-type lookup for {repo_name}#{item_number}")
 
-    # Test doubles and alternate GitHubClient implementations may not implement the
-    # cache-bypassing lookup. Fall back to the raw Issues API representation rather
-    # than assuming the caller-supplied type is correct.
-    item = github_client.get_issue(repo_name, item_number)
-    if item is None:
-        raise ValueError(f"GitHub item type lookup failed for {repo_name}#{item_number}")
-
-    def field(name: str) -> Any:
-        return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
-
-    if field("number") != item_number:
+    item_type = strict_type_getter(repo_name, item_number)
+    if item_type not in ("issue", "pr"):
         raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
-
-    has_pr_marker = (field("pull_request") is not None) if isinstance(item, dict) else hasattr(item, "pull_request")
-    return "pr" if has_pr_marker else "issue"
+    return item_type
 
 
 class GitHubClient:

@@ -31,6 +31,7 @@ def _session(session_id: str, age_hours: float, outputs=None) -> dict:
 
 def _github_client(issue_number: int = 42, state: str = "open", has_linked_pr: bool = False) -> MagicMock:
     client = MagicMock()
+    client.get_item_type_strict.return_value = "issue"
     client.get_issue.return_value = {"number": issue_number, "title": "Broken thing", "state": state}
     client.get_issue_details.return_value = {
         "number": issue_number,
@@ -185,12 +186,7 @@ class TestHandleStaleJulesIssueSessions:
     def test_pull_request_number_in_cloud_csv_is_skipped(self, config):
         """cloud.csv also tracks PR sessions; those are not implemented as issues."""
         github_client = _github_client()
-        github_client.get_issue.return_value = {
-            "number": 42,
-            "title": "A PR",
-            "state": "open",
-            "pull_request": {"url": "https://github.com/owner/repo/pull/42"},
-        }
+        github_client.get_item_type_strict.return_value = "pr"
 
         result, jules_client, take_actions, _, increment = self._run([_session("sess-1", age_hours=13)], github_client, config)
 
@@ -232,6 +228,48 @@ class TestHandleStaleJulesIssueSessions:
                 raise AssertionError("Must not touch labels on a rejected target")
 
         github_client = GitHubStub()
+
+        result, jules_client, take_actions, mark_stopped, increment = self._run(
+            [_session("sess-1", age_hours=13)],
+            github_client,
+            config,
+            issue_number=5266,
+        )
+
+        jules_client.send_message.assert_not_called()
+        mark_stopped.assert_not_called()
+        take_actions.assert_not_called()
+        increment.assert_not_called()
+        assert result.issue_numbers == []
+        assert result.actions == []
+
+    def test_stale_session_is_rejected_when_no_authoritative_lookup_is_available(self, config):
+        """A client that cannot perform the cache-bypassing lookup must fail closed.
+
+        get_issue() returns a stale, issue-shaped response, but the client has no
+        get_item_type_strict method at all -- so the type has not been established.
+        This must be treated the same as an authoritative "pr" result, not as
+        confirmation the target is an Issue: no stop message, no attempt increment,
+        no implementation backend invocation, and no hand-over comment.
+        """
+
+        class GitHubStubWithoutStrictLookup:
+            def get_issue(self, repo_name, issue_number):
+                return {"number": issue_number, "title": "Stale cached issue data", "state": "open"}
+
+            def get_issue_details(self, issue):
+                raise AssertionError("Must not hydrate issue data before the type is established")
+
+            def has_linked_pr(self, repo_name, issue_number):
+                raise AssertionError("Must not evaluate downstream Issue state without an authoritative type")
+
+            def add_comment_to_issue(self, *args, **kwargs):
+                raise AssertionError("Must not comment on an unresolved target")
+
+            def remove_labels(self, *args, **kwargs):
+                raise AssertionError("Must not touch labels on an unresolved target")
+
+        github_client = GitHubStubWithoutStrictLookup()
 
         result, jules_client, take_actions, mark_stopped, increment = self._run(
             [_session("sess-1", age_hours=13)],

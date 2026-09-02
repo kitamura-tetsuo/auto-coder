@@ -155,6 +155,42 @@ class TestAutomationEngine:
         label_manager.assert_not_called()
         implementation_backend.assert_not_called()
 
+    def test_issue_dispatch_fails_closed_when_no_authoritative_lookup_is_available(self):
+        """A client lacking the cache-bypassing lookup must not fall back to a cached response.
+
+        get_issue() returns a stale, issue-shaped response, but the client has no
+        get_item_type_strict method at all, so the type has not been established.
+        This must fail closed exactly like an authoritative "pr" result or a raised
+        lookup failure -- not be treated as confirmation the target is an Issue.
+        """
+
+        class GitHubStubWithoutStrictLookup:
+            def get_issue(self, repo_name, item_number):
+                return {"number": item_number, "title": "Stale cached issue data", "state": "open"}
+
+        engine = AutomationEngine(GitHubStubWithoutStrictLookup(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={"number": 5266, "title": "Stale cached issue data"},
+            priority=0,
+            issue_number=5266,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.cloud_run.CloudRunRepository") as cloud_runs,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert result.success is False
+        assert result.actions == []
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+        increment.assert_not_called()
+        cloud_runs.assert_not_called()
+
     def test_explicit_issue_candidate_rejects_pull_request(self):
         """An explicit target_type='issue' request is still checked against GitHub state."""
 
