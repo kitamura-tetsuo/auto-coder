@@ -15,6 +15,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
+    PRActionList,
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
@@ -22,6 +23,7 @@ from auto_coder.pr_processor import (
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
     _send_adversarial_validation_feedback_to_codex_cloud,
+    _take_pr_actions,
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
@@ -32,6 +34,19 @@ def codex_review_summary(status: str, reviewed_sha: str = "original1") -> dict[s
         "body": ("<!-- codex-pull-request-review-summary -->\n\n" "| Review | Status | Commit | Review trigger |\n" "| --- | --- | --- | --- |\n" f"| 📝 **Code Review** | {status} | `{reviewed_sha}` | PR opened |"),
         "user": {"login": "chatgpt-codex-connector[bot]"},
     }
+
+
+def test_take_pr_actions_preserves_structured_adversarial_failure() -> None:
+    merge_actions = PRActionList(
+        ["Adversarial review publication blocked PR #100"],
+        adversarial_validation_error="Malformed validator review anchor",
+    )
+
+    with patch("auto_coder.pr_processor._handle_pr_merge", return_value=merge_actions):
+        actions = _take_pr_actions(MagicMock(), "owner/repo", {"number": 100}, AutomationConfig())
+
+    assert actions.adversarial_validation_error == "Malformed validator review anchor"
+    assert actions == ["Adversarial review publication blocked PR #100"]
 
 
 class TestCodexReviewState:
@@ -559,6 +574,52 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr")
+    def test_same_sha_with_published_error_retains_structured_failure(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [
+            {
+                "body": format_adversarial_validation_comment(
+                    AdversarialValidationResult(
+                        result="ERROR",
+                        summary="Malformed validator review anchor",
+                        diagnostic_category="schema_error",
+                    ),
+                    head_sha,
+                )
+            }
+        ]
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_worktree.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert actions.adversarial_validation_error == "Adversarial validation previously failed for PR #100 at SHA abc12345"
+        assert any("already validated as ERROR" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
     def test_green_ci_with_adversarial_pass_merges(
         self,
@@ -723,7 +784,12 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        dedicated_reviewer_publication.return_value = ReviewPublicationResult(False, "COMMENT", "reviewer App unavailable")
+        with patch(
+            "auto_coder.pr_processor._reconcile_failed_adversarial_publication",
+            return_value=(False, "diagnostic not found"),
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_run_validation.assert_not_called()
         mock_merge_pr.assert_not_called()
@@ -734,8 +800,8 @@ class TestAdversarialValidationPRFlow:
         assert "validation_execution_error" in comment
         assert "RuntimeError" in comment
         assert '"type":"thread.started"' not in comment
-        assert any(action.startswith("ERROR: Adversarial validation failed for PR #100") for action in actions)
-        assert any("adversarial validation error diagnostic" in action for action in actions)
+        assert actions.adversarial_validation_error == "Adversarial validation execution failed; see the structured interaction log for details"
+        assert any("Adversarial review publication blocked PR #100" in action for action in actions)
         assert not any("Published COMMENT adversarial review" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
