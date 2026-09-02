@@ -103,15 +103,29 @@ class ImplementationSlotRepository:
             os.fsync(state_file.fileno())
         os.replace(temporary, self.storage_path)
 
-    def reserve(self, owner: ImplementationOwner) -> bool:
-        """Reserve *owner*; return False only when a new owner exceeds capacity."""
+    def reserve(self, owner: ImplementationOwner, implementation_pr: Optional[int] = None) -> bool:
+        """Reserve *owner* and durably record a PR known to belong to it."""
+        if implementation_pr is not None and (owner.kind != "issue" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
+            raise ValueError("implementation_pr must identify a PR belonging to an Issue owner")
         with self._state_lock():
             owners = self._read()
             if owner.key in owners:
+                if implementation_pr is not None:
+                    record = owners[owner.key]
+                    known_prs = record.setdefault("implementation_prs", [])
+                    if not isinstance(known_prs, list):
+                        raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+                    if implementation_pr not in known_prs:
+                        known_prs.append(implementation_pr)
+                        self._write(owners)
                 return True
             if len(owners) >= self.max_implementations:
                 return False
-            owners[owner.key] = {"kind": owner.kind, "number": owner.number}
+            owners[owner.key] = {
+                "kind": owner.kind,
+                "number": owner.number,
+                "implementation_prs": [implementation_pr] if implementation_pr is not None else [],
+            }
             self._write(owners)
             return True
 
@@ -148,7 +162,18 @@ class ImplementationSlotRepository:
                     # example, a sibling PR waiting for CI or review).  Use the
                     # existing authoritative Issue-to-PR relationship lookup;
                     # an unavailable lookup raises and retains the slot.
-                    linked_pr_numbers = github_client.get_linked_prs(self.repo_name, owner.number, strict=True)
+                    # Timeline relationships are not the only supported ownership
+                    # oracle: branch metadata can also associate a PR with its
+                    # source Issue.  PR membership learned during owner resolution
+                    # is therefore persisted with the slot and reconciled together
+                    # with timeline relationships after a restart.
+                    with self._state_lock():
+                        record = self._read().get(owner.key, {})
+                        recorded_prs = record.get("implementation_prs", [])
+                    if not isinstance(recorded_prs, list) or any(isinstance(number, bool) or not isinstance(number, int) for number in recorded_prs):
+                        raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+                    linked_pr_numbers = set(github_client.get_linked_prs(self.repo_name, owner.number, strict=True))
+                    linked_pr_numbers.update(recorded_prs)
                     linked_prs_terminal = True
                     for pr_number in linked_pr_numbers:
                         pull_request = github_client.get_pull_request(self.repo_name, pr_number)

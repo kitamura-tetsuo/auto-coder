@@ -193,6 +193,56 @@ def test_reconciliation_reads_all_timeline_pages_before_releasing_slot(tmp_path,
     assert slots.reserve(sibling_owner) is True
 
 
+def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, monkeypatch):
+    slots = repository(tmp_path)
+    github = GitHubClient("token")
+    monkeypatch.setattr(
+        GitHubClient,
+        "get_issue_strict",
+        lambda _self, _repo, number: {"number": number, "state": "closed"},
+    )
+    monkeypatch.setattr(github, "get_issue", lambda _repo, number: {"number": number, "state": "closed"})
+    monkeypatch.setattr(github, "get_issue_details", lambda issue: issue)
+    monkeypatch.setattr(
+        github,
+        "get_pull_request",
+        lambda _repo, number: {"number": number, "state": "open", "merged": False},
+    )
+    monkeypatch.setattr(github, "get_pr_details", lambda pr: pr)
+
+    class EmptyTimelineResponse:
+        links = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return []
+
+    class EmptyTimeline:
+        def get(self, _url, headers=None):
+            return EmptyTimelineResponse()
+
+    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: EmptyTimeline())
+    branch_linked_pr = {
+        "number": 108,
+        "title": "Implementation",
+        "body": "",
+        "head": {"ref": "issue-100-work"},
+    }
+    issue_owner = slots.resolve_owner("pr", branch_linked_pr, github)
+    assert issue_owner == ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner, implementation_pr=108) is True
+
+    restarted_slots = repository(tmp_path)
+    restarted_slots.reconcile(github)
+
+    assert restarted_slots.active_owners() == (issue_owner,)
+    assert restarted_slots.reserve(ImplementationOwner("issue", 200)) is False
+    assert restarted_slots.resolve_owner("pr", branch_linked_pr, github) == issue_owner
+    assert restarted_slots.reserve(issue_owner, implementation_pr=108) is True
+
+
 def test_pr_resolution_failure_is_not_treated_as_standalone(tmp_path):
     slots = repository(tmp_path)
     github = GitHubState(issues={100: RuntimeError("offline")})

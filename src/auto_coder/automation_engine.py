@@ -1107,7 +1107,8 @@ class AutomationEngine:
             result.error = str(exc)
             return result
 
-        if not slots.reserve(owner):
+        implementation_pr = item_number if candidate.type == "pr" and owner.kind == "issue" else None
+        if not slots.reserve(owner, implementation_pr=implementation_pr):
             result.actions = [f"Deferred - logical implementation limit is occupied ({owner.key})"]
             return result
 
