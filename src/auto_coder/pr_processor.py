@@ -33,7 +33,9 @@ from .adversarial_validator import (
     adversarial_validation_codex_feedback_marker,
     adversarial_validation_comment_marker,
     count_adversarial_validation_comments,
+    format_adversarial_finding_comment,
     format_adversarial_validation_comment,
+    format_test_oracle_gap_comment,
     run_adversarial_validation,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
@@ -88,6 +90,7 @@ def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> N
 # Track active monitors to prevent duplicate execution within the same process
 _active_monitors: set[int] = set()
 _active_monitors_lock = threading.Lock()
+_cloud_review_delivery_lock = threading.RLock()
 
 CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
@@ -2469,6 +2472,7 @@ def _handle_pr_merge(
                                 head_sha,
                                 format_adversarial_validation_comment(val_result, head_sha),
                                 github_client,
+                                [format_adversarial_finding_comment(finding) for finding in val_result.findings] + [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
                             )
                         )
                         actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
@@ -3955,32 +3959,42 @@ def _cloud_review_repair_state_path(repo_name: str) -> Path:
     return Path.home() / ".auto-coder" / repo_name / "cloud_review_repairs.json"
 
 
+def _actionable_feedback_fingerprint(body: str) -> str:
+    """Identify reviewer feedback independently of implementation state."""
+    normalized = "\n".join(line.rstrip() for line in body.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _review_thread_repair_fingerprint(
     repo_name: str,
     pr_number: int,
     task_id: str,
-    head_sha: str,
     unresolved_threads: Tuple[ReviewThread, ...],
 ) -> str:
-    """Identify one exact PR-head and unresolved-review state."""
-    thread_state = [
-        {
-            "id": thread.id,
-            "comments": [
-                {
-                    "database_id": comment.database_id,
-                    "body": comment.body,
-                    "author": comment.author_login,
-                }
-                for comment in thread.comments
-            ],
-            "comments_truncated": thread.comments_truncated,
-        }
-        for thread in unresolved_threads
-    ]
-    serialized = json.dumps(thread_state, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    review_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-    return f"{repo_name}#{pr_number}:{task_id}:{head_sha}:{review_digest}"
+    """Identify the set of actionable roots, excluding heads and implementer replies."""
+    feedback = sorted(_actionable_feedback_fingerprint(thread.comments[0].body) for thread in unresolved_threads if thread.comments)
+    serialized = json.dumps(feedback, separators=(",", ":"))
+    return f"{repo_name}#{pr_number}:{task_id}:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
+
+
+def _load_delivered_review_feedback(state_path: Path) -> set[str]:
+    if not state_path.exists():
+        return set()
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("delivery state is not a JSON object")
+    values = loaded.get("delivered_feedback", [])
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("delivered_feedback is not a string list")
+    return set(values)
+
+
+def _record_delivered_review_feedback(state_path: Path, feedback: set[str]) -> None:
+    """Atomically persist confirmed feedback deliveries."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"delivered_feedback": sorted(feedback)}, indent=2), encoding="utf-8")
+    os.replace(temporary, state_path)
 
 
 def _delegate_codex_cloud_review_thread_repair(
@@ -3991,9 +4005,9 @@ def _delegate_codex_cloud_review_thread_repair(
 ) -> List[str]:
     """Assign unresolved review feedback to the PR's existing Codex Cloud task.
 
-    Delivery is durable and state-sensitive: an unchanged PR head and review
-    discussion is sent only once, while a new commit or changed discussion can
-    be assigned again. A missing Codex task simply preserves the generic
+    Delivery is durable and keyed to actionable root findings. Implementation
+    commits and replies therefore cannot make an old finding eligible again.
+    A missing Codex task simply preserves the generic
     review-thread merge gate for non-Codex pull requests.
     """
     pr_number = int(pr_data["number"])
@@ -4009,28 +4023,22 @@ def _delegate_codex_cloud_review_thread_repair(
         logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate review repair")
         return [f"Cannot request Codex Cloud review repair for PR #{pr_number}: PR head/base branch metadata is unavailable"]
 
-    fingerprint = _review_thread_repair_fingerprint(
-        repo_name,
-        pr_number,
-        task_id,
-        target.head_sha,
-        unresolved_threads,
-    )
     state_path = _cloud_review_repair_state_path(repo_name)
-    delivered: dict[str, str] = {}
-    try:
-        if state_path.exists():
-            loaded = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                delivered = {str(key): str(value) for key, value in loaded.items()}
-    except (OSError, ValueError) as exc:
-        logger.warning(f"Could not read Codex Cloud review repair state: {exc}")
+    prefix = f"{repo_name}#{pr_number}:{task_id}:"
+    findings = [(thread, prefix + _actionable_feedback_fingerprint(thread.comments[0].body)) for thread in unresolved_threads if thread.comments]
+    with _cloud_review_delivery_lock:
+        try:
+            delivered = _load_delivered_review_feedback(state_path)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Could not read Codex Cloud review repair state: {exc}")
+            return [f"Cannot safely determine prior Codex Cloud review repair delivery for PR #{pr_number}: {exc}"]
+        pending = [(thread, identity) for thread, identity in findings if identity not in delivered]
+    if not pending:
+        logger.info(f"All actionable review feedback for PR #{pr_number} was already delegated")
+        return [f"Codex Cloud review repair was already requested for PR #{pr_number} for all current actionable feedback"]
 
-    if fingerprint in delivered:
-        logger.info(f"Review-thread repair for PR #{pr_number} at the current state was already delegated")
-        return [f"Codex Cloud review repair was already requested for PR #{pr_number} at the current state"]
-
-    details = get_prompt_template("codex_cloud.review_thread_repair_details")
+    feedback = "\n\n".join(f"Thread `{thread.id}`:\n{thread.comments[0].body}" for thread, _identity in pending)
+    details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
     prompt = build_existing_pr_repair_prompt(target, details)
     try:
         from .codex_cloud_client import CodexCloudClient
@@ -4042,10 +4050,11 @@ def _delegate_codex_cloud_review_thread_repair(
     if not accepted:
         return [f"Codex Cloud task '{task_id}' could not receive review repair work for PR #{pr_number}"]
 
-    delivered[fingerprint] = task_id
     try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
+        with _cloud_review_delivery_lock:
+            delivered = _load_delivered_review_feedback(state_path)
+            delivered.update(identity for _thread, identity in pending)
+            _record_delivered_review_feedback(state_path, delivered)
     except OSError as exc:
         logger.warning(f"Could not persist Codex Cloud review repair state: {exc}")
 
@@ -4212,6 +4221,7 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     head_sha: str,
     validation_report: str,
     github_client: Optional[Any] = None,
+    actionable_feedback: Sequence[str] = (),
 ) -> List[str]:
     """Send a NEEDS_FIX validation report to the PR's existing Codex Cloud task."""
     pr_number = pr_data["number"]
@@ -4230,6 +4240,20 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
     if not task_id:
         return [f"Cannot send adversarial feedback to Codex Cloud for PR #{pr_number}: no valid Codex task ID found"]
+
+    state_path = _cloud_review_repair_state_path(repo_name)
+    prefix = f"{repo_name}#{pr_number}:{task_id}:"
+    identities = {prefix + _actionable_feedback_fingerprint(body) for body in actionable_feedback}
+    if identities:
+        try:
+            with _cloud_review_delivery_lock:
+                delivered = _load_delivered_review_feedback(state_path)
+            if identities.issubset(delivered):
+                return [f"Skipped duplicate adversarial feedback to Codex Cloud for PR #{pr_number}: all actionable feedback was already delivered"]
+            pending_feedback = [body for body in actionable_feedback if prefix + _actionable_feedback_fingerprint(body) not in delivered]
+            validation_report = "New actionable adversarial reviewer feedback:\n\n" + "\n\n---\n\n".join(pending_feedback)
+        except (OSError, ValueError) as exc:
+            return [f"Could not check prior Codex Cloud actionable feedback for PR #{pr_number}: {exc}"]
 
     target = resolve_existing_pr_repair_target(repo_name, pr_data)
     if not target:
@@ -4256,6 +4280,15 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
 
     if not resumed:
         return [f"Codex Cloud task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
+
+    if identities:
+        try:
+            with _cloud_review_delivery_lock:
+                delivered = _load_delivered_review_feedback(state_path)
+                delivered.update(identities)
+                _record_delivered_review_feedback(state_path, delivered)
+        except (OSError, ValueError) as exc:
+            logger.error(f"Failed to persist shared Codex Cloud feedback delivery for PR #{pr_number}: {exc}")
 
     get_trace_logger().log(
         "Codex Cloud Adversarial Feedback",

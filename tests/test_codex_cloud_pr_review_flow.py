@@ -62,19 +62,20 @@ def test_review_repair_uses_existing_task_and_deduplicates_unchanged_state(tmp_p
         )
 
     assert first == ["Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262"]
-    assert second == ["Codex Cloud review repair was already requested for PR #5262 at the current state"]
+    assert second == ["Codex Cloud review repair was already requested for PR #5262 for all current actionable feedback"]
     send_followup.assert_called_once()
     task_id, prompt = send_followup.call_args.args
     assert task_id == "task_review_5262"
     assert "existing pull request #5262" in prompt
     assert "codex/review-5262" in prompt
     assert "Do not create a new pull request." in prompt
-    assert "Review every currently unresolved GitHub review thread" in prompt
+    assert "Address only the newly delivered actionable reviewer feedback" in prompt
+    assert "This misses the empty-input case" in prompt
     assert "<!-- auto-coder-review-addressed:v1 -->" in prompt
     assert state_path.exists()
 
 
-def test_changed_review_discussion_can_be_delegated_again(tmp_path) -> None:
+def test_implementer_reply_and_head_change_do_not_create_new_repair_work(tmp_path) -> None:
     state_path = tmp_path / "review-repairs.json"
 
     with (
@@ -88,11 +89,46 @@ def test_changed_review_discussion_can_be_delegated_again(tmp_path) -> None:
         )
         _delegate_codex_cloud_review_thread_repair(
             "owner/repo",
-            _pr_data(),
+            _pr_data("head-2"),
             unresolved_threads=(_thread("Updated clarification"),),
         )
 
+    send_followup.assert_called_once()
+
+
+def test_new_review_finding_is_delivered_without_redelivering_old_finding(tmp_path) -> None:
+    state_path = tmp_path / "review-repairs.json"
+    second = ReviewThread(
+        id="PRRT_thread_2",
+        is_resolved=False,
+        comments=[ReviewThreadComment(database_id=201, body="Handle whitespace-only input", author_login="reviewer")],
+    )
+
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(_thread(),))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data("head-2"), unresolved_threads=(_thread(), second))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data("head-2"), unresolved_threads=(_thread(), second))
+
     assert send_followup.call_count == 2
+    second_prompt = send_followup.call_args.args[1]
+    assert "Handle whitespace-only input" in second_prompt
+    assert "This misses the empty-input case" not in second_prompt
+
+
+def test_failed_review_feedback_delivery_remains_retryable(tmp_path) -> None:
+    state_path = tmp_path / "review-repairs.json"
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", side_effect=[False, True]) as send_followup,
+    ):
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(_thread(),))
+        _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), unresolved_threads=(_thread(),))
+
+    assert send_followup.call_count == 2
+    assert state_path.exists()
 
 
 def test_non_codex_pr_preserves_generic_review_gate() -> None:

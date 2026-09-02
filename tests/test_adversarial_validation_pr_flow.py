@@ -20,6 +20,7 @@ from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
     CodexReviewState,
     PRActionList,
+    _delegate_codex_cloud_review_thread_repair,
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
@@ -382,6 +383,36 @@ class TestAdversarialValidationPRComment:
 
 
 class TestAdversarialValidationCodexFeedback:
+    def test_successful_adversarial_delivery_deduplicates_review_thread_path(self, tmp_path):
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(
+            id="PRRT_adversarial",
+            is_resolved=False,
+            comments=[ReviewThreadComment(database_id=301, body=finding, author_login="auto-coder-reviewer[bot]")],
+        )
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", "report", client, [finding])
+            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+
+        cloud_client.continue_if_paused.assert_called_once()
+        cloud_client.send_followup.assert_not_called()
+        assert "already requested" in actions[0]
+
     def test_sends_complete_report_as_custom_codex_cloud_followup(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
