@@ -1003,9 +1003,6 @@ class GitHubClient:
             owner, repo = repo_name.split("/")
             client = get_caching_client()
 
-            # Use loose pagination or just get first page?
-            # Usually recent events are what we want? The endpoint returns all or paginated.
-            # Using standard per_page=100
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100"
             headers = {
                 "Authorization": f"bearer {self.token}",
@@ -1013,11 +1010,25 @@ class GitHubClient:
                 # "X-GitHub-Api-Version": "2022-11-28" # Standard API
             }
 
-            # Simple handling for now - assuming recent events are on first page or reasonable number.
-            # If a PR is linked, it should be in the timeline.
-            response = client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            timeline = []
+            visited_urls = set()
+            while url:
+                if url in visited_urls:
+                    raise RuntimeError(f"Repeated pagination URL for issue #{issue_number}")
+                visited_urls.add(url)
+
+                response = client.get(url, headers=headers)
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise ValueError(f"Invalid timeline response for issue #{issue_number}")
+                timeline.extend(page)
+
+                links = response.links
+                next_link = links.get("next") if isinstance(links, dict) else None
+                url = next_link.get("url", "") if isinstance(next_link, dict) else ""
+
+            return timeline
 
         except Exception as e:
             logger.warning(f"Failed to get timeline for issue #{issue_number}: {e}")

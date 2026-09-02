@@ -129,6 +129,70 @@ def test_reconciliation_retains_slot_when_production_timeline_is_unavailable(tmp
     assert slots.reserve(ImplementationOwner("issue", 200)) is False
 
 
+def test_reconciliation_reads_all_timeline_pages_before_releasing_slot(tmp_path, monkeypatch):
+    slots = repository(tmp_path)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner) is True
+    github = GitHubClient("token")
+    monkeypatch.setattr(github, "get_issue", lambda _repo, _number: {"number": 100, "state": "closed"})
+    monkeypatch.setattr(github, "get_issue_details", lambda issue: issue)
+    monkeypatch.setattr(
+        GitHubClient,
+        "get_issue_strict",
+        lambda _self, _repo, number: {"number": number, "state": "closed"},
+    )
+    monkeypatch.setattr(
+        github,
+        "get_pull_request",
+        lambda _repo, number: {"number": number, "state": "open", "merged": False},
+    )
+    monkeypatch.setattr(github, "get_pr_details", lambda pr: pr)
+
+    first_url = "https://api.github.com/repos/owner/repo/issues/100/timeline?per_page=100"
+    second_url = f"{first_url}&page=2"
+
+    class TimelineResponse:
+        def __init__(self, events, next_url=None):
+            self.events = events
+            self.links = {"next": {"url": next_url}} if next_url else {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.events
+
+    class PaginatedTimeline:
+        def __init__(self):
+            self.requested_urls = []
+
+        def get(self, url, headers=None):
+            self.requested_urls.append(url)
+            if url == first_url:
+                return TimelineResponse([{"event": "commented"}] * 100, second_url)
+            assert url == second_url
+            return TimelineResponse(
+                [
+                    {
+                        "event": "cross-referenced",
+                        "source": {"issue": {"number": 108, "pull_request": {}}},
+                    }
+                ]
+            )
+
+    timeline = PaginatedTimeline()
+    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: timeline)
+
+    slots.reconcile(github)
+
+    assert timeline.requested_urls == [first_url, second_url]
+    assert slots.active_owners() == (issue_owner,)
+    assert slots.reserve(ImplementationOwner("issue", 200)) is False
+    sibling_owner = slots.resolve_owner("pr", {"number": 108, "body": "Fixes #100"}, github)
+    assert sibling_owner == issue_owner
+    assert slots.reserve(sibling_owner) is True
+
+
 def test_pr_resolution_failure_is_not_treated_as_standalone(tmp_path):
     slots = repository(tmp_path)
     github = GitHubState(issues={100: RuntimeError("offline")})
