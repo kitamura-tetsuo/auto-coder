@@ -13,9 +13,10 @@ from auto_coder.llm_backend_config import get_max_concurrent_implementations_fro
 
 
 class GitHubState:
-    def __init__(self, issues=None, prs=None):
+    def __init__(self, issues=None, prs=None, linked_prs=None):
         self.issues = issues or {}
         self.prs = prs or {}
+        self.linked_prs = linked_prs or {}
 
     def get_issue(self, _repo, number):
         value = self.issues[number]
@@ -31,6 +32,9 @@ class GitHubState:
 
     def get_pr_details(self, pr):
         return pr
+
+    def get_linked_prs(self, _repo, issue_number):
+        return self.linked_prs.get(issue_number, [])
 
 
 def repository(tmp_path, limit=1):
@@ -79,6 +83,29 @@ def test_reconciliation_releases_terminal_but_retains_uncertain_owner(tmp_path):
     slots.reconcile(github)
 
     assert slots.active_owners() == (uncertain,)
+
+
+def test_closed_issue_retains_slot_while_sibling_pr_is_open(tmp_path):
+    slots = repository(tmp_path)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner) is True
+    github = GitHubState(
+        issues={100: {"number": 100, "state": "closed"}},
+        prs={
+            105: {"number": 105, "state": "closed", "merged": True, "body": "Closes #100"},
+            108: {"number": 108, "state": "open", "merged": False, "body": "Fixes #100"},
+        },
+        linked_prs={100: [105, 108]},
+    )
+
+    slots.reconcile(github)
+
+    assert slots.active_owners() == (issue_owner,)
+    assert slots.reserve(ImplementationOwner("issue", 200)) is False
+    sibling_owner = slots.resolve_owner("pr", github.prs[108], github)
+    assert sibling_owner == issue_owner
+    assert slots.reserve(sibling_owner) is True
+    assert slots.active_owners() == (issue_owner,)
 
 
 def test_pr_resolution_failure_is_not_treated_as_standalone(tmp_path):

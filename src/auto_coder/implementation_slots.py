@@ -134,18 +134,37 @@ class ImplementationSlotRepository:
         return tuple(owners)
 
     def reconcile(self, github_client: Any) -> None:
-        """Release only owners whose authoritative GitHub item is terminal."""
+        """Release only owners whose complete authoritative lifecycle is terminal."""
         for owner in self.active_owners():
             try:
                 if owner.kind == "issue":
                     item = github_client.get_issue(self.repo_name, owner.number)
                     details = github_client.get_issue_details(item)
+                    if details.get("state", "").lower() != "closed":
+                        continue
+
+                    # Closing the source Issue is not terminal while any PR in
+                    # the same logical implementation is still active (for
+                    # example, a sibling PR waiting for CI or review).  Use the
+                    # existing authoritative Issue-to-PR relationship lookup;
+                    # an unavailable lookup raises and retains the slot.
+                    linked_pr_numbers = github_client.get_linked_prs(self.repo_name, owner.number)
+                    linked_prs_terminal = True
+                    for pr_number in linked_pr_numbers:
+                        pull_request = github_client.get_pull_request(self.repo_name, pr_number)
+                        pr_details = github_client.get_pr_details(pull_request)
+                        if pr_details.get("state", "").lower() != "closed" and pr_details.get("merged") is not True:
+                            linked_prs_terminal = False
+                            break
+                    if linked_prs_terminal:
+                        self.release(owner)
+                        logger.info(f"Released terminal logical implementation slot {owner.key}")
                 else:
                     item = github_client.get_pull_request(self.repo_name, owner.number)
                     details = github_client.get_pr_details(item)
-                if details.get("state", "").lower() == "closed" or details.get("merged") is True:
-                    self.release(owner)
-                    logger.info(f"Released terminal logical implementation slot {owner.key}")
+                    if details.get("state", "").lower() == "closed" or details.get("merged") is True:
+                        self.release(owner)
+                        logger.info(f"Released terminal logical implementation slot {owner.key}")
             except Exception as exc:
                 logger.warning(f"Could not reconcile logical implementation {owner.key}; retaining its slot: {exc}")
 
