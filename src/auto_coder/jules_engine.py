@@ -613,6 +613,9 @@ def check_and_start_recurrent_jules_tasks(
                         break
 
                 if match_found:
+                    if implementation_slots is not None:
+                        if not implementation_slots.record_provider_session(owner, str(session_id)):
+                            raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                     # Check if the session is completed and merged/closed on GitHub
                     state = session.get("state")
                     pull_request = get_session_pull_request(session)
@@ -691,6 +694,7 @@ def check_and_start_recurrent_jules_tasks(
                     for pr_number in discovered_prs:
                         if not implementation_slots.record_implementation_pr(owner, pr_number):
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
+                session_submitted = False
                 try:
                     from .automation_config import AutomationConfig
 
@@ -703,11 +707,15 @@ def check_and_start_recurrent_jules_tasks(
                     else:
                         with implementation_slots.serialize(owner):
                             new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                        session_submitted = True
                         if not implementation_slots.record_provider_session(owner, str(new_session_id)):
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                     logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
                 except Exception as e:
-                    if implementation_slots is not None:
+                    # Submission failure means no external implementation was
+                    # created.  Once Jules accepts the task, however, uncertain
+                    # metadata persistence must fail closed and retain capacity.
+                    if implementation_slots is not None and not session_submitted:
                         implementation_slots.release(owner)
                     logger.error(f"Failed to start new recurrent Jules session for {names}: {e}")
 

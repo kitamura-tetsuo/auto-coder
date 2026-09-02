@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -452,6 +453,47 @@ Maintain the application."""
                 MagicMock(issues=[]),
             )
             self.assertEqual(source_less_pr_owner, owner)
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_accepted_recurrent_session_retains_slot_when_membership_write_fails(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+            record_provider_session = slots.record_provider_session
+            slots.record_provider_session = MagicMock(return_value=False)
+
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = []
+            jules.start_session.return_value = "submitted-session"
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+                self.assertEqual(slots.active_owners(), (owner,))
+                self.assertFalse(slots.reserve(ImplementationOwner("issue", 200)))
+
+                slots.record_provider_session = record_provider_session
+                jules.list_sessions.return_value = [
+                    {
+                        "name": "sessions/submitted-session",
+                        "state": "ACTIVE",
+                        "prompt": prompt,
+                    }
+                ]
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.start_session.assert_called_once()
+            state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
+            self.assertEqual(state[owner.key]["provider_sessions"], ["submitted-session"])
 
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")
