@@ -32,7 +32,7 @@ from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import GitHubClient, get_ghapi_client
+from .util.gh_cache import GitHubClient, get_ghapi_client, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
@@ -1244,35 +1244,13 @@ class AutomationEngine:
         A caller-supplied candidate type is not authoritative: GitHub's Issues
         API represents pull requests as issue-like objects, and candidates can
         arrive already misclassified from stale collections, explicit
-        target_type arguments, or other internal enqueue paths. This performs
-        a cache-bypassing lookup (GitHubClient.get_item_type_strict, which
-        talks to GitHub directly rather than through the shared hishel cache)
-        and fails closed (raises) whenever the type cannot be established,
-        rather than treating a lookup failure -- or a possibly-stale cached
-        response -- as confirmation that the target is an Issue.
+        target_type arguments, or other internal enqueue paths. Delegates to
+        the shared implementation (util.gh_cache.resolve_authoritative_item_type)
+        so every Issue dispatch path -- including the direct Jules-fallback
+        resumption path in issue_processor.handle_stale_jules_issue_sessions --
+        uses the same cache-bypassing lookup and the same fail-closed behavior.
         """
-        strict_type_getter = getattr(type(self.github), "get_item_type_strict", None)
-        if strict_type_getter is not None:
-            item_type = strict_type_getter(self.github, repo_name, item_number)
-            if item_type not in ("issue", "pr"):
-                raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
-            return item_type
-
-        # Test doubles and alternate GitHubClient implementations may not
-        # implement the cache-bypassing lookup. Fall back to the raw Issues
-        # API representation rather than assuming the candidate is correct.
-        item = self.github.get_issue(repo_name, item_number)
-        if item is None:
-            raise ValueError(f"GitHub item type lookup failed for {repo_name}#{item_number}")
-
-        def field(name: str) -> Any:
-            return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
-
-        if field("number") != item_number:
-            raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
-
-        has_pr_marker = (field("pull_request") is not None) if isinstance(item, dict) else hasattr(item, "pull_request")
-        return "pr" if has_pr_marker else "issue"
+        return resolve_authoritative_item_type(self.github, repo_name, item_number)
 
     def _process_unlocked_issue(
         self,

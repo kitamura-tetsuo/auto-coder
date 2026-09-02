@@ -273,6 +273,43 @@ def get_ghapi_client(token: str) -> GhApi:
     return cast(GhApi, SafeGhApiProxy(CachedGhApi(token=token)))
 
 
+def resolve_authoritative_item_type(github_client: Any, repo_name: str, item_number: int) -> str:
+    """Establish an issue-like target's authoritative GitHub type, failing closed.
+
+    This is the single implementation of the Issue-vs-PR dispatch guard. Every path
+    that can start Issue implementation work (the shared candidate-dispatch boundary,
+    explicit target_type="issue" requests, retry/resumption paths such as the stale
+    Jules session fallback, and any other internal enqueue path) must call this before
+    performing an Issue lifecycle side effect. A caller-supplied type or a cached issue
+    response is not authoritative on its own: GitHub's Issues API represents pull
+    requests as issue-like objects, and cached data can be stale. Any lookup failure or
+    ambiguous result raises rather than being treated as confirmation the target is an
+    Issue.
+    """
+    strict_type_getter = getattr(type(github_client), "get_item_type_strict", None)
+    if strict_type_getter is not None:
+        item_type = strict_type_getter(github_client, repo_name, item_number)
+        if item_type not in ("issue", "pr"):
+            raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
+        return item_type
+
+    # Test doubles and alternate GitHubClient implementations may not implement the
+    # cache-bypassing lookup. Fall back to the raw Issues API representation rather
+    # than assuming the caller-supplied type is correct.
+    item = github_client.get_issue(repo_name, item_number)
+    if item is None:
+        raise ValueError(f"GitHub item type lookup failed for {repo_name}#{item_number}")
+
+    def field(name: str) -> Any:
+        return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+    if field("number") != item_number:
+        raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
+
+    has_pr_marker = (field("pull_request") is not None) if isinstance(item, dict) else hasattr(item, "pull_request")
+    return "pr" if has_pr_marker else "issue"
+
+
 class GitHubClient:
     """GitHub API client for managing issues and pull requests using GhApi.
 

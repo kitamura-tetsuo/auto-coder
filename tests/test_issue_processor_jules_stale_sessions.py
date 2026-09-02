@@ -199,6 +199,54 @@ class TestHandleStaleJulesIssueSessions:
         increment.assert_not_called()
         assert result.issue_numbers == []
 
+    def test_stale_session_mapped_to_a_pr_number_is_rejected(self, config):
+        """A cloud.csv/session mapping to an actual PR must never reach Issue dispatch.
+
+        Simulates stale or corrupt lifecycle state (or a cached Issue response) that
+        maps a Jules session to a number GitHub's *authoritative* state identifies as
+        a pull request. The cached get_issue() still looks like an ordinary open
+        Issue, but get_item_type_strict() (the cache-bypassing authoritative lookup)
+        reports a PR, and that must win: no stop message, no attempt increment, no
+        implementation backend invocation, and no task-start/hand-over comment.
+        """
+
+        class GitHubStub:
+            def get_issue(self, repo_name, issue_number):
+                # Stale cached response: still looks like an ordinary open Issue.
+                return {"number": issue_number, "title": "Actually a PR", "state": "open"}
+
+            def get_issue_details(self, issue):
+                return {"number": issue["number"], "title": issue["title"], "state": issue["state"], "body": "", "labels": [], "author": "someone"}
+
+            def get_item_type_strict(self, repo_name, item_number):
+                assert (repo_name, item_number) == ("owner/repo", 5266)
+                return "pr"
+
+            def has_linked_pr(self, repo_name, issue_number):
+                raise AssertionError("Must not evaluate downstream Issue state after PR rejection")
+
+            def add_comment_to_issue(self, *args, **kwargs):
+                raise AssertionError("Must not comment on a rejected target")
+
+            def remove_labels(self, *args, **kwargs):
+                raise AssertionError("Must not touch labels on a rejected target")
+
+        github_client = GitHubStub()
+
+        result, jules_client, take_actions, mark_stopped, increment = self._run(
+            [_session("sess-1", age_hours=13)],
+            github_client,
+            config,
+            issue_number=5266,
+        )
+
+        jules_client.send_message.assert_not_called()
+        mark_stopped.assert_not_called()
+        take_actions.assert_not_called()
+        increment.assert_not_called()
+        assert result.issue_numbers == []
+        assert result.actions == []
+
     def test_failed_stop_message_does_not_delegate(self, config):
         """When Jules rejects the stop message the issue stays with Jules."""
         github_client = _github_client()
