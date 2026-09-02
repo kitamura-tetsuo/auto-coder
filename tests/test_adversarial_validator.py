@@ -36,6 +36,7 @@ from auto_coder.trace_logger import get_trace_logger
 def _demonstrated_finding_with_anchor(anchor_line: object) -> dict[str, object]:
     return {
         "requirement_id": "REQ-001",
+        "finding_identity": "state-update-discard",
         "violated_requirement": "Preserve state",
         "evidence_classification": "DEMONSTRATED",
         "reachability": "The public update entry point reaches this branch",
