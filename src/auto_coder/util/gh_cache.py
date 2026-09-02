@@ -273,6 +273,30 @@ def get_ghapi_client(token: str) -> GhApi:
     return cast(GhApi, SafeGhApiProxy(CachedGhApi(token=token)))
 
 
+def resolve_authoritative_item_type(github_client: Any, repo_name: str, item_number: int) -> str:
+    """Establish an issue-like target's authoritative GitHub type, failing closed.
+
+    This is the single implementation of the Issue-vs-PR dispatch guard. Every path
+    that can start Issue implementation work (the shared candidate-dispatch boundary,
+    explicit target_type="issue" requests, retry/resumption paths such as the stale
+    Jules session fallback, and any other internal enqueue path) must call this before
+    performing an Issue lifecycle side effect. A caller-supplied type is not
+    authoritative on its own: GitHub's Issues API represents pull requests as
+    issue-like objects. Only a genuinely cache-bypassing lookup
+    (``get_item_type_strict``) counts as authoritative; a client that cannot perform
+    one has not established the type, so this fails closed (raises) rather than
+    falling back to a cached ``get_issue()`` response that could be stale.
+    """
+    strict_type_getter = getattr(github_client, "get_item_type_strict", None)
+    if strict_type_getter is None:
+        raise ValueError(f"GitHub client does not implement an authoritative, cache-bypassing item-type lookup for {repo_name}#{item_number}")
+
+    item_type = strict_type_getter(repo_name, item_number)
+    if item_type not in ("issue", "pr"):
+        raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
+    return item_type
+
+
 class GitHubClient:
     """GitHub API client for managing issues and pull requests using GhApi.
 
@@ -803,6 +827,35 @@ class GitHubClient:
         owner, repo = repo_name.split("/")
         api = get_ghapi_client(self.token)
         return api.issues.get(owner, repo, issue_number)
+
+    @retry_with_backoff()
+    def get_item_type_strict(self, repo_name: str, item_number: int) -> str:
+        """Return GitHub's authoritative type ("issue" or "pr") for an issue-like item.
+
+        This deliberately bypasses the shared hishel-backed caching client
+        (``get_caching_client()`` / ``get_ghapi_client()``): it is a safety gate for
+        starting Issue implementation work, so it must reflect GitHub's current state
+        rather than a possibly-stale cached response. GitHub's Issues REST endpoint
+        returns both issues and pull requests; a pull request is distinguished by the
+        presence of the ``pull_request`` field.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{item_number}"
+        with httpx.Client() as client:
+            response = client.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            item = response.json()
+
+        if not isinstance(item, dict) or item.get("number") != item_number:
+            raise ValueError(f"GitHub returned an ambiguous item for {repo_name}#{item_number}")
+        return "pr" if "pull_request" in item else "issue"
 
     def get_issue_details(self, issue: Any) -> Dict[str, Any]:
         """Extract detailed information from an issue.

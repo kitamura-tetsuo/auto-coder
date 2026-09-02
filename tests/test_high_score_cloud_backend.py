@@ -235,6 +235,7 @@ class TestDifficultIssueHandling:
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
 
         mock_github = MagicMock()
+        mock_github.get_item_type_strict.return_value = "issue"
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -275,6 +276,7 @@ class TestDifficultIssueHandling:
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
 
         mock_github = MagicMock()
+        mock_github.get_item_type_strict.return_value = "issue"
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -314,6 +316,7 @@ class TestDifficultIssueHandling:
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
 
         mock_github = MagicMock()
+        mock_github.get_item_type_strict.return_value = "issue"
         mock_github.get_all_sub_issues.return_value = [201, 202]
 
         config = AutomationConfig()

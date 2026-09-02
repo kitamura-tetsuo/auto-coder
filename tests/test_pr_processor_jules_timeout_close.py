@@ -425,6 +425,7 @@ class TestUnlockAndRetryLinkedIssue:
         pr_data = _jules_pr_data(hours_old=30)
         pr_data["labels"] = [{"name": "@auto-coder"}]
         issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
+        github_client.get_item_type_strict.return_value = "issue"
         github_client.get_issue.return_value = issue_data
         github_client.get_issue_details.return_value = issue_data
         github_client.get_all_sub_issues.return_value = []
@@ -515,6 +516,7 @@ class TestSingleTargetTypeDetection:
         # 404 for a PR lookup surfaces as an empty payload, not an exception
         github_client.get_pull_request.return_value = {}
         github_client.get_pr_details.return_value = {}
+        github_client.get_item_type_strict.return_value = "issue"
         github_client.get_issue.return_value = issue_data
         github_client.get_issue_details.return_value = issue_data
 

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, TypedDict, cast
 
 from dateutil import parser
 
-from auto_coder.util.gh_cache import get_ghapi_client
+from auto_coder.util.gh_cache import get_ghapi_client, resolve_authoritative_item_type
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
@@ -722,16 +722,27 @@ def handle_stale_jules_issue_sessions(
             if not issue_number:
                 continue
 
+            # cloud.csv also tracks PR-bound sessions, and stale/corrupt lifecycle
+            # state could otherwise map a session to a PR number. This resumption
+            # path performs the same Issue lifecycle side effects (attempt
+            # increment, implementation backend start) as the shared candidate
+            # dispatch boundary, so it must use the same authoritative,
+            # cache-bypassing type check and fail closed on the same terms:
+            # only a confirmed Issue may proceed.
+            try:
+                authoritative_type = resolve_authoritative_item_type(github_client, repo_name, issue_number)
+            except Exception as e:
+                logger.warning(f"Skipping stale Jules session {session_id}: could not establish authoritative GitHub item type for #{issue_number}: {e}")
+                continue
+            if authoritative_type != "issue":
+                logger.warning(f"Skipping stale Jules session {session_id}: GitHub identifies #{issue_number} as {authoritative_type}, not an issue")
+                continue
+
             issue = github_client.get_issue(repo_name, issue_number)
             if issue is None:
                 continue
 
             issue_data = github_client.get_issue_details(issue)
-
-            # cloud.csv also tracks PR-bound sessions; only issues are handled here
-            is_pull_request = (issue.get("pull_request") if isinstance(issue, dict) else getattr(issue, "pull_request", None)) is not None
-            if is_pull_request:
-                continue
 
             if issue_data.get("state") != "open":
                 continue

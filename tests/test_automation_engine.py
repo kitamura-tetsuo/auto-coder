@@ -92,6 +92,199 @@ class TestAutomationEngine:
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
 
+    def test_misclassified_pr_is_rejected_before_issue_side_effects(self):
+        """A pull request presented as an Issue candidate must never reach Issue dispatch."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                assert (repo_name, item_number) == ("owner/repo", 5266)
+                return "pr"
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={
+                "number": 5266,
+                "title": "Cloud-created PR",
+                "labels": ["@auto-coder"],
+            },
+            priority=0,
+            issue_number=5266,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.cloud_run.CloudRunRepository") as cloud_runs,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error == "Refusing Issue dispatch for owner/repo#5266: GitHub identifies the target as pr"
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+        increment.assert_not_called()
+        cloud_runs.assert_not_called()
+
+    def test_issue_dispatch_fails_closed_when_type_lookup_fails(self):
+        """An unavailable authoritative type lookup must not authorize Issue work."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                raise RuntimeError("GitHub unavailable")
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={"number": 201, "title": "Unknown target"},
+            priority=0,
+            issue_number=201,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error == "GitHub unavailable"
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+
+    def test_issue_dispatch_fails_closed_when_no_authoritative_lookup_is_available(self):
+        """A client lacking the cache-bypassing lookup must not fall back to a cached response.
+
+        get_issue() returns a stale, issue-shaped response, but the client has no
+        get_item_type_strict method at all, so the type has not been established.
+        This must fail closed exactly like an authoritative "pr" result or a raised
+        lookup failure -- not be treated as confirmation the target is an Issue.
+        """
+
+        class GitHubStubWithoutStrictLookup:
+            def get_issue(self, repo_name, item_number):
+                return {"number": item_number, "title": "Stale cached issue data", "state": "open"}
+
+        engine = AutomationEngine(GitHubStubWithoutStrictLookup(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={"number": 5266, "title": "Stale cached issue data"},
+            priority=0,
+            issue_number=5266,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.cloud_run.CloudRunRepository") as cloud_runs,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert result.success is False
+        assert result.actions == []
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+        increment.assert_not_called()
+        cloud_runs.assert_not_called()
+
+    def test_explicit_issue_candidate_rejects_pull_request(self):
+        """An explicit target_type='issue' request is still checked against GitHub state."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                return "pr"
+
+            def get_issue(self, repo_name, item_number):
+                raise AssertionError("PR rejection must happen before issue hydration")
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+
+        assert engine._create_candidate_from_single("owner/repo", "issue", 200) is None
+
+    def test_stale_cached_issue_data_cannot_satisfy_the_guard(self):
+        """A cached issue-shaped response must not stand in for the authoritative type.
+
+        Simulates a candidate built from stale cached Issue data (e.g. via
+        get_issue/get_issue_strict, which go through the shared hishel cache) for a
+        number that GitHub's *current* state identifies as a pull request. The
+        cache-bypassing get_item_type_strict lookup must be consulted -- and win --
+        so Issue dispatch still stops before any Issue lifecycle side effect.
+        """
+
+        class GitHubStub:
+            def get_issue_strict(self, repo_name, item_number):
+                # Stale cached response: still looks like an ordinary open Issue.
+                return {"number": 5266, "title": "Cloud-created PR", "state": "open"}
+
+            def get_item_type_strict(self, repo_name, item_number):
+                # Authoritative, cache-bypassing lookup: GitHub now reports a PR.
+                assert (repo_name, item_number) == ("owner/repo", 5266)
+                return "pr"
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={
+                "number": 5266,
+                "title": "Cloud-created PR",
+                "labels": ["@auto-coder"],
+            },
+            priority=0,
+            issue_number=5266,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.cloud_run.CloudRunRepository") as cloud_runs,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error == "Refusing Issue dispatch for owner/repo#5266: GitHub identifies the target as pr"
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+        increment.assert_not_called()
+        cloud_runs.assert_not_called()
+
+    def test_genuine_issue_candidate_still_dispatches(self):
+        """A genuine Issue must retain normal single-candidate dispatch behavior."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, repo_name, item_number):
+                return "issue"
+
+            def get_all_sub_issues(self, repo_name, item_number):
+                return []
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={"number": 300, "title": "Genuine issue", "labels": []},
+            priority=0,
+            issue_number=300,
+        )
+
+        mock_ctx = MagicMock()
+        mock_ctx.__bool__.return_value = True
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions", return_value=["did work"]) as implementation_backend,
+        ):
+            label_manager.return_value.__enter__.return_value = mock_ctx
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=False)
+
+        assert result.success is True
+        assert result.actions == ["did work"]
+        implementation_backend.assert_called_once()
+
     @pytest.mark.parametrize(
         ("outcome", "expected_error_count"),
         [(PRProcessingOutcome.SUCCESS, 0), (PRProcessingOutcome.DEFERRED, 0)],
