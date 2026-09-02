@@ -16,6 +16,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
+from .implementation_slots import ImplementationOwnerResolutionError, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -59,6 +60,7 @@ class AutomationEngine:
         self._wake_up_event: Optional[asyncio.Event] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pr_merged_or_closed: bool = False
+        self.implementation_slots: Optional[ImplementationSlotRepository] = None
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
@@ -138,6 +140,7 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
+        self._get_implementation_slots(repo_name).reconcile(self.github)
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
@@ -1065,6 +1068,43 @@ class AutomationEngine:
             error=None,
         )
 
+        slots = self._get_implementation_slots(repo_name)
+        try:
+            slots.reconcile(self.github)
+            owner = slots.resolve_owner(candidate.type, candidate.data, self.github)
+        except ImplementationOwnerResolutionError as exc:
+            result.error = f"Cannot safely resolve logical implementation owner: {exc}"
+            return result
+        except Exception as exc:
+            result.error = str(exc)
+            return result
+
+        if not slots.reserve(owner):
+            result.actions = [f"Deferred - logical implementation limit is occupied ({owner.key})"]
+            return result
+
+        with slots.serialize(owner):
+            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+        slots.reconcile(self.github)
+        return result
+
+    def _process_single_candidate_reserved(
+        self,
+        repo_name: str,
+        candidate: Candidate,
+        config: AutomationConfig,
+        jules_mode: bool = False,
+    ) -> CandidateProcessingResult:
+        """Process a candidate after its durable owner slot is reserved."""
+        result = CandidateProcessingResult(
+            type=candidate.type,
+            number=candidate.data.get("number"),
+            title=candidate.data.get("title"),
+            success=False,
+            actions=[],
+            error=None,
+        )
+
         try:
             # Get item number and type
             item_number = candidate.data.get("number")
@@ -1237,6 +1277,11 @@ class AutomationEngine:
             logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
 
         return result
+
+    def _get_implementation_slots(self, repo_name: str) -> ImplementationSlotRepository:
+        if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
+            self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
+        return self.implementation_slots
 
     def _get_authoritative_item_type(self, repo_name: str, item_number: int) -> str:
         """Establish an issue-like target's authoritative GitHub type.

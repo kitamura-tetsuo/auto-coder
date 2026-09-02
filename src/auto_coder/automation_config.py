@@ -230,6 +230,7 @@ class AutomationConfig:
             get_jules_issue_pr_timeout_hours_from_config,
             get_jules_pr_ci_timeout_hours_from_config,
             get_jules_wait_timeout_hours_from_config,
+            get_max_concurrent_implementations_from_config,
             get_pr_allowlist_from_config,
             get_process_issues_max_open_prs_for_issues_from_config,
         )
@@ -241,6 +242,9 @@ class AutomationConfig:
         object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config(repo_name=effective_repo))
         object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config(repo_name=effective_repo))
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config(repo_name=effective_repo))
+        implementation_limit = get_max_concurrent_implementations_from_config(repo_name=effective_repo)
+        object.__setattr__(self, "MAX_CONCURRENT_IMPLEMENTATIONS", implementation_limit)
+        object.__setattr__(self, "max_concurrent_implementations", implementation_limit)
 
         configured_max_open_prs = max_open_prs_for_issues if max_open_prs_for_issues is not None else get_process_issues_max_open_prs_for_issues_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_OPEN_PRS_FOR_ISSUES", configured_max_open_prs)
@@ -752,6 +756,10 @@ class AutomationConfig:
 
     # Maximum concurrent tasks (workers)
     MAX_CONCURRENT_TASKS: int = 1
+
+    # Durable logical implementation ownership (independent of workers)
+    MAX_CONCURRENT_IMPLEMENTATIONS: int = 1
+    max_concurrent_implementations: int = 1
 
     # Priority order for semantic labels (highest to lowest priority)
     # Labels not in this list will be added after these (if space permits)

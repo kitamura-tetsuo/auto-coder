@@ -1640,6 +1640,24 @@ def get_process_issues_empty_sleep_time_from_config(
     )
 
 
+def get_max_concurrent_implementations_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
+    """Get the instance-wide durable logical implementation limit."""
+    value = _get_config_value(
+        section="process_issues",
+        key="max_concurrent_implementations",
+        default=1,
+        config_path=config_path,
+        value_type=int,
+        repo_name=repo_name,
+    )
+    if isinstance(value, bool) or value < 1:
+        raise ValueError("[process_issues].max_concurrent_implementations must be a positive integer")
+    return value
+
+
 def get_process_issues_max_open_prs_for_issues_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,
