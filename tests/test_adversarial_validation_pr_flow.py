@@ -730,11 +730,13 @@ class TestAdversarialValidationPRFlow:
         client.add_comment_to_pr.assert_not_called()
         published_result = dedicated_reviewer_publication.call_args.args[3]
         comment = format_adversarial_validation_comment(published_result, "abc123456789")
-        assert "adversarial validation: BLOCKED" in comment
+        assert "adversarial validation: ERROR" in comment
         assert "validation_execution_error" in comment
         assert "RuntimeError" in comment
         assert '"type":"thread.started"' not in comment
-        assert any("Adversarial validation blocked PR #100" in action for action in actions)
+        assert any(action.startswith("ERROR: Adversarial validation failed for PR #100") for action in actions)
+        assert any("adversarial validation error diagnostic" in action for action in actions)
+        assert not any("Published COMMENT adversarial review" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

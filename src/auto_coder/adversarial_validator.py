@@ -1038,10 +1038,16 @@ def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition
 
 
 def _optional_positive_int(value: Any) -> Optional[int]:
-    """Parse an optional positive JSON integer, rejecting booleans and strings."""
+    """Normalize an optional positive line anchor from an LLM response."""
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if isinstance(value, bool):
+        raise ValueError("review anchor lines must be positive integers")
+    if isinstance(value, str):
+        if not re.fullmatch(r"[1-9][0-9]*", value):
+            raise ValueError("review anchor lines must be positive integers")
+        return int(value)
+    if not isinstance(value, int) or value < 1:
         raise ValueError("review anchor lines must be positive integers")
     return value
 
@@ -1555,6 +1561,16 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 )
         except json.JSONDecodeError as exc:
             json_failure_reason = f"{exc.msg} at line {exc.lineno}, column {exc.colno}"
+        except (TypeError, ValueError) as exc:
+            # Schema normalization belongs to this response boundary.  Invalid
+            # anchors must become a structured ERROR rather than escaping into
+            # generic PR-processing exception handling.
+            return _parse_error(
+                raw_response,
+                "schema_error",
+                "Malformed validator review anchor",
+                str(exc),
+            )
 
     # 2. Fallback: Parse structured text markers
     violated_req = ""

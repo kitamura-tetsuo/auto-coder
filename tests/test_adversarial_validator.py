@@ -33,6 +33,59 @@ from auto_coder.reviewer_session_registry import ReviewerSession
 from auto_coder.trace_logger import get_trace_logger
 
 
+def _demonstrated_finding_with_anchor(anchor_line: object) -> dict[str, object]:
+    return {
+        "requirement_id": "REQ-001",
+        "violated_requirement": "Preserve state",
+        "evidence_classification": "DEMONSTRATED",
+        "reachability": "The public update entry point reaches this branch",
+        "required_behavior": "State must be preserved",
+        "actual_behavior": "State is discarded",
+        "evidence": "src/state.py executes the destructive branch",
+        "counterexample": "Given saved state, when update runs, state is discarded while existing tests only cover empty state",
+        "anchor_path": "src/state.py",
+        "anchor_line": anchor_line,
+        "anchor_side": "RIGHT",
+        "anchor_start_line": None,
+    }
+
+
+@pytest.mark.parametrize("anchor_line", [1817, "1817"])
+def test_review_anchor_accepts_integer_and_normalizes_decimal_string(anchor_line: object) -> None:
+    response = json.dumps(
+        {
+            "result": "NEEDS_FIX",
+            "summary": "State loss found",
+            "findings": [_demonstrated_finding_with_anchor(anchor_line)],
+        }
+    )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert result.result == "NEEDS_FIX"
+    assert len(result.findings) == 1
+    assert result.findings[0].anchor_line == 1817
+    assert isinstance(result.findings[0].anchor_line, int)
+
+
+@pytest.mark.parametrize("anchor_line", ["abc", "0", "-1", 0, -1, 1.5, True])
+def test_invalid_review_anchor_returns_structured_schema_error(anchor_line: object) -> None:
+    response = json.dumps(
+        {
+            "result": "NEEDS_FIX",
+            "summary": "State loss found",
+            "findings": [_demonstrated_finding_with_anchor(anchor_line)],
+        }
+    )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "schema_error"
+    assert result.diagnostic_reason == "review anchor lines must be positive integers"
+    assert result.findings == []
+
+
 def test_parses_aggregated_change_provenance_clarification() -> None:
     response = json.dumps(
         {

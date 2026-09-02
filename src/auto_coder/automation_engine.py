@@ -1184,7 +1184,7 @@ class AutomationEngine:
                     # Check if there was an error during processing
                     if pr_result.error:
                         result.error = pr_result.error
-                    result.success = True
+                    result.success = pr_result.error is None
 
         except Exception as e:
             result.error = str(e)
