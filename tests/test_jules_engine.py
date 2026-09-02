@@ -1,7 +1,10 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.jules_engine import (
     SESSION_STATE_STOPPED,
     check_and_restart_recurrent_jules_task_for_pr,
@@ -315,6 +318,49 @@ This is a recurrent task prompt."""
         self.assertIn("This is a recurrent task prompt.", kwargs["prompt"])
         self.assertEqual(kwargs["repo_name"], "owner/repo")
         self.assertEqual(kwargs["title"], "auto improvement with demo site")
+
+    @patch("auto_coder.jules_engine.os.path.isdir", return_value=True)
+    @patch("auto_coder.jules_engine.glob.glob", return_value=["/path/to/prompts/recurrent_prompt.md"])
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_recurrent_jules_task_respects_and_durably_owns_implementation_slot(
+        self,
+        mock_jules_client_cls,
+        mock_open,
+        _mock_glob,
+        _mock_isdir,
+    ):
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent]
+name: [maintenance]
+---
+Maintain the repository."""
+        mock_open.return_value.__enter__.return_value = mock_file
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = []
+
+        with TemporaryDirectory() as temporary_directory:
+            slots = ImplementationSlotRepository(
+                "owner/repo",
+                1,
+                Path(temporary_directory) / "slots.json",
+            )
+            issue_owner = ImplementationOwner("issue", 100)
+            self.assertTrue(slots.reserve(issue_owner))
+
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_not_called()
+            self.assertEqual(slots.active_owners(), (issue_owner,))
+
+            slots.release(issue_owner)
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_called_once()
+            active_owners = slots.active_owners()
+            self.assertEqual(len(active_owners), 1)
+            self.assertEqual(active_owners[0].kind, "recurrent")
 
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")

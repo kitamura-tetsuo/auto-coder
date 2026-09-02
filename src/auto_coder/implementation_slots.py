@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import os
 import threading
@@ -73,7 +74,7 @@ class ImplementationSlotRepository:
     def _state_lock(self) -> Iterator[None]:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self._thread_lock:
-            with open(self.lock_path, "a+", encoding="utf-8") as lock_file:
+            with io.open(self.lock_path, "a+", encoding="utf-8") as lock_file:
                 os.chmod(self.lock_path, 0o600)
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:
@@ -85,7 +86,7 @@ class ImplementationSlotRepository:
         if not self.storage_path.exists():
             return {}
         try:
-            with open(self.storage_path, encoding="utf-8") as state_file:
+            with io.open(self.storage_path, encoding="utf-8") as state_file:
                 value = json.load(state_file)
             if not isinstance(value, dict):
                 raise ValueError("slot state root must be an object")
@@ -223,12 +224,17 @@ class ImplementationSlotRepository:
                     if linked_prs_terminal:
                         self.release(owner)
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
-                else:
+                elif owner.kind == "pr":
                     item = github_client.get_pull_request(self.repo_name, owner.number)
                     details = github_client.get_pr_details(item)
                     if details.get("state", "").lower() == "closed" or details.get("merged") is True:
                         self.release(owner)
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
+                elif owner.kind != "recurrent":
+                    raise ImplementationSlotUnavailable(f"Unknown implementation owner kind: {owner.kind}")
+                # Recurrent Jules ownership is reconciled by the Jules scan,
+                # which has the provider session evidence needed to decide
+                # whether that implementation is terminal. Retain it here.
             except Exception as exc:
                 logger.warning(f"Could not reconcile logical implementation {owner.key}; retaining its slot: {exc}")
 
@@ -251,7 +257,7 @@ class ImplementationSlotRepository:
 
             mutation_lock_path = self.storage_path.parent / f"implementation-{owner.kind}-{owner.number}.lock"
             mutation_lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(mutation_lock_path, "a+", encoding="utf-8") as lock_file:
+            with io.open(mutation_lock_path, "a+", encoding="utf-8") as lock_file:
                 os.chmod(mutation_lock_path, 0o600)
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:

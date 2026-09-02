@@ -117,7 +117,11 @@ class AutomationEngine:
     async def check_and_start_recurrent_jules_tasks_async(self, repo_name: str) -> None:
         """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
         try:
-            await asyncio.to_thread(check_and_start_recurrent_jules_tasks, repo_name)
+            await asyncio.to_thread(
+                check_and_start_recurrent_jules_tasks,
+                repo_name,
+                self._get_implementation_slots(repo_name),
+            )
         except Exception as e:
             logger.error(f"Error checking/starting recurrent Jules tasks: {e}")
 
@@ -1439,7 +1443,7 @@ class AutomationEngine:
                 self.handle_stale_jules_issue_sessions(repo_name)
 
                 # Check and start recurrent Jules tasks
-                check_and_start_recurrent_jules_tasks(repo_name)
+                check_and_start_recurrent_jules_tasks(repo_name, self._get_implementation_slots(repo_name))
 
                 # Pull latest changes for monitored repository
                 try:

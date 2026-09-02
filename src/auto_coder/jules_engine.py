@@ -3,6 +3,7 @@ Jules engine module for managing Jules sessions.
 """
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 from dateutil import parser
 
+from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .jules_client import JulesClient
 from .llm_backend_config import get_jules_session_expiration_days_from_config
 from .logger_config import get_logger
@@ -498,7 +500,17 @@ def _normalize_tags(tags: Any) -> List[str]:
     return [str(tags).strip().lower()]
 
 
-def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
+def _recurrent_implementation_owner(repo_name: str, names: List[str]) -> ImplementationOwner:
+    """Return a stable owner for one repository's recurrent prompt."""
+    identity = f"{repo_name}\0{'\0'.join(name.strip().lower() for name in names)}"
+    number = int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest()[:8], "big")
+    return ImplementationOwner("recurrent", number)
+
+
+def check_and_start_recurrent_jules_tasks(
+    repo_name: str,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
+) -> None:
     """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
     try:
         prompts_dir = os.path.join(os.getcwd(), ".auto-coder", "prompts")
@@ -510,6 +522,12 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
         if not md_files:
             logger.debug(f"No prompt files (*.md) found in {prompts_dir}")
             return
+
+        if implementation_slots is None:
+            from .automation_config import AutomationConfig
+
+            config = AutomationConfig()
+            implementation_slots = ImplementationSlotRepository(repo_name, config.MAX_CONCURRENT_IMPLEMENTATIONS)
 
         jules_client = JulesClient()
         try:
@@ -539,6 +557,8 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
             if not names:
                 logger.warning(f"Prompt file {file_path} has jules and recurrent tags but no valid name. Skipping.")
                 continue
+
+            owner = _recurrent_implementation_owner(repo_name, names)
 
             is_running = False
             for session in sessions:
@@ -643,6 +663,9 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
 
             if not is_running:
                 logger.info(f"No active Jules session found for recurrent prompt: {names}. Starting a new Jules session...")
+                if not implementation_slots.reserve(owner):
+                    logger.info(f"Deferring recurrent Jules implementation {names}: all implementation slots are occupied")
+                    continue
                 try:
                     from .automation_config import AutomationConfig
 
@@ -650,9 +673,18 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                     base_branch = config.MAIN_BRANCH
 
                     session_title = names[0]
-                    new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                    with implementation_slots.serialize(owner):
+                        new_session_id = jules_client.start_session(
+                            prompt=full_prompt,
+                            repo_name=repo_name,
+                            base_branch=base_branch,
+                            title=session_title,
+                        )
                     logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
                 except Exception as e:
+                    # No asynchronous implementation exists when submission
+                    # itself fails, so this reservation is safe to release.
+                    implementation_slots.release(owner)
                     logger.error(f"Failed to start new recurrent Jules session for {names}: {e}")
 
     except Exception as e:
