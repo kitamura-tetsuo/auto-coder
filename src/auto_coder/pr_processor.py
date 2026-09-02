@@ -4005,7 +4005,14 @@ def _load_pr_delivered_review_feedback(github_client: Optional[Any], repo_name: 
     if github_client is None or not feedback:
         return set()
     comments = github_client.get_pr_comments(repo_name, pr_number)
-    bodies = "\n".join(comment.get("body", "") for comment in comments if isinstance(comment, dict))
+    receipt_comments = [comment for comment in comments if isinstance(comment, dict) and CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX in str(comment.get("body", ""))]
+    if not receipt_comments:
+        return set()
+    trusted_login = github_client.get_authenticated_user_login()
+    if not isinstance(trusted_login, str) or not trusted_login.strip():
+        raise ValueError("authenticated GitHub receipt author is unavailable")
+    trusted_login = trusted_login.strip().lower()
+    bodies = "\n".join(comment.get("body", "") for comment in receipt_comments if isinstance(comment.get("user"), dict) and str(comment["user"].get("login", "")).strip().lower() == trusted_login)
     return {identity for identity in feedback if f"<!-- {CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX}{hashlib.sha256(identity.encode('utf-8')).hexdigest()} -->" in bodies}
 
 

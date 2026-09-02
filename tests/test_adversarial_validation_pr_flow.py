@@ -626,6 +626,7 @@ class TestAdversarialValidationCodexFeedback:
         )
         client = MagicMock()
         client.get_pr_comments.return_value = []
+        client.get_authenticated_user_login.return_value = "auto-coder-bot"
         client.get_pr_review_threads_strict.return_value = [thread]
         cloud_client = MagicMock()
         cloud_client.continue_if_paused.return_value = True
@@ -645,7 +646,7 @@ class TestAdversarialValidationCodexFeedback:
         ):
             _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, client, [finding])
             durable_receipt = client.add_comment_to_pr.call_args.args[2]
-            client.get_pr_comments.return_value = [{"body": durable_receipt}]
+            client.get_pr_comments.return_value = [{"body": durable_receipt, "user": {"login": "auto-coder-bot"}}]
             actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
         cloud_client.continue_if_paused.assert_called_once()

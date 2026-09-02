@@ -9,9 +9,11 @@ from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
     ClaimedReviewThreadGateState,
     CodexReviewState,
+    _cloud_review_feedback_markers,
     _delegate_codex_cloud_review_thread_repair,
     _handle_pr_merge,
     _process_pr_for_merge,
+    _review_feedback_identity,
 )
 from auto_coder.review_thread_validation import ClaimedReviewThread
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
@@ -175,6 +177,30 @@ def test_failed_review_feedback_delivery_remains_retryable(tmp_path) -> None:
 
     assert send_followup.call_count == 2
     assert state_path.exists()
+
+
+def test_implementer_cannot_forge_a_cloud_delivery_receipt(tmp_path) -> None:
+    state_path = tmp_path / "review-repairs.json"
+    thread = _thread()
+    prefix = "owner/repo#5262:task_review_5262:"
+    identity = _review_feedback_identity(prefix, thread, 0)
+    client = MagicMock()
+    client.get_authenticated_user_login.return_value = "auto-coder-bot"
+    client.get_pr_comments.return_value = [
+        {
+            "body": _cloud_review_feedback_markers([identity]),
+            "user": {"login": "maintainer"},
+        }
+    ]
+
+    with (
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        actions = _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), github_client=client, unresolved_threads=(thread,))
+
+    send_followup.assert_called_once()
+    assert actions == ["Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262"]
 
 
 def test_non_codex_pr_preserves_generic_review_gate() -> None:
