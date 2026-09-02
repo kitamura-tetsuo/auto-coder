@@ -6,12 +6,15 @@ A Jules session that works on an issue for longer than
 implemented by the backend_with_high_score backend instead.
 """
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from src.auto_coder.issue_processor import handle_stale_jules_issue_sessions
 
 
@@ -55,7 +58,7 @@ def config() -> AutomationConfig:
 class TestHandleStaleJulesIssueSessions:
     """Test cases for handle_stale_jules_issue_sessions."""
 
-    def _run(self, sessions, github_client, config, issue_number=42, stopped=False, backend_manager=None):
+    def _run(self, sessions, github_client, config, issue_number=42, stopped=False, backend_manager=None, implementation_slots=None):
         jules_client = MagicMock()
         jules_client.list_sessions.return_value = sessions
 
@@ -76,9 +79,40 @@ class TestHandleStaleJulesIssueSessions:
                 return_value=backend_manager,
             ),
         ):
-            result = handle_stale_jules_issue_sessions("owner/repo", config, github_client)
+            result = handle_stale_jules_issue_sessions(
+                "owner/repo",
+                config,
+                github_client,
+                implementation_slots=implementation_slots,
+            )
 
         return result, jules_client, take_actions, mark_stopped, increment
+
+    def test_fallback_serializes_with_linked_pr_owner(self, config, tmp_path):
+        """A stale fallback cannot mutate while its Issue-rooted PR owns the lock."""
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        owner = ImplementationOwner("issue", 42)
+        started = Event()
+
+        def run_fallback():
+            started.set()
+            return self._run(
+                [_session("sess-1", age_hours=13)],
+                _github_client(),
+                config,
+                implementation_slots=slots,
+            )
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with slots.serialize(owner):
+                future = executor.submit(run_fallback)
+                assert started.wait(timeout=1)
+                with pytest.raises(TimeoutError):
+                    future.result(timeout=0.1)
+
+            result, *_ = future.result(timeout=2)
+
+        assert result.issue_numbers == [42]
 
     def test_stops_session_and_delegates_to_high_score_backend(self, config):
         """A session older than the timeout without a PR is stopped and handed over."""
@@ -344,7 +378,12 @@ class TestAutomationEngineHook:
         with patch("src.auto_coder.issue_processor.handle_stale_jules_issue_sessions", return_value=stale_result) as mock_handle:
             actions = engine.handle_stale_jules_issue_sessions("owner/repo")
 
-        mock_handle.assert_called_once_with("owner/repo", config, github_client)
+        mock_handle.assert_called_once_with(
+            "owner/repo",
+            config,
+            github_client,
+            implementation_slots=engine._get_implementation_slots("owner/repo"),
+        )
         assert actions == stale_result.actions
 
     def test_engine_swallows_errors(self, config):

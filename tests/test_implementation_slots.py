@@ -9,6 +9,7 @@ from auto_coder.implementation_slots import (
     ImplementationOwnerResolutionError,
     ImplementationSlotRepository,
 )
+from auto_coder.llm_backend_config import get_max_concurrent_implementations_from_config
 
 
 class GitHubState:
@@ -103,6 +104,18 @@ def test_atomic_reservation_never_exceeds_limit(tmp_path):
 def test_configuration_rejects_non_positive_limit(tmp_path):
     with pytest.raises(ValueError, match="positive integer"):
         repository(tmp_path, limit=0)
+
+
+@pytest.mark.parametrize("invalid_value", ["true", "1.5", '"1"'])
+def test_configuration_rejects_non_integer_toml_values(tmp_path, invalid_value):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"[process_issues]\nmax_concurrent_implementations = {invalid_value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="positive integer"):
+        get_max_concurrent_implementations_from_config(str(config_path))
 
 
 def test_same_owner_serialization_is_reentrant(tmp_path):

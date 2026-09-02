@@ -1650,10 +1650,9 @@ def get_max_concurrent_implementations_from_config(
         key="max_concurrent_implementations",
         default=1,
         config_path=config_path,
-        value_type=int,
         repo_name=repo_name,
     )
-    if isinstance(value, bool) or value < 1:
+    if type(value) is not int or value < 1:
         raise ValueError("[process_issues].max_concurrent_implementations must be a positive integer")
     return value
 

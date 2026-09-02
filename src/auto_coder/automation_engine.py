@@ -126,7 +126,12 @@ class AutomationEngine:
         from .issue_processor import handle_stale_jules_issue_sessions
 
         try:
-            stale_result = handle_stale_jules_issue_sessions(repo_name, self.config, self.github)
+            stale_result = handle_stale_jules_issue_sessions(
+                repo_name,
+                self.config,
+                self.github,
+                implementation_slots=self._get_implementation_slots(repo_name),
+            )
             for action in stale_result.actions:
                 logger.info(f"Stale Jules issue session: {action}")
             return stale_result.actions
@@ -1067,6 +1072,29 @@ class AutomationEngine:
             actions=[],
             error=None,
         )
+
+        # Reject candidates that cannot enter an implementation lifecycle before
+        # persisting ownership.  Otherwise an open but ineligible item can leak a
+        # slot indefinitely because reconciliation correctly sees it as nonterminal.
+        item_number = candidate.data.get("number")
+        if not isinstance(item_number, int) or isinstance(item_number, bool):
+            result.error = f"Item number is missing for {candidate.type} #{candidate.data.get('number', 'N/A')}"
+            return result
+        if candidate.type == "pr" and not self._is_pr_author_allowed(candidate.data):
+            logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
+            return result
+        if candidate.type == "issue":
+            if not self._is_issue_author_allowed(candidate.data):
+                logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
+                return result
+            try:
+                authoritative_type = self._get_authoritative_item_type(repo_name, item_number)
+            except Exception as exc:
+                result.error = str(exc)
+                return result
+            if authoritative_type != "issue":
+                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as {authoritative_type}"
+                return result
 
         slots = self._get_implementation_slots(repo_name)
         try:

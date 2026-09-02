@@ -7,6 +7,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 """Tests for automation engine functionality."""
@@ -127,6 +128,28 @@ class TestAutomationEngine:
         implementation_backend.assert_not_called()
         increment.assert_not_called()
         cloud_runs.assert_not_called()
+
+    def test_ineligible_issue_does_not_reserve_implementation_slot(self, tmp_path):
+        """An allowlist rejection must leave capacity for eligible work."""
+        github = MagicMock()
+        config = AutomationConfig()
+        config.ISSUE_ALLOWLIST = [123]
+        engine = AutomationEngine(github, config=config)
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="issue",
+            data={"number": 42, "title": "Untrusted", "author_id": 999},
+            priority=0,
+        )
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error is None
+        assert slots.active_owners() == ()
+        assert slots.reserve(ImplementationOwner("issue", 200)) is True
 
     def test_issue_dispatch_fails_closed_when_type_lookup_fails(self):
         """An unavailable authoritative type lookup must not authorize Issue work."""
