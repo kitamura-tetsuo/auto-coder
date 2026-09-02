@@ -119,17 +119,19 @@ def test_review_summary_publishes_concrete_still_valid_provenance(rationale: str
     body = format_adversarial_review_summary(result, "abc123")
 
     assert "Issue requirements remain verified" in body
-    assert "`provenance-1`: **STILL_VALID**" in body
-    assert rationale not in body
-    assert evidence not in body
-    assert "details remain in the existing thread" in body
+    assert "`provenance-1`: STILL_VALID" in body
+    assert rationale in body
+    assert evidence in body
 
 
 def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None:
     shared = {
         "evidence_classification": "DEMONSTRATED",
         "reachability": "The status handler reaches the exception branch",
+        "required_behavior": "Propagate the fatal lookup failure and record FAILED",
+        "actual_behavior": "Returns success while leaving the previous success status",
         "evidence": "handler.py:42 catches and returns",
+        "counterexample": "Given a lookup error, when status runs, then failure must propagate as FAILED, but SUCCESS remains, and tests omit errors",
         "anchor_path": "handler.py",
         "suggested_regression_scenario": "Raise from lookup and assert failed status",
     }
@@ -141,17 +143,11 @@ def test_one_counterexample_compacts_multiple_requirement_perspectives() -> None
                     **shared,
                     "requirement_id": "REQ-001",
                     "violated_requirement": "Failures propagate",
-                    "required_behavior": "Propagate fatal lookup failure",
-                    "actual_behavior": "Returns success",
-                    "counterexample": "Given a lookup error, when status runs, then failure must propagate, but success is returned, and tests omit errors",
                 },
                 {
                     **shared,
                     "requirement_id": "REQ-002",
                     "violated_requirement": "Status distinguishes failure",
-                    "required_behavior": "Record a failed structured status",
-                    "actual_behavior": "Leaves the previous success status",
-                    "counterexample": "Given the same lookup error, when status runs, then FAILED is required, but SUCCESS remains, and tests omit errors",
                 },
             ],
         }
@@ -186,6 +182,30 @@ def test_materially_different_corrections_are_not_compacted() -> None:
             ],
         }
     )
+
+    result = parse_adversarial_validation_response(response)
+
+    assert len(result.findings) == 2
+
+
+@pytest.mark.parametrize("contract_field", ["required_behavior", "actual_behavior", "counterexample"])
+def test_different_observable_failure_contracts_are_not_compacted(contract_field: str) -> None:
+    common = {
+        "requirement_ids": ["REQ-001"],
+        "violated_requirement": "Operation failures must be reported",
+        "evidence_classification": "DEMONSTRATED",
+        "reachability": "The same public handler reaches this return",
+        "required_behavior": "Return FAILED",
+        "actual_behavior": "Returns SUCCESS",
+        "evidence": "handler.py:42 returns without propagating",
+        "counterexample": "Given a lookup error, the handler returns SUCCESS",
+        "anchor_path": "handler.py",
+        # Omit suggested_regression_scenario so both receive the same default,
+        # matching the dangerous case from AC-005.
+    }
+    different_contract = dict(common)
+    different_contract[contract_field] = f"Materially different {contract_field}"
+    response = json.dumps({"result": "NEEDS_FIX", "findings": [common, different_contract]})
 
     result = parse_adversarial_validation_response(response)
 

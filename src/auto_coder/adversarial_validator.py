@@ -418,7 +418,19 @@ def format_adversarial_review_summary(
     if unresolved_dispositions:
         body += "\n\n### Unresolved review-thread dispositions"
         for disposition in unresolved_dispositions:
-            body += f"\n- `{_bounded_comment_field(disposition.thread_id)}`: **{disposition.status}** (details remain in the existing thread)"
+            body += "\n\n" + "\n".join(
+                [
+                    f"#### `{_bounded_comment_field(disposition.thread_id)}`: {disposition.status}",
+                    "",
+                    "**Current rationale**",
+                    "",
+                    _bounded_comment_field(disposition.rationale),
+                    "",
+                    "**Current evidence**",
+                    "",
+                    _bounded_comment_field(disposition.evidence),
+                ]
+            )
     return body
 
 
@@ -1500,18 +1512,19 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 compacted_findings: List[AdversarialValidationFinding] = []
                 findings_by_counterexample: Dict[tuple[str, ...], AdversarialValidationFinding] = {}
                 for finding in findings:
-                    # Requirement-perspective descriptions (required/actual
-                    # behavior and counterexample wording) may legitimately
-                    # differ even when they point to the same production
-                    # defect.  The demonstrated path, evidence, anchor, and
-                    # correction/test oracle form the concrete identity.  A
-                    # materially different fix or oracle therefore remains a
-                    # separate actionable finding.
+                    # Compact only when both the production path and complete
+                    # observable failure contract match. Similar location or
+                    # evidence cannot establish semantic equivalence: retaining
+                    # required/actual behavior and the counterexample prevents
+                    # an independently actionable defect from being discarded.
                     identity = (
                         finding.anchor_path,
                         str(finding.anchor_line or ""),
                         finding.reachability,
+                        finding.required_behavior,
+                        finding.actual_behavior,
                         finding.evidence,
+                        finding.counterexample,
                         finding.suggested_regression_scenario,
                     )
                     existing = findings_by_counterexample.get(identity)
