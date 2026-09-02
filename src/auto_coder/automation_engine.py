@@ -504,7 +504,13 @@ class AutomationEngine:
         - Creation time ascending (oldest first)
         """
         from .issue_context import extract_linked_issues_from_pr_body
-        from .pr_processor import _close_empty_pr, _close_stale_jules_pr, _is_dependabot_pr, _is_jules_pr
+        from .pr_processor import (
+            _close_empty_pr,
+            _close_stale_jules_pr,
+            _is_dependabot_pr,
+            _is_jules_pr,
+            _reject_unsafe_codex_cloud_pr,
+        )
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
@@ -529,6 +535,25 @@ class AutomationEngine:
             # Sort by creation date ascending (oldest first) to match processing order expectation
             pr_data_list.sort(key=lambda x: x.get("created_at", ""))
 
+            safe_pr_data_list = []
+            for pr_data in pr_data_list:
+                pr_number = pr_data.get("number")
+                if not isinstance(pr_number, int):
+                    logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
+                    continue
+
+                # Branch identity is a safety invariant, not a normal PR
+                # processing decision. Reject unsafe Codex Cloud heads before
+                # even preloading CI, or author/label/CI gates can defer them
+                # indefinitely.
+                unsafe_branch_result = _reject_unsafe_codex_cloud_pr(self.github, repo_name, pr_data, self.config)
+                if unsafe_branch_result.closed:
+                    for action in unsafe_branch_result.actions:
+                        logger.info(f"PR #{pr_number}: {action}")
+                    continue
+                safe_pr_data_list.append(pr_data)
+
+            pr_data_list = safe_pr_data_list
             preload_github_actions_status(repo_name, pr_data_list)
 
             # Lazy-load repository object if needed for Jules PRs
@@ -1048,6 +1073,15 @@ class AutomationEngine:
             # Ensure item_number is not None
             if item_number is None:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
+
+            if item_type == "pr":
+                from .pr_processor import _reject_unsafe_codex_cloud_pr
+
+                unsafe_branch_result = _reject_unsafe_codex_cloud_pr(self.github, repo_name, candidate.data, config)
+                if unsafe_branch_result.closed:
+                    result.actions = list(unsafe_branch_result.actions)
+                    result.success = True
+                    return result
 
             # Check author allowlists before any processing or API actions
             if item_type == "pr" and not self._is_pr_author_allowed(candidate.data):

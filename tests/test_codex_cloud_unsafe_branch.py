@@ -102,35 +102,35 @@ def test_task_specific_codex_branch_and_non_codex_work_branch_are_not_rejected(
     github_client.close_pr.assert_not_called()
 
 
-def test_automation_engine_routes_empty_work_pr_to_existing_cloud_task(
+@pytest.mark.parametrize("changed_files", [0, 22])
+def test_automation_engine_rejects_work_pr_before_label_and_in_progress_ci_gates(
     config: AutomationConfig,
     github_client: MagicMock,
+    changed_files: int,
 ) -> None:
     """Candidate collection and worker dispatch must not consume the PR as generically empty."""
-    config.CHECK_LABELS = False
-    pr_data = codex_pr(changed_files=0)
+    pr_data = codex_pr(changed_files=changed_files)
     pr_data.update({"created_at": "2026-01-01T00:00:00Z", "labels": [], "mergeable": True})
     github_client.get_open_prs_json.return_value = [pr_data]
     github_client.get_open_issues_json.return_value = []
     engine = AutomationEngine(github_client, config=config)
 
     with (
-        patch("auto_coder.util.github_action.preload_github_actions_status"),
-        patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=True),
+        patch("auto_coder.util.github_action.preload_github_actions_status") as preload_ci,
+        patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=False) as ci_gate,
         patch("auto_coder.util.github_action._check_github_actions_status", return_value=MagicMock(success=True)),
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as followup,
+        patch("auto_coder.automation_engine.LabelManager") as label_gate,
         patch("auto_coder.pr_processor.increment_attempt") as increment,
         patch("auto_coder.pr_processor._release_issue_processing_label") as release_label,
     ):
         candidates = engine._get_candidates("owner/repo")
-        assert len(candidates) == 1
-        assert candidates[0].type == "pr"
 
-        result = engine._process_single_candidate("owner/repo", candidates[0])
-
-    assert result.success is True
-    assert any("in-flight Codex Cloud reissue flow" in action for action in result.actions)
+    assert candidates == []
     github_client.close_pr.assert_called_once()
     followup.assert_called_once()
+    preload_ci.assert_called_once_with("owner/repo", [])
+    label_gate.assert_not_called()
+    ci_gate.assert_not_called()
     increment.assert_not_called()
     release_label.assert_not_called()
