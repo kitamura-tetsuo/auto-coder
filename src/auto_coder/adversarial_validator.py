@@ -1514,11 +1514,10 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 compacted_findings: List[AdversarialValidationFinding] = []
                 findings_by_counterexample: Dict[tuple[str, ...], AdversarialValidationFinding] = {}
                 for finding in findings:
-                    # Compact only when both the production path and complete
-                    # observable failure contract match. Similar location or
-                    # evidence cannot establish semantic equivalence: retaining
-                    # required/actual behavior and the counterexample prevents
-                    # an independently actionable defect from being discarded.
+                    # An explicit root-defect identity permits requirement
+                    # perspectives to describe different consequences. Without
+                    # one, require the complete observable contract to match so
+                    # independently actionable defects cannot be discarded.
                     shared_identity = (
                         finding.anchor_path,
                         str(finding.anchor_line or ""),
