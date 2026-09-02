@@ -1245,13 +1245,23 @@ class AutomationEngine:
         API represents pull requests as issue-like objects, and candidates can
         arrive already misclassified from stale collections, explicit
         target_type arguments, or other internal enqueue paths. This performs
-        an uncached lookup and fails closed (raises) whenever the type cannot
-        be established, rather than treating a lookup failure as confirmation
-        that the target is an Issue.
+        a cache-bypassing lookup (GitHubClient.get_item_type_strict, which
+        talks to GitHub directly rather than through the shared hishel cache)
+        and fails closed (raises) whenever the type cannot be established,
+        rather than treating a lookup failure -- or a possibly-stale cached
+        response -- as confirmation that the target is an Issue.
         """
-        strict_getter = getattr(type(self.github), "get_issue_strict", None)
-        item = strict_getter(self.github, repo_name, item_number) if strict_getter is not None else self.github.get_issue(repo_name, item_number)
+        strict_type_getter = getattr(type(self.github), "get_item_type_strict", None)
+        if strict_type_getter is not None:
+            item_type = strict_type_getter(self.github, repo_name, item_number)
+            if item_type not in ("issue", "pr"):
+                raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
+            return item_type
 
+        # Test doubles and alternate GitHubClient implementations may not
+        # implement the cache-bypassing lookup. Fall back to the raw Issues
+        # API representation rather than assuming the candidate is correct.
+        item = self.github.get_issue(repo_name, item_number)
         if item is None:
             raise ValueError(f"GitHub item type lookup failed for {repo_name}#{item_number}")
 

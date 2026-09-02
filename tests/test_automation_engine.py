@@ -96,9 +96,9 @@ class TestAutomationEngine:
         """A pull request presented as an Issue candidate must never reach Issue dispatch."""
 
         class GitHubStub:
-            def get_issue_strict(self, repo_name, item_number):
+            def get_item_type_strict(self, repo_name, item_number):
                 assert (repo_name, item_number) == ("owner/repo", 5266)
-                return {"number": 5266, "pull_request": {"url": "https://api.github.com/..."}}
+                return "pr"
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         candidate = Candidate(
@@ -132,7 +132,7 @@ class TestAutomationEngine:
         """An unavailable authoritative type lookup must not authorize Issue work."""
 
         class GitHubStub:
-            def get_issue_strict(self, repo_name, item_number):
+            def get_item_type_strict(self, repo_name, item_number):
                 raise RuntimeError("GitHub unavailable")
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
@@ -159,8 +159,8 @@ class TestAutomationEngine:
         """An explicit target_type='issue' request is still checked against GitHub state."""
 
         class GitHubStub:
-            def get_issue_strict(self, repo_name, item_number):
-                return {"number": 200, "pull_request": {}}
+            def get_item_type_strict(self, repo_name, item_number):
+                return "pr"
 
             def get_issue(self, repo_name, item_number):
                 raise AssertionError("PR rejection must happen before issue hydration")
@@ -169,12 +169,60 @@ class TestAutomationEngine:
 
         assert engine._create_candidate_from_single("owner/repo", "issue", 200) is None
 
+    def test_stale_cached_issue_data_cannot_satisfy_the_guard(self):
+        """A cached issue-shaped response must not stand in for the authoritative type.
+
+        Simulates a candidate built from stale cached Issue data (e.g. via
+        get_issue/get_issue_strict, which go through the shared hishel cache) for a
+        number that GitHub's *current* state identifies as a pull request. The
+        cache-bypassing get_item_type_strict lookup must be consulted -- and win --
+        so Issue dispatch still stops before any Issue lifecycle side effect.
+        """
+
+        class GitHubStub:
+            def get_issue_strict(self, repo_name, item_number):
+                # Stale cached response: still looks like an ordinary open Issue.
+                return {"number": 5266, "title": "Cloud-created PR", "state": "open"}
+
+            def get_item_type_strict(self, repo_name, item_number):
+                # Authoritative, cache-bypassing lookup: GitHub now reports a PR.
+                assert (repo_name, item_number) == ("owner/repo", 5266)
+                return "pr"
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        candidate = Candidate(
+            type="issue",
+            data={
+                "number": 5266,
+                "title": "Cloud-created PR",
+                "labels": ["@auto-coder"],
+            },
+            priority=0,
+            issue_number=5266,
+        )
+
+        with (
+            patch("auto_coder.automation_engine.LabelManager") as label_manager,
+            patch.object(engine, "_take_issue_actions") as implementation_backend,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.cloud_run.CloudRunRepository") as cloud_runs,
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error == "Refusing Issue dispatch for owner/repo#5266: GitHub identifies the target as pr"
+        label_manager.assert_not_called()
+        implementation_backend.assert_not_called()
+        increment.assert_not_called()
+        cloud_runs.assert_not_called()
+
     def test_genuine_issue_candidate_still_dispatches(self):
         """A genuine Issue must retain normal single-candidate dispatch behavior."""
 
         class GitHubStub:
-            def get_issue_strict(self, repo_name, item_number):
-                return {"number": 300}
+            def get_item_type_strict(self, repo_name, item_number):
+                return "issue"
 
             def get_all_sub_issues(self, repo_name, item_number):
                 return []

@@ -804,6 +804,35 @@ class GitHubClient:
         api = get_ghapi_client(self.token)
         return api.issues.get(owner, repo, issue_number)
 
+    @retry_with_backoff()
+    def get_item_type_strict(self, repo_name: str, item_number: int) -> str:
+        """Return GitHub's authoritative type ("issue" or "pr") for an issue-like item.
+
+        This deliberately bypasses the shared hishel-backed caching client
+        (``get_caching_client()`` / ``get_ghapi_client()``): it is a safety gate for
+        starting Issue implementation work, so it must reflect GitHub's current state
+        rather than a possibly-stale cached response. GitHub's Issues REST endpoint
+        returns both issues and pull requests; a pull request is distinguished by the
+        presence of the ``pull_request`` field.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{item_number}"
+        with httpx.Client() as client:
+            response = client.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            item = response.json()
+
+        if not isinstance(item, dict) or item.get("number") != item_number:
+            raise ValueError(f"GitHub returned an ambiguous item for {repo_name}#{item_number}")
+        return "pr" if "pull_request" in item else "issue"
+
     def get_issue_details(self, issue: Any) -> Dict[str, Any]:
         """Extract detailed information from an issue.
 
