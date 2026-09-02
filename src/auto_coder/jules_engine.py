@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import yaml
 from dateutil import parser
 
-from .jules_client import JulesClient
+from .jules_client import JulesClient, JulesSessionRejectedError
 from .llm_backend_config import get_jules_session_expiration_days_from_config
 from .logger_config import get_logger
 from .util.gh_cache import GitHubClient
@@ -715,6 +715,10 @@ def check_and_start_recurrent_jules_tasks(
                         if not implementation_slots.record_provider_session(owner, str(new_session_id)):
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                     logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
+                except JulesSessionRejectedError as e:
+                    if implementation_slots is not None:
+                        implementation_slots.release(owner)
+                    logger.error(f"Jules rejected recurrent session creation for {names}: {e}")
                 except Exception as e:
                     # Submission failure means no external implementation was
                     # created.  Once Jules accepts the task, however, uncertain

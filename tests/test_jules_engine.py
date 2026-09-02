@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.jules_client import JulesSessionRejectedError
 from auto_coder.jules_engine import (
     SESSION_STATE_STOPPED,
     _recurrent_implementation_owner,
@@ -532,6 +533,32 @@ Maintain the application."""
             jules.start_session.assert_called_once()
             state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
             self.assertEqual(state[owner.key]["provider_sessions"], ["accepted-despite-timeout"])
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_authoritative_recurrent_rejection_releases_slot(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt_path.write_text(
+                """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application.""",
+                encoding="utf-8",
+            )
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = []
+            jules.start_session.side_effect = JulesSessionRejectedError("Failed to start Jules session: HTTP 400: invalid prompt")
+
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            self.assertEqual(slots.active_owners(), ())
+            self.assertTrue(slots.reserve(ImplementationOwner("issue", 200)))
 
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")

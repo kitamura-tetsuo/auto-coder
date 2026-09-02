@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 import requests
 
-from src.auto_coder.jules_client import JulesClient
+from src.auto_coder.jules_client import JulesClient, JulesSessionOutcomeUncertainError, JulesSessionRejectedError
 
 
 class TestJulesClient:
@@ -218,7 +218,7 @@ class TestJulesClient:
 
         client = JulesClient()
 
-        with pytest.raises(RuntimeError, match="Failed to start Jules session"):
+        with pytest.raises(JulesSessionRejectedError, match="Failed to start Jules session"):
             client.start_session("Test prompt", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")
@@ -239,7 +239,7 @@ class TestJulesClient:
 
         client = JulesClient()
 
-        with pytest.raises(RuntimeError, match="Failed to start Jules session"):
+        with pytest.raises(JulesSessionOutcomeUncertainError, match="Failed to start Jules session"):
             client.start_session("Test prompt", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")
