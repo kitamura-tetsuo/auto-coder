@@ -10,6 +10,7 @@ from auto_coder.implementation_slots import (
     ImplementationSlotRepository,
 )
 from auto_coder.llm_backend_config import get_max_concurrent_implementations_from_config
+from auto_coder.util.gh_cache import GitHubClient
 
 
 class GitHubState:
@@ -33,7 +34,7 @@ class GitHubState:
     def get_pr_details(self, pr):
         return pr
 
-    def get_linked_prs(self, _repo, issue_number):
+    def get_linked_prs(self, _repo, issue_number, strict=False):
         return self.linked_prs.get(issue_number, [])
 
 
@@ -106,6 +107,26 @@ def test_closed_issue_retains_slot_while_sibling_pr_is_open(tmp_path):
     assert sibling_owner == issue_owner
     assert slots.reserve(sibling_owner) is True
     assert slots.active_owners() == (issue_owner,)
+
+
+def test_reconciliation_retains_slot_when_production_timeline_is_unavailable(tmp_path, monkeypatch):
+    slots = repository(tmp_path)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner) is True
+    github = GitHubClient("token")
+    monkeypatch.setattr(github, "get_issue", lambda _repo, _number: {"number": 100, "state": "closed"})
+    monkeypatch.setattr(github, "get_issue_details", lambda issue: issue)
+
+    class UnavailableTimeline:
+        def get(self, _url, headers=None):
+            raise RuntimeError("timeline offline")
+
+    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: UnavailableTimeline())
+
+    slots.reconcile(github)
+
+    assert slots.active_owners() == (issue_owner,)
+    assert slots.reserve(ImplementationOwner("issue", 200)) is False
 
 
 def test_pr_resolution_failure_is_not_treated_as_standalone(tmp_path):

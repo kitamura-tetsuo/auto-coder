@@ -148,7 +148,7 @@ class ImplementationSlotRepository:
                     # example, a sibling PR waiting for CI or review).  Use the
                     # existing authoritative Issue-to-PR relationship lookup;
                     # an unavailable lookup raises and retains the slot.
-                    linked_pr_numbers = github_client.get_linked_prs(self.repo_name, owner.number)
+                    linked_pr_numbers = github_client.get_linked_prs(self.repo_name, owner.number, strict=True)
                     linked_prs_terminal = True
                     for pr_number in linked_pr_numbers:
                         pull_request = github_client.get_pull_request(self.repo_name, pr_number)

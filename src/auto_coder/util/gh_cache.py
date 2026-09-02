@@ -989,7 +989,12 @@ class GitHubClient:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
-    def _get_issue_timeline(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+    def _get_issue_timeline(
+        self,
+        repo_name: str,
+        issue_number: int,
+        raise_on_error: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Get timeline for an issue using GitHub REST API.
 
         Endpoint: /repos/{owner}/{repo}/issues/{issue_number}/timeline
@@ -1016,16 +1021,18 @@ class GitHubClient:
 
         except Exception as e:
             logger.warning(f"Failed to get timeline for issue #{issue_number}: {e}")
+            if raise_on_error:
+                raise
             return []
 
-    def get_linked_prs(self, repo_name: str, issue_number: int) -> List[int]:
+    def get_linked_prs(self, repo_name: str, issue_number: int, strict: bool = False) -> List[int]:
         """Get PRs linked to this issue via REST Timeline.
 
         Replaces get_linked_prs_via_graphql.
         Look for 'connected' (closing) or 'cross-referenced' (mention) events.
         """
         try:
-            timeline = self._get_issue_timeline(repo_name, issue_number)
+            timeline = self._get_issue_timeline(repo_name, issue_number, raise_on_error=strict)
             pr_numbers = set()
 
             for event in timeline:
@@ -1056,6 +1063,8 @@ class GitHubClient:
 
         except Exception as e:
             logger.error(f"Failed to get linked PRs for issue #{issue_number}: {e}")
+            if strict:
+                raise
             return []
 
     # Deprecated/Removed: get_linked_prs_via_graphql
