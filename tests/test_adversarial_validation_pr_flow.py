@@ -618,6 +618,41 @@ class TestAdversarialValidationCodexFeedback:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         assert len(state["delivered_feedback"]) == 2
 
+    def test_pr_receipt_prevents_cross_path_redelivery_when_local_persistence_fails(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(
+            id="PRRT_adversarial",
+            comments=[ReviewThreadComment(database_id=301, body=finding, author_login="auto-coder-reviewer[bot]")],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pr_review_threads_strict.return_value = [thread]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+            "user": {"login": "codex"},
+        }
+        state_path = tmp_path / "review-repairs.json"
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.pr_processor._record_delivered_review_feedback", side_effect=OSError("disk full")),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, client, [finding])
+            durable_receipt = client.add_comment_to_pr.call_args.args[2]
+            client.get_pr_comments.return_value = [{"body": durable_receipt}]
+            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+
+        cloud_client.continue_if_paused.assert_called_once()
+        cloud_client.send_followup.assert_not_called()
+        assert "auto-coder-cloud-review-feedback:v1:" in durable_receipt
+        assert "already requested" in actions[0]
+
 
 class TestAdversarialValidationPRFlow:
     """Test adversarial validation integration into _handle_pr_merge."""

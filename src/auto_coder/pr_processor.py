@@ -94,6 +94,7 @@ _cloud_review_delivery_lock = threading.RLock()
 
 CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
+CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX = "auto-coder-cloud-review-feedback:v1:"
 
 
 @dataclass(frozen=True)
@@ -3994,6 +3995,28 @@ def _record_delivered_review_feedback(state_path: Path, feedback: set[str]) -> N
     os.replace(temporary, state_path)
 
 
+def _cloud_review_feedback_markers(feedback: Sequence[str]) -> str:
+    """Render durable PR-side receipts for confirmed cloud deliveries."""
+    return "\n".join(f"<!-- {CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX}{hashlib.sha256(identity.encode('utf-8')).hexdigest()} -->" for identity in sorted(feedback))
+
+
+def _load_pr_delivered_review_feedback(github_client: Optional[Any], repo_name: str, pr_number: int, feedback: Sequence[str]) -> set[str]:
+    """Return feedback identities with a durable delivery receipt on the PR."""
+    if github_client is None or not feedback:
+        return set()
+    comments = github_client.get_pr_comments(repo_name, pr_number)
+    bodies = "\n".join(comment.get("body", "") for comment in comments if isinstance(comment, dict))
+    return {identity for identity in feedback if f"<!-- {CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX}{hashlib.sha256(identity.encode('utf-8')).hexdigest()} -->" in bodies}
+
+
+def _record_pr_delivered_review_feedback(github_client: Optional[Any], repo_name: str, pr_number: int, feedback: Sequence[str], message: str) -> bool:
+    """Persist confirmed delivery receipts in GitHub independently of local state."""
+    if github_client is None or not feedback:
+        return False
+    github_client.add_comment_to_pr(repo_name, pr_number, f"{_cloud_review_feedback_markers(feedback)}\n{message}")
+    return True
+
+
 def _delegate_codex_cloud_review_thread_repair(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -4034,6 +4057,7 @@ def _delegate_codex_cloud_review_thread_repair(
     with _cloud_review_delivery_lock:
         try:
             delivered = _load_delivered_review_feedback(state_path)
+            delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _thread, _comment, identity in findings]))
         except (OSError, ValueError) as exc:
             logger.warning(f"Could not read Codex Cloud review repair state: {exc}")
             return [f"Cannot safely determine prior Codex Cloud review repair delivery for PR #{pr_number}: {exc}"]
@@ -4055,13 +4079,28 @@ def _delegate_codex_cloud_review_thread_repair(
     if not accepted:
         return [f"Codex Cloud task '{task_id}' could not receive review repair work for PR #{pr_number}"]
 
+    local_receipt = False
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
             delivered.update(identity for _thread, _comment, identity in pending)
             _record_delivered_review_feedback(state_path, delivered)
+            local_receipt = True
     except OSError as exc:
         logger.warning(f"Could not persist Codex Cloud review repair state: {exc}")
+    try:
+        remote_receipt = _record_pr_delivered_review_feedback(
+            github_client,
+            repo_name,
+            pr_number,
+            [identity for _thread, _comment, identity in pending],
+            "🤖 Auto-Coder: I sent newly actionable review feedback to the existing Codex Cloud task.",
+        )
+    except Exception as exc:
+        remote_receipt = False
+        logger.warning(f"Could not persist Codex Cloud review repair receipt on PR #{pr_number}: {exc}")
+    if not local_receipt and not remote_receipt:
+        logger.error(f"Confirmed Codex Cloud review repair delivery for PR #{pr_number} has no durable receipt")
 
     get_trace_logger().log(
         "Codex Cloud Review Repair",
@@ -4259,6 +4298,7 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
+            delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _body, identity in feedback_items]))
         pending_feedback = [(body, identity) for body, identity in feedback_items if identity not in delivered]
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to Codex Cloud for PR #{pr_number}: all actionable feedback was already delivered"]
@@ -4292,11 +4332,13 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     if not resumed:
         return [f"Codex Cloud task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
 
+    local_receipt = False
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
             delivered.update(identity for _body, identity in pending_feedback)
             _record_delivered_review_feedback(state_path, delivered)
+            local_receipt = True
     except (OSError, ValueError) as exc:
         logger.error(f"Failed to persist shared Codex Cloud feedback delivery for PR #{pr_number}: {exc}")
 
@@ -4312,15 +4354,20 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
         comment_body = "\n".join(
             [
                 feedback_marker,
+                _cloud_review_feedback_markers([identity for _body, identity in pending_feedback]),
                 "🤖 Auto-Coder: I sent the adversarial validation findings to the existing Codex Cloud task and requested a fix.",
             ]
         )
         try:
             github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
+            remote_receipt = True
             actions.append(f"Recorded Codex Cloud adversarial feedback delivery on PR #{pr_number}")
         except Exception as e:
+            remote_receipt = False
             logger.error(f"Failed to record Codex Cloud adversarial feedback delivery on PR #{pr_number}: {e}")
             actions.append(f"Failed to record Codex Cloud adversarial feedback delivery on PR #{pr_number}: {e}")
+        if not local_receipt and not remote_receipt:
+            logger.error(f"Confirmed adversarial feedback delivery for PR #{pr_number} has no durable receipt")
     return actions
 
 
