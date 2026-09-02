@@ -216,8 +216,9 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
     failure) behaves exactly as before. Only when at least one thread is
     unresolved does this additionally fetch full thread detail (comments) to
     determine whether every unresolved thread is an eligible, explicitly
-    claimed automated-review thread. Any failure in that additional lookup
-    fails closed to treating all unresolved threads as ordinary blockers.
+    claimed automated-review thread. Any failure in that additional lookup is
+    returned as a structured lookup error so callers can distinguish an API
+    failure from an ordinary unresolved-thread blocker.
     """
     gate = _get_review_thread_gate_state(github_client, repo_name, pr_number)
     if gate.lookup_error:
@@ -235,7 +236,7 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
         threads = client.get_pr_review_threads_strict(repo_name, pr_number)
     except Exception as e:
         logger.error(f"Failed detailed review-thread lookup for PR #{pr_number}: {e}")
-        return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
+        return ClaimedReviewThreadGateState(lookup_error=str(e))
 
     eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
     classification = classify_review_threads(threads, eligible_author_ids)

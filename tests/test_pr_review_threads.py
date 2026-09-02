@@ -564,6 +564,19 @@ class TestClaimedReviewThreadGateState:
         assert state.lookup_error == "boom"
         assert state.claimed == ()
 
+    def test_detailed_lookup_error_propagates(self):
+        from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state
+
+        client = GitHubClient(token="fake_token")
+        client.get_pr_review_threads_strict = MagicMock(side_effect=RuntimeError("detailed GraphQL lookup failed"))
+
+        with patch("auto_coder.pr_processor._get_review_thread_gate_state", return_value=ReviewThreadGateState(has_unresolved=True)):
+            state = _get_claimed_review_thread_state(client, "owner/repo", 101)
+
+        assert state.lookup_error == "detailed GraphQL lookup failed"
+        assert state.has_blocking_unresolved is False
+        assert state.claimed == ()
+
     def test_claimed_thread_does_not_block(self):
         from auto_coder.pr_processor import ReviewThreadGateState, _get_claimed_review_thread_state
 
