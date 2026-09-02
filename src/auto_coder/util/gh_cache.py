@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import types
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, cast
@@ -42,6 +43,11 @@ class ReviewThread:
 
 # Safety bound for paginated comment listings (100 comments per page).
 COMMENTS_MAX_PAGES = 50
+
+# A bound prevents a malformed or cyclic Link header from looping forever. In
+# strict mode, reaching the bound raises so lifecycle reconciliation fails
+# closed rather than treating a partial timeline as authoritative.
+TIMELINE_MAX_PAGES = 100
 
 _local_storage = threading.local()
 
@@ -1010,25 +1016,28 @@ class GitHubClient:
                 # "X-GitHub-Api-Version": "2022-11-28" # Standard API
             }
 
-            timeline = []
+            events: List[Dict[str, Any]] = []
             visited_urls = set()
-            while url:
+            for _page in range(TIMELINE_MAX_PAGES):
                 if url in visited_urls:
-                    raise RuntimeError(f"Repeated pagination URL for issue #{issue_number}")
+                    raise RuntimeError(f"Issue #{issue_number} timeline pagination repeated URL: {url}")
                 visited_urls.add(url)
 
                 response = client.get(url, headers=headers)
                 response.raise_for_status()
-                page = response.json()
-                if not isinstance(page, list):
-                    raise ValueError(f"Invalid timeline response for issue #{issue_number}")
-                timeline.extend(page)
+                page_events = response.json()
+                if not isinstance(page_events, list) or not all(isinstance(event, dict) for event in page_events):
+                    raise ValueError(f"Issue #{issue_number} timeline returned invalid page data")
+                events.extend(page_events)
 
                 links = response.links
-                next_link = links.get("next") if isinstance(links, dict) else None
-                url = next_link.get("url", "") if isinstance(next_link, dict) else ""
+                next_link = links.get("next") if isinstance(links, Mapping) else None
+                next_url = next_link.get("url") if isinstance(next_link, Mapping) else None
+                if not isinstance(next_url, str) or not next_url:
+                    return events
+                url = next_url
 
-            return timeline
+            raise RuntimeError(f"Issue #{issue_number} timeline exceeded {TIMELINE_MAX_PAGES} pages")
 
         except Exception as e:
             logger.warning(f"Failed to get timeline for issue #{issue_number}: {e}")
