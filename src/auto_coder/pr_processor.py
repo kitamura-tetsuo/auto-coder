@@ -943,9 +943,7 @@ def _reject_unsafe_codex_cloud_pr(
     existing retry path.
     """
     result = UnsafeCodexCloudPRResult()
-    head = pr_data.get("head") or {}
-    remote_head = head.get("ref") or pr_data.get("head_branch") or ""
-    if remote_head != "work" or not _is_codex_pr(pr_data) or pr_data.get("state") == "closed":
+    if not _is_unsafe_codex_cloud_branch(pr_data) or pr_data.get("state") == "closed":
         return result
 
     pr_number = int(pr_data["number"])
@@ -1023,6 +1021,15 @@ def _close_empty_pr(
         if pr_data.get("state") == "closed":
             _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
             logger.debug(f"PR #{pr_number} is already closed, skipping empty PR check")
+            return result
+
+        # The Codex Cloud branch-safety recovery owns these PRs, including
+        # empty ones. AutomationEngine calls this helper while collecting and
+        # dispatching candidates before process_pull_request reaches its safety
+        # gate, so closing here would bypass the originating-task follow-up and
+        # incorrectly release the linked issue for a competing implementation.
+        if _is_unsafe_codex_cloud_branch(pr_data):
+            logger.debug(f"Deferring empty PR #{pr_number} to Codex Cloud unsafe-branch recovery")
             return result
 
         if not _is_empty_pr(pr_data, repo_name=repo_name, github_client=github_client):
@@ -3205,6 +3212,13 @@ def _is_codex_pr(pr_data: Dict[str, Any]) -> bool:
         return True
 
     return False
+
+
+def _is_unsafe_codex_cloud_branch(pr_data: Dict[str, Any]) -> bool:
+    """Return whether a Codex Cloud PR uses a forbidden remote head identity."""
+    head = pr_data.get("head") or {}
+    remote_head = head.get("ref") or pr_data.get("head_branch") or ""
+    return remote_head == "work" and _is_codex_pr(pr_data)
 
 
 def _is_claude_pr(pr_data: Dict[str, Any]) -> bool:
