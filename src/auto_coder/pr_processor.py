@@ -4231,16 +4231,6 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     """Send a NEEDS_FIX validation report to the PR's existing Codex Cloud task."""
     pr_number = pr_data["number"]
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
-    if github_client:
-        try:
-            comments = github_client.get_pr_comments(repo_name, pr_number)
-        except Exception as e:
-            logger.error(f"Failed to check prior Codex Cloud adversarial feedback for PR #{pr_number}: {e}")
-            return [f"Could not check prior Codex Cloud adversarial feedback for PR #{pr_number}: {e}"]
-        for comment in comments:
-            body = _comment_value(comment, "body", "")
-            if isinstance(body, str) and body.startswith(feedback_marker):
-                return [f"Skipped duplicate adversarial feedback to Codex Cloud for PR #{pr_number} at {head_sha[:8]}"]
 
     task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
     if not task_id:
