@@ -229,7 +229,9 @@ class ImplementationSlotRepository:
         for pull_request in github_client.get_open_pull_requests(self.repo_name):
             owner = self.resolve_owner("pr", pull_request, github_client)
             pr_number = pull_request.get("number")
-            if owner.kind != "issue" or owner.key not in active_owner_keys:
+            # Every non-PR owner can have implementation PRs.  This includes
+            # provider-owned recurrent runs as well as Issue-owned work.
+            if owner.kind == "pr" or owner.key not in active_owner_keys:
                 continue
             if isinstance(pr_number, bool) or not isinstance(pr_number, int):
                 raise ImplementationOwnerResolutionError("Open pull request has no valid numeric identity")

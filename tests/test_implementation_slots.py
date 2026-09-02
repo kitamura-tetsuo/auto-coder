@@ -15,10 +15,11 @@ from auto_coder.util.gh_cache import GitHubClient
 
 
 class GitHubState:
-    def __init__(self, issues=None, prs=None, linked_prs=None):
+    def __init__(self, issues=None, prs=None, linked_prs=None, open_prs=None):
         self.issues = issues or {}
         self.prs = prs or {}
         self.linked_prs = linked_prs or {}
+        self.open_prs = open_prs or []
 
     def get_issue(self, _repo, number):
         value = self.issues[number]
@@ -37,6 +38,9 @@ class GitHubState:
 
     def get_linked_prs(self, _repo, issue_number, strict=False):
         return self.linked_prs.get(issue_number, [])
+
+    def get_open_pull_requests(self, _repo):
+        return self.open_prs
 
 
 def repository(tmp_path, limit=1):
@@ -96,6 +100,32 @@ def test_source_less_provider_pr_reuses_durable_recurrent_owner(tmp_path):
         github,
     )
     assert owner_after_restart == recurrent_owner
+
+
+def test_startup_records_open_provider_pr_membership(tmp_path):
+    slots = repository(tmp_path)
+    recurrent_owner = ImplementationOwner("recurrent", 12345)
+    assert slots.reserve_new(recurrent_owner) is True
+    assert slots.record_provider_session(recurrent_owner, "session-abc") is True
+    github = GitHubState(
+        open_prs=[
+            {
+                "number": 123,
+                "body": "Created by https://jules.google.com/session/session-abc",
+            }
+        ]
+    )
+
+    slots.reconcile(github, discover_open_prs=True)
+
+    restarted = repository(tmp_path)
+    owner = restarted.resolve_owner(
+        "pr",
+        {"number": 123, "body": "No source Issue or provider metadata"},
+        GitHubState(),
+    )
+    assert owner == recurrent_owner
+    assert restarted.reserve(ImplementationOwner("issue", 200)) is False
 
 
 def test_reconciliation_releases_terminal_but_retains_uncertain_owner(tmp_path):
