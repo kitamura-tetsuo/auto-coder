@@ -495,6 +495,44 @@ Maintain the application."""
             state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
             self.assertEqual(state[owner.key]["provider_sessions"], ["submitted-session"])
 
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_ambiguous_recurrent_submission_retains_slot_until_provider_recovery(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = []
+            jules.start_session.side_effect = RuntimeError("read timed out after provider acceptance")
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+                self.assertEqual(slots.active_owners(), (owner,))
+                self.assertFalse(slots.reserve(ImplementationOwner("issue", 200)))
+
+                jules.list_sessions.return_value = [
+                    {
+                        "name": "sessions/accepted-despite-timeout",
+                        "state": "ACTIVE",
+                        "prompt": prompt,
+                    }
+                ]
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.start_session.assert_called_once()
+            state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
+            self.assertEqual(state[owner.key]["provider_sessions"], ["accepted-despite-timeout"])
+
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")
     @patch("builtins.open", new_callable=MagicMock)

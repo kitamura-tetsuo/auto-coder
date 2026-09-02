@@ -694,7 +694,7 @@ def check_and_start_recurrent_jules_tasks(
                     for pr_number in discovered_prs:
                         if not implementation_slots.record_implementation_pr(owner, pr_number):
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
-                session_submitted = False
+                submission_attempted = False
                 try:
                     from .automation_config import AutomationConfig
 
@@ -706,8 +706,12 @@ def check_and_start_recurrent_jules_tasks(
                         new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
                     else:
                         with implementation_slots.serialize(owner):
+                            # Once the provider request begins, an exception can
+                            # mean an ambiguous transport outcome rather than a
+                            # definite rejection. Retain ownership until a later
+                            # authoritative provider scan recovers the session.
+                            submission_attempted = True
                             new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
-                        session_submitted = True
                         if not implementation_slots.record_provider_session(owner, str(new_session_id)):
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                     logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
@@ -715,7 +719,7 @@ def check_and_start_recurrent_jules_tasks(
                     # Submission failure means no external implementation was
                     # created.  Once Jules accepts the task, however, uncertain
                     # metadata persistence must fail closed and retain capacity.
-                    if implementation_slots is not None and not session_submitted:
+                    if implementation_slots is not None and not submission_attempted:
                         implementation_slots.release(owner)
                     logger.error(f"Failed to start new recurrent Jules session for {names}: {e}")
 
