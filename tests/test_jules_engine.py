@@ -1,9 +1,15 @@
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.jules_client import JulesClient, JulesSessionRejectedError
 from auto_coder.jules_engine import (
     SESSION_STATE_STOPPED,
+    _recurrent_implementation_owner,
     check_and_restart_recurrent_jules_task_for_pr,
     check_and_resume_or_archive_sessions,
     check_and_start_recurrent_jules_tasks,
@@ -315,6 +321,290 @@ This is a recurrent task prompt."""
         self.assertIn("This is a recurrent task prompt.", kwargs["prompt"])
         self.assertEqual(kwargs["repo_name"], "owner/repo")
         self.assertEqual(kwargs["title"], "auto improvement with demo site")
+
+    @patch("auto_coder.jules_engine.os.path.isdir", return_value=True)
+    @patch("auto_coder.jules_engine.glob.glob", return_value=["/path/to/prompts/recurrent_prompt.md"])
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_recurrent_jules_task_respects_and_durably_owns_implementation_slot(
+        self,
+        mock_jules_client_cls,
+        mock_open,
+        _mock_glob,
+        _mock_isdir,
+    ):
+        mock_file = MagicMock()
+        mock_file.read.return_value = """---
+tags: [jules, recurrent]
+name: [maintenance]
+---
+Maintain the repository."""
+        mock_open.return_value.__enter__.return_value = mock_file
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = []
+
+        with TemporaryDirectory() as temporary_directory:
+            slots = ImplementationSlotRepository(
+                "owner/repo",
+                1,
+                Path(temporary_directory) / "slots.json",
+            )
+            issue_owner = ImplementationOwner("issue", 100)
+            self.assertTrue(slots.reserve(issue_owner))
+
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_not_called()
+            self.assertEqual(slots.active_owners(), (issue_owner,))
+
+            slots.release(issue_owner)
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_called_once()
+            active_owners = slots.active_owners()
+            self.assertEqual(len(active_owners), 1)
+            self.assertEqual(active_owners[0].kind, "recurrent")
+
+    @patch("auto_coder.jules_engine.os.path.isdir")
+    @patch("auto_coder.jules_engine.glob.glob")
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_recurrent_task_respects_and_durably_claims_implementation_limit(self, mock_jules_client_cls, mock_glob, mock_isdir):
+        mock_isdir.return_value = True
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = []
+
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt_path.write_text(
+                """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application.""",
+                encoding="utf-8",
+            )
+            mock_glob.return_value = [str(prompt_path)]
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            occupied_owner = ImplementationOwner("issue", 100)
+            self.assertTrue(slots.reserve(occupied_owner))
+
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_not_called()
+            self.assertEqual(slots.active_owners(), (occupied_owner,))
+
+            slots.release(occupied_owner)
+
+            def assert_reserved_before_start(**_kwargs):
+                owners = slots.active_owners()
+                self.assertEqual(len(owners), 1)
+                self.assertEqual(owners[0].kind, "recurrent")
+                return "session-1"
+
+            mock_jules_client.start_session.side_effect = assert_reserved_before_start
+            check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            mock_jules_client.start_session.assert_called_once()
+            self.assertEqual(slots.active_owners()[0].kind, "recurrent")
+
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_terminal_recurrent_session_releases_and_reuses_owner(self, mock_jules_client_cls, mock_github_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+            self.assertTrue(slots.reserve_new(owner))
+            self.assertTrue(slots.record_provider_session(owner, "old-session"))
+
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = [
+                {
+                    "name": "sessions/old-session",
+                    "state": "COMPLETED",
+                    "prompt": prompt,
+                    "outputs": {"pullRequest": {"number": 123, "repository": {"name": "owner/repo"}}},
+                }
+            ]
+            jules.start_session.return_value = "new-session"
+            mock_github_client_cls.get_instance.return_value.get_pull_request.return_value = {
+                "number": 123,
+                "state": "closed",
+                "merged": True,
+            }
+
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.start_session.assert_called_once()
+            restarted_slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            self.assertEqual(restarted_slots.active_owners(), (owner,))
+            source_less_pr_owner = restarted_slots.resolve_owner(
+                "pr",
+                {"number": 123, "body": "No Issue reference"},
+                MagicMock(issues=[]),
+            )
+            self.assertEqual(source_less_pr_owner, owner)
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_accepted_recurrent_session_retains_slot_when_membership_write_fails(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+            record_provider_session = slots.record_provider_session
+            slots.record_provider_session = MagicMock(return_value=False)
+
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = []
+            jules.start_session.return_value = "submitted-session"
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+                self.assertEqual(slots.active_owners(), (owner,))
+                self.assertFalse(slots.reserve(ImplementationOwner("issue", 200)))
+
+                slots.record_provider_session = record_provider_session
+                jules.list_sessions.return_value = [
+                    {
+                        "name": "sessions/submitted-session",
+                        "state": "ACTIVE",
+                        "prompt": prompt,
+                    }
+                ]
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.start_session.assert_called_once()
+            state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
+            self.assertEqual(state[owner.key]["provider_sessions"], ["submitted-session"])
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_ambiguous_recurrent_submission_retains_slot_until_provider_recovery(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = []
+            jules.start_session.side_effect = RuntimeError("read timed out after provider acceptance")
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+                self.assertEqual(slots.active_owners(), (owner,))
+                self.assertFalse(slots.reserve(ImplementationOwner("issue", 200)))
+
+                jules.list_sessions.return_value = [
+                    {
+                        "name": "sessions/accepted-despite-timeout",
+                        "state": "ACTIVE",
+                        "prompt": prompt,
+                    }
+                ]
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.start_session.assert_called_once()
+            state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
+            self.assertEqual(state[owner.key]["provider_sessions"], ["accepted-despite-timeout"])
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_server_error_after_recurrent_submission_retains_slot_until_recovery(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt = """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application."""
+            prompt_path.write_text(prompt, encoding="utf-8")
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            owner = _recurrent_implementation_owner("owner/repo", str(prompt_path))
+
+            # Exercise the production HTTP status classification while keeping
+            # provider discovery deterministic for this lifecycle regression.
+            with patch("auto_coder.jules_client.get_llm_config") as get_config:
+                backend = MagicMock(options=[], options_for_noedit=[], api_key=None)
+                get_config.return_value.get_backend_config.return_value = backend
+                jules = JulesClient()
+            response = MagicMock(status_code=500, text="committed before response failed")
+            jules.session.post = MagicMock(return_value=response)
+            jules.list_sessions = MagicMock(return_value=[])
+            mock_jules_client_cls.return_value = jules
+
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+                self.assertEqual(slots.active_owners(), (owner,))
+                self.assertFalse(slots.reserve(ImplementationOwner("issue", 200)))
+
+                jules.list_sessions.return_value = [
+                    {
+                        "name": "sessions/accepted-despite-server-error",
+                        "state": "ACTIVE",
+                        "prompt": prompt,
+                    }
+                ]
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            jules.session.post.assert_called_once()
+            state = json.loads((Path(directory) / "slots.json").read_text(encoding="utf-8"))
+            self.assertEqual(state[owner.key]["provider_sessions"], ["accepted-despite-server-error"])
+
+    @patch("auto_coder.jules_engine.JulesClient")
+    def test_authoritative_recurrent_rejection_releases_slot(self, mock_jules_client_cls):
+        with TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "recurrent_prompt.md"
+            prompt_path.write_text(
+                """---
+tags: [jules, recurrent]
+name: [scheduled maintenance]
+---
+Maintain the application.""",
+                encoding="utf-8",
+            )
+            slots = ImplementationSlotRepository("owner/repo", 1, Path(directory) / "slots.json")
+            jules = mock_jules_client_cls.return_value
+            jules.list_sessions.return_value = []
+            jules.start_session.side_effect = JulesSessionRejectedError("Failed to start Jules session: HTTP 400: invalid prompt")
+
+            with (
+                patch("auto_coder.jules_engine.os.path.isdir", return_value=True),
+                patch("auto_coder.jules_engine.glob.glob", return_value=[str(prompt_path)]),
+            ):
+                check_and_start_recurrent_jules_tasks("owner/repo", slots)
+
+            self.assertEqual(slots.active_owners(), ())
+            self.assertTrue(slots.reserve(ImplementationOwner("issue", 200)))
 
     @patch("auto_coder.jules_engine.os.path.isdir")
     @patch("auto_coder.jules_engine.glob.glob")

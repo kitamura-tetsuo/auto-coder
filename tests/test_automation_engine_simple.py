@@ -203,8 +203,12 @@ class TestAutomationEngine:
             # Execute
             result = engine.run(test_repo_name)
 
-            # Assert check_and_start_recurrent_jules_tasks was called with repo_name
-            mock_check_recurrent.assert_called_once_with(test_repo_name)
+            # The synchronous loop must enforce the same instance-wide
+            # implementation limit as the asynchronous producer loop.
+            mock_check_recurrent.assert_called_once_with(
+                test_repo_name,
+                engine._get_implementation_slots(test_repo_name),
+            )
 
     @pytest.mark.asyncio
     async def test_producer_loop_calls_recurrent_jules_tasks(self, mock_github_client):

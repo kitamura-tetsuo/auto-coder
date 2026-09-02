@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 import requests
 
-from src.auto_coder.jules_client import JulesClient
+from src.auto_coder.jules_client import JulesClient, JulesSessionOutcomeUncertainError, JulesSessionRejectedError
 
 
 class TestJulesClient:
@@ -218,7 +218,24 @@ class TestJulesClient:
 
         client = JulesClient()
 
-        with pytest.raises(RuntimeError, match="Failed to start Jules session"):
+        with pytest.raises(JulesSessionRejectedError, match="Failed to start Jules session"):
+            client.start_session("Test prompt", "owner/repo", "main")
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_treats_server_error_as_uncertain(self, mock_post, mock_get_config):
+        """A server error does not prove that Jules rejected the session."""
+        mock_config = Mock()
+        mock_backend_config = Mock(options=[], options_for_noedit=[], api_key=None)
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        mock_response = Mock(status_code=500, text="Internal Server Error")
+        mock_post.return_value = mock_response
+
+        client = JulesClient()
+
+        with pytest.raises(JulesSessionOutcomeUncertainError, match="HTTP 500"):
             client.start_session("Test prompt", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")
@@ -239,7 +256,7 @@ class TestJulesClient:
 
         client = JulesClient()
 
-        with pytest.raises(RuntimeError, match="Failed to start Jules session"):
+        with pytest.raises(JulesSessionOutcomeUncertainError, match="Failed to start Jules session"):
             client.start_session("Test prompt", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")

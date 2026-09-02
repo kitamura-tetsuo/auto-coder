@@ -3,19 +3,23 @@ Jules engine module for managing Jules sessions.
 """
 
 import glob
+import hashlib
 import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import yaml
 from dateutil import parser
 
-from .jules_client import JulesClient
+from .jules_client import JulesClient, JulesSessionRejectedError
 from .llm_backend_config import get_jules_session_expiration_days_from_config
 from .logger_config import get_logger
 from .util.gh_cache import GitHubClient
+
+if TYPE_CHECKING:
+    from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 
 logger = get_logger(__name__)
 
@@ -498,7 +502,33 @@ def _normalize_tags(tags: Any) -> List[str]:
     return [str(tags).strip().lower()]
 
 
-def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
+def _recurrent_implementation_owner(repo_name: str, file_path: str) -> "ImplementationOwner":
+    """Build a stable logical owner for a repository recurrent prompt."""
+    from .implementation_slots import ImplementationOwner
+
+    identity = f"{repo_name}:{os.path.basename(file_path)}"
+    number = int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest()[:8], "big")
+    return ImplementationOwner("recurrent", number)
+
+
+def _session_pull_request_number(pull_request: object) -> Optional[int]:
+    """Extract a PR number from Jules session metadata."""
+    if isinstance(pull_request, dict):
+        number = pull_request.get("number")
+        if isinstance(number, int) and not isinstance(number, bool):
+            return number
+        pull_request = pull_request.get("url", "")
+    if isinstance(pull_request, str):
+        match = re.search(r"/pull/(\d+)(?:\D|$)", pull_request)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def check_and_start_recurrent_jules_tasks(
+    repo_name: str,
+    implementation_slots: Optional["ImplementationSlotRepository"] = None,
+) -> None:
     """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
     try:
         prompts_dir = os.path.join(os.getcwd(), ".auto-coder", "prompts")
@@ -540,6 +570,10 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                 logger.warning(f"Prompt file {file_path} has jules and recurrent tags but no valid name. Skipping.")
                 continue
 
+            owner = _recurrent_implementation_owner(repo_name, file_path)
+            terminal_owner = False
+            discovered_prs: set[int] = set()
+
             is_running = False
             for session in sessions:
                 session_id = session.get("name", "").split("/")[-1]
@@ -579,9 +613,16 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                         break
 
                 if match_found:
+                    if implementation_slots is not None:
+                        if not implementation_slots.record_provider_session(owner, str(session_id)):
+                            raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                     # Check if the session is completed and merged/closed on GitHub
                     state = session.get("state")
                     pull_request = get_session_pull_request(session)
+                    pr_number = _session_pull_request_number(pull_request)
+                    if implementation_slots is not None and pr_number is not None:
+                        discovered_prs.add(pr_number)
+                        implementation_slots.record_implementation_pr(owner, pr_number)
                     if state == "COMPLETED" and pull_request:
                         try:
                             github_client = GitHubClient.get_instance()
@@ -633,6 +674,7 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                                     pr = github_client.get_pull_request(repo_name_pr, pr_number)
                                     if pr and pr.get("state") == "closed":
                                         logger.info(f"Session {session_id} has a closed/merged PR #{pr_number}. Not considering it as running.")
+                                        terminal_owner = True
                                         continue
                                 except Exception as e:
                                     logger.warning(f"Failed to check PR status for session {session_id}: {e}")
@@ -643,6 +685,16 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
 
             if not is_running:
                 logger.info(f"No active Jules session found for recurrent prompt: {names}. Starting a new Jules session...")
+                if implementation_slots is not None and terminal_owner:
+                    implementation_slots.release(owner)
+                if implementation_slots is not None and not implementation_slots.reserve_new(owner):
+                    logger.info(f"Deferring recurrent Jules implementation {owner.key}: no implementation slot available")
+                    continue
+                if implementation_slots is not None:
+                    for pr_number in discovered_prs:
+                        if not implementation_slots.record_implementation_pr(owner, pr_number):
+                            raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
+                submission_attempted = False
                 try:
                     from .automation_config import AutomationConfig
 
@@ -650,9 +702,29 @@ def check_and_start_recurrent_jules_tasks(repo_name: str) -> None:
                     base_branch = config.MAIN_BRANCH
 
                     session_title = names[0]
-                    new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                    if implementation_slots is None:
+                        new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                    else:
+                        with implementation_slots.serialize(owner):
+                            # Once the provider request begins, an exception can
+                            # mean an ambiguous transport outcome rather than a
+                            # definite rejection. Retain ownership until a later
+                            # authoritative provider scan recovers the session.
+                            submission_attempted = True
+                            new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                        if not implementation_slots.record_provider_session(owner, str(new_session_id)):
+                            raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                     logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
+                except JulesSessionRejectedError as e:
+                    if implementation_slots is not None:
+                        implementation_slots.release(owner)
+                    logger.error(f"Jules rejected recurrent session creation for {names}: {e}")
                 except Exception as e:
+                    # Submission failure means no external implementation was
+                    # created.  Once Jules accepts the task, however, uncertain
+                    # metadata persistence must fail closed and retain capacity.
+                    if implementation_slots is not None and not submission_attempted:
+                        implementation_slots.release(owner)
                     logger.error(f"Failed to start new recurrent Jules session for {names}: {e}")
 
     except Exception as e:

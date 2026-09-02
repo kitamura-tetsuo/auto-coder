@@ -25,6 +25,14 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+class JulesSessionRejectedError(RuntimeError):
+    """Raised when Jules authoritatively rejects session creation."""
+
+
+class JulesSessionOutcomeUncertainError(RuntimeError):
+    """Raised when transport failure leaves session creation uncertain."""
+
+
 @dataclass
 class _SessionListCache:
     """Process-wide cache holding the sessions fetched by ``list_sessions``.
@@ -127,7 +135,13 @@ class JulesClient(CloudTaskClientBase):
             if response.status_code not in [200, 201]:
                 error_msg = f"HTTP {response.status_code}: {response.text}"
                 logger.error(f"Failed to start Jules session: {error_msg}")
-                raise RuntimeError(f"Failed to start Jules session: {error_msg}")
+                error = f"Failed to start Jules session: {error_msg}"
+                if 400 <= response.status_code < 500:
+                    raise JulesSessionRejectedError(error)
+                # A server-side failure can be returned after Jules committed
+                # the session.  Treat it like a transport failure until an
+                # authoritative session listing establishes the outcome.
+                raise JulesSessionOutcomeUncertainError(error)
 
             # Parse the response to get the session ID
             try:
@@ -150,12 +164,14 @@ class JulesClient(CloudTaskClientBase):
             logger.info(f"Started Jules session: {session_id}")
             return session_id
 
+        except (JulesSessionRejectedError, JulesSessionOutcomeUncertainError):
+            raise
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to start Jules session: {e}")
-            raise RuntimeError(f"Failed to start Jules session: {e}")
+            raise JulesSessionOutcomeUncertainError(f"Failed to start Jules session: {e}") from e
         except Exception as e:
             logger.error(f"Failed to start Jules session: {e}")
-            raise RuntimeError(f"Failed to start Jules session: {e}")
+            raise JulesSessionOutcomeUncertainError(f"Failed to start Jules session: {e}") from e
 
     def _fetch_all_sessions(self, page_size: int) -> List[Dict[str, Any]]:
         """Fetch every Jules session by walking the paginated collection."""

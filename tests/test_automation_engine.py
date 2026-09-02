@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 """Tests for automation engine functionality."""
@@ -21,6 +23,16 @@ class TestAutomationEngine:
         engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
+
+    @patch("auto_coder.automation_engine.check_and_start_recurrent_jules_tasks")
+    def test_recurrent_jules_step_receives_instance_slot_repository(self, start_recurrent, tmp_path):
+        engine = AutomationEngine(Mock(), config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+
+        asyncio.run(engine.check_and_start_recurrent_jules_tasks_async("owner/repo"))
+
+        start_recurrent.assert_called_once_with("owner/repo", slots)
         assert engine.config.REPORTS_DIR == "reports"
 
     # Note: Tests for deprecated process_issues and related functions have been removed
@@ -127,6 +139,163 @@ class TestAutomationEngine:
         implementation_backend.assert_not_called()
         increment.assert_not_called()
         cloud_runs.assert_not_called()
+
+    def test_ineligible_issue_does_not_reserve_implementation_slot(self, tmp_path):
+        """An allowlist rejection must leave capacity for eligible work."""
+        github = MagicMock()
+        config = AutomationConfig()
+        config.ISSUE_ALLOWLIST = [123]
+        engine = AutomationEngine(github, config=config)
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="issue",
+            data={"number": 42, "title": "Untrusted", "author_id": 999},
+            priority=0,
+        )
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is False
+        assert result.actions == []
+        assert result.error is None
+        assert slots.active_owners() == ()
+        assert slots.reserve(ImplementationOwner("issue", 200)) is True
+
+    def test_first_branch_linked_pr_discovery_protects_existing_owner_before_reconciliation(self, tmp_path):
+        """A newly discovered PR must record membership before its Issue can be released."""
+
+        class GitHubStub:
+            def get_issue(self, _repo_name, number):
+                return {"number": number, "state": "closed", "title": "Source Issue"}
+
+            def get_issue_details(self, issue):
+                return issue
+
+            def get_linked_prs(self, _repo_name, _issue_number, strict=False):
+                assert strict is True
+                return []
+
+            def get_pull_request(self, _repo_name, number):
+                assert number == 108
+                return {"number": number, "state": "open", "merged": False}
+
+            def get_pr_details(self, pull_request):
+                return pull_request
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        issue_owner = ImplementationOwner("issue", 100)
+        assert slots.reserve(issue_owner) is True
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="pr",
+            data={
+                "number": 108,
+                "title": "Implementation",
+                "body": "",
+                "head": {"ref": "issue-100-work"},
+            },
+            priority=0,
+        )
+
+        def process_reserved(*_args):
+            assert slots.active_owners() == (issue_owner,)
+            assert slots.reserve(ImplementationOwner("issue", 200)) is False
+            return CandidateProcessingResult(type="pr", number=108, title="Implementation", success=True)
+
+        engine._process_single_candidate_reserved = Mock(side_effect=process_reserved)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        assert slots.active_owners() == (issue_owner,)
+        assert json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))["issue:100"]["implementation_prs"] == [108]
+        assert slots.reserve(ImplementationOwner("issue", 200)) is False
+
+    def test_source_less_recurrent_pr_continues_under_provider_owner(self, tmp_path):
+        github = MagicMock()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        recurrent_owner = ImplementationOwner("recurrent", 12345)
+        assert slots.reserve_new(recurrent_owner) is True
+        assert slots.record_provider_session(recurrent_owner, "session-abc") is True
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="pr",
+            data={
+                "number": 123,
+                "title": "Recurrent implementation",
+                "body": "Created by https://jules.google.com/session/session-abc",
+            },
+            priority=0,
+        )
+
+        def process_reserved(*_args):
+            assert slots.active_owners() == (recurrent_owner,)
+            assert slots.reserve(ImplementationOwner("issue", 200)) is False
+            return CandidateProcessingResult(type="pr", number=123, title="Recurrent implementation", success=True)
+
+        engine._process_single_candidate_reserved = Mock(side_effect=process_reserved)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        assert slots.resolve_owner("pr", candidate.data, github) == recurrent_owner
+        assert slots.active_owners() == (recurrent_owner,)
+
+    def test_startup_discovers_branch_linked_pr_before_reconciliation(self, tmp_path):
+        """Restart discovery must protect an unrecorded branch-linked PR."""
+
+        class GitHubStub:
+            def get_open_pull_requests(self, _repo_name):
+                return [
+                    {
+                        "number": 108,
+                        "title": "Implementation",
+                        "body": "",
+                        "head": {"ref": "issue-100-work"},
+                    }
+                ]
+
+            def get_issue(self, _repo_name, number):
+                return {"number": number, "state": "closed", "title": "Source Issue"}
+
+            def get_issue_details(self, issue):
+                return issue
+
+            def get_linked_prs(self, _repo_name, _issue_number, strict=False):
+                assert strict is True
+                return []
+
+            def get_pull_request(self, _repo_name, number):
+                assert number == 108
+                return {"number": number, "state": "open", "merged": False}
+
+            def get_pr_details(self, pull_request):
+                return pull_request
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        issue_owner = ImplementationOwner("issue", 100)
+        assert slots.reserve(issue_owner) is True
+        engine.implementation_slots = slots
+        reconcile = slots.reconcile
+
+        def verify_startup_reconciliation(client, discover_open_prs=False):
+            assert discover_open_prs is True
+            reconcile(client, discover_open_prs=discover_open_prs)
+            assert slots.active_owners() == (issue_owner,)
+            assert json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))["issue:100"]["implementation_prs"] == [108]
+            assert slots.reserve(ImplementationOwner("issue", 200)) is False
+            raise RuntimeError("startup verified")
+
+        slots.reconcile = Mock(side_effect=verify_startup_reconciliation)
+
+        with pytest.raises(RuntimeError, match="startup verified"):
+            asyncio.run(engine.start_automation("owner/repo", concurrency=0))
 
     def test_issue_dispatch_fails_closed_when_type_lookup_fails(self):
         """An unavailable authoritative type lookup must not authorize Issue work."""

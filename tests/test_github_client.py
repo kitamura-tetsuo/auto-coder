@@ -207,6 +207,28 @@ class TestGitHubClient:
         assert args[1] == "https://api.github.com/repos/test/repo/pulls?state=open&sort=created&direction=asc&per_page=1"
         assert kwargs["headers"]["X-GitHub-Api-Version"] == "2022-11-28"
 
+    @patch("src.auto_coder.util.gh_cache.get_caching_client")
+    def test_get_open_pull_requests_follows_pagination(self, mock_get_caching, mock_github_token):
+        first_url = "https://api.github.com/repos/test/repo/pulls?state=open&sort=created&direction=asc&per_page=100"
+        second_url = f"{first_url}&page=2"
+        first_response = Mock()
+        first_response.json.return_value = [{"number": 1}]
+        first_response.links = {"next": {"url": second_url}}
+        second_response = Mock()
+        second_response.json.return_value = [{"number": 108, "head": {"ref": "issue-100-work"}}]
+        second_response.links = {}
+        mock_client = Mock()
+        mock_client.request.side_effect = [first_response, second_response]
+        mock_get_caching.return_value = mock_client
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        assert client.get_open_pull_requests("test/repo") == [
+            {"number": 1},
+            {"number": 108, "head": {"ref": "issue-100-work"}},
+        ]
+        assert [call.args[1] for call in mock_client.request.call_args_list] == [first_url, second_url]
+
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_find_pr_by_head_branch_found(self, mock_get_client, mock_github_token):
         """Test finding PR by head branch when PR exists."""

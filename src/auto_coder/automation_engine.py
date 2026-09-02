@@ -16,6 +16,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
+from .implementation_slots import ImplementationOwnerResolutionError, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -59,6 +60,7 @@ class AutomationEngine:
         self._wake_up_event: Optional[asyncio.Event] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pr_merged_or_closed: bool = False
+        self.implementation_slots: Optional[ImplementationSlotRepository] = None
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
@@ -115,7 +117,11 @@ class AutomationEngine:
     async def check_and_start_recurrent_jules_tasks_async(self, repo_name: str) -> None:
         """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
         try:
-            await asyncio.to_thread(check_and_start_recurrent_jules_tasks, repo_name)
+            await asyncio.to_thread(
+                check_and_start_recurrent_jules_tasks,
+                repo_name,
+                self._get_implementation_slots(repo_name),
+            )
         except Exception as e:
             logger.error(f"Error checking/starting recurrent Jules tasks: {e}")
 
@@ -124,7 +130,12 @@ class AutomationEngine:
         from .issue_processor import handle_stale_jules_issue_sessions
 
         try:
-            stale_result = handle_stale_jules_issue_sessions(repo_name, self.config, self.github)
+            stale_result = handle_stale_jules_issue_sessions(
+                repo_name,
+                self.config,
+                self.github,
+                implementation_slots=self._get_implementation_slots(repo_name),
+            )
             for action in stale_result.actions:
                 logger.info(f"Stale Jules issue session: {action}")
             return stale_result.actions
@@ -138,6 +149,11 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
+        # Discover open PR ownership before releasing startup reservations.
+        # A PR linked only by branch metadata has no Issue timeline event and
+        # may not have been recorded if the previous process stopped before its
+        # first candidate scan.
+        self._get_implementation_slots(repo_name).reconcile(self.github, discover_open_prs=True)
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
@@ -1065,6 +1081,74 @@ class AutomationEngine:
             error=None,
         )
 
+        # Reject candidates that cannot enter an implementation lifecycle before
+        # persisting ownership.  Otherwise an open but ineligible item can leak a
+        # slot indefinitely because reconciliation correctly sees it as nonterminal.
+        item_number = candidate.data.get("number")
+        if not isinstance(item_number, int) or isinstance(item_number, bool):
+            result.error = f"Item number is missing for {candidate.type} #{candidate.data.get('number', 'N/A')}"
+            return result
+        if candidate.type == "pr" and not self._is_pr_author_allowed(candidate.data):
+            logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
+            return result
+        if candidate.type == "issue":
+            if not self._is_issue_author_allowed(candidate.data):
+                logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
+                return result
+            try:
+                authoritative_type = self._get_authoritative_item_type(repo_name, item_number)
+            except Exception as exc:
+                result.error = str(exc)
+                return result
+            if authoritative_type != "issue":
+                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as {authoritative_type}"
+                return result
+
+        slots = self._get_implementation_slots(repo_name)
+        try:
+            owner = slots.resolve_owner(candidate.type, candidate.data, self.github)
+        except ImplementationOwnerResolutionError as exc:
+            result.error = f"Cannot safely resolve logical implementation owner: {exc}"
+            return result
+        except Exception as exc:
+            result.error = str(exc)
+            return result
+
+        implementation_pr = item_number if candidate.type == "pr" and owner.kind != "pr" else None
+        # Try to reuse an existing owner before reconciliation.  In particular,
+        # this atomically records a newly discovered branch-linked PR while its
+        # Issue owner still exists.  Reconciling first could release that owner
+        # when the closed Issue has no timeline relationship for the PR.
+        reserved = slots.reserve(owner, implementation_pr=implementation_pr)
+        if not reserved:
+            slots.reconcile(self.github)
+            reserved = slots.reserve(owner, implementation_pr=implementation_pr)
+        if not reserved:
+            result.actions = [f"Deferred - logical implementation limit is occupied ({owner.key})"]
+            return result
+
+        with slots.serialize(owner):
+            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+        slots.reconcile(self.github)
+        return result
+
+    def _process_single_candidate_reserved(
+        self,
+        repo_name: str,
+        candidate: Candidate,
+        config: AutomationConfig,
+        jules_mode: bool = False,
+    ) -> CandidateProcessingResult:
+        """Process a candidate after its durable owner slot is reserved."""
+        result = CandidateProcessingResult(
+            type=candidate.type,
+            number=candidate.data.get("number"),
+            title=candidate.data.get("title"),
+            success=False,
+            actions=[],
+            error=None,
+        )
+
         try:
             # Get item number and type
             item_number = candidate.data.get("number")
@@ -1238,6 +1322,11 @@ class AutomationEngine:
 
         return result
 
+    def _get_implementation_slots(self, repo_name: str) -> ImplementationSlotRepository:
+        if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
+            self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
+        return self.implementation_slots
+
     def _get_authoritative_item_type(self, repo_name: str, item_number: int) -> str:
         """Establish an issue-like target's authoritative GitHub type.
 
@@ -1354,7 +1443,10 @@ class AutomationEngine:
                 self.handle_stale_jules_issue_sessions(repo_name)
 
                 # Check and start recurrent Jules tasks
-                check_and_start_recurrent_jules_tasks(repo_name)
+                check_and_start_recurrent_jules_tasks(
+                    repo_name,
+                    self._get_implementation_slots(repo_name),
+                )
 
                 # Pull latest changes for monitored repository
                 try:

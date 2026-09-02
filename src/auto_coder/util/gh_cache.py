@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import types
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, cast
@@ -42,6 +43,11 @@ class ReviewThread:
 
 # Safety bound for paginated comment listings (100 comments per page).
 COMMENTS_MAX_PAGES = 50
+
+# A bound prevents a malformed or cyclic Link header from looping forever. In
+# strict mode, reaching the bound raises so lifecycle reconciliation fails
+# closed rather than treating a partial timeline as authoritative.
+TIMELINE_MAX_PAGES = 100
 
 _local_storage = threading.local()
 
@@ -504,12 +510,26 @@ class GitHubClient:
             per_page = min(limit, 100) if limit else 100
             url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=created&direction=asc&per_page={per_page}"
 
-            resp = client.request("GET", url, headers=headers)
-            resp.raise_for_status()
-            pr_list = resp.json()
-
-            if limit:
-                pr_list = pr_list[:limit]
+            pr_list: List[Any] = []
+            visited_urls = set()
+            while url:
+                if url in visited_urls or len(visited_urls) >= 1000:
+                    raise RuntimeError("GitHub open-PR pagination did not terminate safely")
+                visited_urls.add(url)
+                resp = client.request("GET", url, headers=headers)
+                resp.raise_for_status()
+                page = resp.json()
+                if not isinstance(page, list):
+                    raise RuntimeError("GitHub open-PR response was not a list")
+                pr_list.extend(page)
+                if limit and len(pr_list) >= limit:
+                    pr_list = pr_list[:limit]
+                    break
+                next_link = getattr(resp, "links", {}).get("next", {})
+                next_url = next_link.get("url") if isinstance(next_link, dict) else None
+                if next_url is not None and not isinstance(next_url, str):
+                    raise RuntimeError("GitHub open-PR pagination link was invalid")
+                url = next_url
 
             logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)")
             return pr_list
@@ -989,7 +1009,12 @@ class GitHubClient:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
-    def _get_issue_timeline(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+    def _get_issue_timeline(
+        self,
+        repo_name: str,
+        issue_number: int,
+        raise_on_error: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Get timeline for an issue using GitHub REST API.
 
         Endpoint: /repos/{owner}/{repo}/issues/{issue_number}/timeline
@@ -998,9 +1023,6 @@ class GitHubClient:
             owner, repo = repo_name.split("/")
             client = get_caching_client()
 
-            # Use loose pagination or just get first page?
-            # Usually recent events are what we want? The endpoint returns all or paginated.
-            # Using standard per_page=100
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100"
             headers = {
                 "Authorization": f"bearer {self.token}",
@@ -1008,24 +1030,43 @@ class GitHubClient:
                 # "X-GitHub-Api-Version": "2022-11-28" # Standard API
             }
 
-            # Simple handling for now - assuming recent events are on first page or reasonable number.
-            # If a PR is linked, it should be in the timeline.
-            response = client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            events: List[Dict[str, Any]] = []
+            visited_urls = set()
+            for _page in range(TIMELINE_MAX_PAGES):
+                if url in visited_urls:
+                    raise RuntimeError(f"Issue #{issue_number} timeline pagination repeated URL: {url}")
+                visited_urls.add(url)
+
+                response = client.get(url, headers=headers)
+                response.raise_for_status()
+                page_events = response.json()
+                if not isinstance(page_events, list) or not all(isinstance(event, dict) for event in page_events):
+                    raise ValueError(f"Issue #{issue_number} timeline returned invalid page data")
+                events.extend(page_events)
+
+                links = response.links
+                next_link = links.get("next") if isinstance(links, Mapping) else None
+                next_url = next_link.get("url") if isinstance(next_link, Mapping) else None
+                if not isinstance(next_url, str) or not next_url:
+                    return events
+                url = next_url
+
+            raise RuntimeError(f"Issue #{issue_number} timeline exceeded {TIMELINE_MAX_PAGES} pages")
 
         except Exception as e:
             logger.warning(f"Failed to get timeline for issue #{issue_number}: {e}")
+            if raise_on_error:
+                raise
             return []
 
-    def get_linked_prs(self, repo_name: str, issue_number: int) -> List[int]:
+    def get_linked_prs(self, repo_name: str, issue_number: int, strict: bool = False) -> List[int]:
         """Get PRs linked to this issue via REST Timeline.
 
         Replaces get_linked_prs_via_graphql.
         Look for 'connected' (closing) or 'cross-referenced' (mention) events.
         """
         try:
-            timeline = self._get_issue_timeline(repo_name, issue_number)
+            timeline = self._get_issue_timeline(repo_name, issue_number, raise_on_error=strict)
             pr_numbers = set()
 
             for event in timeline:
@@ -1056,6 +1097,8 @@ class GitHubClient:
 
         except Exception as e:
             logger.error(f"Failed to get linked PRs for issue #{issue_number}: {e}")
+            if strict:
+                raise
             return []
 
     # Deprecated/Removed: get_linked_prs_via_graphql
