@@ -11,7 +11,9 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     ChangeProvenanceItem,
+    EvidenceRecoveryEntry,
     IssueRequirement,
+    RequirementCoverageEntry,
     ReviewThreadDisposition,
     _apply_coverage_and_verdict_precedence,
     build_adversarial_validation_context,
@@ -68,6 +70,40 @@ def test_review_anchor_accepts_integer_and_normalizes_decimal_string(anchor_line
     assert len(result.findings) == 1
     assert result.findings[0].anchor_line == 1817
     assert isinstance(result.findings[0].anchor_line, int)
+
+
+def test_recovered_changed_file_allows_independently_verified_pass() -> None:
+    context = AdversarialValidationContext(
+        all_changed_files=["src/state.py"],
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+    )
+    result = AdversarialValidationResult(
+        result="PASS",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="Current-head focused execution")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(
+                path="src/state.py",
+                source="current-PR retrieval",
+                status="RECOVERED",
+                evidence="Retrieved and inspected the complete current-head file",
+                requirement_ids=["REQ-001"],
+            )
+        ],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "PASS"
+
+
+def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
+    attempts = [{"path": f"src/{index}.py", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "not present", "requirement_ids": ["REQ-001"]} for index in range(9)]
+
+    result = parse_adversarial_validation_response(json.dumps({"result": "INCONCLUSIVE", "findings": [], "evidence_recovery": attempts}))
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "schema_error"
 
 
 @pytest.mark.parametrize("anchor_line", ["abc", "0", "-1", 0, -1, 1.5, True])
