@@ -30,7 +30,7 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v9"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v10"
 CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
 TEST_ORACLE_GAP_STATUSES = {"OPEN", "RESOLVED", "INVALID"}
 TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
@@ -47,6 +47,7 @@ class AdversarialValidationFinding:
     requirement_id: str = ""
     requirement_ids: List[str] = field(default_factory=list)
     finding_identity: str = ""
+    correction_identity: str = ""
     violated_requirement: str = ""
     reachability: str = ""
     required_behavior: str = ""
@@ -1457,6 +1458,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                         required_fields = {
                             "finding_identity": str(item.get("finding_identity", "")).strip(),
+                            "correction_identity": str(item.get("correction_identity", "")).strip(),
                             "violated_requirement": str(item.get("violated_requirement", "")).strip(),
                             "reachability": str(item.get("reachability", "")).strip(),
                             "required_behavior": str(item.get("required_behavior", "")).strip(),
@@ -1499,6 +1501,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                                 requirement_id=finding_requirement_ids[0],
                                 requirement_ids=finding_requirement_ids,
                                 finding_identity=required_fields["finding_identity"],
+                                correction_identity=required_fields["correction_identity"],
                                 violated_requirement=req,
                                 reachability=required_fields["reachability"],
                                 required_behavior=required_fields["required_behavior"],
@@ -1521,24 +1524,26 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 compacted_findings: List[AdversarialValidationFinding] = []
                 findings_by_counterexample: Dict[tuple[str, ...], AdversarialValidationFinding] = {}
                 for finding in findings:
-                    # The required root-defect identity permits requirement
-                    # perspectives to describe different consequences without
-                    # conflating findings that need different corrections.
-                    shared_identity = (
-                        finding.anchor_path,
-                        str(finding.anchor_line or ""),
-                        finding.reachability,
-                        finding.evidence,
-                        finding.suggested_regression_scenario,
-                    )
-                    identity = (finding.finding_identity, *shared_identity)
+                    # Structured identities, rather than reviewer prose, decide
+                    # grouping. The correction identity prevents one root label
+                    # from collapsing independently actionable fixes.
+                    identity = (finding.finding_identity, finding.correction_identity)
                     existing = findings_by_counterexample.get(identity)
                     if existing is None:
                         findings_by_counterexample[identity] = finding
                         compacted_findings.append(finding)
                         continue
                     existing.requirement_ids = list(dict.fromkeys([*existing.all_requirement_ids, *finding.all_requirement_ids]))
-                    for field_name in ("violated_requirement", "required_behavior", "actual_behavior", "counterexample", "test_gap"):
+                    for field_name in (
+                        "violated_requirement",
+                        "reachability",
+                        "required_behavior",
+                        "actual_behavior",
+                        "evidence",
+                        "counterexample",
+                        "test_gap",
+                        "suggested_regression_scenario",
+                    ):
                         merged_values = list(dict.fromkeys(value for value in [getattr(existing, field_name), getattr(finding, field_name)] if value))
                         setattr(existing, field_name, "\n\n".join(merged_values))
                 findings = compacted_findings
