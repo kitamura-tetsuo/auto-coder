@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
+from .deployment_channel import repository_dispatch_authority
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
@@ -1137,15 +1138,16 @@ class AutomationEngine:
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
-        execution_id = slots.current_execution_id(owner)
-        inherited_execution = execution_id is not None
-        if not inherited_execution:
-            execution_id = slots.start_execution(
-                owner,
-                implementation_pr=implementation_pr,
-                bypass_capacity=explicit_only,
-                bypass_active_execution=explicit_only and force,
-            )
+        with repository_dispatch_authority(repo_name):
+            execution_id = slots.current_execution_id(owner)
+            inherited_execution = execution_id is not None
+            if not inherited_execution:
+                execution_id = slots.start_execution(
+                    owner,
+                    implementation_pr=implementation_pr,
+                    bypass_capacity=explicit_only,
+                    bypass_active_execution=explicit_only and force,
+                )
             if execution_id is None and not explicit_only:
                 slots.reconcile(self.github)
                 execution_id = slots.start_execution(owner, implementation_pr=implementation_pr)

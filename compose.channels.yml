@@ -1,0 +1,30 @@
+services:
+  release:
+    image: ${AUTO_CODER_IMAGE}@${RELEASE_DIGEST}
+    command: ["process-issues", "--repo", "${RELEASE_REPOSITORY}", "--log-file", "/runtime/logs/auto-coder.log"]
+    environment:
+      AUTO_CODER_CHANNEL: release
+      AUTO_CODER_ARTIFACT_DIGEST: ${RELEASE_DIGEST}
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_OWNERSHIP_FILE: /routing/ownership.json
+      HOME: /runtime/home
+    volumes:
+      - ./runtime/release:/runtime
+      - ./runtime/workspaces/release:/workspace
+      - ./runtime/routing:/routing
+    restart: unless-stopped
+
+  beta:
+    image: ${AUTO_CODER_IMAGE}@${BETA_DIGEST}
+    command: ["process-issues", "--repo", "${BETA_REPOSITORY}", "--log-file", "/runtime/logs/auto-coder.log"]
+    environment:
+      AUTO_CODER_CHANNEL: beta
+      AUTO_CODER_ARTIFACT_DIGEST: ${BETA_DIGEST}
+      AUTO_CODER_RUNTIME_ROOT: /runtime
+      AUTO_CODER_OWNERSHIP_FILE: /routing/ownership.json
+      HOME: /runtime/home
+    volumes:
+      - ./runtime/beta:/runtime
+      - ./runtime/workspaces/beta:/workspace
+      - ./runtime/routing:/routing
+    restart: unless-stopped

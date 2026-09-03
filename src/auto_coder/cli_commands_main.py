@@ -117,6 +117,9 @@ def process_issues(
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
+    from .deployment_channel import validate_repository_ownership
+
+    validate_repository_ownership(repo_name)
     set_active_repo_name(repo_name)
 
     config = get_llm_config(repo_name=repo_name)
