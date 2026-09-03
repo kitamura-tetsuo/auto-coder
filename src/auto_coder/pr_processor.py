@@ -3084,7 +3084,7 @@ def _update_with_base_branch(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
-            cloud_delegation = _delegate_cloud_merge_conflict_repair(repo_name, pr_data)
+            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data)
             if cloud_delegation:
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
@@ -4251,7 +4251,7 @@ def _delegate_codex_cloud_review_thread_repair(
     return [f"Requested Codex Cloud task '{task_id}' to address unresolved review threads for PR #{pr_number}"]
 
 
-def _delegate_cloud_merge_conflict_repair(
+def _delegate_cloud_merge_conflict_repair_result(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
@@ -4333,6 +4333,15 @@ def _delegate_cloud_merge_conflict_repair(
 
     logger.info(f"Delegated merge-conflict repair for PR #{pr_number} to existing cloud task {task_id}")
     return CloudConflictDelegationResult(delegated=True, reason=f"repair was delivered to cloud session '{task_id}'")
+
+
+def _delegate_cloud_merge_conflict_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+) -> bool:
+    """Return whether cloud conflict repair was delegated or deduplicated."""
+    return bool(_delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, github_client))
 
 
 def _send_codex_cloud_error_feedback(

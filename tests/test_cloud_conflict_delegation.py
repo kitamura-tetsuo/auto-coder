@@ -7,6 +7,7 @@ from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
 from src.auto_coder.pr_processor import (
     _delegate_cloud_merge_conflict_repair,
+    _delegate_cloud_merge_conflict_repair_result,
     _record_cloud_conflict_deliveries,
     _resolve_cloud_conflict_origin,
     _update_with_base_branch,
@@ -89,7 +90,7 @@ def test_failed_delivery_and_unsupported_provider_preserve_fallback(tmp_path) ->
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(failed_client, "task_existing")),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
     ):
-        result = _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
 
     assert not result
     assert result.reason == "delivery to originating cloud session 'task_existing' was rejected"
@@ -102,7 +103,7 @@ def test_failed_delivery_and_unsupported_provider_preserve_fallback(tmp_path) ->
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(unsupported, "session_existing")),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
     ):
-        result = _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
 
     assert not result
     assert "does not support repair follow-up" in result.reason
@@ -110,7 +111,7 @@ def test_failed_delivery_and_unsupported_provider_preserve_fallback(tmp_path) ->
 
 def test_missing_origin_preserves_fallback_without_creating_a_task() -> None:
     with patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=None) as resolver:
-        result = _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
 
     resolver.assert_called_once()
     assert not result
@@ -127,8 +128,8 @@ def test_delivery_is_reserved_before_followup_and_never_redelivered(tmp_path) ->
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
         patch("src.auto_coder.pr_processor._record_cloud_conflict_deliveries", wraps=_record_cloud_conflict_deliveries) as record,
     ):
-        first = _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
-        second = _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
+        first = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
+        second = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
 
     assert first
     assert second
@@ -145,7 +146,7 @@ def test_reservation_failure_prevents_non_idempotent_delivery(tmp_path) -> None:
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
         patch("src.auto_coder.pr_processor._record_cloud_conflict_deliveries", side_effect=OSError("read-only filesystem")),
     ):
-        result = _delegate_cloud_merge_conflict_repair("owner/repo", pr_data())
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
 
     assert not result
     assert result.reason == "a durable repair delivery receipt could not be reserved: read-only filesystem"
