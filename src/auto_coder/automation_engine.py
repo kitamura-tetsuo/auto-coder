@@ -1070,6 +1070,8 @@ class AutomationEngine:
         candidate: Candidate,
         config: AutomationConfig,
         jules_mode: bool = False,
+        explicit_only: bool = False,
+        force: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1135,17 +1137,35 @@ class AutomationEngine:
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
-        reserved = slots.reserve(owner, implementation_pr=implementation_pr)
-        if not reserved:
-            slots.reconcile(self.github)
-            reserved = slots.reserve(owner, implementation_pr=implementation_pr)
-        if not reserved:
-            result.actions = [f"Deferred - logical implementation limit is occupied ({owner.key})"]
+        execution_id = slots.current_execution_id(owner)
+        inherited_execution = execution_id is not None
+        if not inherited_execution:
+            execution_id = slots.start_execution(
+                owner,
+                implementation_pr=implementation_pr,
+                bypass_capacity=explicit_only,
+                bypass_active_execution=explicit_only and force,
+            )
+            if execution_id is None and not explicit_only:
+                slots.reconcile(self.github)
+                execution_id = slots.start_execution(owner, implementation_pr=implementation_pr)
+        if execution_id is None:
+            reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
+            result.actions = [f"Deferred - {reason} ({owner.key})"]
             return result
 
-        with slots.serialize(owner):
-            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
-        slots.reconcile(self.github)
+        try:
+            # Forced recovery intentionally does not take the per-owner mutation
+            # lock; its separate durable execution identity protects sibling state.
+            if explicit_only and force:
+                result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+            else:
+                with slots.serialize(owner):
+                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+        finally:
+            if not inherited_execution:
+                slots.finish_execution(owner, execution_id)
+                slots.reconcile(self.github)
         return result
 
     def _process_single_candidate_reserved(
@@ -1537,7 +1557,16 @@ class AutomationEngine:
             results["errors"].append(error_msg)  # type: ignore
             return results
 
-    def process_single(self, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]:
+    def process_single(
+        self,
+        repo_name: str,
+        target_type: str,
+        number: int,
+        jules_mode: bool = False,
+        *,
+        explicit_only: bool = False,
+        force: bool = False,
+    ) -> Dict[str, Any]:
         """Process a single issue or PR by number.
 
         Args:
@@ -1592,12 +1621,15 @@ class AutomationEngine:
                         }
 
                     # Use unified processing function
-                    processing_result = self._process_single_candidate_unified(
-                        repo_name,
-                        candidate,
-                        self.config,
-                        jules_mode,
-                    )
+                    processing_args = (repo_name, candidate, self.config, jules_mode)
+                    if explicit_only:
+                        processing_result = self._process_single_candidate_unified(
+                            *processing_args,
+                            explicit_only=True,
+                            force=force,
+                        )
+                    else:
+                        processing_result = self._process_single_candidate_unified(*processing_args)
 
                     # Only add to processed list if there was no error and processing succeeded
                     if processing_result.error:

@@ -8,6 +8,8 @@ import json
 import os
 import re
 import threading
+import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +54,7 @@ class ImplementationSlotRepository:
         self._thread_lock = threading.RLock()
         self._owner_locks: Dict[str, threading.RLock] = {}
         self._serialization_depth = threading.local()
+        self._execution_context = threading.local()
 
     def resolve_owner(self, candidate_type: str, data: Dict[str, Any], github_client: Any) -> ImplementationOwner:
         number = data.get("number")
@@ -171,6 +174,87 @@ class ImplementationSlotRepository:
             self._write(owners)
             return True
 
+    def start_execution(
+        self,
+        owner: ImplementationOwner,
+        *,
+        implementation_pr: Optional[int] = None,
+        bypass_capacity: bool = False,
+        bypass_active_execution: bool = False,
+    ) -> Optional[str]:
+        """Atomically admit and durably identify one mutating execution.
+
+        Capacity and duplicate-execution admission are deliberately independent:
+        explicit ``--only`` work may bypass the former, while only the additional
+        operator ``--force`` flag may bypass the latter.
+        """
+        if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
+            raise ValueError("implementation_pr must identify a PR belonging to a non-PR implementation owner")
+        execution_id = uuid.uuid4().hex
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                if len(owners) >= self.max_implementations and not bypass_capacity:
+                    return None
+                record = {
+                    "kind": owner.kind,
+                    "number": owner.number,
+                    "implementation_prs": [],
+                    "provider_sessions": [],
+                    "executions": [],
+                }
+                owners[owner.key] = record
+            executions = record.setdefault("executions", [])
+            if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+                raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+            if executions and not bypass_active_execution:
+                return None
+            known_prs = record.setdefault("implementation_prs", [])
+            if not isinstance(known_prs, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+            if implementation_pr is not None and implementation_pr not in known_prs:
+                known_prs.append(implementation_pr)
+            executions.append({"id": execution_id, "pid": os.getpid(), "started_at": time.time()})
+            self._write(owners)
+        active = getattr(self._execution_context, "owners", {})
+        active[owner.key] = execution_id
+        self._execution_context.owners = active
+        return execution_id
+
+    def finish_execution(self, owner: ImplementationOwner, execution_id: str) -> None:
+        """Remove only the named execution, preserving its owner and siblings."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return
+            executions = record.setdefault("executions", [])
+            if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+                raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+            remaining = [value for value in executions if value["id"] != execution_id]
+            if len(remaining) != len(executions):
+                record["executions"] = remaining
+                self._write(owners)
+        active = getattr(self._execution_context, "owners", {})
+        if active.get(owner.key) == execution_id:
+            active.pop(owner.key, None)
+
+    def current_execution_id(self, owner: ImplementationOwner) -> Optional[str]:
+        """Return this thread's enclosing execution for reentrant lifecycle work."""
+        return getattr(self._execution_context, "owners", {}).get(owner.key)
+
+    def active_execution_ids(self, owner: ImplementationOwner) -> tuple[str, ...]:
+        """Return durable active execution identities for an owner."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return ()
+        executions = record.get("executions", [])
+        if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+            raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+        return tuple(value["id"] for value in executions)
+
     def release(self, owner: ImplementationOwner) -> None:
         with self._state_lock():
             owners = self._read()
@@ -251,6 +335,11 @@ class ImplementationSlotRepository:
                 return
         for owner in self.active_owners():
             try:
+                # Lifecycle reconciliation must never erase live execution
+                # identities, including forced siblings of the execution that
+                # just completed.
+                if self.active_execution_ids(owner):
+                    continue
                 if owner.kind == "issue":
                     item = github_client.get_issue(self.repo_name, owner.number)
                     details = github_client.get_issue_details(item)

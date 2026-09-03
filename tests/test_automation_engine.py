@@ -104,6 +104,20 @@ class TestAutomationEngine:
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
 
+    def test_process_single_preserves_operator_override_to_admission_boundary(self, mock_github_client):
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="issue", data={"number": 100, "title": "Recovery"}, priority=1)
+        processing_result = CandidateProcessingResult(type="issue", number=100, title="Recovery", success=True, actions=["started"])
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        engine._process_single_candidate_unified = Mock(return_value=processing_result)
+
+        with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+            result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True)
+
+        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True)
+        assert result["issues_processed"][0]["actions_taken"] == ["started"]
+
     def test_misclassified_pr_is_rejected_before_issue_side_effects(self):
         """A pull request presented as an Issue candidate must never reach Issue dispatch."""
 
