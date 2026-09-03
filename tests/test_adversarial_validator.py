@@ -138,6 +138,50 @@ def test_inconclusive_without_recovery_or_irreducible_gap_is_rejected() -> None:
     assert checked.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
 
 
+def test_inconclusive_rejects_recovery_scoped_only_to_verified_requirement() -> None:
+    context = AdversarialValidationContext(
+        issue_requirements=[
+            IssueRequirement(requirement_id="REQ-A", text="Recover state evidence"),
+            IssueRequirement(requirement_id="REQ-B", text="Verify audit evidence"),
+        ]
+    )
+    parsed = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "INCONCLUSIVE",
+                "summary": "State evidence is unavailable",
+                "requirement_coverage": [
+                    {"requirement_id": "REQ-A", "status": "UNVERIFIED", "evidence": "State file omitted"},
+                    {"requirement_id": "REQ-B", "status": "VERIFIED", "evidence": "Audit test passed"},
+                ],
+                "findings": [],
+                "evidence_recovery": [
+                    {
+                        "path": "tests/test_audit.py",
+                        "source": "focused execution",
+                        "status": "RECOVERED",
+                        "evidence": "Audit test passed",
+                        "requirement_ids": ["REQ-B"],
+                    }
+                ],
+                "decision_critical_evidence_gaps": [
+                    {
+                        "requirement_id": "REQ-B",
+                        "evidence_needed": "Additional audit output",
+                        "recovery_attempts": ["Ran the audit test"],
+                    }
+                ],
+            }
+        )
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(parsed, context)
+
+    assert checked.result == "ERROR"
+    assert checked.diagnostic_category == "inconclusive_evidence_scope_mismatch"
+    assert checked.diagnostic_reason == ("requirements without recovery attempts: REQ-A; requirements without decision-critical gaps: REQ-A; " "gaps for already-decided requirements: REQ-B")
+
+
 @pytest.mark.parametrize("anchor_line", ["abc", "0", "-1", 0, -1, 1.5, True])
 def test_invalid_review_anchor_returns_structured_schema_error(anchor_line: object) -> None:
     response = json.dumps(

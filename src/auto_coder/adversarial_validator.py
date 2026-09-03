@@ -1831,8 +1831,11 @@ def _reconcile_test_oracle_gap_lifecycle(
     return result
 
 
-def _enforce_inconclusive_recovery_contract(result: AdversarialValidationResult) -> AdversarialValidationResult:
-    """Reject a final INCONCLUSIVE verdict that did not exhaust recovery."""
+def _enforce_inconclusive_recovery_contract(
+    result: AdversarialValidationResult,
+    incomplete_requirement_ids: List[str],
+) -> AdversarialValidationResult:
+    """Reject a final INCONCLUSIVE verdict without scoped recovery evidence."""
     if result.result.strip().upper() != "INCONCLUSIVE" or result.dynamic_check_requested:
         return result
 
@@ -1846,6 +1849,27 @@ def _enforce_inconclusive_recovery_contract(result: AdversarialValidationResult)
         result.result = "ERROR"
         result.summary = f"Invalid validator response: {reason}"
         result.diagnostic_category = "inconclusive_without_exhausted_evidence_recovery"
+        result.diagnostic_reason = reason
+        return result
+
+    incomplete_ids = set(incomplete_requirement_ids)
+    recovery_ids = {requirement_id for entry in result.evidence_recovery for requirement_id in entry.requirement_ids}
+    gap_ids = {gap.requirement_id for gap in result.decision_critical_evidence_gaps}
+    requirements_without_recovery = sorted(incomplete_ids - recovery_ids)
+    requirements_without_gap = sorted(incomplete_ids - gap_ids)
+    gaps_for_verified_requirements = sorted(gap_ids - incomplete_ids)
+    if requirements_without_recovery or requirements_without_gap or gaps_for_verified_requirements:
+        scope_errors: List[str] = []
+        if requirements_without_recovery:
+            scope_errors.append(f"requirements without recovery attempts: {', '.join(requirements_without_recovery)}")
+        if requirements_without_gap:
+            scope_errors.append(f"requirements without decision-critical gaps: {', '.join(requirements_without_gap)}")
+        if gaps_for_verified_requirements:
+            scope_errors.append(f"gaps for already-decided requirements: {', '.join(gaps_for_verified_requirements)}")
+        reason = "; ".join(scope_errors)
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: INCONCLUSIVE evidence was not scoped to undecided requirements"
+        result.diagnostic_category = "inconclusive_evidence_scope_mismatch"
         result.diagnostic_reason = reason
     return result
 
@@ -1998,7 +2022,7 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_evidence_coverage"
         result.diagnostic_reason = reason
-        return _enforce_inconclusive_recovery_contract(result)
+        return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
     if result.result.strip().upper() == "PASS" and (not expected_requirement_ids or incomplete_requirement_ids):
         if not expected_requirement_ids:
@@ -2009,7 +2033,7 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_requirement_coverage"
         result.diagnostic_reason = reason
-    return _enforce_inconclusive_recovery_contract(result)
+    return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
 
 def run_adversarial_validation(
