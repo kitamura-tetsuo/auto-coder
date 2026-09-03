@@ -532,8 +532,8 @@ def process_pull_request(
             repo_name,
             pr_number,
             item_type="pr",
-            skip_label_add=True,
-            check_labels=config.CHECK_LABELS,
+            skip_label_add=not force_adversarial_validation,
+            check_labels=config.CHECK_LABELS and not force_adversarial_validation,
             known_labels=pr_data.get("labels"),
         ) as should_process:
             if not should_process:
@@ -2057,6 +2057,8 @@ def _handle_pr_merge(
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
     pr_number = pr_data["number"]
+    decision_attempt_repository: Optional[AdversarialValidationAttemptRepository] = None
+    decision_attempt_sequence = 0
 
     try:
         # A stale review-thread resolution (issue #1619) that could not be
@@ -2416,6 +2418,8 @@ def _handle_pr_merge(
                         claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
                         attempt_repository = AdversarialValidationAttemptRepository(repo_name)
                         attempt = attempt_repository.start(pr_number, head_sha)
+                        decision_attempt_repository = attempt_repository
+                        decision_attempt_sequence = attempt.sequence
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
@@ -2482,45 +2486,46 @@ def _handle_pr_merge(
 
                         _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
 
-                        publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
-                        if not publication.success:
-                            publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
-                                github_client,
-                                repo_name,
-                                pr_number,
-                                head_sha,
-                                val_result,
-                            )
-                            if publication_confirmed:
-                                published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
-                                actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
-                            elif resolved_thread_ids:
-                                reopened_thread_ids = reopen_review_threads_after_publication_failure(
+                        with attempt_repository.serialized_transition():
+                            publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
+                            if not publication.success:
+                                publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
                                     github_client,
                                     repo_name,
                                     pr_number,
-                                    claimed_review_threads,
-                                    resolved_thread_ids,
+                                    head_sha,
+                                    val_result,
                                 )
-                                if reopened_thread_ids:
-                                    actions.append(f"Reopened {len(reopened_thread_ids)} review thread(s) after adversarial review publication failed")
-                                if len(reopened_thread_ids) != len(resolved_thread_ids):
-                                    actions.append("Some review-thread publication rollbacks remain pending and will be retried before later merge processing")
-                            if not publication_confirmed:
-                                reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
-                                actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
-                                logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
-                                return actions
-                        else:
-                            if val_result.result.strip().upper() == "ERROR":
-                                actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
+                                if publication_confirmed:
+                                    published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
+                                    actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
+                                elif resolved_thread_ids:
+                                    reopened_thread_ids = reopen_review_threads_after_publication_failure(
+                                        github_client,
+                                        repo_name,
+                                        pr_number,
+                                        claimed_review_threads,
+                                        resolved_thread_ids,
+                                    )
+                                    if reopened_thread_ids:
+                                        actions.append(f"Reopened {len(reopened_thread_ids)} review thread(s) after adversarial review publication failed")
+                                    if len(reopened_thread_ids) != len(resolved_thread_ids):
+                                        actions.append("Some review-thread publication rollbacks remain pending and will be retried before later merge processing")
+                                if not publication_confirmed:
+                                    reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
+                                    actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
+                                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                                    return actions
                             else:
-                                actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+                                if val_result.result.strip().upper() == "ERROR":
+                                    actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
+                                else:
+                                    actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
 
-                        attempt_repository.mark_published(attempt.attempt_id)
-                        if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
-                            actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
-                            return actions
+                            attempt_repository.mark_published(attempt.attempt_id)
+                            if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
+                                actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                                return actions
                     if published_status == "PASS":
                         pass
                     elif val_result.needs_fix:
@@ -2576,34 +2581,39 @@ def _handle_pr_merge(
                 logger.warning(f"No github_client available to verify PR #{pr_number} head SHA; aborting merge.")
                 return actions
 
-            try:
-                current_pr = github_client.get_pull_request(repo_name, pr_number)
-                current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
-                if not current_head_sha:
-                    actions.append(f"Could not determine current remote head SHA for PR #{pr_number}; merge aborted.")
-                    logger.warning(f"Could not determine remote head SHA for PR #{pr_number}; aborting merge.")
+            merge_transition = decision_attempt_repository.serialized_transition() if decision_attempt_repository is not None else contextlib.nullcontext()
+            with merge_transition:
+                if decision_attempt_repository is not None and decision_attempt_repository.latest_published_sequence(pr_number, head_sha) > decision_attempt_sequence:
+                    actions.append("Skipping merge because a newer adversarial-validation attempt is applicable")
+                    return actions
+                try:
+                    current_pr = github_client.get_pull_request(repo_name, pr_number)
+                    current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+                    if not current_head_sha:
+                        actions.append(f"Could not determine current remote head SHA for PR #{pr_number}; merge aborted.")
+                        logger.warning(f"Could not determine remote head SHA for PR #{pr_number}; aborting merge.")
+                        return actions
+
+                    if head_sha and current_head_sha != head_sha:
+                        actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
+                        logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
+                        return actions
+                except Exception as e:
+                    actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
+                    logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
+                    if processing_status is not None:
+                        processing_status.error = str(e)
+                        processing_status.outcome = PRProcessingOutcome.FAILED
                     return actions
 
-                if head_sha and current_head_sha != head_sha:
-                    actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
-                    logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
-                    return actions
-            except Exception as e:
-                actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
-                logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
-                if processing_status is not None:
-                    processing_status.error = str(e)
-                    processing_status.outcome = PRProcessingOutcome.FAILED
-                return actions
-
-            merge_result = _merge_pr(
-                repo_name,
-                pr_number,
-                analysis,
-                config,
-                github_client=github_client,
-                expected_head_sha=current_head_sha or head_sha or None,
-            )
+                merge_result = _merge_pr(
+                    repo_name,
+                    pr_number,
+                    analysis,
+                    config,
+                    github_client=github_client,
+                    expected_head_sha=current_head_sha or head_sha or None,
+                )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
                 if processing_status is not None:

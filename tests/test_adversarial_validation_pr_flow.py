@@ -747,14 +747,12 @@ class TestAdversarialValidationPRFlow:
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
 
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
-        mock_run_validation.return_value = AdversarialValidationResult(
-            result="NEEDS_FIX",
-            summary="Retried and found a defect",
-            findings=[AdversarialValidationFinding(violated_requirement="REQ-001")],
-        )
+        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Retried")
         attempt_repository = attempt_repository_type.return_value
         attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-v2", 2)
-        attempt_repository.latest_published_sequence.return_value = 2
+        # V1 is authoritative immediately after publication. Before its final
+        # merge transition, a newer V2 blocking publication becomes applicable.
+        attempt_repository.latest_published_sequence.side_effect = [2, 3]
         head_sha = "abc123456789"
         prior_body = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Historical"), head_sha)
         client = MagicMock()
@@ -770,12 +768,12 @@ class TestAdversarialValidationPRFlow:
 
         mock_run_validation.assert_called_once()
         attempt_repository.start.assert_called_once_with(100, head_sha)
-        attempt_repository.finish.assert_called_once_with("attempt-v2", "NEEDS_FIX")
+        attempt_repository.finish.assert_called_once_with("attempt-v2", "PASS")
         attempt_repository.mark_published.assert_called_once_with("attempt-v2")
         assert client.get_pr_comments.return_value == [{"body": prior_body}]
         assert any("Forcing a new adversarial-validation attempt" in action for action in actions)
         mock_merge_pr.assert_not_called()
-        assert any("Adversarial validation failed" in action for action in actions)
+        assert any("newer adversarial-validation attempt is applicable" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

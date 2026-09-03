@@ -1256,7 +1256,7 @@ class AutomationEngine:
                 item_number,
                 item_type=item_type,
                 config=config,
-                check_labels=config.CHECK_LABELS,
+                check_labels=config.CHECK_LABELS and not force_adversarial_validation,
                 known_labels=candidate.data.get("labels") if candidate.data else None,
             ) as should_process:
                 if not should_process:

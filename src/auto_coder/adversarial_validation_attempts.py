@@ -25,12 +25,30 @@ class AdversarialValidationAttemptRepository:
     def __init__(self, repo_name: str, storage_path: Optional[Path] = None):
         self.storage_path = storage_path or Path.home() / ".auto-coder" / repo_name / "adversarial_validation_attempts.json"
         self.lock_path = self.storage_path.with_suffix(".lock")
+        self.transition_lock_path = self.storage_path.with_suffix(".transition.lock")
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             os.chmod(self.lock_path, 0o600)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def serialized_transition(self) -> Iterator[None]:
+        """Fence publication and merge transitions across processes.
+
+        Attempt-state reads alone cannot close the check-to-merge race. Every
+        durable publication and every final merge authority check uses this
+        separate lock, while ordinary state mutations retain their short lock.
+        """
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.transition_lock_path.open("a+", encoding="utf-8") as lock:
+            os.chmod(self.transition_lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             try:
                 yield
