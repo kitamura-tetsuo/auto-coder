@@ -717,6 +717,15 @@ pr:
     6. Has the implementation introduced an unintended regression or violated an invariant?
     7. Is the implementation satisfying the symptom via a workaround/special case rather than implementing the true intended behavior?
 
+    PRODUCTION-REACHABILITY AND INDEPENDENT-ORACLE CHECK (required for every material requirement):
+    - Ask "Where does the required state or representation come from in production?" Trace it from a supported production entry point through every material parser, configuration, model, persistence, manager, selector, authorization, server, UI, or public-API boundary needed for the observable behavior.
+    - Do NOT classify a requirement VERIFIED solely because a test directly invokes an internal helper or synthetically constructs the required internal state, type, object, normalized value, lifecycle state, or configuration shape. Establish that the supported production origin can create that precondition and that every material boundary preserves its meaning. A locally correct downstream helper is insufficient evidence.
+    - For EACH material requirement, define at least one minimal plausible incorrect implementation and independently determine whether the committed tests would remain green. Explicitly consider the false-success mutation where the changed helper accepts a new representation but the real parser/model/caller path flattens it or can never produce it. Agreement between implementation and tests, green CI, test names, and the implementation agent's interpretation are not independent evidence.
+    - In particular, when ordered List priority and equal-priority Set/group semantics are required, trace the supported configuration -> model -> manager -> selector path. A test that directly supplies a Set/group to the selector cannot prove the production-path requirement if that path only creates a List or loses the distinction.
+    - If the supported production path demonstrably cannot create or preserve explicitly required state, mark the affected requirement VIOLATED and return NEEDS_FIX with the reachable counterexample; do not downgrade the production defect to a test-oracle gap. If decision-critical reachability cannot be established after bounded evidence recovery, mark it UNVERIFIED and return INCONCLUSIVE, never PASS.
+    - If production behavior is established as correct but committed tests omit material protection for the reachable boundary and satisfy the material test-oracle-gap standard, keep production coverage VERIFIED and return NEEDS_TESTS. A focused helper test may remain useful, but it is never sufficient by itself for a cross-boundary requirement.
+    - Before PASS, confirm every stable requirement is VERIFIED or justified IRRELEVANT using this evidence standard. Do not infer completeness from green CI or local helper coverage.
+
     INITIAL TEST-ORACLE DISCOVERY:
     This initial authoritative review may report a small, bounded set of OPEN material test-oracle gaps that satisfy every criterion in the material test-oracle-gap standard. Use discovery_phase INITIAL, rereview_exception_reason NONE, and empty rereview_exception_evidence. Do not mark requirement coverage VIOLATED merely because its implementation is correct but its regression oracle is missing. If one or more such gaps remain and there is no demonstrated implementation violation, return NEEDS_TESTS. Ask only for the focused regression scenario, not a production-code change.
 
@@ -898,6 +907,10 @@ pr:
   adversarial_validation_fix: |-
     Auto-Coder's adversarial validation produced blocking corrective feedback for PR #$pr_number in $repo_name at commit $head_sha. The report distinguishes demonstrated production-code violations from material test-oracle gaps. For a test-oracle gap, add only the focused committed regression protection requested; do not change production code unless a separate demonstrated violation requires it.
 
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
+
     Apply fixes for every concrete finding below, add strict regression tests for the counterexamples, and update the existing PR branch. Do not patch only the demonstrated example: identify and correct the shared lifecycle or correctness invariant. For that invariant, enumerate and evaluate adjacent states and transitions, supported authoritative/oracle sources, restart and persistence behavior, provider-result ambiguity, and relevant ordering/race boundaries. Re-read the linked Issue specification before editing. Specification gaps in the report are non-actionable metadata: do not implement, select, or promote any candidate policy solely to resolve a gap, and do not create or modify an Issue because of one. Do not dismiss findings merely because the current tests pass. Run the repository test script after making the changes. Do not post general PR comments.
 
     For each unresolved GitHub PR review thread you address as part of this work — regardless of which reviewer authored it (Codex GitHub review, Auto-Coder's adversarial reviewer, or any other automated or human reviewer) — inspect the feedback and, if it is actionable, make the necessary code change. Do NOT resolve, close, or otherwise mark any GitHub review thread as resolved yourself; leave that decision to Auto-Coder's independent validation. For each thread you believe you have successfully addressed, reply directly in that same thread with a concise explanation of the implementation change and the validation or regression-test evidence supporting the claim, ending the reply with the exact marker `<!-- auto-coder-review-addressed:v1 -->` on its own line. Only add this marker when you are confident the finding is actually corrected in the current code. If you cannot fix or verify it, disagree with the finding, or consider it already satisfied or invalid, leave the thread unresolved and do NOT add the marker — explain your reasoning in the reply instead. Address each thread independently: fixing one thread never implies that any other thread has been addressed.
@@ -988,6 +1001,10 @@ issue:
     - Close the issue
     - Add a polite comment explaining why it was closed
 
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
+
     After taking action, respond with a summary of what you did.
 
     Please proceed with analyzing and taking action on this issue now.
@@ -1056,6 +1073,10 @@ issue:
     - Users must be able to migrate their code successfully
     - Version numbers must accurately reflect breaking changes
     - No existing functionality should work incorrectly without clear migration path
+
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
 
     Please proceed with analyzing and implementing this breaking change now.
 
@@ -1137,6 +1158,10 @@ issue:
     - Ensure the implementation resolves the urgent problem
     - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
 
     After taking action, respond with a summary of what you did.
 
@@ -1223,6 +1248,10 @@ issue:
     - Ensure the implementation follows best practices
     - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
 
     After taking action, respond with a summary of what you did.
 
@@ -1311,6 +1340,10 @@ issue:
     - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
 
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
+
     After taking action, respond with a summary of what you did.
 
     Please proceed with analyzing and implementing this enhancement now.
@@ -1396,6 +1429,10 @@ issue:
     - Include examples and code snippets where helpful
     - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    PRODUCTION-PATH REGRESSION POLICY:
+    - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+    - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
 
     After taking action, respond with a summary of what you did.
 
@@ -1762,6 +1799,10 @@ jules:
       - All tests were passed in the main branch. If tests are failing, it is because of the changes.
       - Commit code and open PR.
       - After creating the pull request, review all PR comments and review comments. If a comment identifies a valid issue, address it, push the necessary changes, and verify CI again.
+
+      PRODUCTION-PATH REGRESSION POLICY:
+      - Validate every Issue requirement and acceptance scenario at an appropriate supported production-reachable boundary, not merely at the newly changed helper. When required information crosses components, add or update a regression test that starts at its supported production origin and traverses enough material boundaries to detect loss, flattening, reinterpretation, or bypass before observing the required behavior. Lower-level unit tests may supplement, but cannot replace, that production-path regression.
+      - If a test directly constructs an internal state, type, object, configuration shape, lifecycle state, or normalized value required by the Issue, separately prove in a regression test that the supported production origin can create and preserve the same state. Otherwise, do not present the synthetic test as the requirement's regression oracle.
 
       For each unresolved GitHub PR review thread — regardless of which reviewer authored it (Codex GitHub review, Auto-Coder's adversarial reviewer, or any other automated or human reviewer) — do NOT resolve, close, or otherwise mark the thread as resolved yourself; leave that decision to Auto-Coder's independent validation. For each thread you believe you have successfully addressed, reply directly in that same thread with a concise explanation of the implementation change and the validation or regression-test evidence supporting the claim, ending the reply with the exact marker `<!-- auto-coder-review-addressed:v1 -->` on its own line. Only add this marker when you are confident the finding is actually corrected in the current code. If you cannot fix or verify it, disagree with the finding, or consider it already satisfied or invalid, leave the thread unresolved and do NOT add the marker — explain your reasoning in the reply instead. Address each thread independently: fixing one thread never implies that any other thread has been addressed.
 

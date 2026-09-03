@@ -13,6 +13,64 @@ def test_adversarial_initial_review_retains_broad_falsification_policy():
     assert "against every Issue requirement" in prompt
 
 
+def test_adversarial_initial_review_rejects_synthetic_selector_oracles():
+    prompt = get_prompt_template("pr.adversarial_validation_initial_review")
+
+    assert "Where does the required state or representation come from in production?" in prompt
+    assert "configuration -> model -> manager -> selector" in prompt
+    assert "directly supplies a Set/group to the selector cannot prove" in prompt
+    assert "define at least one minimal plausible incorrect implementation" in prompt
+    assert "mark the affected requirement VIOLATED and return NEEDS_FIX" in prompt
+    assert "mark it UNVERIFIED and return INCONCLUSIVE, never PASS" in prompt
+    assert "keep production coverage VERIFIED and return NEEDS_TESTS" in prompt
+
+
+@pytest.mark.parametrize(
+    "prompt_key",
+    [
+        "issue.action",
+        "issue.breaking_change",
+        "issue.urgent",
+        "issue.bug",
+        "issue.enhancement",
+        "jules.issue.action",
+        "pr.adversarial_validation_fix",
+    ],
+)
+def test_implementation_prompts_require_production_path_regression_oracles(prompt_key):
+    prompt = get_prompt_template(prompt_key)
+
+    assert "PRODUCTION-PATH REGRESSION POLICY" in prompt
+    assert "starts at its supported production origin" in prompt
+    assert "detect loss, flattening, reinterpretation, or bypass" in prompt
+    assert "Lower-level unit tests may supplement, but cannot replace" in prompt
+    assert "directly constructs an internal state" in prompt
+    assert "do not present the synthetic test as the requirement's regression oracle" in prompt
+
+
+def test_jules_issue_dispatch_renders_production_path_regression_policy():
+    prompt = render_prompt(
+        "issue.action",
+        is_jules=True,
+        repo_name="owner/repository",
+        issue_number=1656,
+        issue_title="Preserve cross-boundary representation",
+        issue_body="The production path must preserve equal-priority groups.",
+        issue_labels="difficult",
+        issue_state="open",
+        issue_author="author",
+        commit_log="(No commit history)",
+    )
+
+    assert "Implement the following GitHub issue" in prompt
+    assert "PRODUCTION-PATH REGRESSION POLICY" in prompt
+    assert "starts at its supported production origin" in prompt
+    assert "detect loss, flattening, reinterpretation, or bypass" in prompt
+    assert "Lower-level unit tests may supplement, but cannot replace" in prompt
+    assert "directly constructs an internal state" in prompt
+    assert "separately prove in a regression test" in prompt
+
+
 def test_adversarial_rereview_uses_material_convergence_policy():
     prompt = render_prompt(
         "pr.adversarial_validation_rereview",
@@ -29,6 +87,7 @@ def test_adversarial_rereview_uses_material_convergence_policy():
     assert "count never excuses a material violation" in prompt
     assert "allow the rereview to PASS" in prompt
     assert "Your mission: Falsify the implementation" not in prompt
+    assert "PRODUCTION-REACHABILITY AND INDEPENDENT-ORACLE CHECK" not in prompt
 
 
 class TestLabelBasedPromptLoader:
