@@ -33,6 +33,7 @@ def test_adversarial_initial_review_rejects_synthetic_selector_oracles():
         "issue.urgent",
         "issue.bug",
         "issue.enhancement",
+        "jules.issue.action",
         "pr.adversarial_validation_fix",
     ],
 )
@@ -45,6 +46,29 @@ def test_implementation_prompts_require_production_path_regression_oracles(promp
     assert "Lower-level unit tests may supplement, but cannot replace" in prompt
     assert "directly constructs an internal state" in prompt
     assert "do not present the synthetic test as the requirement's regression oracle" in prompt
+
+
+def test_jules_issue_dispatch_renders_production_path_regression_policy():
+    prompt = render_prompt(
+        "issue.action",
+        is_jules=True,
+        repo_name="owner/repository",
+        issue_number=1656,
+        issue_title="Preserve cross-boundary representation",
+        issue_body="The production path must preserve equal-priority groups.",
+        issue_labels="difficult",
+        issue_state="open",
+        issue_author="author",
+        commit_log="(No commit history)",
+    )
+
+    assert "Implement the following GitHub issue" in prompt
+    assert "PRODUCTION-PATH REGRESSION POLICY" in prompt
+    assert "starts at its supported production origin" in prompt
+    assert "detect loss, flattening, reinterpretation, or bypass" in prompt
+    assert "Lower-level unit tests may supplement, but cannot replace" in prompt
+    assert "directly constructs an internal state" in prompt
+    assert "separately prove in a regression test" in prompt
 
 
 def test_adversarial_rereview_uses_material_convergence_policy():
