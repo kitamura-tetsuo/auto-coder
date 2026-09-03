@@ -589,7 +589,6 @@ pr:
         {
           "gap_id": "<omit on initial discovery, otherwise exact prior stable ID>",
           "requirement_id": "<exact stable ID from the requirement manifest>",
-          "requirement_text": "<exact explicit Issue requirement protected by the missing oracle>",
           "authoritative_boundary": "<exact reachable production entry point or state transition>",
           "invariant": "<exact material state/authorization/synchronization/enforcement/integrity/compatibility invariant>",
           "plausible_incorrect_implementation": "<minimal implementation omission or mutation that would violate the requirement>",

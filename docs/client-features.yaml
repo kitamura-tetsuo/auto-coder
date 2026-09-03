@@ -43,6 +43,11 @@ scenario. An open gap produces `NEEDS_TESTS`, requests only committed regression
 protection, and blocks automatic merge without claiming that current production
 behavior is wrong.
 
+The reviewer identifies a gap's Issue requirement only by its stable manifest ID.
+Unknown IDs fail closed, while human-readable requirement text used in review
+comments, prompts, and persisted lifecycle state is populated deterministically
+from the authoritative requirement manifest rather than copied from model output.
+
 Gap identities and scopes persist with the PR-scoped reviewer session. Rereviews
 revalidate recorded gaps and the corrective diff instead of restarting broad
 test exploration. New rereview gaps are accepted only when the corrective diff

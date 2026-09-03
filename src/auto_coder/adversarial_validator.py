@@ -1232,6 +1232,17 @@ def _stable_test_oracle_gap_id(requirement_id: str, authoritative_boundary: str,
     return f"TOG-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]}"
 
 
+def _populate_test_oracle_gap_requirement_text(
+    gaps: List[TestOracleGap],
+    requirements: List[IssueRequirement],
+) -> None:
+    """Attach authoritative manifest text to gaps with known stable IDs."""
+    requirement_text_by_id = {requirement.requirement_id: requirement.text for requirement in requirements}
+    for gap in gaps:
+        if gap.requirement_id in requirement_text_by_id:
+            gap.requirement_text = requirement_text_by_id[gap.requirement_id]
+
+
 def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[List[TestOracleGap], Optional[AdversarialValidationResult]]:
     """Parse and consolidate the distinct material test-oracle-gap schema."""
     if not isinstance(raw_value, list):
@@ -1241,7 +1252,6 @@ def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[Lis
     seen_ids: set[str] = set()
     required_fields = (
         "requirement_id",
-        "requirement_text",
         "authoritative_boundary",
         "invariant",
         "plausible_incorrect_implementation",
@@ -1904,8 +1914,6 @@ def _apply_coverage_and_verdict_precedence(
     gap_requirement_ids = {gap.requirement_id for gap in result.test_oracle_gaps}
     unknown_gap_requirement_ids = sorted(gap_requirement_ids - expected_requirement_ids)
     invalid_gap_anchors = sorted({gap.anchor_path for gap in result.open_test_oracle_gaps if gap.anchor_path not in context.all_changed_files})
-    requirement_text_by_id = {requirement.requirement_id: requirement.text for requirement in context.issue_requirements}
-    mismatched_gap_requirement_text_ids = sorted({gap.requirement_id for gap in result.test_oracle_gaps if gap.requirement_id in requirement_text_by_id and gap.requirement_text != requirement_text_by_id[gap.requirement_id]})
 
     if unknown_finding_requirement_ids:
         reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
@@ -1925,21 +1933,17 @@ def _apply_coverage_and_verdict_precedence(
         result.diagnostic_reason = reason
         return result
 
+    # The stable ID is the model's only requirement reference.  Once that ID
+    # has passed the fail-closed manifest check above, attach authoritative
+    # display text locally instead of trusting an echoed copy from the model.
+    _populate_test_oracle_gap_requirement_text(result.test_oracle_gaps, context.issue_requirements)
+
     if invalid_gap_anchors:
         reason = f"Open test-oracle gaps must anchor to changed files: {', '.join(invalid_gap_anchors)}"
         result.result = "ERROR"
         result.summary = "Invalid validator response: test-oracle gaps used invalid changed-file anchors"
         result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.anchor_path in context.all_changed_files]
         result.diagnostic_category = "invalid_test_oracle_gap_anchor"
-        result.diagnostic_reason = reason
-        return result
-
-    if mismatched_gap_requirement_text_ids:
-        reason = f"Test-oracle gaps did not reproduce the exact manifest text for: {', '.join(mismatched_gap_requirement_text_ids)}"
-        result.result = "ERROR"
-        result.summary = "Invalid validator response: test-oracle gaps did not map to exact Issue requirements"
-        result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.requirement_id in requirement_text_by_id and gap.requirement_text == requirement_text_by_id[gap.requirement_id]]
-        result.diagnostic_category = "test_oracle_gap_requirement_text_mismatch"
         result.diagnostic_reason = reason
         return result
 
@@ -2157,6 +2161,8 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
+    if stored_session is not None:
+        _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
     if lifecycle_session is not None:
         review_policy = render_prompt(
