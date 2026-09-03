@@ -53,6 +53,29 @@ boundary and invariant.
 Previously published gap identities reuse their existing unresolved review
 threads; insufficient corrective commits do not create duplicate root threads.
 
+The broad initial review independently traces every material requirement from a
+supported production origin across the parser/configuration, model, manager,
+selector, persistence, authorization, UI, or public-API boundaries that matter
+to its observable behavior. Direct helper calls and tests that synthetically
+construct an internal representation are not sufficient proof that the state is
+production-reachable or preserved. For each material requirement, the reviewer
+also considers a minimal plausible incorrect implementation that might leave the
+committed tests green, including a downstream helper that accepts a Set/group
+while its real upstream path flattens or never creates that representation.
+Demonstrated production reachability failures produce `NEEDS_FIX`; evidence that
+remains decision-critical after bounded recovery produces `INCONCLUSIVE`; and
+correct production behavior lacking a material regression oracle continues to
+produce `NEEDS_TESTS`. A successful initial `PASS` therefore requires valid
+production-path evidence for every `VERIFIED` cross-boundary requirement. The
+narrow incremental rereview policy is unchanged.
+
+Issue implementation and adversarial-fix prompts likewise require regression
+coverage to begin at a supported production origin and cross enough material
+boundaries to detect information loss, flattening, reinterpretation, or bypass.
+A synthetic-state helper test remains useful as additional unit coverage, but
+cannot be presented as the regression oracle unless production-origin coverage
+proves the same state can be created and preserved.
+
 #### Dedicated adversarial reviewer GitHub App
 
 Adversarial validation verdicts are published as native pull-request reviews using
