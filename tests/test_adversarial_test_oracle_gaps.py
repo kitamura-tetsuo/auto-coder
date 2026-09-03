@@ -299,6 +299,41 @@ def test_validation_run_rejects_unknown_gap_requirement_id(tmp_path) -> None:
     assert result.test_oracle_gaps == []
 
 
+def test_rereview_prompt_replaces_persisted_requirement_text_from_manifest(tmp_path) -> None:
+    stale_text = "A stale model-authored paraphrase from an earlier review."
+    authoritative_text = context().issue_requirements[0].text
+    persisted_gap = parsed_result(gap_payload()).test_oracle_gaps[0]
+    persisted_gap.requirement_text = stale_text
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(persisted_gap, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = validation_response(
+        gap_payload(phase="REREVIEW"),
+        "NEEDS_TESTS",
+    )
+
+    with patch(
+        "auto_coder.adversarial_validator.build_adversarial_validation_context",
+        return_value=validation_context,
+    ):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    prompt = manager.continue_session.call_args.args[1]
+    assert result.result == "NEEDS_TESTS"
+    assert authoritative_text in prompt
+    assert stale_text not in prompt
+
+
 def test_failed_first_attempt_keeps_retry_in_initial_discovery_phase(tmp_path) -> None:
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
