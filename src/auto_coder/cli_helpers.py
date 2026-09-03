@@ -76,6 +76,11 @@ def check_claude_cli_or_fail() -> None:
     check_cli_tool(tool_name="claude", install_url="https://claude.ai/download\nOr use: npm install -g @anthropic-ai/claude-code", version_flag="--version")
 
 
+def check_muse_cli_or_fail() -> None:
+    """Check if muse CLI is available and working."""
+    check_cli_tool(tool_name="muse", install_url="https://github.com/muse-ai/muse", version_flag="--version")
+
+
 def check_aider_cli_or_fail() -> None:
     """Check if aider CLI is available and working."""
     # Note: aider is typically a python library but it does have a CLI
@@ -273,6 +278,8 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_auggie_cli_or_fail()
         elif backend_name == "claude":
             check_claude_cli_or_fail()
+        elif backend_name == "muse":
+            check_muse_cli_or_fail()
         elif backend_name == "aider":
             check_aider_cli_or_fail()
         elif backend_name == "codex-cloud":
@@ -286,7 +293,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
                 # Recursively check the backend_type
                 check_backend_prerequisites([backend_config.backend_type])
             else:
-                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine, codex-cloud) " f"or configure backend_type in llm_config.toml")
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine, codex-cloud, muse) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
@@ -418,6 +425,12 @@ def build_backend_manager(
 
         return CodexMCPClient(backend_name=backend_name)
 
+    def _create_muse_client(backend_name: str):
+        """Create a MuseClient."""
+        from .muse_client import MuseClient
+
+        return MuseClient(backend_name=backend_name)
+
     def _create_aider_client(backend_name: str):
         """Create an AiderClient."""
         from .aider_client import AiderClient
@@ -450,6 +463,7 @@ def build_backend_manager(
         "antigravity": _create_gemini_client,
         "claude": _create_claude_client,
         "auggie": _create_auggie_client,
+        "muse": _create_muse_client,
         "codex": _create_codex_client,
         "codex-mcp": _create_codex_mcp_client,
         "aider": _create_aider_client,
@@ -475,6 +489,8 @@ def build_backend_manager(
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_auggie_client, backend_name))
             elif backend_name == "claude":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_client, backend_name))
+            elif backend_name == "muse":
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_muse_client, backend_name))
             elif backend_name == "aider":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_aider_client, backend_name))
             elif backend_name == "claude-routine":

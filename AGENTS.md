@@ -96,7 +96,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * **Exceptions:** Non-LLM operations (Git/GitHub API, build, test, static analysis, etc.) are allowed as needed. Automatic backend switching is permitted only within the same LLM run.
 * **Implementation Note:** Do not add or use methods like `analyze_issue` in clients such as `CodexClient`. If such calls exist in the code, remove them and unify under the single-execution flow.
 * **PR Output Policy:**
-  LLMs must not post comments on PRs. They should only perform minimal code modifications, `git add/commit/push`, and `gh pr merge` if conditions are met.
+  LLMs must not post comments on PRs. They should only perform minimal code modifications in the working tree. LLM backends (including Muse Code) must not directly perform `git add`, `git commit`, `git push`, or `gh pr merge` operations; all Git lifecycle mutations are centrally handled by Auto-Coder.
   No review or comment text output is allowed.
   On success, output only a single line beginning with `ACTION_SUMMARY:`.
   If the issue cannot be fixed, output `CANNOT_FIX`.

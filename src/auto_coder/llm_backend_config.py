@@ -24,6 +24,7 @@ REQUIRED_OPTIONS_BY_BACKEND = {
     "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
     "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],
+    "muse": [],
     "qwen": ["-y"],
     "jules": [],  # Session-based, no required flags
     "codex-mcp": [],  # MCP-based, options flexible
@@ -435,7 +436,7 @@ class LLMBackendConfiguration:
         """Initialize default backends if none are configured."""
         if not self.backends:
             # Add default configurations for known backends
-            default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
+            default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "muse", "jules", "codex-mcp", "aider"]
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
 
@@ -699,7 +700,7 @@ class LLMBackendConfiguration:
 
         # Add default backends if they are not already in the configuration
         # This ensures that backends like 'jules' are available even if not explicitly defined in the file
-        default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
+        default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "muse", "jules", "codex-mcp", "aider"]
         for backend_name in default_backends:
             if backend_name not in backends:
                 backends[backend_name] = BackendConfig(name=backend_name)
