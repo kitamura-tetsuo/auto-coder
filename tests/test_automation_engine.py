@@ -118,6 +118,50 @@ class TestAutomationEngine:
         engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
 
+    def test_forced_pr_reaches_validation_attempt_despite_active_execution_and_label(self, tmp_path):
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
+
+        github = MagicMock()
+        github.try_add_labels.return_value = False
+        config = AutomationConfig()
+        engine = AutomationEngine(github, config=config)
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        owner = ImplementationOwner("pr", 100)
+        first_execution = slots.start_execution(owner)
+        assert first_execution is not None
+        engine.implementation_slots = slots
+        candidate = Candidate(
+            type="pr",
+            data={"number": 100, "title": "Recovery", "body": "", "labels": [{"name": "@auto-coder"}]},
+            priority=1,
+        )
+        attempts = AdversarialValidationAttemptRepository("owner/repo", tmp_path / "attempts.json")
+        first_attempt = attempts.start(100, "head-a")
+        started_attempts = []
+
+        def process_pr(_github, _config, _repo, _data, *, force_adversarial_validation=False):
+            assert force_adversarial_validation is True
+            started_attempts.append(attempts.start(100, "head-a"))
+            return ProcessedPRResult(pr_data=_data, actions_taken=["forced validation reached"])
+
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        slots.resolve_owner = Mock(return_value=owner)  # type: ignore[method-assign]
+
+        with (
+            patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False),
+            patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr", return_value=MagicMock(closed=False)),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False)),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=MagicMock(closed=False)),
+            patch("auto_coder.automation_engine.process_pull_request", side_effect=process_pr),
+        ):
+            result = engine.process_single("owner/repo", "pr", 100, explicit_only=True, force=True)
+
+        assert result["prs_processed"][0]["actions_taken"] == ["forced validation reached"]
+        assert len(started_attempts) == 1
+        assert started_attempts[0].attempt_id != first_attempt.attempt_id
+        assert slots.active_execution_ids(owner) == (first_execution,)
+
     def test_misclassified_pr_is_rejected_before_issue_side_effects(self):
         """A pull request presented as an Issue candidate must never reach Issue dispatch."""
 

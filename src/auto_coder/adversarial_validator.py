@@ -183,6 +183,8 @@ class AdversarialValidationResult:
     clarification_reply_fingerprint: str = ""
     publish_clarification_thread: bool = True
     provenance_thread_comment_ids: Dict[str, int] = field(default_factory=dict)
+    attempt_id: str = ""
+    attempt_sequence: int = 0
 
     @property
     def is_pass(self) -> bool:
@@ -309,6 +311,7 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     status_icon = "✅" if result.is_pass else "❌" if result.needs_fix else "⚠️"
     lines = [
         adversarial_validation_comment_marker(head_sha),
+        *([f"<!-- auto-coder-adversarial-validation-attempt:v1:{result.attempt_sequence}:{result.attempt_id} -->"] if result.attempt_id else []),
         f"## {status_icon} Auto-Coder adversarial validation: {status}",
         "",
         f"Validated commit: `{head_sha}`",
@@ -427,6 +430,8 @@ def format_adversarial_review_summary(
         diagnostic_reason=result.diagnostic_reason,
         requirement_coverage=result.requirement_coverage,
         specification_gaps=result.specification_gaps,
+        attempt_id=result.attempt_id,
+        attempt_sequence=result.attempt_sequence,
     )
     body = format_adversarial_validation_comment(summary_result, head_sha)
     if result.clarification_reply_fingerprint:

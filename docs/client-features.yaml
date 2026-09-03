@@ -12,6 +12,17 @@ as red CI, merge gates, and cloud-task waits remain deferred rather than failure
 
 ## Configuration
 
+#### Forced adversarial-validation recovery
+
+An explicit `--only <PR> --force` run starts a new adversarial-validation
+attempt for the current head even when that head already has a verdict or the
+normal review limit has been reached. Ordinary scheduling and non-forced
+`--only` runs retain same-head and review-limit suppression. Every attempt has
+a durable, start-ordered identity; prior reviews remain immutable, overlapping
+attempts remain distinct, and a late older completion cannot supersede the
+newer applicable verdict. Force changes retry eligibility only and does not
+relax validator response, requirement coverage, or review-anchor checks.
+
 #### Authoritative Issue dispatch type guard
 
 Before any Issue implementation side effect (backend start, CloudRun
