@@ -216,6 +216,12 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
     claude_code_routine_token = "sk-ant-oat01-..."
     ```
   - Behavior:
+    - Backend names in an `order` array retain their declared priority after
+      quota eligibility checks; an ineligible entry may be skipped without
+      reordering the remaining entries. Quota-surplus ranking applies only to
+      backends explicitly placed in the same equal-priority set/group and
+      cannot promote a later candidate or group across an earlier priority
+      boundary.
     - Single-item processing (`process-issues --only`) honors the repository's cloud/Jules mode configuration, just like continuous issue processing.
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
     - Before creating a Codex Cloud task, weekly usage is fetched with ChatGPT OAuth credentials from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). The task starts only when the remaining percentage is at least `(days_until_reset + 1) * 5`; missing credentials, authentication errors, and malformed responses safely route to the next backend. OpenAI API keys are never used for this request.
