@@ -1381,7 +1381,13 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
             # - Pushing updated branch with retry
             get_trace_logger().log("Remediation", f"Updating base branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"step": "update_base"})
-            update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
+            # Preserve the authoritative GitHub PR metadata.  In particular,
+            # cloud ownership is carried by the body/author and the exact
+            # head/base SHAs are required for conflict-request deduplication.
+            remediation_pr_data = dict(pr_details)
+            remediation_pr_data["number"] = pr_number
+            remediation_pr_data["base_branch"] = base_branch
+            update_actions = _update_with_base_branch(repo_name, remediation_pr_data, AutomationConfig())
             actions.extend(update_actions)
 
             # Step 4: Check for degrading merge detection
@@ -1413,10 +1419,17 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
         # Step 5: Verify successful remediation
         # If push succeeded, the action flag will be set
-        if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+        if any("Delegated merge-conflict repair" in action for action in update_actions):
+            actions.append(f"Mergeability remediation delegated for PR #{pr_number}; deferring until a later pass observes a new head")
+            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+            get_trace_logger().log("Remediation", f"Remediation delegated for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "delegated"})
+        elif any("Pushed updated branch" in action for action in update_actions):
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation success for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "success"})
+        elif "ACTION_FLAG:SKIP_ANALYSIS" in update_actions:
+            actions.append(f"Mergeability remediation deferred for PR #{pr_number}; no repair was confirmed")
+            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
         elif "Failed" in str(update_actions):
             # Remediation attempted but failed
             actions.append(f"Mergeability remediation failed for PR #{pr_number}")
@@ -3066,7 +3079,7 @@ def _update_with_base_branch(
                 return actions
 
             if not _is_local_llm_pr(pr_data):
-                actions.append(f"PR #{pr_number} was not created by local LLM, skipping conflict resolution.")
+                actions.append(f"PR #{pr_number} has no usable cloud conflict-repair session and was not created by local LLM; deferring conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
@@ -4002,6 +4015,30 @@ def _resolve_cloud_conflict_origin(
     github_client: Optional[Any] = None,
 ) -> Optional[Tuple[Any, str]]:
     """Return the capable client and existing task ID that originated a PR."""
+    # CloudRun is the lifecycle's authoritative implementation association.
+    # Consult it before heuristics based on an author name or PR body, because
+    # provider-created PRs do not consistently retain those presentation cues.
+    try:
+        from .cloud_run import CloudRunRepository
+
+        pr_number = int(pr_data["number"])
+        repository = CloudRunRepository(repo_name)
+        associated_runs = [run for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client) for run in repository.list_for_issue(issue_number) if pr_number in run.pull_request_numbers]
+        if associated_runs:
+            run = max(associated_runs, key=lambda candidate: candidate.attempt)
+            if run.provider == "codex-cloud":
+                from .codex_cloud_client import CodexCloudClient
+
+                return CodexCloudClient(repo_name=repo_name), run.task_id
+            if run.provider == "claude-routine":
+                from .claude_routine_client import ClaudeRoutineClient
+
+                return ClaudeRoutineClient(repo_name=repo_name), run.task_id
+            logger.warning(f"Cloud run provider '{run.provider}' does not support PR conflict follow-up")
+            return None
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        logger.warning(f"Could not resolve authoritative cloud run for PR #{pr_data.get('number')}: {exc}")
+
     if _is_codex_pr(pr_data):
         task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
         if task_id:

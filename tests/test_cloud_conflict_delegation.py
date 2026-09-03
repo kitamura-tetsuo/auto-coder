@@ -2,8 +2,9 @@
 
 from unittest.mock import Mock, patch
 
+from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
-from src.auto_coder.pr_processor import _delegate_cloud_merge_conflict_repair
+from src.auto_coder.pr_processor import _delegate_cloud_merge_conflict_repair, _resolve_cloud_conflict_origin
 
 
 class FollowupClient:
@@ -99,3 +100,30 @@ def test_missing_origin_preserves_fallback_without_creating_a_task() -> None:
         assert _delegate_cloud_merge_conflict_repair("owner/repo", pr_data()) is False
 
     resolver.assert_called_once()
+
+
+def test_authoritative_cloud_run_association_precedes_pr_author_heuristics() -> None:
+    """A lifecycle-associated PR remains cloud-owned without author markers."""
+    run = CloudRun(
+        repo_name="owner/repo",
+        issue_number=1589,
+        attempt=2,
+        provider="codex-cloud",
+        task_id="task_e_authoritative",
+        pull_request_numbers=[1589],
+    )
+    unmarked_pr = pr_data()
+    unmarked_pr["body"] = "Closes #1589"
+    unmarked_pr["user"] = {"login": "ordinary-user"}
+
+    with (
+        patch("src.auto_coder.cloud_run.CloudRunRepository.list_for_issue", return_value=[run]),
+        patch("src.auto_coder.codex_cloud_client.CodexCloudClient") as client_type,
+    ):
+        origin = _resolve_cloud_conflict_origin("owner/repo", unmarked_pr)
+
+    assert origin is not None
+    client, task_id = origin
+    assert client is client_type.return_value
+    assert task_id == "task_e_authoritative"
+    client_type.assert_called_once_with(repo_name="owner/repo")
