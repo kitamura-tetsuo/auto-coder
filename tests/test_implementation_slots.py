@@ -360,6 +360,52 @@ def test_reserve_new_rejects_existing_owner_and_occupied_capacity(tmp_path):
     assert slots.active_owners() == (owner,)
 
 
+def test_only_execution_bypasses_capacity_but_not_active_duplicate(tmp_path):
+    slots = repository(tmp_path)
+    first = ImplementationOwner("issue", 100)
+    second = ImplementationOwner("issue", 200)
+    first_execution = slots.start_execution(first)
+
+    assert first_execution is not None
+    second_execution = slots.start_execution(second, bypass_capacity=True)
+    assert second_execution is not None
+    assert slots.start_execution(second, bypass_capacity=True) is None
+    assert set(slots.active_owners()) == {first, second}
+
+    restarted = repository(tmp_path)
+    assert restarted.active_execution_ids(first) == (first_execution,)
+    assert restarted.active_execution_ids(second) == (second_execution,)
+    assert restarted.start_execution(ImplementationOwner("issue", 300)) is None
+
+
+def test_forced_execution_has_distinct_identity_and_scoped_cleanup(tmp_path):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 100)
+    execution_a = slots.start_execution(owner)
+    execution_b = slots.start_execution(owner, bypass_capacity=True, bypass_active_execution=True)
+
+    assert execution_a is not None
+    assert execution_b is not None
+    assert execution_a != execution_b
+    assert slots.active_execution_ids(owner) == (execution_a, execution_b)
+
+    slots.finish_execution(owner, execution_b)
+
+    assert repository(tmp_path).active_execution_ids(owner) == (execution_a,)
+
+
+def test_reconcile_does_not_release_owner_with_an_active_execution(tmp_path):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 100)
+    execution = slots.start_execution(owner)
+    github = GitHubState(issues={100: {"state": "closed"}}, linked_prs={100: []})
+
+    slots.reconcile(github)
+
+    assert slots.active_owners() == (owner,)
+    assert slots.active_execution_ids(owner) == (execution,)
+
+
 def test_configuration_rejects_non_positive_limit(tmp_path):
     with pytest.raises(ValueError, match="positive integer"):
         repository(tmp_path, limit=0)
