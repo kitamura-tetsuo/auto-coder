@@ -1834,9 +1834,9 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
+        assert result.result == "ERROR"
         assert result.is_blocked
-        assert result.diagnostic_category == "incomplete_evidence_coverage"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -1862,8 +1862,8 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
-        assert result.diagnostic_category == "incomplete_requirement_coverage"
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -1897,8 +1897,8 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
-        assert "REQ-002-r2" in (result.diagnostic_reason or "")
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @pytest.mark.parametrize("top_level_result", ["PASS", "INCONCLUSIVE"])
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
@@ -2023,7 +2023,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
+    def test_normalized_inconclusive_without_recovery_contract_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -2053,8 +2053,9 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
-        assert "REQ-002-r2" in (result.diagnostic_reason or "")
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+        assert result.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

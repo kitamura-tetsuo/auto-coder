@@ -167,7 +167,6 @@ class AdversarialValidationResult:
     """
 
     result: str = "ERROR"  # "PASS", "NEEDS_FIX", "NEEDS_TESTS", "BLOCKED", "INCONCLUSIVE", "ERROR"
-    original_result: str = ""
     summary: str = ""
     findings: List[AdversarialValidationFinding] = field(default_factory=list)
     raw_response: str = ""
@@ -1656,7 +1655,6 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
 
                 return AdversarialValidationResult(
                     result=result_val,
-                    original_result=raw_result,
                     summary=summary or ("Validation passed" if result_val == "PASS" else f"Validation status: {result_val}"),
                     findings=findings,
                     raw_response=raw_response,
@@ -1833,6 +1831,25 @@ def _reconcile_test_oracle_gap_lifecycle(
     return result
 
 
+def _enforce_inconclusive_recovery_contract(result: AdversarialValidationResult) -> AdversarialValidationResult:
+    """Reject a final INCONCLUSIVE verdict that did not exhaust recovery."""
+    if result.result.strip().upper() != "INCONCLUSIVE" or result.dynamic_check_requested:
+        return result
+
+    missing_contract_parts: List[str] = []
+    if not result.evidence_recovery:
+        missing_contract_parts.append("bounded evidence-recovery attempts")
+    if not result.decision_critical_evidence_gaps:
+        missing_contract_parts.append("a decision-critical evidence gap")
+    if missing_contract_parts:
+        reason = f"INCONCLUSIVE requires {', '.join(missing_contract_parts)}"
+        result.result = "ERROR"
+        result.summary = f"Invalid validator response: {reason}"
+        result.diagnostic_category = "inconclusive_without_exhausted_evidence_recovery"
+        result.diagnostic_reason = reason
+    return result
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -1840,7 +1857,6 @@ def _apply_coverage_and_verdict_precedence(
     """Apply deterministic finding-first and complete-coverage verdict rules."""
     if result.result == "ERROR" and result.diagnostic_category:
         return result
-    reviewer_returned_inconclusive = (result.original_result or result.result).strip().upper() == "INCONCLUSIVE"
     expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
     recovery_requirement_ids = {requirement_id for entry in result.evidence_recovery for requirement_id in entry.requirement_ids}
     evidence_gap_requirement_ids = {gap.requirement_id for gap in result.decision_critical_evidence_gaps}
@@ -1952,25 +1968,6 @@ def _apply_coverage_and_verdict_precedence(
             result.diagnostic_reason = result.diagnostic_reason or "; ".join(coverage_details)
         return result
 
-    # A pending focused check is itself an active recovery step and is handled
-    # below by run_adversarial_validation. Otherwise an INCONCLUSIVE reviewer
-    # verdict is valid only after independently attempted recovery has isolated
-    # a concrete, requirement-scoped gap. Enforce this deterministically rather
-    # than trusting prompt compliance.
-    if reviewer_returned_inconclusive and not result.dynamic_check_requested:
-        missing_contract_parts: List[str] = []
-        if not result.evidence_recovery:
-            missing_contract_parts.append("bounded evidence-recovery attempts")
-        if not result.decision_critical_evidence_gaps:
-            missing_contract_parts.append("a decision-critical evidence gap")
-        if missing_contract_parts:
-            reason = f"INCONCLUSIVE requires {', '.join(missing_contract_parts)}"
-            result.result = "ERROR"
-            result.summary = f"Invalid validator response: {reason}"
-            result.diagnostic_category = "inconclusive_without_exhausted_evidence_recovery"
-            result.diagnostic_reason = reason
-            return result
-
     if result.open_test_oracle_gaps and result.result in {"PASS", "NEEDS_TESTS"}:
         result.result = "NEEDS_TESTS"
         if remaining_unverified_files:
@@ -1984,6 +1981,9 @@ def _apply_coverage_and_verdict_precedence(
         result.result = "INCONCLUSIVE"
         result.diagnostic_category = "change_provenance_clarification"
         result.diagnostic_reason = "Material changed-file purpose or provenance requires implementer clarification"
+        # Provenance clarification is an orthogonal merge gate after all Issue
+        # requirements and file evidence are complete, not an evidence-recovery
+        # failure for an undecidable requirement.
         return result
 
     if result.unexplained_changes:
@@ -1998,7 +1998,7 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_evidence_coverage"
         result.diagnostic_reason = reason
-        return result
+        return _enforce_inconclusive_recovery_contract(result)
 
     if result.result.strip().upper() == "PASS" and (not expected_requirement_ids or incomplete_requirement_ids):
         if not expected_requirement_ids:
@@ -2009,7 +2009,7 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_requirement_coverage"
         result.diagnostic_reason = reason
-    return result
+    return _enforce_inconclusive_recovery_contract(result)
 
 
 def run_adversarial_validation(
