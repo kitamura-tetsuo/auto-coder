@@ -128,6 +128,14 @@ class CloudConflictDelegationResult:
         return self.delegated
 
 
+@dataclass(frozen=True)
+class CloudConflictDeliveryRecord:
+    """Durable state for one non-idempotent cloud conflict follow-up."""
+
+    task_id: str
+    status: str
+
+
 @dataclass
 class UnsafeCodexCloudPRResult:
     """Outcome of rejecting a Codex Cloud PR with an unsafe remote head."""
@@ -4080,12 +4088,33 @@ def _cloud_conflict_state_path(repo_name: str) -> Path:
     return Path.home() / ".auto-coder" / repo_name / "cloud_conflict_repairs.json"
 
 
-def _record_cloud_conflict_deliveries(state_path: Path, delivered: dict[str, str]) -> None:
+def _record_cloud_conflict_deliveries(state_path: Path, delivered: dict[str, CloudConflictDeliveryRecord]) -> None:
     """Atomically persist conflict delivery reservations and receipts."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
+    serialized = {fingerprint: {"task_id": record.task_id, "status": record.status} for fingerprint, record in delivered.items()}
+    temporary.write_text(json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(temporary, state_path)
+
+
+def _load_cloud_conflict_deliveries(state_path: Path) -> dict[str, CloudConflictDeliveryRecord]:
+    """Load and validate durable cloud conflict delivery state."""
+    if not state_path.exists():
+        return {}
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("delivery state is not a JSON object")
+
+    records: dict[str, CloudConflictDeliveryRecord] = {}
+    for fingerprint, value in loaded.items():
+        if not isinstance(fingerprint, str) or not isinstance(value, dict):
+            raise ValueError("delivery state contains an invalid record")
+        task_id = value.get("task_id")
+        status = value.get("status")
+        if not isinstance(task_id, str) or status not in {"pending", "confirmed"}:
+            raise ValueError("delivery state contains an invalid record")
+        records[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status=status)
+    return records
 
 
 def _cloud_review_repair_state_path(repo_name: str) -> Path:
@@ -4285,25 +4314,24 @@ def _delegate_cloud_merge_conflict_repair_result(
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
     state_path = _cloud_conflict_state_path(repo_name)
     with _cloud_conflict_delivery_lock:
-        delivered: dict[str, str] = {}
+        delivered: dict[str, CloudConflictDeliveryRecord] = {}
         try:
-            if state_path.exists():
-                loaded = json.loads(state_path.read_text(encoding="utf-8"))
-                if not isinstance(loaded, dict):
-                    raise ValueError("delivery state is not a JSON object")
-                delivered = {str(key): str(value) for key, value in loaded.items()}
+            delivered = _load_cloud_conflict_deliveries(state_path)
         except (OSError, ValueError) as exc:
             logger.warning(f"Could not read cloud conflict repair state: {exc}")
             return CloudConflictDelegationResult(reason=f"prior repair delivery state could not be read: {exc}")
 
-        if fingerprint in delivered:
+        existing = delivered.get(fingerprint)
+        if existing and existing.status == "confirmed":
             logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
             return CloudConflictDelegationResult(delegated=True, reason="an equivalent repair request was already delegated")
+        if existing:
+            return CloudConflictDelegationResult(reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"))
 
         # Reserve the conflict identity before the non-idempotent follow-up call.
-        # This makes an accepted delivery durable even if a later filesystem
-        # operation or process shutdown occurs. If this write fails, do not send.
-        delivered[fingerprint] = task_id
+        # Pending state prevents speculative redelivery but is never evidence
+        # that the cloud session accepted the request. If this write fails, do not send.
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="pending")
         try:
             _record_cloud_conflict_deliveries(state_path, delivered)
         except OSError as exc:
@@ -4331,6 +4359,14 @@ def _delegate_cloud_merge_conflict_repair_result(
                 failure_reason += f"; its delivery reservation could not be cleared: {exc}"
         return CloudConflictDelegationResult(reason=failure_reason)
 
+    with _cloud_conflict_delivery_lock:
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed")
+        try:
+            _record_cloud_conflict_deliveries(state_path, delivered)
+        except OSError as exc:
+            # The request was accepted, but the pending reservation must not be
+            # interpreted as confirmed on a later pass or resent speculatively.
+            logger.warning(f"Could not confirm cloud conflict repair delivery: {exc}")
     logger.info(f"Delegated merge-conflict repair for PR #{pr_number} to existing cloud task {task_id}")
     return CloudConflictDelegationResult(delegated=True, reason=f"repair was delivered to cloud session '{task_id}'")
 

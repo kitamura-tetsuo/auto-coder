@@ -119,7 +119,7 @@ def test_missing_origin_preserves_fallback_without_creating_a_task() -> None:
 
 
 def test_delivery_is_reserved_before_followup_and_never_redelivered(tmp_path) -> None:
-    """A confirmed send has no fallible receipt write after delivery."""
+    """A confirmed send transitions its durable reservation before deduplication."""
     client = FollowupClient()
     state_path = tmp_path / "repairs.json"
 
@@ -134,7 +134,7 @@ def test_delivery_is_reserved_before_followup_and_never_redelivered(tmp_path) ->
     assert first
     assert second
     assert len(client.messages) == 1
-    record.assert_called_once()
+    assert record.call_count == 2
 
 
 def test_reservation_failure_prevents_non_idempotent_delivery(tmp_path) -> None:
@@ -151,6 +151,44 @@ def test_reservation_failure_prevents_non_idempotent_delivery(tmp_path) -> None:
     assert not result
     assert result.reason == "a durable repair delivery receipt could not be reserved: read-only filesystem"
     assert client.messages == []
+
+
+def test_rejected_delivery_with_failed_cleanup_is_not_reported_as_delegated(tmp_path) -> None:
+    """Production remediation treats a stranded reservation as unconfirmed."""
+    client = FollowupClient(accepted=False)
+    state_path = tmp_path / "repairs.json"
+    write_count = 0
+    commands = [
+        CommandResult(True, "", "", 0),
+        CommandResult(True, "3\n", "", 0),
+        CommandResult(False, "CONFLICT", "", 1),
+        CommandResult(True, "", "", 0),
+    ] * 2
+
+    def fail_cleanup(path, deliveries) -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("cleanup unavailable")
+        _record_cloud_conflict_deliveries(path, deliveries)
+
+    with (
+        patch("src.auto_coder.pr_processor.cmd") as command_executor,
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+        patch("src.auto_coder.pr_processor._record_cloud_conflict_deliveries", side_effect=fail_cleanup),
+        patch("src.auto_coder.pr_processor._is_local_llm_pr", return_value=False),
+    ):
+        command_executor.run_command.side_effect = commands
+        first = _update_with_base_branch("owner/repo", pr_data(), AutomationConfig())
+        second = _update_with_base_branch("owner/repo", pr_data(), AutomationConfig())
+
+    assert any("was rejected" in action and "reservation could not be cleared" in action for action in first)
+    assert any("has unconfirmed status" in action and "not resending" in action for action in second)
+    assert "ACTION_FLAG:SKIP_ANALYSIS" in first
+    assert "ACTION_FLAG:SKIP_ANALYSIS" in second
+    assert not any("Delegated merge-conflict repair" in action for action in first + second)
+    assert len(client.messages) == 1
 
 
 def test_production_conflict_path_reports_rejected_cloud_delivery(tmp_path) -> None:
