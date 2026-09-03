@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
+from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_usage_checker import codex_cloud_quota_allows_task
 from .codex_wham_client import CodexWhamClient
 from .exceptions import AutoCoderUsageLimitError
@@ -68,29 +69,24 @@ class CodexCloudClient(CloudTaskClientBase):
             data = json.loads(output)
             if isinstance(data, dict):
                 tid = data.get("task_id") or data.get("taskId") or data.get("id")
-                if tid:
-                    return str(tid)
+                if is_valid_codex_cloud_task_id(tid):
+                    return str(tid).strip()
                 url = data.get("url") or data.get("task_url")
                 if url:
-                    m = re.search(r"/tasks/(task_[a-zA-Z0-9_-]+)", url)
-                    if m:
-                        return m.group(1)
+                    task_id = extract_codex_cloud_task_id(url)
+                    if task_id:
+                        return task_id
         except Exception:
             pass
 
         # Check for task URL in text output
-        url_match = re.search(r"https?://[^\s/]+/codex/tasks/(task_[a-zA-Z0-9_-]+)", output)
-        if url_match:
-            return url_match.group(1)
-
-        # Check for direct task_... token
-        task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", output)
-        if task_match:
-            return task_match.group(1)
+        task_id = extract_codex_cloud_task_id(output)
+        if task_id:
+            return task_id
 
         # Generic task_id pattern
         generic_match = re.search(r"(?:task\s*id|task_id)[:=]\s*([a-zA-Z0-9_-]+)", output, re.IGNORECASE)
-        if generic_match:
+        if generic_match and is_valid_codex_cloud_task_id(generic_match.group(1)):
             return generic_match.group(1)
 
         return None
@@ -425,8 +421,8 @@ class CodexCloudClient(CloudTaskClientBase):
         Returns:
             True if the continuation request was accepted, False otherwise.
         """
-        if not task_id:
-            logger.warning("continue_if_paused called with empty task_id")
+        if not is_valid_codex_cloud_task_id(task_id):
+            logger.warning("continue_if_paused called with invalid task_id")
             return False
 
         # Anti-tight-loop cooldown (60 seconds)
@@ -459,7 +455,7 @@ class CodexCloudClient(CloudTaskClientBase):
 
     def send_followup(self, task_id: str, message: str) -> bool:
         """Send new work to an existing Codex Cloud task via WHAM."""
-        if not task_id or not message:
+        if not is_valid_codex_cloud_task_id(task_id) or not message:
             logger.warning("Codex Cloud follow-up requires a task ID and message")
             return False
 

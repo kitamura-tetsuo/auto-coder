@@ -400,6 +400,30 @@ class TestAdversarialValidationPRComment:
 
 
 class TestAdversarialValidationCodexFeedback:
+    def test_invalid_metadata_falls_back_to_pr_body_task_for_delivery(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        github_client = MagicMock()
+        github_client.get_pr_comments.return_value = []
+        github_client.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_current", comments=[ReviewThreadComment(database_id=301, body=finding)])]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 1670,
+            "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_real123",
+            "_codex_task_id": "task_id",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "delivery.json"),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            actions = _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, github_client, [finding])
+
+        assert cloud_client.continue_if_paused.call_args.args == ("task_e_real123",)
+        assert all("task_id" not in action for action in actions)
+
     def test_successful_adversarial_delivery_deduplicates_review_thread_path(self, tmp_path):
         client = MagicMock()
         client.get_pr_comments.return_value = []

@@ -142,6 +142,28 @@ class TestCodexCloudPRCIFlow:
             assert result.retryable is True
             assert any("could not be resumed" in a for a in result.actions)
 
+    def test_invalid_metadata_falls_back_to_pr_body_task_for_continuation(self, config):
+        """Truthy placeholder metadata must not suppress the authoritative PR URL."""
+        pr_data = {
+            "number": 1670,
+            "title": "Codex Cloud PR",
+            "body": "https://chatgpt.com/codex/tasks/task_e_real123",
+            "_codex_task_id": "task_id",
+            "user": {"login": "codex"},
+        }
+
+        with patch("auto_coder.codex_cloud_client.CodexCloudClient.continue_if_paused", return_value=True) as mock_cont:
+            result = _send_codex_cloud_error_feedback(
+                repo_name="owner/repo",
+                pr_data=pr_data,
+                failed_checks=[{"name": "Tests", "conclusion": "failure"}],
+                config=config,
+            )
+
+        mock_cont.assert_called_once_with("task_e_real123")
+        assert result.delivered is True
+        assert all("task_id" not in action for action in result.actions)
+
     def test_send_codex_cloud_error_feedback_missing_task_id(self, config):
         """Test safe failure when no task ID can be found."""
         pr_data = {

@@ -12,6 +12,13 @@ as red CI, merge gates, and cloud-task waits remain deferred rather than failure
 
 ## Configuration
 
+#### Authoritative Codex Cloud task IDs
+
+Codex Cloud task associations use one shared parser across PR metadata, PR bodies,
+issue sessions and comments, CI continuation, adversarial feedback, review repair,
+and conflict repair. Placeholder values such as `task_id` are rejected and do not
+block fallback to a valid provider task URL from a lower-priority source.
+
 #### Forced adversarial-validation recovery
 
 An explicit `--only <PR> --force` run starts a new adversarial-validation

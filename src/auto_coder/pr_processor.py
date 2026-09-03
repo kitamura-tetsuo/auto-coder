@@ -42,6 +42,7 @@ from .adversarial_validator import (
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
 from .branch_manager import BranchManager
+from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
@@ -3423,10 +3424,11 @@ def _find_codex_cloud_task_for_issue(
         cloud_manager = CloudManager(repo_name)
         session_id = cloud_manager.get_session_id(issue_number)
         if session_id:
-            if session_id.startswith("http") and "codex/tasks" in session_id:
+            task_id = extract_codex_cloud_task_id(session_id)
+            if session_id.startswith("http") and "/codex/tasks/" in session_id and task_id:
                 return session_id
-            if re.match(r"^task_[a-zA-Z0-9_-]+$", session_id):
-                return f"https://chatgpt.com/codex/tasks/{session_id}"
+            if is_valid_codex_cloud_task_id(session_id):
+                return f"https://chatgpt.com/codex/tasks/{session_id.strip()}"
 
         # 2. Check comments on the issue if github_client is available
         if github_client:
@@ -3436,12 +3438,12 @@ def _find_codex_cloud_task_for_issue(
                     comment_body = comment.get("body", "") or ""
                     # Check for direct URL in comment
                     url_match = re.search(r"(https?://[^\s]+/codex/tasks/[a-zA-Z0-9_-]+)", comment_body)
-                    if url_match:
+                    if url_match and extract_codex_cloud_task_id(url_match.group(1)):
                         return url_match.group(1)
 
                     # Check for "Codex Cloud task ... Task ID: <id>"
                     task_match = re.search(r"Codex Cloud task.*?Task ID:\s*(task_[a-zA-Z0-9_-]+)", comment_body, re.IGNORECASE | re.DOTALL)
-                    if task_match:
+                    if task_match and is_valid_codex_cloud_task_id(task_match.group(1)):
                         return f"https://chatgpt.com/codex/tasks/{task_match.group(1)}"
             except Exception as e:
                 logger.debug(f"Failed to fetch comments for issue #{issue_number}: {e}")
@@ -3972,28 +3974,22 @@ def _resolve_codex_cloud_task_id(
     github_client: Optional[Any] = None,
 ) -> Optional[str]:
     """Resolve the Codex Cloud task associated with a pull request."""
-    task_id = pr_data.get("_codex_task_id")
     pr_body = pr_data.get("body", "") or ""
 
+    task_id = extract_codex_cloud_task_id(pr_data.get("_codex_task_id"))
+
     if not task_id:
-        direct_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", pr_body)
-        if direct_match:
-            task_id = direct_match.group(1)
+        task_id = extract_codex_cloud_task_id(pr_body)
 
     if not task_id:
         for issue_num in extract_linked_issues_from_pr_body(pr_body):
             found_url = _find_codex_cloud_task_for_issue(repo_name, issue_num, github_client)
             if found_url:
-                task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", found_url)
-                if task_match:
-                    task_id = task_match.group(1)
+                task_id = extract_codex_cloud_task_id(found_url)
+                if task_id:
                     break
 
-    if isinstance(task_id, str):
-        task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", task_id)
-        if task_match:
-            return task_match.group(1)
-    return None
+    return task_id
 
 
 def _resolve_cloud_conflict_origin(

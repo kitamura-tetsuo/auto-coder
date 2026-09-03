@@ -108,6 +108,25 @@ class TestCodexCloudClient:
                 with pytest.raises(RuntimeError, match="environment not found"):
                     client.start_task("Implement the issue")
 
+    def test_start_task_rejects_placeholder_task_id(self, mock_backend_config):
+        """A successful CLI exit must not make placeholder output authoritative."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            result = MagicMock(returncode=0, stdout='{"task_id": "task_id"}', stderr="")
+            with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
+                with pytest.raises(RuntimeError, match="did not return a task ID"):
+                    client.start_task("Implement the issue")
+
+    def test_client_followup_paths_reject_placeholder_task_id(self, mock_backend_config):
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            client.wham_client = MagicMock()
+
+            assert client.continue_if_paused("task_id") is False
+            assert client.send_followup("task_id", "Fix the PR") is False
+
+        client.wham_client.resolve_latest_assistant_turn.assert_not_called()
+
     def test_start_task_skips_cli_when_weekly_quota_disallows_it(self, mock_backend_config):
         with (
             patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
