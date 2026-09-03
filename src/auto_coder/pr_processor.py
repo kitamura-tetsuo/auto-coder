@@ -2456,37 +2456,41 @@ def _handle_pr_merge(
                             val_result.publish_clarification_thread = False
                         val_result.provenance_thread_comment_ids = {thread.thread_id: thread.root_comment_database_id for thread in claimed_review_threads if thread.is_change_provenance and thread.root_comment_database_id is not None}
 
-                        # Independent thread-completion validation (REQ-001..REQ-010): this
-                        # runs whenever a fresh validation pass produced dispositions,
-                        # regardless of the PR-level verdict (REQ-005 independence).
-                        resolved_thread_ids: List[str] = []
-                        if claimed_review_threads and val_result.thread_dispositions:
-                            try:
-                                resolved_thread_ids = resolve_addressed_review_threads(
-                                    github_client,
-                                    repo_name,
-                                    pr_number,
-                                    head_sha,
-                                    claimed_review_threads,
-                                    val_result.thread_dispositions,
-                                )
-                                if resolved_thread_ids:
-                                    actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
-                            except StaleReviewThreadResolutionError as e:
-                                # A thread is durably resolved against a stale head and
-                                # could not be rolled back: GitHub's authoritative
-                                # unresolved-thread gate can no longer be trusted for
-                                # this PR, so merge must not proceed this run even if
-                                # every other gate would otherwise allow it.
-                                logger.error(f"Stale review-thread resolution could not be rolled back for PR #{pr_number}: {e}")
-                                actions.append(f"Skipping merge for PR #{pr_number}: review thread {e.thread_id} was resolved against a stale head and could not be reverted")
-                                return actions
-                            except Exception as e:
-                                logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
-
-                        _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
-
                         with attempt_repository.serialized_transition():
+                            attempt_is_superseded = attempt_repository.latest_started_sequence(pr_number, head_sha) > attempt.sequence
+                            if attempt_is_superseded:
+                                actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                                return actions
+                            resolved_thread_ids: List[str] = []
+                            # Independent thread-completion validation (REQ-001..REQ-010): this
+                            # runs whenever the authoritative fresh validation produced
+                            # dispositions, regardless of the PR-level verdict.
+                            if claimed_review_threads and val_result.thread_dispositions:
+                                try:
+                                    resolved_thread_ids = resolve_addressed_review_threads(
+                                        github_client,
+                                        repo_name,
+                                        pr_number,
+                                        head_sha,
+                                        claimed_review_threads,
+                                        val_result.thread_dispositions,
+                                    )
+                                    if resolved_thread_ids:
+                                        actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
+                                except StaleReviewThreadResolutionError as e:
+                                    # A thread is durably resolved against a stale head and
+                                    # could not be rolled back: GitHub's authoritative
+                                    # unresolved-thread gate can no longer be trusted for
+                                    # this PR, so merge must not proceed this run even if
+                                    # every other gate would otherwise allow it.
+                                    logger.error(f"Stale review-thread resolution could not be rolled back for PR #{pr_number}: {e}")
+                                    actions.append(f"Skipping merge for PR #{pr_number}: review thread {e.thread_id} was resolved against a stale head and could not be reverted")
+                                    return actions
+                                except Exception as e:
+                                    logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
+
+                            _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
+
                             publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                             if not publication.success:
                                 publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(

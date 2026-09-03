@@ -73,19 +73,23 @@ class AdversarialValidationAttemptRepository:
         os.replace(temporary, self.storage_path)
 
     def start(self, pr_number: int, head_sha: str) -> AdversarialValidationAttempt:
-        with self._locked():
-            state = self._read()
-            next_sequence = state["next_sequence"]
-            if not isinstance(next_sequence, int):
-                raise RuntimeError("Adversarial-validation attempt sequence is invalid")
-            sequence = next_sequence
-            attempt = AdversarialValidationAttempt(uuid.uuid4().hex, sequence)
-            attempts = state["attempts"]
-            assert isinstance(attempts, list)
-            attempts.append({"id": attempt.attempt_id, "sequence": sequence, "pr_number": pr_number, "head_sha": head_sha, "status": "IN_PROGRESS", "started_at": time.time()})
-            state["next_sequence"] = sequence + 1
-            self._write(state)
-            return attempt
+        # Starting an attempt participates in the same transition fence as
+        # review-thread mutation/publication. Once an attempt has established
+        # authority, a newer start cannot appear midway through those effects.
+        with self.serialized_transition():
+            with self._locked():
+                state = self._read()
+                next_sequence = state["next_sequence"]
+                if not isinstance(next_sequence, int):
+                    raise RuntimeError("Adversarial-validation attempt sequence is invalid")
+                sequence = next_sequence
+                attempt = AdversarialValidationAttempt(uuid.uuid4().hex, sequence)
+                attempts = state["attempts"]
+                assert isinstance(attempts, list)
+                attempts.append({"id": attempt.attempt_id, "sequence": sequence, "pr_number": pr_number, "head_sha": head_sha, "status": "IN_PROGRESS", "started_at": time.time()})
+                state["next_sequence"] = sequence + 1
+                self._write(state)
+                return attempt
 
     def finish(self, attempt_id: str, status: str) -> None:
         with self._locked():
@@ -107,6 +111,16 @@ class AdversarialValidationAttemptRepository:
         assert isinstance(attempts, list)
         return max(
             (int(item["sequence"]) for item in attempts if isinstance(item, dict) and item.get("pr_number") == pr_number and item.get("head_sha") == head_sha and item.get("published") is True),
+            default=0,
+        )
+
+    def latest_started_sequence(self, pr_number: int, head_sha: str) -> int:
+        """Return the newest start order, including an in-progress attempt."""
+        with self._locked():
+            attempts = self._read()["attempts"]
+        assert isinstance(attempts, list)
+        return max(
+            (int(item["sequence"]) for item in attempts if isinstance(item, dict) and item.get("pr_number") == pr_number and item.get("head_sha") == head_sha),
             default=0,
         )
 
