@@ -945,6 +945,59 @@ SUGGESTED_REGRESSION_SCENARIO: Persist an event while delivery is offline
         assert result.summary == "All requirements verified"
         assert result.raw_response == response
 
+    def test_parse_claude_jsonl_uses_terminal_result_and_preserves_event_stream(self):
+        final_message = '{"result":"PASS","summary":"All requirements verified","findings":[]}'
+        response = "\n".join(
+            [
+                '{"type":"system","subtype":"init","session_id":"session-1"}',
+                '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}',
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"Reviewing"}]}}',
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "is_error": False,
+                        "result": final_message,
+                        "session_id": "session-1",
+                    }
+                ),
+            ]
+        )
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.is_pass
+        assert result.summary == "All requirements verified"
+        assert result.raw_response == response
+
+    def test_parse_claude_jsonl_failed_terminal_result_fails_closed(self):
+        response = "\n".join(
+            [
+                '{"type":"system","subtype":"init","session_id":"session-1"}',
+                '{"type":"result","subtype":"error_during_execution","is_error":true}',
+            ]
+        )
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "cli_event_stream_error"
+        assert "failed terminal result error_during_execution" in (result.diagnostic_reason or "")
+
+    def test_parse_claude_jsonl_without_terminal_result_fails_closed(self):
+        response = "\n".join(
+            [
+                '{"type":"system","subtype":"init","session_id":"session-1"}',
+                '{"type":"assistant","message":{"content":[]}}',
+            ]
+        )
+
+        result = parse_adversarial_validation_response(response)
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "cli_event_stream_error"
+        assert result.diagnostic_reason == "Claude event stream contained no terminal result"
+
     def test_parse_codex_jsonl_with_non_json_contamination_fails_closed(self):
         response = "\n".join(
             [

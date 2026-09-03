@@ -25,7 +25,7 @@ def codex_pr(*, branch: str = "work", changed_files: int = 3) -> dict:
     return {
         "number": 162,
         "title": "Fix issue #161",
-        "body": "Closes #161\n\nhttps://chatgpt.com/codex/tasks/task_reissue_161",
+        "body": "Closes #161\n\nhttps://chatgpt.com/codex/tasks/task_e_reissue161",
         "user": {"login": "chatgpt-codex-connector[bot]"},
         "head": {"ref": branch, "sha": "abc123"},
         "base": {"ref": "main", "sha": "base123"},
@@ -54,7 +54,7 @@ def test_work_pr_is_closed_and_existing_task_reissues_without_local_processing(
     github_client.close_pr.assert_called_once()
     followup.assert_called_once()
     task_id, prompt = followup.call_args.args
-    assert task_id == "task_reissue_161"
+    assert task_id == "task_e_reissue161"
     assert "unique to this task or its linked issue" in prompt
     assert "Do not reuse, update, push to, or force-push the remote `work` branch" in prompt
     assert "Do not reopen, retarget, or reuse the closed pull request" in prompt

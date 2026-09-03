@@ -15,6 +15,15 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _get_mergeable_state, _handle_pr_merge, _start_mergeability_remediation
 
 
+class _CloudFollowupClient:
+    def __init__(self) -> None:
+        self.messages = []
+
+    def send_followup(self, task_id, message):
+        self.messages.append((task_id, message))
+        return True
+
+
 @patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
 def test_non_mergeable_detection_is_reported(mock_check_progress):
     """Ensure non-mergeable PRs surface a detection action."""
@@ -54,6 +63,61 @@ def test_mergeability_remediation_flow_invoked(mock_github_client, mock_get_ghap
     # Verify that remediation flow was invoked and skip-analysis flag was set
     assert any("Starting mergeability remediation" in action for action in actions)
     assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
+    mock_check_status.assert_not_called()
+
+
+@patch("src.auto_coder.pr_processor._check_github_actions_status")
+@patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+@patch("src.auto_coder.pr_processor.BranchManager")
+@patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True)
+@patch("src.auto_coder.pr_processor.get_ghapi_client")
+@patch("src.auto_coder.pr_processor.GitHubClient")
+def test_production_remediation_preserves_cloud_pr_metadata_and_defers_after_delegation(
+    mock_github_client,
+    mock_get_ghapi_client,
+    _mock_checkout,
+    _mock_branch_manager,
+    _mock_check_progress,
+    mock_check_status,
+    tmp_path,
+):
+    """The merge gate must carry API ownership/state through to cloud repair."""
+    from src.auto_coder.pr_processor import _delegate_cloud_merge_conflict_repair
+
+    cloud_client = _CloudFollowupClient()
+    api_pr = {
+        "number": 1660,
+        "body": "Closes #1659\nTask task_e_existing",
+        "user": {"login": "chatgpt-codex-connector"},
+        "head": {"ref": "issue-1659-release-beta-channels", "sha": "H1"},
+        "base": {"ref": "release/beta", "sha": "B1"},
+    }
+    mock_api = Mock()
+    mock_api.pulls.get.return_value = api_pr
+    mock_get_ghapi_client.return_value = mock_api
+    mock_github_client.get_instance.return_value.token = "token"
+
+    def conflicting_update(repo_name, preserved_pr_data, _config):
+        assert preserved_pr_data["body"] == api_pr["body"]
+        assert preserved_pr_data["head"] == api_pr["head"]
+        assert preserved_pr_data["base"] == api_pr["base"]
+        assert _delegate_cloud_merge_conflict_repair(repo_name, preserved_pr_data)
+        return ["Merge conflict detected for PR #1660", "Delegated merge-conflict repair for PR #1660 to its existing cloud session", "ACTION_FLAG:SKIP_ANALYSIS"]
+
+    config = AutomationConfig()
+    config.ENABLE_MERGEABILITY_REMEDIATION = True
+    with (
+        patch("src.auto_coder.pr_processor._update_with_base_branch", side_effect=conflicting_update),
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(cloud_client, "task_e_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+    ):
+        actions = _handle_pr_merge(_client(), "owner/repo", {"number": 1660, "mergeable": False}, config, {})
+
+    assert len(cloud_client.messages) == 1
+    assert "release/beta" in cloud_client.messages[0][1]
+    assert "issue-1659-release-beta-channels" in cloud_client.messages[0][1]
+    assert any("remediation delegated" in action.lower() and "later pass" in action for action in actions)
+    assert not any("remediation completed" in action.lower() for action in actions)
     mock_check_status.assert_not_called()
 
 

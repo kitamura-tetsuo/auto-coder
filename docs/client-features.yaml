@@ -25,6 +25,25 @@ as red CI, merge gates, and cloud-task waits remain deferred rather than failure
 
 ## Configuration
 
+#### Authoritative Codex Cloud task IDs
+
+Codex Cloud task associations use one shared parser across PR metadata, PR bodies,
+issue sessions and comments, CI continuation, adversarial feedback, review repair,
+and conflict repair. Only the provider-issued `task_e_<token>` shape is accepted;
+arbitrary prefixed values such as `task_id` and `task_fake` are rejected and do not
+block fallback to a valid provider task URL from a lower-priority source.
+
+#### Forced adversarial-validation recovery
+
+An explicit `--only <PR> --force` run starts a new adversarial-validation
+attempt for the current head even when that head already has a verdict or the
+normal review limit has been reached. Ordinary scheduling and non-forced
+`--only` runs retain same-head and review-limit suppression. Every attempt has
+a durable, start-ordered identity; prior reviews remain immutable, overlapping
+attempts remain distinct, and a late older completion cannot supersede the
+newer applicable verdict. Force changes retry eligibility only and does not
+relax validator response, requirement coverage, or review-anchor checks.
+
 #### Authoritative Issue dispatch type guard
 
 Before any Issue implementation side effect (backend start, CloudRun
@@ -55,6 +74,11 @@ implementation that existing tests would miss, and one focused regression
 scenario. An open gap produces `NEEDS_TESTS`, requests only committed regression
 protection, and blocks automatic merge without claiming that current production
 behavior is wrong.
+
+The reviewer identifies a gap's Issue requirement only by its stable manifest ID.
+Unknown IDs fail closed, while human-readable requirement text used in review
+comments, prompts, and persisted lifecycle state is populated deterministically
+from the authoritative requirement manifest rather than copied from model output.
 
 Gap identities and scopes persist with the PR-scoped reviewer session. Rereviews
 revalidate recorded gaps and the corrective diff instead of restarting broad
@@ -262,7 +286,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
     - Before creating a Codex Cloud task, weekly usage is fetched with ChatGPT OAuth credentials from `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`). The task starts only when the remaining percentage is at least `(days_until_reset + 1) * 5`; missing credentials, authentication errors, and malformed responses safely route to the next backend. OpenAI API keys are never used for this request.
     - Codex Cloud supports `continue_if_paused()` via the internal WHAM backend API (`POST https://chatgpt.com/backend-api/wham/tasks`). When CI checks fail on a Codex Cloud-created PR, auto-coder resolves the latest assistant turn ID via WHAM turn APIs and sends a follow-up continuation prompt using Codex OAuth credentials (never the OpenAI API key), allowing Codex to resume and fix the PR without spawning new tasks. This cloud routing is preserved when label checks are disabled (including `--only` and WIP resumption) and when the local checkout already matches the PR branch; Auto-Coder does not check out or repair the cloud PR locally. A failed continuation delivery is reported as retryable and is never described as successfully handled, while local repair remains disabled. Repeated resumptions do not post duplicate informational PR comments; Jules fix-request notifications use the same deduplication rule.
-    - Cloud clients may independently implement `send_followup()` for assigning new work to an existing task after it has created a PR; this capability is distinct from paused-task continuation. When a Codex Cloud or Claude cloud PR is still conflicting, Auto-Coder sends the existing session a repair instruction using the PR's actual head and base branches before local resolution. Successful delivery stops that processing pass, while failed or unsupported delivery retains the prior fallback. Durable deduplication keys include repository/PR identity plus head and base states, so unchanged polling does not resend work and changed heads or bases may be delegated again. Delivery never marks the PR mergeable or bypasses normal CI, review-thread, adversarial-validation, or mergeability gates.
+    - Cloud clients may independently implement `send_followup()` for assigning new work to an existing task after it has created a PR; this capability is distinct from paused-task continuation. When a Codex Cloud or Claude cloud PR is still conflicting, Auto-Coder sends the existing session a repair instruction using the PR's actual head and base branches before local resolution. Successful delivery stops that processing pass, while failed or unsupported delivery retains the prior fallback. Durable deduplication keys include repository/PR identity plus head and base states, with explicit pending and confirmed states: unchanged confirmed work is not resent, an unconfirmed reservation is deferred without being falsely reported as delegated, and changed heads or bases may be delegated again. Delivery never marks the PR mergeable or bypasses normal CI, review-thread, adversarial-validation, or mergeability gates.
     - Codex Cloud pull requests whose remote head is exactly `work` are closed before diff, CI, merge, or checkout processing because that shared branch is not a safe task identity. The existing cloud task is instructed to preserve its implementation and publish a replacement PR from a unique issue/task branch without reusing or force-pushing `work`. Successful delivery keeps the linked issue in its current cloud flow; failed resolution or delivery releases it through the normal attempt/retry policy.
     - When `model` is configured, it is forwarded to Codex Cloud as a CLI configuration override.
     - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
@@ -352,7 +376,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
 - **`max_open_prs_for_issues` configuration**: Open PR threshold for issue processing
   - Purpose: Controls the maximum number of open PR candidates allowed when collecting new issues to process.
   - Configuration section: `[process_issues]` in `config.toml` (`max_open_prs_for_issues` or `max_open_prs`)
-  - Durable implementation concurrency: `[process_issues].max_concurrent_implementations` is a positive integer (default `1`). Issue retries, provider sessions, and linked PRs share one persisted Issue-owned slot; standalone PRs own separate slots. Slots survive restarts, remain held during asynchronous and CI/review waits, and are released only after authoritative terminal GitHub state is observed. This limit is independent of worker concurrency.
+  - Durable implementation concurrency: `[process_issues].max_concurrent_implementations` is a positive integer (default `1`). Issue retries, provider sessions, and linked PRs share one persisted Issue-owned slot; standalone PRs own separate slots. Slots survive restarts, remain held during asynchronous and CI/review waits, and are released only after authoritative terminal GitHub state is observed. This limit is independent of worker concurrency. An explicit `--only` target bypasses slot capacity but not an active execution for the same logical owner; adding the global `--force` override bypasses both guards. Every override execution has its own durable identity, so completing one forced execution cannot clear a concurrently active sibling execution.
   - CLI option: `--max-open-prs-for-issues` / `--max-open-prs` (in `process_issues`)
   - Environment variable: `AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES` or `AUTO_CODER_MAX_OPEN_PRS`
   - Default: `3`
@@ -1191,6 +1215,7 @@ Recent configuration schema changes that require migration:
       - "Before the merge-gate unresolved-review-thread check skips validation, Auto-Coder fetches every review thread with its full comment list (stable numeric author identity ID, informational login, and body) via GraphQL and classifies each unresolved thread: a thread counts as 'claimed' only when its root author's stable identity ID is in the effective repository-scoped `[github].pr_review_allowlist` AND at least one reply carries the `auto-coder-review-addressed:v1` marker. Login and display-name strings never influence authorization. Missing, malformed, unconfigured, empty, or non-allowlisted identity data fails closed to an ordinary unresolved blocker."
       - "`[github].pr_review_allowlist` accepts only positive integer GitHub identity IDs; strings, booleans, zero, negative values, and other malformed values raise configuration validation errors instead of being coerced. Repository-specific config lists replace the global list through the standard partial-override precedence."
       - "When every unresolved thread is claimed (or there are none), merge processing proceeds to a fresh adversarial validation run instead of being skipped; the run's prompt includes a 'Claimed-Addressed Review Threads' section listing each claimed thread's ID, original finding (the root comment), and full chronological discussion (including the implementation agent's rationale)."
+      - "Adversarial-validation response parsing supports both Codex JSONL events and Claude CLI stream-json events. Claude streams must begin with system/init and contain exactly one successful terminal result; malformed, truncated, or failed streams fail closed without treating event metadata as the validator verdict."
       - "Every PR-processing entry point uses the same claimed-aware merge transition workflow. A quick/single-PR pass cannot bypass independent validation or re-delegate claimed-addressed threads, and when claimed and ordinary unresolved threads coexist only the ordinary blockers are included in repair delegation."
       - "The validator returns one independent disposition per claimed thread in a `thread_dispositions` list: `ADDRESSED` (the original defect is demonstrably gone on the current head), `STILL_VALID` (it remains), or `INCONCLUSIVE` (the evidence cannot establish either safely). The prompt explicitly forbids deriving ADDRESSED merely from the implementation agent's claim, a GitHub `outdated` state, a moved/deleted diff line, a passing test alone, or a pushed commit alone; every disposition requires a concrete rationale and evidence grounded in the current implementation."
       - "Thread dispositions are parsed leniently and independently of the PR-level verdict: a malformed or incomplete entry is dropped (logged) without failing the PR-level PASS/NEEDS_FIX/INCONCLUSIVE/BLOCKED result, and a thread may be ADDRESSED while the PR itself is NEEDS_FIX for an unrelated defect, or vice versa."

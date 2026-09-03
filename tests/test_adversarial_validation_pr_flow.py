@@ -267,6 +267,22 @@ class TestAdversarialValidationPRComment:
         assert error is None
         assert body == latest
 
+    def test_newer_started_attempt_remains_authoritative_when_older_finishes_late(self):
+        client = MagicMock()
+        newer_result = AdversarialValidationResult(result="PASS", attempt_id="b" * 32, attempt_sequence=12)
+        older_result = AdversarialValidationResult(result="ERROR", attempt_id="a" * 32, attempt_sequence=11)
+        newer = format_adversarial_validation_comment(newer_result, "abc123")
+        late_older = format_adversarial_validation_comment(older_result, "abc123")
+        client.get_pr_reviews_strict.return_value = [
+            {"id": 1, "body": newer, "user": {"login": "auto-coder-reviewer[bot]"}},
+            {"id": 2, "body": late_older, "user": {"login": "auto-coder-reviewer[bot]"}},
+        ]
+
+        body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
+
+        assert error is None
+        assert body == newer
+
     def test_lookalike_review_from_another_author_is_not_authoritative(self):
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -384,6 +400,30 @@ class TestAdversarialValidationPRComment:
 
 
 class TestAdversarialValidationCodexFeedback:
+    def test_invalid_metadata_falls_back_to_pr_body_task_for_delivery(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        github_client = MagicMock()
+        github_client.get_pr_comments.return_value = []
+        github_client.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_current", comments=[ReviewThreadComment(database_id=301, body=finding)])]
+        cloud_client = MagicMock()
+        cloud_client.continue_if_paused.return_value = True
+        pr_data = {
+            "number": 1670,
+            "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_real123",
+            "_codex_task_id": "task_fake",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "delivery.json"),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
+        ):
+            actions = _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, github_client, [finding])
+
+        assert cloud_client.continue_if_paused.call_args.args == ("task_e_real123",)
+        assert all("task_fake" not in action for action in actions)
+
     def test_successful_adversarial_delivery_deduplicates_review_thread_path(self, tmp_path):
         client = MagicMock()
         client.get_pr_comments.return_value = []
@@ -708,6 +748,127 @@ class TestAdversarialValidationPRFlow:
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_called_once()
         assert any("already validated as PASS" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository")
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_forced_only_retry_runs_for_an_already_validated_head(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+        attempt_repository_type,
+    ):
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Retried")
+        attempt_repository = attempt_repository_type.return_value
+        attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-v2", 2)
+        attempt_repository.latest_completed_sequence.side_effect = [2, 3]
+        # V1 is authoritative immediately after publication. Before its final
+        # merge transition, newer V2 completes but has not published yet.
+        attempt_repository.latest_published_sequence.return_value = 2
+        head_sha = "abc123456789"
+        prior_body = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Historical"), head_sha)
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [{"body": prior_body}]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        mock_run_validation.assert_called_once()
+        attempt_repository.start.assert_called_once_with(100, head_sha)
+        attempt_repository.finish.assert_called_once_with("attempt-v2", "PASS")
+        attempt_repository.mark_published.assert_called_once_with("attempt-v2")
+        assert client.get_pr_comments.return_value == [{"body": prior_body}]
+        assert any("Forcing a new adversarial-validation attempt" in action for action in actions)
+        mock_merge_pr.assert_not_called()
+        assert any("newer adversarial-validation attempt is applicable" in action for action in actions)
+
+    @pytest.mark.parametrize("newer_state", ["PUBLISHED", "TERMINAL", "IN_PROGRESS"])
+    def test_thread_disposition_uses_latest_completed_attempt(self, dedicated_reviewer_publication, tmp_path, newer_state):
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState
+        from auto_coder.review_thread_validation import ClaimedReviewThread
+
+        head_sha = "abc123456789"
+        claimed = ClaimedReviewThread(thread_id="thread-t", is_change_provenance=False)
+        older_validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Older result",
+            thread_dispositions=[ReviewThreadDisposition(thread_id="thread-t", status="ADDRESSED", rationale="Fixed", evidence="Diff")],
+        )
+        newer_validation = AdversarialValidationResult(
+            result="INCONCLUSIVE",
+            summary="Newer result keeps the thread open",
+            thread_dispositions=[ReviewThreadDisposition(thread_id="thread-t", status="STILL_VALID", rationale="Still reproducible", evidence="Current head")],
+        )
+        client = MagicMock()
+        client.get_pr_comments.return_value = []
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+
+        attempt_repository = AdversarialValidationAttemptRepository("owner/repo", tmp_path / "attempts.json")
+
+        def finish_newer_attempt(*_args, **_kwargs):
+            newer_attempt = attempt_repository.start(100, head_sha)
+            newer_validation.attempt_id = newer_attempt.attempt_id
+            newer_validation.attempt_sequence = newer_attempt.sequence
+            if newer_state != "IN_PROGRESS":
+                attempt_repository.finish(newer_attempt.attempt_id, newer_validation.result)
+            if newer_state == "PUBLISHED":
+                dedicated_reviewer_publication("owner/repo", 100, head_sha, newer_validation)
+                attempt_repository.mark_published(newer_attempt.attempt_id)
+            return older_validation
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState(claimed=(claimed,))),
+            patch("auto_coder.pr_processor.run_adversarial_validation", side_effect=finish_newer_attempt),
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository", return_value=attempt_repository),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads") as resolve_threads,
+            patch("auto_coder.pr_processor._merge_pr") as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        if newer_state != "IN_PROGRESS":
+            resolve_threads.assert_not_called()
+            if newer_state == "PUBLISHED":
+                dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, head_sha, newer_validation)
+            else:
+                dedicated_reviewer_publication.assert_not_called()
+            merge_pr.assert_not_called()
+            assert attempt_repository.latest_completed_sequence(100, head_sha) == newer_validation.attempt_sequence
+            assert any("Ignored late adversarial-validation attempt" in action for action in actions)
+        else:
+            resolve_threads.assert_called_once()
+            dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, head_sha, older_validation)
+            merge_pr.assert_called_once()
+            assert attempt_repository.latest_completed_sequence(100, head_sha) == older_validation.attempt_sequence
+            assert not any("Ignored late adversarial-validation attempt" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

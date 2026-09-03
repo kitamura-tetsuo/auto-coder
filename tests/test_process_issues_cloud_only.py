@@ -64,7 +64,14 @@ def test_process_issues_only_passes_configured_cloud_mode():
 
     assert result.exit_code == 0
     cloud_mode.assert_called_once_with(repo_name=repo_name)
-    engine.process_single.assert_called_once_with(repo_name, "issue", 1591, jules_mode=True)
+    engine.process_single.assert_called_once_with(
+        repo_name,
+        "issue",
+        1591,
+        jules_mode=True,
+        explicit_only=True,
+        force=False,
+    )
 
 
 @pytest.mark.parametrize(

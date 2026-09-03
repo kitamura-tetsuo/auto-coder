@@ -112,6 +112,9 @@ def process_issues(
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
+    parent_context = click.get_current_context().parent
+    operator_force = bool(parent_context and parent_context.params.get("force"))
+
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
     from .deployment_channel import validate_repository_ownership
@@ -333,10 +336,10 @@ def process_issues(
             if target_type is None:
                 # Auto-detect the type; process_single reports failures in its result
                 # instead of raising, so the detection happens while building the candidate.
-                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode)
+                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force)
                 target_type = "pr" if result.get("prs_processed") else "issue"
             else:
-                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode)
+                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force)
 
             # Create completion message with clickable link
             target_display = f"{target_type} #{number}"

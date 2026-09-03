@@ -174,6 +174,28 @@ def test_find_codex_cloud_task_for_issue_cloud_manager(tmp_path: Path):
         assert url == "https://chatgpt.com/codex/tasks/task_e_abcdef123456"
 
 
+def test_find_codex_cloud_task_for_issue_rejects_placeholder_session(tmp_path: Path):
+    repo = "owner/repo"
+    cloud_manager = CloudManager(repo, cloud_file_path=tmp_path / "cloud.csv")
+    cloud_manager.add_session(42, "task_fake")
+
+    with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
+        assert _find_codex_cloud_task_for_issue(repo, 42) is None
+
+
+def test_find_codex_cloud_task_for_issue_falls_back_after_placeholder_session(tmp_path: Path):
+    repo = "owner/repo"
+    github_client = MagicMock()
+    github_client.get_issue_comments.return_value = [{"body": "Codex Cloud task started. Task ID: task_e_real123"}]
+    cloud_manager = CloudManager(repo, cloud_file_path=tmp_path / "cloud.csv")
+    cloud_manager.add_session(42, "task_fake")
+
+    with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
+        url = _find_codex_cloud_task_for_issue(repo, 42, github_client)
+
+    assert url == "https://chatgpt.com/codex/tasks/task_e_real123"
+
+
 def test_find_codex_cloud_task_for_issue_comments(tmp_path: Path):
     """Verify finding Codex Cloud task URL via GitHub issue comments."""
     repo = "test-owner/test-repo"

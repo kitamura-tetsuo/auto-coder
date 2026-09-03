@@ -28,6 +28,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
+from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .adversarial_validator import (
     AdversarialValidationResult,
     adversarial_validation_codex_feedback_marker,
@@ -41,6 +42,7 @@ from .adversarial_validator import (
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
 from .branch_manager import BranchManager
+from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
@@ -91,6 +93,7 @@ def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> N
 _active_monitors: set[int] = set()
 _active_monitors_lock = threading.Lock()
 _cloud_review_delivery_lock = threading.RLock()
+_cloud_conflict_delivery_lock = threading.RLock()
 
 CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
@@ -113,6 +116,25 @@ class CodexCloudFeedbackResult:
     delivered: bool = False
     retryable: bool = False
     actions: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CloudConflictDelegationResult:
+    """Outcome of routing a merge conflict to an existing cloud session."""
+
+    delegated: bool = False
+    reason: str = ""
+
+    def __bool__(self) -> bool:
+        return self.delegated
+
+
+@dataclass(frozen=True)
+class CloudConflictDeliveryRecord:
+    """Durable state for one non-idempotent cloud conflict follow-up."""
+
+    task_id: str
+    status: str
 
 
 @dataclass
@@ -483,6 +505,8 @@ def process_pull_request(
     config: AutomationConfig,
     repo_name: str,
     pr_data: Dict[str, Any],
+    *,
+    force_adversarial_validation: bool = False,
 ) -> ProcessedPRResult:
     """Process a single pull request with priority order."""
     try:
@@ -529,8 +553,8 @@ def process_pull_request(
             repo_name,
             pr_number,
             item_type="pr",
-            skip_label_add=True,
-            check_labels=config.CHECK_LABELS,
+            skip_label_add=not force_adversarial_validation,
+            check_labels=config.CHECK_LABELS and not force_adversarial_validation,
             known_labels=pr_data.get("labels"),
         ) as should_process:
             if not should_process:
@@ -604,7 +628,13 @@ def process_pull_request(
                 processed_pr.priority = "fix"
 
                 # Process using _take_pr_actions
-                processed_pr_result = _process_pr_for_fixes(github_client, repo_name, pr_data, config)
+                processed_pr_result = _process_pr_for_fixes(
+                    github_client,
+                    repo_name,
+                    pr_data,
+                    config,
+                    force_adversarial_validation=force_adversarial_validation,
+                )
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
@@ -1372,7 +1402,13 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
             # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
             # - Pushing updated branch with retry
             get_trace_logger().log("Remediation", f"Updating base branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"step": "update_base"})
-            update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
+            # Preserve the authoritative GitHub PR metadata.  In particular,
+            # cloud ownership is carried by the body/author and the exact
+            # head/base SHAs are required for conflict-request deduplication.
+            remediation_pr_data = dict(pr_details)
+            remediation_pr_data["number"] = pr_number
+            remediation_pr_data["base_branch"] = base_branch
+            update_actions = _update_with_base_branch(repo_name, remediation_pr_data, AutomationConfig())
             actions.extend(update_actions)
 
             # Step 4: Check for degrading merge detection
@@ -1404,10 +1440,17 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
         # Step 5: Verify successful remediation
         # If push succeeded, the action flag will be set
-        if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+        if any("Delegated merge-conflict repair" in action for action in update_actions):
+            actions.append(f"Mergeability remediation delegated for PR #{pr_number}; deferring until a later pass observes a new head")
+            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+            get_trace_logger().log("Remediation", f"Remediation delegated for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "delegated"})
+        elif any("Pushed updated branch" in action for action in update_actions):
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
             actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             get_trace_logger().log("Remediation", f"Remediation success for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "success"})
+        elif "ACTION_FLAG:SKIP_ANALYSIS" in update_actions:
+            actions.append(f"Mergeability remediation deferred for PR #{pr_number}; no repair was confirmed")
+            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
         elif "Failed" in str(update_actions):
             # Remediation attempted but failed
             actions.append(f"Mergeability remediation failed for PR #{pr_number}")
@@ -1467,6 +1510,8 @@ def _process_pr_for_fixes(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
+    *,
+    force_adversarial_validation: bool = False,
 ) -> ProcessedPRResult:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr = ProcessedPRResult(
@@ -1486,7 +1531,14 @@ def _process_pr_for_fixes(
         with ProgressStage("Fixing issues"):
             try:
                 processing_status = ProcessedPRResult(pr_data=pr_data)
-                actions = _take_pr_actions(github_client, repo_name, pr_data, config, processing_status)
+                actions = _take_pr_actions(
+                    github_client,
+                    repo_name,
+                    pr_data,
+                    config,
+                    processing_status,
+                    force_adversarial_validation=force_adversarial_validation,
+                )
                 processed_pr.actions_taken = actions
                 processed_pr.error = processing_status.error
                 processed_pr.outcome = processing_status.outcome
@@ -1507,6 +1559,8 @@ def _take_pr_actions(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     processing_status: Optional[ProcessedPRResult] = None,
+    *,
+    force_adversarial_validation: bool = False,
 ) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
     actions = PRActionList()
@@ -1515,7 +1569,15 @@ def _take_pr_actions(
     try:
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processing_status)
+        merge_actions = _handle_pr_merge(
+            github_client,
+            repo_name,
+            pr_data,
+            config,
+            {},
+            processing_status,
+            force_adversarial_validation=force_adversarial_validation,
+        )
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
 
@@ -1871,13 +1933,25 @@ def _find_authoritative_adversarial_review(
         logger.error(f"Failed to read PR reviews for PR #{pr_number}: {e}")
         return None, str(e)
 
-    for review in reversed(reviews):
+    matching_bodies: List[str] = []
+    for review in reviews:
         login = _comment_value(_comment_value(review, "user") or {}, "login", "")
         body = _comment_value(review, "body", "")
         if login == identity.login and isinstance(body, str) and body.startswith(marker):
-            return body, None
+            matching_bodies.append(body)
+
+    if matching_bodies:
+        # Completion order is not authority order when forced attempts overlap.
+        # Attempt sequence is allocated at start, so a late V1 cannot replace V2.
+        return max(enumerate(matching_bodies), key=lambda item: (_adversarial_validation_attempt_sequence(item[1]), item[0]))[1], None
 
     return None, None
+
+
+def _adversarial_validation_attempt_sequence(body: str) -> int:
+    """Return start order from a verdict, treating historical verdicts as zero."""
+    match = re.search(r"<!-- auto-coder-adversarial-validation-attempt:v1:(\d+):[0-9a-f]+ -->", body)
+    return int(match.group(1)) if match else 0
 
 
 def _get_legacy_adversarial_validation_comment(
@@ -1899,11 +1973,12 @@ def _get_legacy_adversarial_validation_comment(
         logger.error(f"Failed to read legacy adversarial validation comments for PR #{pr_number}: {e}")
         return None, str(e)
 
+    matching_bodies: List[str] = []
     for comment in comments:
         body = _comment_value(comment, "body", "")
         if isinstance(body, str) and body.startswith(marker):
-            return body, None
-    return None, None
+            matching_bodies.append(body)
+    return (max(enumerate(matching_bodies), key=lambda item: (_adversarial_validation_attempt_sequence(item[1]), item[0]))[1], None) if matching_bodies else (None, None)
 
 
 def _parse_adversarial_validation_status(body: str) -> str:
@@ -2010,10 +2085,14 @@ def _handle_pr_merge(
     config: AutomationConfig,
     analysis: Dict[str, Any],
     processing_status: Optional[ProcessedPRResult] = None,
+    *,
+    force_adversarial_validation: bool = False,
 ) -> PRActionList:
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
     pr_number = pr_data["number"]
+    decision_attempt_repository: Optional[AdversarialValidationAttemptRepository] = None
+    decision_attempt_sequence = 0
 
     try:
         # A stale review-thread resolution (issue #1619) that could not be
@@ -2231,7 +2310,7 @@ def _handle_pr_merge(
                         return actions
 
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint:
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
                         current_head_sha = pr_data.get("head", {}).get("sha", "")
@@ -2255,7 +2334,9 @@ def _handle_pr_merge(
                             return actions
                         should_run_validation = False
                     else:
-                        if adv_review_count >= max_adv_reviews:
+                        if adv_review_count >= max_adv_reviews and force_adversarial_validation:
+                            actions.append(f"Forcing adversarial validation for PR #{pr_number} beyond the normal review limit")
+                        elif adv_review_count >= max_adv_reviews:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True
                 else:
@@ -2324,7 +2405,7 @@ def _handle_pr_merge(
                             return actions
                         has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report) or saved_pass_has_unresolved_provenance
 
-                    if published_status and not has_new_provenance_evidence:
+                    if published_status and not has_new_provenance_evidence and not force_adversarial_validation:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
                             saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
@@ -2358,12 +2439,21 @@ def _handle_pr_merge(
                                     )
                             return actions
                     else:
-                        if has_new_provenance_evidence:
+                        if force_adversarial_validation:
+                            actions.append(f"Forcing a new adversarial-validation attempt for PR #{pr_number} at unchanged commit {head_sha[:8]}")
+                        elif has_new_provenance_evidence:
                             if saved_pass_has_unresolved_provenance:
                                 actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} because a saved PASS still has an unresolved provenance thread")
                             else:
                                 actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} using new implementer provenance evidence")
+                        # From here onward only this attempt's validated result may
+                        # drive the decision; a saved same-head verdict is history.
+                        published_status = None
                         claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
+                        attempt_repository = AdversarialValidationAttemptRepository(repo_name)
+                        attempt = attempt_repository.start(pr_number, head_sha)
+                        decision_attempt_repository = attempt_repository
+                        decision_attempt_sequence = attempt.sequence
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
@@ -2387,6 +2477,10 @@ def _handle_pr_merge(
                                 diagnostic_reason=type(e).__name__,
                             )
 
+                        val_result.attempt_id = attempt.attempt_id
+                        val_result.attempt_sequence = attempt.sequence
+                        attempt_repository.finish(attempt.attempt_id, val_result.result.strip().upper() or "ERROR")
+
                         val_result.clarification_reply_fingerprint = provenance_fingerprint
                         if val_result.result.strip().upper() == "ERROR":
                             actions.adversarial_validation_error = val_result.summary
@@ -2396,71 +2490,80 @@ def _handle_pr_merge(
                             val_result.publish_clarification_thread = False
                         val_result.provenance_thread_comment_ids = {thread.thread_id: thread.root_comment_database_id for thread in claimed_review_threads if thread.is_change_provenance and thread.root_comment_database_id is not None}
 
-                        # Independent thread-completion validation (REQ-001..REQ-010): this
-                        # runs whenever a fresh validation pass produced dispositions,
-                        # regardless of the PR-level verdict (REQ-005 independence).
-                        resolved_thread_ids: List[str] = []
-                        if claimed_review_threads and val_result.thread_dispositions:
-                            try:
-                                resolved_thread_ids = resolve_addressed_review_threads(
+                        with attempt_repository.serialized_transition():
+                            attempt_is_superseded = attempt_repository.latest_completed_sequence(pr_number, head_sha) > attempt.sequence
+                            if attempt_is_superseded:
+                                actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                                return actions
+                            resolved_thread_ids: List[str] = []
+                            # Independent thread-completion validation (REQ-001..REQ-010): this
+                            # runs whenever the authoritative fresh validation produced
+                            # dispositions, regardless of the PR-level verdict.
+                            if claimed_review_threads and val_result.thread_dispositions:
+                                try:
+                                    resolved_thread_ids = resolve_addressed_review_threads(
+                                        github_client,
+                                        repo_name,
+                                        pr_number,
+                                        head_sha,
+                                        claimed_review_threads,
+                                        val_result.thread_dispositions,
+                                    )
+                                    if resolved_thread_ids:
+                                        actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
+                                except StaleReviewThreadResolutionError as e:
+                                    # A thread is durably resolved against a stale head and
+                                    # could not be rolled back: GitHub's authoritative
+                                    # unresolved-thread gate can no longer be trusted for
+                                    # this PR, so merge must not proceed this run even if
+                                    # every other gate would otherwise allow it.
+                                    logger.error(f"Stale review-thread resolution could not be rolled back for PR #{pr_number}: {e}")
+                                    actions.append(f"Skipping merge for PR #{pr_number}: review thread {e.thread_id} was resolved against a stale head and could not be reverted")
+                                    return actions
+                                except Exception as e:
+                                    logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
+
+                            _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
+
+                            publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
+                            if not publication.success:
+                                publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
                                     github_client,
                                     repo_name,
                                     pr_number,
                                     head_sha,
-                                    claimed_review_threads,
-                                    val_result.thread_dispositions,
+                                    val_result,
                                 )
-                                if resolved_thread_ids:
-                                    actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
-                            except StaleReviewThreadResolutionError as e:
-                                # A thread is durably resolved against a stale head and
-                                # could not be rolled back: GitHub's authoritative
-                                # unresolved-thread gate can no longer be trusted for
-                                # this PR, so merge must not proceed this run even if
-                                # every other gate would otherwise allow it.
-                                logger.error(f"Stale review-thread resolution could not be rolled back for PR #{pr_number}: {e}")
-                                actions.append(f"Skipping merge for PR #{pr_number}: review thread {e.thread_id} was resolved against a stale head and could not be reverted")
-                                return actions
-                            except Exception as e:
-                                logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
-
-                        _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
-
-                        publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
-                        if not publication.success:
-                            publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
-                                github_client,
-                                repo_name,
-                                pr_number,
-                                head_sha,
-                                val_result,
-                            )
-                            if publication_confirmed:
-                                published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
-                                actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
-                            elif resolved_thread_ids:
-                                reopened_thread_ids = reopen_review_threads_after_publication_failure(
-                                    github_client,
-                                    repo_name,
-                                    pr_number,
-                                    claimed_review_threads,
-                                    resolved_thread_ids,
-                                )
-                                if reopened_thread_ids:
-                                    actions.append(f"Reopened {len(reopened_thread_ids)} review thread(s) after adversarial review publication failed")
-                                if len(reopened_thread_ids) != len(resolved_thread_ids):
-                                    actions.append("Some review-thread publication rollbacks remain pending and will be retried before later merge processing")
-                            if not publication_confirmed:
-                                reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
-                                actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
-                                logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
-                                return actions
-                        else:
-                            if val_result.result.strip().upper() == "ERROR":
-                                actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
+                                if publication_confirmed:
+                                    published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
+                                    actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
+                                elif resolved_thread_ids:
+                                    reopened_thread_ids = reopen_review_threads_after_publication_failure(
+                                        github_client,
+                                        repo_name,
+                                        pr_number,
+                                        claimed_review_threads,
+                                        resolved_thread_ids,
+                                    )
+                                    if reopened_thread_ids:
+                                        actions.append(f"Reopened {len(reopened_thread_ids)} review thread(s) after adversarial review publication failed")
+                                    if len(reopened_thread_ids) != len(resolved_thread_ids):
+                                        actions.append("Some review-thread publication rollbacks remain pending and will be retried before later merge processing")
+                                if not publication_confirmed:
+                                    reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
+                                    actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
+                                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                                    return actions
                             else:
-                                actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+                                if val_result.result.strip().upper() == "ERROR":
+                                    actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
+                                else:
+                                    actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
 
+                            attempt_repository.mark_published(attempt.attempt_id)
+                            if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
+                                actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                                return actions
                     if published_status == "PASS":
                         pass
                     elif val_result.needs_fix:
@@ -2516,34 +2619,39 @@ def _handle_pr_merge(
                 logger.warning(f"No github_client available to verify PR #{pr_number} head SHA; aborting merge.")
                 return actions
 
-            try:
-                current_pr = github_client.get_pull_request(repo_name, pr_number)
-                current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
-                if not current_head_sha:
-                    actions.append(f"Could not determine current remote head SHA for PR #{pr_number}; merge aborted.")
-                    logger.warning(f"Could not determine remote head SHA for PR #{pr_number}; aborting merge.")
+            merge_transition = decision_attempt_repository.serialized_transition() if decision_attempt_repository is not None else contextlib.nullcontext()
+            with merge_transition:
+                if decision_attempt_repository is not None and decision_attempt_repository.latest_completed_sequence(pr_number, head_sha) > decision_attempt_sequence:
+                    actions.append("Skipping merge because a newer adversarial-validation attempt is applicable")
+                    return actions
+                try:
+                    current_pr = github_client.get_pull_request(repo_name, pr_number)
+                    current_head_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else getattr(getattr(current_pr, "head", None), "sha", None)
+                    if not current_head_sha:
+                        actions.append(f"Could not determine current remote head SHA for PR #{pr_number}; merge aborted.")
+                        logger.warning(f"Could not determine remote head SHA for PR #{pr_number}; aborting merge.")
+                        return actions
+
+                    if head_sha and current_head_sha != head_sha:
+                        actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
+                        logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
+                        return actions
+                except Exception as e:
+                    actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
+                    logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
+                    if processing_status is not None:
+                        processing_status.error = str(e)
+                        processing_status.outcome = PRProcessingOutcome.FAILED
                     return actions
 
-                if head_sha and current_head_sha != head_sha:
-                    actions.append(f"PR #{pr_number} head SHA changed from {head_sha[:8]} to {current_head_sha[:8]} during validation; merge aborted.")
-                    logger.warning(f"PR #{pr_number} head SHA changed during validation; skipping merge.")
-                    return actions
-            except Exception as e:
-                actions.append(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; merge aborted.")
-                logger.warning(f"Failed to verify remote head SHA for PR #{pr_number}: {e}; skipping merge.")
-                if processing_status is not None:
-                    processing_status.error = str(e)
-                    processing_status.outcome = PRProcessingOutcome.FAILED
-                return actions
-
-            merge_result = _merge_pr(
-                repo_name,
-                pr_number,
-                analysis,
-                config,
-                github_client=github_client,
-                expected_head_sha=current_head_sha or head_sha or None,
-            )
+                merge_result = _merge_pr(
+                    repo_name,
+                    pr_number,
+                    analysis,
+                    config,
+                    github_client=github_client,
+                    expected_head_sha=current_head_sha or head_sha or None,
+                )
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
                 if processing_status is not None:
@@ -2985,14 +3093,15 @@ def _update_with_base_branch(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
-            if _delegate_cloud_merge_conflict_repair(repo_name, pr_data):
+            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data)
+            if cloud_delegation:
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
             if not _is_local_llm_pr(pr_data):
-                actions.append(f"PR #{pr_number} was not created by local LLM, skipping conflict resolution.")
+                actions.append(f"Cloud merge-conflict repair could not be delegated for PR #{pr_number}: " f"{cloud_delegation.reason}; deferring conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
@@ -3349,10 +3458,11 @@ def _find_codex_cloud_task_for_issue(
         cloud_manager = CloudManager(repo_name)
         session_id = cloud_manager.get_session_id(issue_number)
         if session_id:
-            if session_id.startswith("http") and "codex/tasks" in session_id:
+            task_id = extract_codex_cloud_task_id(session_id)
+            if session_id.startswith("http") and "/codex/tasks/" in session_id and task_id:
                 return session_id
-            if re.match(r"^task_[a-zA-Z0-9_-]+$", session_id):
-                return f"https://chatgpt.com/codex/tasks/{session_id}"
+            if is_valid_codex_cloud_task_id(session_id):
+                return f"https://chatgpt.com/codex/tasks/{session_id.strip()}"
 
         # 2. Check comments on the issue if github_client is available
         if github_client:
@@ -3362,12 +3472,12 @@ def _find_codex_cloud_task_for_issue(
                     comment_body = comment.get("body", "") or ""
                     # Check for direct URL in comment
                     url_match = re.search(r"(https?://[^\s]+/codex/tasks/[a-zA-Z0-9_-]+)", comment_body)
-                    if url_match:
+                    if url_match and extract_codex_cloud_task_id(url_match.group(1)):
                         return url_match.group(1)
 
                     # Check for "Codex Cloud task ... Task ID: <id>"
                     task_match = re.search(r"Codex Cloud task.*?Task ID:\s*(task_[a-zA-Z0-9_-]+)", comment_body, re.IGNORECASE | re.DOTALL)
-                    if task_match:
+                    if task_match and is_valid_codex_cloud_task_id(task_match.group(1)):
                         return f"https://chatgpt.com/codex/tasks/{task_match.group(1)}"
             except Exception as e:
                 logger.debug(f"Failed to fetch comments for issue #{issue_number}: {e}")
@@ -3898,28 +4008,22 @@ def _resolve_codex_cloud_task_id(
     github_client: Optional[Any] = None,
 ) -> Optional[str]:
     """Resolve the Codex Cloud task associated with a pull request."""
-    task_id = pr_data.get("_codex_task_id")
     pr_body = pr_data.get("body", "") or ""
 
+    task_id = extract_codex_cloud_task_id(pr_data.get("_codex_task_id"))
+
     if not task_id:
-        direct_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", pr_body)
-        if direct_match:
-            task_id = direct_match.group(1)
+        task_id = extract_codex_cloud_task_id(pr_body)
 
     if not task_id:
         for issue_num in extract_linked_issues_from_pr_body(pr_body):
             found_url = _find_codex_cloud_task_for_issue(repo_name, issue_num, github_client)
             if found_url:
-                task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", found_url)
-                if task_match:
-                    task_id = task_match.group(1)
+                task_id = extract_codex_cloud_task_id(found_url)
+                if task_id:
                     break
 
-    if isinstance(task_id, str):
-        task_match = re.search(r"\b(task_[a-zA-Z0-9_-]+)\b", task_id)
-        if task_match:
-            return task_match.group(1)
-    return None
+    return task_id
 
 
 def _resolve_cloud_conflict_origin(
@@ -3928,6 +4032,30 @@ def _resolve_cloud_conflict_origin(
     github_client: Optional[Any] = None,
 ) -> Optional[Tuple[Any, str]]:
     """Return the capable client and existing task ID that originated a PR."""
+    # CloudRun is the lifecycle's authoritative implementation association.
+    # Consult it before heuristics based on an author name or PR body, because
+    # provider-created PRs do not consistently retain those presentation cues.
+    try:
+        from .cloud_run import CloudRunRepository
+
+        pr_number = int(pr_data["number"])
+        repository = CloudRunRepository(repo_name)
+        associated_runs = [run for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client) for run in repository.list_for_issue(issue_number) if pr_number in run.pull_request_numbers]
+        if associated_runs:
+            run = max(associated_runs, key=lambda candidate: candidate.attempt)
+            if run.provider == "codex-cloud":
+                from .codex_cloud_client import CodexCloudClient
+
+                return CodexCloudClient(repo_name=repo_name), run.task_id
+            if run.provider == "claude-routine":
+                from .claude_routine_client import ClaudeRoutineClient
+
+                return ClaudeRoutineClient(repo_name=repo_name), run.task_id
+            logger.warning(f"Cloud run provider '{run.provider}' does not support PR conflict follow-up")
+            return None
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        logger.warning(f"Could not resolve authoritative cloud run for PR #{pr_data.get('number')}: {exc}")
+
     if _is_codex_pr(pr_data):
         task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
         if task_id:
@@ -3954,6 +4082,35 @@ def _resolve_cloud_conflict_origin(
 def _cloud_conflict_state_path(repo_name: str) -> Path:
     """Return the durable deduplication state path for cloud conflict work."""
     return Path.home() / ".auto-coder" / repo_name / "cloud_conflict_repairs.json"
+
+
+def _record_cloud_conflict_deliveries(state_path: Path, delivered: dict[str, CloudConflictDeliveryRecord]) -> None:
+    """Atomically persist conflict delivery reservations and receipts."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
+    serialized = {fingerprint: {"task_id": record.task_id, "status": record.status} for fingerprint, record in delivered.items()}
+    temporary.write_text(json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, state_path)
+
+
+def _load_cloud_conflict_deliveries(state_path: Path) -> dict[str, CloudConflictDeliveryRecord]:
+    """Load and validate durable cloud conflict delivery state."""
+    if not state_path.exists():
+        return {}
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("delivery state is not a JSON object")
+
+    records: dict[str, CloudConflictDeliveryRecord] = {}
+    for fingerprint, value in loaded.items():
+        if not isinstance(fingerprint, str) or not isinstance(value, dict):
+            raise ValueError("delivery state contains an invalid record")
+        task_id = value.get("task_id")
+        status = value.get("status")
+        if not isinstance(task_id, str) or status not in {"pending", "confirmed"}:
+            raise ValueError("delivery state contains an invalid record")
+        records[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status=status)
+    return records
 
 
 def _cloud_review_repair_state_path(repo_name: str) -> Path:
@@ -4119,11 +4276,11 @@ def _delegate_codex_cloud_review_thread_repair(
     return [f"Requested Codex Cloud task '{task_id}' to address unresolved review threads for PR #{pr_number}"]
 
 
-def _delegate_cloud_merge_conflict_repair(
+def _delegate_cloud_merge_conflict_repair_result(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
-) -> bool:
+) -> CloudConflictDelegationResult:
     """Delegate a current conflict to its originating cloud session when possible.
 
     ``True`` means this conflict state was either just delegated or was already
@@ -4132,7 +4289,7 @@ def _delegate_cloud_merge_conflict_repair(
     """
     origin = _resolve_cloud_conflict_origin(repo_name, pr_data, github_client)
     if origin is None:
-        return False
+        return CloudConflictDelegationResult(reason="no originating cloud implementation session could be resolved")
     client, task_id = origin
 
     # An inherited default method means that the provider does not opt in to
@@ -4140,7 +4297,7 @@ def _delegate_cloud_merge_conflict_repair(
     from .cloud_task_client_base import CloudTaskClientBase
 
     if type(client).send_followup is CloudTaskClientBase.send_followup:
-        return False
+        return CloudConflictDelegationResult(reason=f"cloud provider for session '{task_id}' does not support repair follow-up")
 
     pr_number = pr_data.get("number")
     base = pr_data.get("base") or {}
@@ -4148,43 +4305,75 @@ def _delegate_cloud_merge_conflict_repair(
     target = resolve_existing_pr_repair_target(repo_name, pr_data)
     if not target or not base_state:
         logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate conflict repair")
-        return False
+        return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
     state_path = _cloud_conflict_state_path(repo_name)
-    delivered: dict[str, str] = {}
-    try:
-        if state_path.exists():
-            loaded = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                delivered = {str(key): str(value) for key, value in loaded.items()}
-    except (OSError, ValueError) as exc:
-        logger.warning(f"Could not read cloud conflict repair state: {exc}")
+    with _cloud_conflict_delivery_lock:
+        delivered: dict[str, CloudConflictDeliveryRecord] = {}
+        try:
+            delivered = _load_cloud_conflict_deliveries(state_path)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Could not read cloud conflict repair state: {exc}")
+            return CloudConflictDelegationResult(reason=f"prior repair delivery state could not be read: {exc}")
 
-    if fingerprint in delivered:
-        logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
-        return True
+        existing = delivered.get(fingerprint)
+        if existing and existing.status == "confirmed":
+            logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
+            return CloudConflictDelegationResult(delegated=True, reason="an equivalent repair request was already delegated")
+        if existing:
+            return CloudConflictDelegationResult(reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"))
+
+        # Reserve the conflict identity before the non-idempotent follow-up call.
+        # Pending state prevents speculative redelivery but is never evidence
+        # that the cloud session accepted the request. If this write fails, do not send.
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="pending")
+        try:
+            _record_cloud_conflict_deliveries(state_path, delivered)
+        except OSError as exc:
+            logger.warning(f"Could not reserve cloud conflict repair delivery: {exc}")
+            return CloudConflictDelegationResult(reason=f"a durable repair delivery receipt could not be reserved: {exc}")
 
     details = Template(get_prompt_template("pr.cloud_merge_conflict_repair_details")).safe_substitute(base_branch=target.base_branch)
     message = build_existing_pr_repair_prompt(target, details)
+    failure_reason: Optional[str] = None
     try:
         accepted = client.send_followup(task_id, message)
     except Exception as exc:
         logger.warning(f"Cloud conflict repair delegation failed for PR #{pr_number}: {exc}")
-        return False
+        accepted = False
+        failure_reason = f"delivery to originating cloud session '{task_id}' failed: {exc}"
     if not accepted:
-        return False
+        if failure_reason is None:
+            failure_reason = f"delivery to originating cloud session '{task_id}' was rejected"
+        with _cloud_conflict_delivery_lock:
+            delivered.pop(fingerprint, None)
+            try:
+                _record_cloud_conflict_deliveries(state_path, delivered)
+            except OSError as exc:
+                logger.warning(f"Could not clear rejected cloud conflict repair reservation: {exc}")
+                failure_reason += f"; its delivery reservation could not be cleared: {exc}"
+        return CloudConflictDelegationResult(reason=failure_reason)
 
-    delivered[fingerprint] = task_id
-    try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
-    except OSError as exc:
-        # Delivery succeeded, so local repair must still stop. A persistence
-        # failure can cause a later retry but must never create parallel repair.
-        logger.warning(f"Could not persist cloud conflict repair state: {exc}")
+    with _cloud_conflict_delivery_lock:
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed")
+        try:
+            _record_cloud_conflict_deliveries(state_path, delivered)
+        except OSError as exc:
+            # The request was accepted, but the pending reservation must not be
+            # interpreted as confirmed on a later pass or resent speculatively.
+            logger.warning(f"Could not confirm cloud conflict repair delivery: {exc}")
     logger.info(f"Delegated merge-conflict repair for PR #{pr_number} to existing cloud task {task_id}")
-    return True
+    return CloudConflictDelegationResult(delegated=True, reason=f"repair was delivered to cloud session '{task_id}'")
+
+
+def _delegate_cloud_merge_conflict_repair(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+) -> bool:
+    """Return whether cloud conflict repair was delegated or deduplicated."""
+    return bool(_delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, github_client))
 
 
 def _send_codex_cloud_error_feedback(

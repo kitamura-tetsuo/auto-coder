@@ -183,6 +183,8 @@ class AdversarialValidationResult:
     clarification_reply_fingerprint: str = ""
     publish_clarification_thread: bool = True
     provenance_thread_comment_ids: Dict[str, int] = field(default_factory=dict)
+    attempt_id: str = ""
+    attempt_sequence: int = 0
 
     @property
     def is_pass(self) -> bool:
@@ -309,6 +311,7 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     status_icon = "✅" if result.is_pass else "❌" if result.needs_fix else "⚠️"
     lines = [
         adversarial_validation_comment_marker(head_sha),
+        *([f"<!-- auto-coder-adversarial-validation-attempt:v1:{result.attempt_sequence}:{result.attempt_id} -->"] if result.attempt_id else []),
         f"## {status_icon} Auto-Coder adversarial validation: {status}",
         "",
         f"Validated commit: `{head_sha}`",
@@ -427,6 +430,8 @@ def format_adversarial_review_summary(
         diagnostic_reason=result.diagnostic_reason,
         requirement_coverage=result.requirement_coverage,
         specification_gaps=result.specification_gaps,
+        attempt_id=result.attempt_id,
+        attempt_sequence=result.attempt_sequence,
     )
     body = format_adversarial_validation_comment(summary_result, head_sha)
     if result.clarification_reply_fingerprint:
@@ -1142,6 +1147,52 @@ def _extract_codex_jsonl_message(response: str) -> tuple[bool, Optional[str], Op
     return True, messages[-1], None
 
 
+def _extract_claude_jsonl_result(response: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Extract Claude CLI's final result from a ``stream-json`` event stream.
+
+    Claude streams one JSON object per line, beginning with ``system/init`` and
+    ending with a ``result`` event.  Once that envelope is detected, every line
+    and the terminal result are validated so truncated or failed streams cannot
+    accidentally authorize a merge.
+    """
+    lines = [line for line in response.splitlines() if line.strip()]
+    if not lines:
+        return False, None, None
+
+    try:
+        first_event = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return False, None, None
+
+    if not isinstance(first_event, dict) or first_event.get("type") != "system" or first_event.get("subtype") != "init":
+        return False, None, None
+
+    terminal_results: List[tuple[int, Dict[str, Any]]] = []
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            return True, None, f"non-JSON content in Claude event stream at line {line_number}: {exc.msg}"
+        if not isinstance(event, dict):
+            return True, None, f"Claude event at line {line_number} is not an object"
+        if event.get("type") == "result":
+            terminal_results.append((line_number, event))
+
+    if not terminal_results:
+        return True, None, "Claude event stream contained no terminal result"
+    if len(terminal_results) != 1:
+        return True, None, f"Claude event stream contained {len(terminal_results)} terminal results"
+
+    line_number, terminal = terminal_results[0]
+    if terminal.get("subtype") != "success" or terminal.get("is_error") is True:
+        subtype = terminal.get("subtype", "unknown")
+        return True, None, f"Claude emitted failed terminal result {subtype} at line {line_number}"
+    result = terminal.get("result")
+    if not isinstance(result, str) or not result.strip():
+        return True, None, f"Claude terminal result at line {line_number} contained no response text"
+    return True, result, None
+
+
 def _parse_error(response: str, category: str, summary: str, reason: str) -> AdversarialValidationResult:
     """Create and diagnose a fail-closed adversarial parse result."""
     response_length = len(response)
@@ -1232,6 +1283,17 @@ def _stable_test_oracle_gap_id(requirement_id: str, authoritative_boundary: str,
     return f"TOG-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]}"
 
 
+def _populate_test_oracle_gap_requirement_text(
+    gaps: List[TestOracleGap],
+    requirements: List[IssueRequirement],
+) -> None:
+    """Attach authoritative manifest text to gaps with known stable IDs."""
+    requirement_text_by_id = {requirement.requirement_id: requirement.text for requirement in requirements}
+    for gap in gaps:
+        if gap.requirement_id in requirement_text_by_id:
+            gap.requirement_text = requirement_text_by_id[gap.requirement_id]
+
+
 def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[List[TestOracleGap], Optional[AdversarialValidationResult]]:
     """Parse and consolidate the distinct material test-oracle-gap schema."""
     if not isinstance(raw_value, list):
@@ -1241,7 +1303,6 @@ def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[Lis
     seen_ids: set[str] = set()
     required_fields = (
         "requirement_id",
-        "requirement_text",
         "authoritative_boundary",
         "invariant",
         "plausible_incorrect_implementation",
@@ -1329,6 +1390,15 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
             f"Invalid Codex validator event stream: {jsonl_error}",
             jsonl_error,
         )
+    if not jsonl_detected:
+        jsonl_detected, extracted_message, jsonl_error = _extract_claude_jsonl_result(raw_response)
+        if jsonl_detected and jsonl_error:
+            return _parse_error(
+                raw_response,
+                "cli_event_stream_error",
+                f"Invalid Claude validator event stream: {jsonl_error}",
+                jsonl_error,
+            )
     effective_response = extracted_message if jsonl_detected and extracted_message is not None else raw_response
     cleaned_response = effective_response.strip()
 
@@ -1904,8 +1974,6 @@ def _apply_coverage_and_verdict_precedence(
     gap_requirement_ids = {gap.requirement_id for gap in result.test_oracle_gaps}
     unknown_gap_requirement_ids = sorted(gap_requirement_ids - expected_requirement_ids)
     invalid_gap_anchors = sorted({gap.anchor_path for gap in result.open_test_oracle_gaps if gap.anchor_path not in context.all_changed_files})
-    requirement_text_by_id = {requirement.requirement_id: requirement.text for requirement in context.issue_requirements}
-    mismatched_gap_requirement_text_ids = sorted({gap.requirement_id for gap in result.test_oracle_gaps if gap.requirement_id in requirement_text_by_id and gap.requirement_text != requirement_text_by_id[gap.requirement_id]})
 
     if unknown_finding_requirement_ids:
         reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
@@ -1925,21 +1993,17 @@ def _apply_coverage_and_verdict_precedence(
         result.diagnostic_reason = reason
         return result
 
+    # The stable ID is the model's only requirement reference.  Once that ID
+    # has passed the fail-closed manifest check above, attach authoritative
+    # display text locally instead of trusting an echoed copy from the model.
+    _populate_test_oracle_gap_requirement_text(result.test_oracle_gaps, context.issue_requirements)
+
     if invalid_gap_anchors:
         reason = f"Open test-oracle gaps must anchor to changed files: {', '.join(invalid_gap_anchors)}"
         result.result = "ERROR"
         result.summary = "Invalid validator response: test-oracle gaps used invalid changed-file anchors"
         result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.anchor_path in context.all_changed_files]
         result.diagnostic_category = "invalid_test_oracle_gap_anchor"
-        result.diagnostic_reason = reason
-        return result
-
-    if mismatched_gap_requirement_text_ids:
-        reason = f"Test-oracle gaps did not reproduce the exact manifest text for: {', '.join(mismatched_gap_requirement_text_ids)}"
-        result.result = "ERROR"
-        result.summary = "Invalid validator response: test-oracle gaps did not map to exact Issue requirements"
-        result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.requirement_id in requirement_text_by_id and gap.requirement_text == requirement_text_by_id[gap.requirement_id]]
-        result.diagnostic_category = "test_oracle_gap_requirement_text_mismatch"
         result.diagnostic_reason = reason
         return result
 
@@ -2157,6 +2221,8 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
+    if stored_session is not None:
+        _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
     if lifecycle_session is not None:
         review_policy = render_prompt(

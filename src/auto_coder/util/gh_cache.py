@@ -508,10 +508,10 @@ class GitHubClient:
                 headers["Authorization"] = f"Bearer {self.token}"
 
             per_page = min(limit, 100) if limit else 100
-            url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=created&direction=asc&per_page={per_page}"
+            url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=created&direction=asc&per_page={per_page}"
 
             pr_list: List[Any] = []
-            visited_urls = set()
+            visited_urls: set[str] = set()
             while url:
                 if url in visited_urls or len(visited_urls) >= 1000:
                     raise RuntimeError("GitHub open-PR pagination did not terminate safely")
