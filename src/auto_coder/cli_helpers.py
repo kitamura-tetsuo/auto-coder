@@ -765,7 +765,7 @@ def create_high_score_backend_manager() -> Optional[BackendManager]:
     if not high_score_order and not high_score_config:
         return None
 
-    # If order is present, rank candidates by quota surplus
+    # Preserve configured priority while filtering ineligible candidates
     if high_score_order:
         from .quota_selector import rank_high_score_backends_by_quota
 
@@ -817,7 +817,7 @@ def create_high_score_cloud_backend_manager() -> Optional[BackendManager]:
     if not high_score_cloud_order and not high_score_cloud_config:
         return None
 
-    # If order is present, rank candidates by quota surplus
+    # Preserve configured priority while filtering ineligible candidates
     if high_score_cloud_order:
         from .quota_selector import rank_high_score_backends_by_quota
 
@@ -869,7 +869,7 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
     if not cloud_order and not cloud_config:
         return None
 
-    # If order is present, rank candidates by quota surplus
+    # Preserve configured priority while filtering ineligible candidates
     if cloud_order:
         from .quota_selector import rank_high_score_backends_by_quota
 

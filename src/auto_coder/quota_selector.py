@@ -6,7 +6,7 @@ the planned remaining quota at the current point in its quota cycle (quota surpl
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Sequence
+from typing import AbstractSet, Callable, List, Optional, Sequence, Union
 
 from dateutil import parser
 
@@ -15,6 +15,9 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 WEEK_SECONDS: float = 7.0 * 24.0 * 3600.0  # 604,800 seconds
+
+BackendPriorityGroup = AbstractSet[str]
+BackendPriorityCandidate = Union[str, BackendPriorityGroup]
 
 
 @dataclass
@@ -268,25 +271,28 @@ def evaluate_backend_quota(
 
 
 def rank_high_score_backends_by_quota(
-    candidate_backends: Sequence[str],
+    candidate_backends: Union[Sequence[BackendPriorityCandidate], BackendPriorityGroup],
     config: Optional[object] = None,
     now: Optional[datetime] = None,
     consumption_curve: Optional[Callable[[float, float], float]] = None,
     quota_period_seconds: float = WEEK_SECONDS,
 ) -> List[str]:
-    """Rank candidate high-score backends based on quota surplus.
+    """Filter and rank high-score backends without crossing priority boundaries.
 
     Evaluates each candidate's weekly quota surplus:
         planned_remaining_ratio = time_until_reset / quota_period
         quota_surplus = actual_remaining_ratio - planned_remaining_ratio
 
-    Candidates are filtered by eligibility and ranked in order:
+    A sequence is an ordered collection of priority positions and retains that
+    order. A set (either as the entire input or as an item in a sequence) denotes
+    an equal-priority group whose eligible members are ranked in order:
     1. Backends with measured quota metrics, ordered by quota_surplus descending.
     2. Healthy unmetered backends, retaining stable original order.
     3. Backends whose usage data could not be retrieved, retaining stable original order at lowered priority.
 
     Args:
-        candidate_backends: List of candidate backend names to rank.
+        candidate_backends: Ordered candidates and/or equal-priority sets. A
+            top-level set is one equal-priority group.
         config: Optional LLMBackendConfiguration instance.
         now: Optional current datetime.
         consumption_curve: Optional consumption curve function.
@@ -298,6 +304,19 @@ def rank_high_score_backends_by_quota(
     if not candidate_backends:
         return []
 
+    priority_groups: List[Union[Sequence[str], BackendPriorityGroup]]
+    if isinstance(candidate_backends, (set, frozenset)):
+        priority_groups = [candidate_backends]
+    else:
+        priority_groups = []
+        for candidate in candidate_backends:
+            if isinstance(candidate, (set, frozenset)):
+                priority_groups.append(candidate)
+            else:
+                assert isinstance(candidate, str)
+                priority_groups.append((candidate,))
+
+    backend_names = [backend_name for group in priority_groups for backend_name in group]
     evaluations = [
         evaluate_backend_quota(
             backend_name=b,
@@ -306,13 +325,13 @@ def rank_high_score_backends_by_quota(
             consumption_curve=consumption_curve,
             quota_period_seconds=quota_period_seconds,
         )
-        for b in candidate_backends
+        for b in backend_names
     ]
 
     eligible_evals = [e for e in evaluations if e.is_eligible]
     if not eligible_evals:
         logger.warning("No candidate high-score backends were eligible under quota checks; falling back to configured order")
-        return list(candidate_backends)
+        return backend_names
 
     # Sort key:
     # 1. Backends with quota_surplus (and not usage_retrieval_failed) come first (tier: 0),
@@ -326,7 +345,13 @@ def rank_high_score_backends_by_quota(
             return (0, -eval_item.quota_surplus)
         return (1, 0.0)
 
-    ranked_evals = sorted(eligible_evals, key=_sort_key)
+    evaluations_by_name = {evaluation.backend_name: evaluation for evaluation in eligible_evals}
+    ranked_evals = []
+    for group in priority_groups:
+        group_evaluations = [evaluations_by_name[name] for name in group if name in evaluations_by_name]
+        if isinstance(group, (set, frozenset)):
+            group_evaluations.sort(key=_sort_key)
+        ranked_evals.extend(group_evaluations)
     ranked_names = [e.backend_name for e in ranked_evals]
 
     log_summaries = []

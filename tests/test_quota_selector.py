@@ -7,6 +7,7 @@ import pytest
 
 from auto_coder.claude_usage_checker import ClaudeUsageQuota, ClaudeUsageWindow
 from auto_coder.cli_helpers import (
+    create_cloud_backend_manager,
     create_high_score_backend_manager,
     create_high_score_cloud_backend_manager,
 )
@@ -112,7 +113,7 @@ class TestQuotaSurplusSelection:
         with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage), patch("auto_coder.claude_usage_checker.check_claude_usage", return_value=claude_quota), patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"):
 
             ranked = rank_high_score_backends_by_quota(
-                ["claude-routine", "codex-cloud"],
+                {"claude-routine", "codex-cloud"},
                 config=config,
                 now=fixed_now,
             )
@@ -155,12 +156,12 @@ class TestQuotaSurplusSelection:
         with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage), patch("auto_coder.claude_usage_checker.check_claude_usage", return_value=claude_quota), patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"):
 
             ranked = rank_high_score_backends_by_quota(
-                ["codex-cloud", "claude-routine"],
+                {"codex-cloud", "claude-routine"},
                 config=config,
                 now=fixed_now,
             )
 
-            # Claude must be preferred first
+            # Claude must be preferred first within the equal-priority group.
             assert ranked == ["claude-routine", "codex-cloud"]
 
     def test_backend_ahead_and_behind_consumption_curve(self, fixed_now):
@@ -195,8 +196,40 @@ class TestQuotaSurplusSelection:
         with patch("auto_coder.quota_selector.evaluate_backend_quota") as mock_eval:
             mock_eval.side_effect = lambda backend_name, **kwargs: eval_a if backend_name == "backend_a" else eval_b
 
-            ranked = rank_high_score_backends_by_quota(["backend_b", "backend_a"], now=fixed_now)
+            ranked = rank_high_score_backends_by_quota({"backend_b", "backend_a"}, now=fixed_now)
             assert ranked == ["backend_a", "backend_b"]
+
+    def test_ordered_candidates_keep_priority_after_eligibility_filtering(self, fixed_now):
+        """Quota scores cannot reorder eligible members of an ordered list."""
+        evaluations = {
+            "backend-a": BackendQuotaEvaluation(backend_name="backend-a", is_eligible=False),
+            "backend-b": BackendQuotaEvaluation(backend_name="backend-b", quota_surplus=-0.9),
+            "backend-c": BackendQuotaEvaluation(backend_name="backend-c", quota_surplus=0.9),
+        }
+
+        with patch(
+            "auto_coder.quota_selector.evaluate_backend_quota",
+            side_effect=lambda backend_name, **kwargs: evaluations[backend_name],
+        ):
+            ranked = rank_high_score_backends_by_quota(["backend-a", "backend-b", "backend-c"], now=fixed_now)
+
+        assert ranked == ["backend-b", "backend-c"]
+
+    def test_quota_ranking_stays_inside_equal_priority_group(self, fixed_now):
+        """A later group cannot cross an earlier ordered priority boundary."""
+        evaluations = {
+            "backend-a": BackendQuotaEvaluation(backend_name="backend-a", quota_surplus=-0.8),
+            "backend-b": BackendQuotaEvaluation(backend_name="backend-b", quota_surplus=-0.4),
+            "backend-c": BackendQuotaEvaluation(backend_name="backend-c", quota_surplus=0.9),
+        }
+
+        with patch(
+            "auto_coder.quota_selector.evaluate_backend_quota",
+            side_effect=lambda backend_name, **kwargs: evaluations[backend_name],
+        ):
+            ranked = rank_high_score_backends_by_quota([{"backend-a", "backend-b"}, "backend-c"], now=fixed_now)
+
+        assert ranked == ["backend-b", "backend-a", "backend-c"]
 
     def test_ineligible_backend_is_filtered_out(self, fixed_now):
         """Test that ineligibility (quota limit reached, disabled, missing credentials) filters out candidates."""
@@ -277,15 +310,14 @@ class TestQuotaSurplusSelection:
             patch("auto_coder.claude_usage_checker.resolve_claude_oauth_token", return_value="test-token"),
         ):
             ranked = rank_high_score_backends_by_quota(
-                ["claude-routine", "codex-cloud"],
+                {"claude-routine", "codex-cloud"},
                 config=config,
                 now=fixed_now,
             )
-            # codex-cloud is preferred as primary, claude-routine is placed at the end due to unretrieved usage
             assert ranked == ["codex-cloud", "claude-routine"]
 
-    def test_unretrieved_claude_usage_lowers_priority_below_unmetered_backend(self, fixed_now):
-        """Test that a backend whose Claude usage data could not be retrieved has lower priority than healthy unmetered backends."""
+    def test_ordered_unretrieved_claude_stays_ahead_of_unmetered_backend(self, fixed_now):
+        """An ordered backend stays ahead even when its usage cannot be retrieved."""
         claude_unretrieved = ClaudeUsageQuota(
             is_quota_insufficient=True,
             reason="Claude usage data could not be retrieved",
@@ -307,11 +339,10 @@ class TestQuotaSurplusSelection:
                 config=config,
                 now=fixed_now,
             )
-            # antigravity (unmetered) is preferred first, claude-routine is lowered
-            assert ranked == ["antigravity", "claude-routine"]
+            assert ranked == ["claude-routine", "antigravity"]
 
-    def test_unretrieved_codex_cloud_usage_lowers_priority_below_unmetered_backend(self, fixed_now):
-        """Test that Codex Cloud when usage is unavailable has lower priority than unmetered backends."""
+    def test_ordered_unretrieved_codex_stays_ahead_of_unmetered_backend(self, fixed_now):
+        """Ordered Codex Cloud stays ahead when its usage is unavailable."""
         config = LLMBackendConfiguration(
             backends={
                 "codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud"),
@@ -325,10 +356,10 @@ class TestQuotaSurplusSelection:
                 config=config,
                 now=fixed_now,
             )
-            assert ranked == ["qwen", "codex-cloud"]
+            assert ranked == ["codex-cloud", "qwen"]
 
-    def test_multiple_unretrieved_backends_preserve_order_at_lowest_tier(self, fixed_now):
-        """Test multiple backends with unretrieved usage retain relative order at lowest priority tier."""
+    def test_ordered_usage_statuses_preserve_configured_order(self, fixed_now):
+        """Usage retrieval and metering status do not change ordered priorities."""
         claude_unretrieved = ClaudeUsageQuota(
             is_quota_insufficient=True,
             reason="Claude usage data could not be retrieved",
@@ -352,7 +383,7 @@ class TestQuotaSurplusSelection:
                 config=config,
                 now=fixed_now,
             )
-            assert ranked == ["qwen", "claude-routine", "codex-cloud"]
+            assert ranked == ["claude-routine", "codex-cloud", "qwen"]
 
     def test_custom_consumption_curve_isolation(self, fixed_now):
         """Test that a custom consumption curve can be supplied."""
@@ -373,43 +404,71 @@ class TestHighScoreBackendManagerIntegration:
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.build_backend_manager")
     @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
-    def test_create_high_score_backend_manager_ranks_by_quota(self, mock_rank, mock_build, mock_get_config):
-        """Test that create_high_score_backend_manager reorders candidates based on quota surplus."""
+    def test_create_high_score_backend_manager_preserves_order(self, mock_rank, mock_build, mock_get_config):
+        """An ordered high-score configuration keeps its declared priority."""
         mock_config = MagicMock(spec=LLMBackendConfiguration)
         mock_config.backend_with_high_score_order = ["backend-b", "backend-a"]
         mock_config.get_backend_with_high_score.return_value = None
         mock_config.get_model_for_backend.side_effect = lambda x: f"model-{x}"
         mock_get_config.return_value = mock_config
 
-        # Quota selector ranks backend-a ahead of backend-b
-        mock_rank.return_value = ["backend-a", "backend-b"]
+        mock_rank.return_value = ["backend-b", "backend-a"]
 
         create_high_score_backend_manager()
 
         mock_rank.assert_called_once_with(["backend-b", "backend-a"], mock_config)
         mock_build.assert_called_once()
         call_args = mock_build.call_args[1]
-        assert call_args["selected_backends"] == ["backend-a", "backend-b"]
-        assert call_args["primary_backend"] == "backend-a"
+        assert call_args["selected_backends"] == ["backend-b", "backend-a"]
+        assert call_args["primary_backend"] == "backend-b"
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.build_backend_manager")
     @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
-    def test_create_high_score_cloud_backend_manager_ranks_by_quota(self, mock_rank, mock_build, mock_get_config):
-        """Test that create_high_score_cloud_backend_manager reorders candidates based on quota surplus."""
+    def test_create_high_score_cloud_backend_manager_preserves_order(self, mock_rank, mock_build, mock_get_config):
+        """An ordered high-score cloud configuration keeps its declared priority."""
         mock_config = MagicMock(spec=LLMBackendConfiguration)
         mock_config.backend_with_high_score_cloud_order = ["claude-opus", "codex-cloud"]
         mock_config.get_backend_with_high_score_cloud.return_value = None
         mock_config.get_model_for_backend.side_effect = lambda x: f"model-{x}"
         mock_get_config.return_value = mock_config
 
-        # Quota selector ranks codex-cloud first
-        mock_rank.return_value = ["codex-cloud", "claude-opus"]
+        mock_rank.return_value = ["claude-opus", "codex-cloud"]
 
         create_high_score_cloud_backend_manager()
 
         mock_rank.assert_called_once_with(["claude-opus", "codex-cloud"], mock_config)
         mock_build.assert_called_once()
         call_args = mock_build.call_args[1]
-        assert call_args["selected_backends"] == ["codex-cloud", "claude-opus"]
-        assert call_args["primary_backend"] == "codex-cloud"
+        assert call_args["selected_backends"] == ["claude-opus", "codex-cloud"]
+        assert call_args["primary_backend"] == "claude-opus"
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    @patch("auto_coder.quota_selector.evaluate_backend_quota")
+    def test_cloud_order_regression_keeps_first_backend_primary(self, mock_evaluate, mock_build, mock_get_config):
+        """backend_cloud.order wins even when its second item has more quota."""
+        mock_config = MagicMock(spec=LLMBackendConfiguration)
+        mock_config.backend_cloud_order = ["codex-cloud-spark", "codex-cloud-luna", "jules"]
+        mock_config.get_backend_cloud.return_value = None
+        mock_config.get_model_for_backend.side_effect = lambda name: f"model-{name}"
+        mock_get_config.return_value = mock_config
+        surpluses = {
+            "codex-cloud-spark": -0.8,
+            "codex-cloud-luna": 0.8,
+            "jules": None,
+        }
+        mock_evaluate.side_effect = lambda backend_name, **kwargs: BackendQuotaEvaluation(
+            backend_name=backend_name,
+            quota_surplus=surpluses[backend_name],
+        )
+
+        create_cloud_backend_manager()
+
+        call_args = mock_build.call_args.kwargs
+        assert call_args["selected_backends"] == [
+            "codex-cloud-spark",
+            "codex-cloud-luna",
+            "jules",
+        ]
+        assert call_args["primary_backend"] == "codex-cloud-spark"
