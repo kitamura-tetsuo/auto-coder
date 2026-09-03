@@ -112,7 +112,7 @@ class TestCodexCloudClient:
         """A successful CLI exit must not make placeholder output authoritative."""
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
             client = CodexCloudClient("codex-cloud")
-            result = MagicMock(returncode=0, stdout='{"task_id": "task_id"}', stderr="")
+            result = MagicMock(returncode=0, stdout='{"task_id": "task_fake"}', stderr="")
             with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
                 with pytest.raises(RuntimeError, match="did not return a task ID"):
                     client.start_task("Implement the issue")
@@ -122,8 +122,8 @@ class TestCodexCloudClient:
             client = CodexCloudClient("codex-cloud")
             client.wham_client = MagicMock()
 
-            assert client.continue_if_paused("task_id") is False
-            assert client.send_followup("task_id", "Fix the PR") is False
+            assert client.continue_if_paused("task_fake") is False
+            assert client.send_followup("task_fake", "Fix the PR") is False
 
         client.wham_client.resolve_latest_assistant_turn.assert_not_called()
 

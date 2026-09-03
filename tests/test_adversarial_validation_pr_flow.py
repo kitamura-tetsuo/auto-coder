@@ -410,7 +410,7 @@ class TestAdversarialValidationCodexFeedback:
         pr_data = {
             "number": 1670,
             "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_real123",
-            "_codex_task_id": "task_id",
+            "_codex_task_id": "task_fake",
             "head": {"ref": "codex/issue-99", "sha": "head123"},
             "base": {"ref": "main"},
         }
@@ -422,7 +422,7 @@ class TestAdversarialValidationCodexFeedback:
             actions = _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, github_client, [finding])
 
         assert cloud_client.continue_if_paused.call_args.args == ("task_e_real123",)
-        assert all("task_id" not in action for action in actions)
+        assert all("task_fake" not in action for action in actions)
 
     def test_successful_adversarial_delivery_deduplicates_review_thread_path(self, tmp_path):
         client = MagicMock()

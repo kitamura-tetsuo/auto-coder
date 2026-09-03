@@ -23,7 +23,7 @@ from auto_coder.util.github_action import GitHubActionsStatusResult
 def _pr_data(head_sha: str = "head-1") -> dict:
     return {
         "number": 5262,
-        "body": "Fixes #42\n\nhttps://chatgpt.com/codex/tasks/task_review_5262",
+        "body": "Fixes #42\n\nhttps://chatgpt.com/codex/tasks/task_e_review5262",
         "head": {"ref": "codex/review-5262", "sha": head_sha},
         "base": {"ref": "main", "sha": "base-1"},
         "labels": [],
@@ -64,11 +64,11 @@ def test_review_repair_uses_existing_task_and_deduplicates_unchanged_state(tmp_p
             unresolved_threads=(_thread(),),
         )
 
-    assert first == ["Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262"]
+    assert first == ["Requested Codex Cloud task 'task_e_review5262' to address unresolved review threads for PR #5262"]
     assert second == ["Codex Cloud review repair was already requested for PR #5262 for all current actionable feedback"]
     send_followup.assert_called_once()
     task_id, prompt = send_followup.call_args.args
-    assert task_id == "task_review_5262"
+    assert task_id == "task_e_review5262"
     assert "existing pull request #5262" in prompt
     assert "codex/review-5262" in prompt
     assert "Do not create a new pull request." in prompt
@@ -182,7 +182,7 @@ def test_failed_review_feedback_delivery_remains_retryable(tmp_path) -> None:
 def test_implementer_cannot_forge_a_cloud_delivery_receipt(tmp_path) -> None:
     state_path = tmp_path / "review-repairs.json"
     thread = _thread()
-    prefix = "owner/repo#5262:task_review_5262:"
+    prefix = "owner/repo#5262:task_e_review5262:"
     identity = _review_feedback_identity(prefix, thread, 0)
     client = MagicMock()
     client.get_authenticated_user_login.return_value = "auto-coder-bot"
@@ -200,7 +200,7 @@ def test_implementer_cannot_forge_a_cloud_delivery_receipt(tmp_path) -> None:
         actions = _delegate_codex_cloud_review_thread_repair("owner/repo", _pr_data(), github_client=client, unresolved_threads=(thread,))
 
     send_followup.assert_called_once()
-    assert actions == ["Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262"]
+    assert actions == ["Requested Codex Cloud task 'task_e_review5262' to address unresolved review threads for PR #5262"]
 
 
 def test_non_codex_pr_preserves_generic_review_gate() -> None:
@@ -287,7 +287,7 @@ def test_passing_codex_pr_delegates_blocking_review_threads(
         blocking_unresolved=(thread,),
         has_blocking_unresolved=True,
     )
-    delegate_review_repair.return_value = ["Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262"]
+    delegate_review_repair.return_value = ["Requested Codex Cloud task 'task_e_review5262' to address unresolved review threads for PR #5262"]
     config = AutomationConfig()
     config.AUTO_MERGE = True
     client = MagicMock()
@@ -297,7 +297,7 @@ def test_passing_codex_pr_delegates_blocking_review_threads(
     assert actions == [
         "All GitHub Actions checks passed for PR #5262",
         "Skipping merge for PR #5262 due to unresolved review threads",
-        "Requested Codex Cloud task 'task_review_5262' to address unresolved review threads for PR #5262",
+        "Requested Codex Cloud task 'task_e_review5262' to address unresolved review threads for PR #5262",
     ]
     delegate_review_repair.assert_called_once_with(
         "owner/repo",

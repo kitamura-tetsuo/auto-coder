@@ -96,7 +96,7 @@ class TestCodexCloudPRCIFlow:
         repo = "owner/repo"
         cloud_csv = tmp_path / "cloud.csv"
         cloud_manager = CloudManager(repo, cloud_file_path=cloud_csv)
-        cloud_manager.add_session(50, "task_e_cloudmgr_999")
+        cloud_manager.add_session(50, "task_e_cloudmgr999")
 
         pr_data = {
             "number": 102,
@@ -116,16 +116,16 @@ class TestCodexCloudPRCIFlow:
                 config=config,
             )
 
-            mock_cont.assert_called_once_with("task_e_cloudmgr_999")
+            mock_cont.assert_called_once_with("task_e_cloudmgr999")
             assert result.delivered is True
-            assert any("Sent continuation request to Codex Cloud task 'task_e_cloudmgr_999'" in a for a in result.actions)
+            assert any("Sent continuation request to Codex Cloud task 'task_e_cloudmgr999'" in a for a in result.actions)
 
     def test_send_codex_cloud_error_feedback_when_task_cannot_be_resumed(self, config):
         """Test handling when continue_if_paused returns False."""
         pr_data = {
             "number": 103,
             "title": "Feature branch",
-            "body": "https://chatgpt.com/codex/tasks/task_e_non_resumable",
+            "body": "https://chatgpt.com/codex/tasks/task_e_nonresumable",
             "user": {"login": "octocat"},
         }
 
@@ -137,7 +137,7 @@ class TestCodexCloudPRCIFlow:
                 config=config,
             )
 
-            mock_cont.assert_called_once_with("task_e_non_resumable")
+            mock_cont.assert_called_once_with("task_e_nonresumable")
             assert result.delivered is False
             assert result.retryable is True
             assert any("could not be resumed" in a for a in result.actions)
@@ -148,7 +148,7 @@ class TestCodexCloudPRCIFlow:
             "number": 1670,
             "title": "Codex Cloud PR",
             "body": "https://chatgpt.com/codex/tasks/task_e_real123",
-            "_codex_task_id": "task_id",
+            "_codex_task_id": "task_fake",
             "user": {"login": "codex"},
         }
 
@@ -162,7 +162,7 @@ class TestCodexCloudPRCIFlow:
 
         mock_cont.assert_called_once_with("task_e_real123")
         assert result.delivered is True
-        assert all("task_id" not in action for action in result.actions)
+        assert all("task_fake" not in action for action in result.actions)
 
     def test_send_codex_cloud_error_feedback_missing_task_id(self, config):
         """Test safe failure when no task ID can be found."""
