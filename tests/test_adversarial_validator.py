@@ -106,6 +106,38 @@ def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
     assert result.diagnostic_category == "schema_error"
 
 
+def test_inconclusive_without_recovery_or_irreducible_gap_is_rejected() -> None:
+    context = AdversarialValidationContext(
+        all_changed_files=["src/state.py"],
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-013", text="Recover decision-critical evidence")],
+    )
+    parsed = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "INCONCLUSIVE",
+                "summary": "The material file is unavailable",
+                "requirement_coverage": [
+                    {
+                        "requirement_id": "REQ-013",
+                        "status": "UNVERIFIED",
+                        "evidence": "The supplied manifest omitted src/state.py",
+                    }
+                ],
+                "findings": [],
+                "evidence_recovery": [],
+                "decision_critical_evidence_gaps": [],
+            }
+        )
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(parsed, context)
+
+    assert checked.result == "ERROR"
+    assert checked.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+    assert checked.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
+
+
 @pytest.mark.parametrize("anchor_line", ["abc", "0", "-1", 0, -1, 1.5, True])
 def test_invalid_review_anchor_returns_structured_schema_error(anchor_line: object) -> None:
     response = json.dumps(
@@ -2026,7 +2058,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_finding_wins_while_incomplete_coverage_remains_diagnostic(self, mock_run_prompt, mock_build_ctx):
+    def test_unverified_suspicion_without_recovery_contract_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -2058,9 +2090,10 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
+        assert result.result == "ERROR"
         assert not result.needs_fix
         assert result.findings == []
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

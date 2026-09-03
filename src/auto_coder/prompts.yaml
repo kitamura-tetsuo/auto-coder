@@ -832,7 +832,7 @@ pr:
     1. Does the dynamic execution resolve or reject your suspected counterexample?
     2. If the dynamic test ran and proved the implementation behaves correctly per the specification, return `result: "PASS"`.
     3. If the dynamic test failed or revealed a defect, return `result: "NEEDS_FIX"` with the concrete counterexample.
-    4. If the test ran but did NOT test the suspected scenario, explain why and return `result: "INCONCLUSIVE"` or `result: "NEEDS_FIX"` if a concrete defect remains proven.
+    4. If the test ran but did NOT test the suspected scenario, record that focused execution as an UNAVAILABLE evidence-recovery attempt, identify the smallest requirement-scoped evidence gap, and return `result: "INCONCLUSIVE"`; return `result: "NEEDS_FIX"` instead if a concrete defect remains proven.
     5. For each thread listed in Claimed-Addressed Review Threads, independently re-determine ADDRESSED / STILL_VALID / INCONCLUSIVE grounded in this dynamic-check result and the current implementation — never merely repeat your initial disposition. If the dynamic evidence disproves an initial ADDRESSED, return STILL_VALID; if it proves an initial INCONCLUSIVE, return ADDRESSED or STILL_VALID as the evidence now shows.
 
     OUTPUT FORMAT:
@@ -846,6 +846,22 @@ pr:
           "requirement_id": "<exact stable ID from the requirement manifest>",
           "status": "VERIFIED" | "VIOLATED" | "IRRELEVANT" | "UNVERIFIED",
           "evidence": "<specific dynamic-check or oracle evidence>"
+        }
+      ],
+      "evidence_recovery": [
+        {
+          "path": "<focused check target or other initially missing artifact>",
+          "source": "focused execution | repository inspection | current-PR retrieval | tests",
+          "status": "RECOVERED" | "UNAVAILABLE" | "IRRELEVANT",
+          "evidence": "<specific result of the recovery attempt>",
+          "requirement_ids": ["<only exact IDs materially depending on this evidence>"]
+        }
+      ],
+      "decision_critical_evidence_gaps": [
+        {
+          "requirement_id": "<exact undecidable requirement ID; required for INCONCLUSIVE>",
+          "evidence_needed": "<smallest concrete evidence still needed>",
+          "recovery_attempts": ["<the focused execution and any other supported attempts>"]
         }
       ],
       "findings": [
