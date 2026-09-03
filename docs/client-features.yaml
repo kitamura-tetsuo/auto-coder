@@ -589,13 +589,14 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
       - "The attempt counter of the issue is incremented, so the fallback starts from a fresh attempt branch instead of the one the Jules run left behind."
       - "The @auto-coder label the Jules run left on the issue is kept in place so no other instance picks the issue up while the fallback works on it; the fallback run passes check_labels=False so the label gate does not skip the issue it already owns."
       - "Stopped sessions are recorded in .auto-coder/jules_session_state.json so they are neither resumed nor handed over twice."
-      - "The check runs once per producer/run loop iteration, right after the Jules session resume/archive pass."
+      - "The check runs during the hourly Jules full-session-list maintenance cycle, right after the Jules session resume/archive pass."
     session_listing_cache:
       - "Listing Jules sessions walks the whole paginated /sessions collection, which takes minutes once a repository accumulates thousands of sessions."
       - "The raw (unfiltered) listing is cached process-wide in jules_client, so every list_sessions call shares a single HTTP fetch regardless of the JulesClient instance or the repo_name filter used."
       - "Repository and ARCHIVED filtering still happens client-side on each call, so callers keep receiving their own filtered view."
-      - "The producer/run loop calls invalidate_jules_sessions_cache() once per iteration, immediately before the Jules resume/archive, stale-issue, and recurrent-task passes: exactly one listing request per loop iteration."
-      - "A failed listing is never cached, so the next call retries the fetch."
+      - "Each process waits approximately one hour after startup before its first full listing opportunity. The producer/run loop then starts a list-dependent Jules maintenance cycle at most once per hour, invalidating the cache immediately before the resume/archive, stale-issue, and recurrent-task passes."
+      - "The hourly deadline advances before the listing is attempted, so a failed listing is not retried by a subsequent loop until approximately another hour has elapsed. Non-eligible loops skip all list-dependent maintenance rather than treating the cached snapshot as fresh."
+      - "Direct operations on a known Jules session ID remain independent of the full-list maintenance schedule. The schedule is process-local and resets on restart."
     label_locking:
       - "Jules mode keeps the @auto-coder label on an issue for the lifetime of its session, so an aborted session would otherwise lock the issue permanently."
       - "With check_labels=False (--only and WIP-branch resume) an existing @auto-coder label no longer blocks processing; the label is left in place because the run does not own it."

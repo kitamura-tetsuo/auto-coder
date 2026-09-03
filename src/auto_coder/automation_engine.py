@@ -5,6 +5,7 @@ Main automation engine for Auto-Coder.
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -40,6 +41,8 @@ from .utils import CommandExecutor, get_target_container, log_action
 
 logger = get_logger(__name__)
 
+JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
+
 
 class AutomationEngine:
     """Main automation engine that orchestrates GitHub and LLM integration."""
@@ -61,9 +64,22 @@ class AutomationEngine:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pr_merged_or_closed: bool = False
         self.implementation_slots: Optional[ImplementationSlotRepository] = None
+        # Full Jules discovery is deliberately delayed after startup.  Claiming
+        # a cycle advances this deadline before any HTTP work begins, so a
+        # failed listing cannot cause a hot retry on the next loop iteration.
+        self._next_jules_session_list_refresh = time.monotonic() + JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
+
+    def _claim_jules_session_list_refresh(self) -> bool:
+        """Claim the hourly full-list maintenance cycle when it is due."""
+        now = time.monotonic()
+        if now < self._next_jules_session_list_refresh:
+            return False
+
+        self._next_jules_session_list_refresh = now + JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS
+        return True
 
     def notify_pr_merged_or_closed(self) -> None:
         """Signal that a PR was merged or closed, interrupting any active wait in the producer loop."""
@@ -210,8 +226,8 @@ class AutomationEngine:
                 # Check updates
                 await asyncio.to_thread(check_for_updates_and_restart)
 
-                if not skip_jules_sessions:
-                    # Fetch the Jules session listing at most once per loop iteration
+                if not skip_jules_sessions and self._claim_jules_session_list_refresh():
+                    # All list-dependent maintenance shares this cycle's fresh listing.
                     invalidate_jules_sessions_cache()
 
                     # Resume sessions
@@ -223,7 +239,7 @@ class AutomationEngine:
 
                     # Check and start recurrent Jules tasks
                     await self.check_and_start_recurrent_jules_tasks_async(repo_name)
-                else:
+                elif skip_jules_sessions:
                     logger.info("Resumed loop early after PR merge/close; skipping Jules session enumeration")
                     skip_jules_sessions = False
 
@@ -1433,20 +1449,21 @@ class AutomationEngine:
                 # Check for updates and restart if necessary
                 check_for_updates_and_restart()
 
-                # Fetch the Jules session listing at most once per loop iteration
-                invalidate_jules_sessions_cache()
+                if self._claim_jules_session_list_refresh():
+                    # All list-dependent maintenance shares this cycle's fresh listing.
+                    invalidate_jules_sessions_cache()
 
-                # Check and resume failed Jules sessions
-                check_and_resume_or_archive_sessions()
+                    # Check and resume failed Jules sessions
+                    check_and_resume_or_archive_sessions()
 
-                # Take issues away from Jules sessions that timed out without creating a PR
-                self.handle_stale_jules_issue_sessions(repo_name)
+                    # Take issues away from Jules sessions that timed out without creating a PR
+                    self.handle_stale_jules_issue_sessions(repo_name)
 
-                # Check and start recurrent Jules tasks
-                check_and_start_recurrent_jules_tasks(
-                    repo_name,
-                    self._get_implementation_slots(repo_name),
-                )
+                    # Check and start recurrent Jules tasks
+                    check_and_start_recurrent_jules_tasks(
+                        repo_name,
+                        self._get_implementation_slots(repo_name),
+                    )
 
                 # Pull latest changes for monitored repository
                 try:

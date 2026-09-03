@@ -203,18 +203,15 @@ class TestAutomationEngine:
             # Execute
             result = engine.run(test_repo_name)
 
-            # The synchronous loop must enforce the same instance-wide
-            # implementation limit as the asynchronous producer loop.
-            mock_check_recurrent.assert_called_once_with(
-                test_repo_name,
-                engine._get_implementation_slots(test_repo_name),
-            )
+            # Startup defers all full-list-dependent Jules maintenance.
+            mock_check_recurrent.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_producer_loop_calls_recurrent_jules_tasks(self, mock_github_client):
         """Test that _producer_loop calls check_and_start_recurrent_jules_tasks_async."""
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
+        engine._next_jules_session_list_refresh = 0.0
 
         # Mock dependencies in loop
         with (
