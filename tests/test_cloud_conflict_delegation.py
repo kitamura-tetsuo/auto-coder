@@ -57,6 +57,27 @@ def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:
     assert "Do not replace or close the existing pull request." in message
 
 
+def test_delegation_rejects_invalid_metadata_and_uses_provider_task_from_pr_body(tmp_path) -> None:
+    """Exercise conflict delegation through its real task-resolution boundary."""
+    client = FollowupClient()
+    state_path = tmp_path / "repairs.json"
+    pull_request = pr_data()
+    pull_request["_codex_task_id"] = "task_fake"
+    pull_request["body"] = "Closes #1589\n\nhttps://chatgpt.com/codex/tasks/task_e_real123"
+
+    with (
+        patch("src.auto_coder.codex_cloud_client.CodexCloudClient", return_value=client),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+    ):
+        assert _delegate_cloud_merge_conflict_repair("owner/repo", pull_request) is True
+
+    assert len(client.messages) == 1
+    task_id, message = client.messages[0]
+    assert task_id == "task_e_real123"
+    assert "task_fake" not in message
+    assert state_path.exists()
+
+
 def test_unchanged_state_is_deduplicated_but_changed_states_can_delegate(tmp_path) -> None:
     client = FollowupClient()
     state_path = tmp_path / "repairs.json"
