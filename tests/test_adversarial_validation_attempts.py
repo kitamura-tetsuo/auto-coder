@@ -47,3 +47,14 @@ def test_publication_cannot_cross_a_final_merge_transition(tmp_path):
         publication_future.result(timeout=2)
 
     assert publication_entered.is_set()
+
+
+def test_newer_in_progress_attempt_does_not_supersede_completed_attempt(tmp_path):
+    repository = AdversarialValidationAttemptRepository("owner/repo", tmp_path / "attempts.json")
+    older = repository.start(100, "head-a")
+    newer = repository.start(100, "head-a")
+
+    repository.finish(older.attempt_id, "PASS")
+
+    assert newer.sequence > older.sequence
+    assert repository.latest_completed_sequence(100, "head-a") == older.sequence

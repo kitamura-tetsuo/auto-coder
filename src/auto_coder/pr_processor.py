@@ -2457,7 +2457,7 @@ def _handle_pr_merge(
                         val_result.provenance_thread_comment_ids = {thread.thread_id: thread.root_comment_database_id for thread in claimed_review_threads if thread.is_change_provenance and thread.root_comment_database_id is not None}
 
                         with attempt_repository.serialized_transition():
-                            attempt_is_superseded = attempt_repository.latest_started_sequence(pr_number, head_sha) > attempt.sequence
+                            attempt_is_superseded = attempt_repository.latest_completed_sequence(pr_number, head_sha) > attempt.sequence
                             if attempt_is_superseded:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 return actions

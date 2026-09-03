@@ -114,13 +114,13 @@ class AdversarialValidationAttemptRepository:
             default=0,
         )
 
-    def latest_started_sequence(self, pr_number: int, head_sha: str) -> int:
-        """Return the newest start order, including an in-progress attempt."""
+    def latest_completed_sequence(self, pr_number: int, head_sha: str) -> int:
+        """Return the newest start-ordered attempt with a terminal result."""
         with self._locked():
             attempts = self._read()["attempts"]
         assert isinstance(attempts, list)
         return max(
-            (int(item["sequence"]) for item in attempts if isinstance(item, dict) and item.get("pr_number") == pr_number and item.get("head_sha") == head_sha),
+            (int(item["sequence"]) for item in attempts if isinstance(item, dict) and item.get("pr_number") == pr_number and item.get("head_sha") == head_sha and isinstance(item.get("status"), str) and item.get("status") != "IN_PROGRESS"),
             default=0,
         )
 
