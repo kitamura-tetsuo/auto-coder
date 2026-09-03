@@ -28,6 +28,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
+from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .adversarial_validator import (
     AdversarialValidationResult,
     adversarial_validation_codex_feedback_marker,
@@ -483,6 +484,8 @@ def process_pull_request(
     config: AutomationConfig,
     repo_name: str,
     pr_data: Dict[str, Any],
+    *,
+    force_adversarial_validation: bool = False,
 ) -> ProcessedPRResult:
     """Process a single pull request with priority order."""
     try:
@@ -604,7 +607,13 @@ def process_pull_request(
                 processed_pr.priority = "fix"
 
                 # Process using _take_pr_actions
-                processed_pr_result = _process_pr_for_fixes(github_client, repo_name, pr_data, config)
+                processed_pr_result = _process_pr_for_fixes(
+                    github_client,
+                    repo_name,
+                    pr_data,
+                    config,
+                    force_adversarial_validation=force_adversarial_validation,
+                )
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
@@ -1467,6 +1476,8 @@ def _process_pr_for_fixes(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
+    *,
+    force_adversarial_validation: bool = False,
 ) -> ProcessedPRResult:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr = ProcessedPRResult(
@@ -1486,7 +1497,14 @@ def _process_pr_for_fixes(
         with ProgressStage("Fixing issues"):
             try:
                 processing_status = ProcessedPRResult(pr_data=pr_data)
-                actions = _take_pr_actions(github_client, repo_name, pr_data, config, processing_status)
+                actions = _take_pr_actions(
+                    github_client,
+                    repo_name,
+                    pr_data,
+                    config,
+                    processing_status,
+                    force_adversarial_validation=force_adversarial_validation,
+                )
                 processed_pr.actions_taken = actions
                 processed_pr.error = processing_status.error
                 processed_pr.outcome = processing_status.outcome
@@ -1507,6 +1525,8 @@ def _take_pr_actions(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     processing_status: Optional[ProcessedPRResult] = None,
+    *,
+    force_adversarial_validation: bool = False,
 ) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
     actions = PRActionList()
@@ -1515,7 +1535,15 @@ def _take_pr_actions(
     try:
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processing_status)
+        merge_actions = _handle_pr_merge(
+            github_client,
+            repo_name,
+            pr_data,
+            config,
+            {},
+            processing_status,
+            force_adversarial_validation=force_adversarial_validation,
+        )
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
 
@@ -1871,13 +1899,25 @@ def _find_authoritative_adversarial_review(
         logger.error(f"Failed to read PR reviews for PR #{pr_number}: {e}")
         return None, str(e)
 
-    for review in reversed(reviews):
+    matching_bodies: List[str] = []
+    for review in reviews:
         login = _comment_value(_comment_value(review, "user") or {}, "login", "")
         body = _comment_value(review, "body", "")
         if login == identity.login and isinstance(body, str) and body.startswith(marker):
-            return body, None
+            matching_bodies.append(body)
+
+    if matching_bodies:
+        # Completion order is not authority order when forced attempts overlap.
+        # Attempt sequence is allocated at start, so a late V1 cannot replace V2.
+        return max(enumerate(matching_bodies), key=lambda item: (_adversarial_validation_attempt_sequence(item[1]), item[0]))[1], None
 
     return None, None
+
+
+def _adversarial_validation_attempt_sequence(body: str) -> int:
+    """Return start order from a verdict, treating historical verdicts as zero."""
+    match = re.search(r"<!-- auto-coder-adversarial-validation-attempt:v1:(\d+):[0-9a-f]+ -->", body)
+    return int(match.group(1)) if match else 0
 
 
 def _get_legacy_adversarial_validation_comment(
@@ -1899,11 +1939,12 @@ def _get_legacy_adversarial_validation_comment(
         logger.error(f"Failed to read legacy adversarial validation comments for PR #{pr_number}: {e}")
         return None, str(e)
 
+    matching_bodies: List[str] = []
     for comment in comments:
         body = _comment_value(comment, "body", "")
         if isinstance(body, str) and body.startswith(marker):
-            return body, None
-    return None, None
+            matching_bodies.append(body)
+    return (max(enumerate(matching_bodies), key=lambda item: (_adversarial_validation_attempt_sequence(item[1]), item[0]))[1], None) if matching_bodies else (None, None)
 
 
 def _parse_adversarial_validation_status(body: str) -> str:
@@ -2010,6 +2051,8 @@ def _handle_pr_merge(
     config: AutomationConfig,
     analysis: Dict[str, Any],
     processing_status: Optional[ProcessedPRResult] = None,
+    *,
+    force_adversarial_validation: bool = False,
 ) -> PRActionList:
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
@@ -2231,7 +2274,7 @@ def _handle_pr_merge(
                         return actions
 
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint:
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
                         current_head_sha = pr_data.get("head", {}).get("sha", "")
@@ -2255,7 +2298,9 @@ def _handle_pr_merge(
                             return actions
                         should_run_validation = False
                     else:
-                        if adv_review_count >= max_adv_reviews:
+                        if adv_review_count >= max_adv_reviews and force_adversarial_validation:
+                            actions.append(f"Forcing adversarial validation for PR #{pr_number} beyond the normal review limit")
+                        elif adv_review_count >= max_adv_reviews:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True
                 else:
@@ -2324,7 +2369,7 @@ def _handle_pr_merge(
                             return actions
                         has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report) or saved_pass_has_unresolved_provenance
 
-                    if published_status and not has_new_provenance_evidence:
+                    if published_status and not has_new_provenance_evidence and not force_adversarial_validation:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
                             saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
@@ -2358,12 +2403,19 @@ def _handle_pr_merge(
                                     )
                             return actions
                     else:
-                        if has_new_provenance_evidence:
+                        if force_adversarial_validation:
+                            actions.append(f"Forcing a new adversarial-validation attempt for PR #{pr_number} at unchanged commit {head_sha[:8]}")
+                        elif has_new_provenance_evidence:
                             if saved_pass_has_unresolved_provenance:
                                 actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} because a saved PASS still has an unresolved provenance thread")
                             else:
                                 actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} using new implementer provenance evidence")
+                        # From here onward only this attempt's validated result may
+                        # drive the decision; a saved same-head verdict is history.
+                        published_status = None
                         claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
+                        attempt_repository = AdversarialValidationAttemptRepository(repo_name)
+                        attempt = attempt_repository.start(pr_number, head_sha)
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
@@ -2386,6 +2438,10 @@ def _handle_pr_merge(
                                 diagnostic_category="validation_execution_error",
                                 diagnostic_reason=type(e).__name__,
                             )
+
+                        val_result.attempt_id = attempt.attempt_id
+                        val_result.attempt_sequence = attempt.sequence
+                        attempt_repository.finish(attempt.attempt_id, val_result.result.strip().upper() or "ERROR")
 
                         val_result.clarification_reply_fingerprint = provenance_fingerprint
                         if val_result.result.strip().upper() == "ERROR":
@@ -2461,6 +2517,10 @@ def _handle_pr_merge(
                             else:
                                 actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
 
+                        attempt_repository.mark_published(attempt.attempt_id)
+                        if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
+                            actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                            return actions
                     if published_status == "PASS":
                         pass
                     elif val_result.needs_fix:

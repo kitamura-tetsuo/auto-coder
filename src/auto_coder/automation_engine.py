@@ -1158,7 +1158,7 @@ class AutomationEngine:
             # Forced recovery intentionally does not take the per-owner mutation
             # lock; its separate durable execution identity protects sibling state.
             if explicit_only and force:
-                result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+                result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
             else:
                 with slots.serialize(owner):
                     result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
@@ -1174,6 +1174,7 @@ class AutomationEngine:
         candidate: Candidate,
         config: AutomationConfig,
         jules_mode: bool = False,
+        force_adversarial_validation: bool = False,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -1344,7 +1345,13 @@ class AutomationEngine:
                     result.success = True
                 elif item_type == "pr":
                     # PR processing
-                    pr_result = process_pull_request(self.github, config, repo_name, candidate.data)
+                    pr_result = process_pull_request(
+                        self.github,
+                        config,
+                        repo_name,
+                        candidate.data,
+                        force_adversarial_validation=force_adversarial_validation,
+                    )
                     result.actions = pr_result.actions_taken
                     # Check if there was an error during processing
                     if pr_result.error:
