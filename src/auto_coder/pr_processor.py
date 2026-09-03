@@ -2587,7 +2587,7 @@ def _handle_pr_merge(
 
             merge_transition = decision_attempt_repository.serialized_transition() if decision_attempt_repository is not None else contextlib.nullcontext()
             with merge_transition:
-                if decision_attempt_repository is not None and decision_attempt_repository.latest_published_sequence(pr_number, head_sha) > decision_attempt_sequence:
+                if decision_attempt_repository is not None and decision_attempt_repository.latest_completed_sequence(pr_number, head_sha) > decision_attempt_sequence:
                     actions.append("Skipping merge because a newer adversarial-validation attempt is applicable")
                     return actions
                 try:

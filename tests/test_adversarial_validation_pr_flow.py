@@ -750,10 +750,10 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Retried")
         attempt_repository = attempt_repository_type.return_value
         attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-v2", 2)
-        attempt_repository.latest_completed_sequence.return_value = 2
+        attempt_repository.latest_completed_sequence.side_effect = [2, 3]
         # V1 is authoritative immediately after publication. Before its final
-        # merge transition, a newer V2 blocking publication becomes applicable.
-        attempt_repository.latest_published_sequence.side_effect = [2, 3]
+        # merge transition, newer V2 completes but has not published yet.
+        attempt_repository.latest_published_sequence.return_value = 2
         head_sha = "abc123456789"
         prior_body = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Historical"), head_sha)
         client = MagicMock()
@@ -776,8 +776,8 @@ class TestAdversarialValidationPRFlow:
         mock_merge_pr.assert_not_called()
         assert any("newer adversarial-validation attempt is applicable" in action for action in actions)
 
-    @pytest.mark.parametrize("newer_completed", [True, False])
-    def test_thread_disposition_uses_latest_completed_attempt(self, dedicated_reviewer_publication, tmp_path, newer_completed):
+    @pytest.mark.parametrize("newer_state", ["PUBLISHED", "TERMINAL", "IN_PROGRESS"])
+    def test_thread_disposition_uses_latest_completed_attempt(self, dedicated_reviewer_publication, tmp_path, newer_state):
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
         from auto_coder.adversarial_validator import ReviewThreadDisposition
         from auto_coder.pr_processor import ClaimedReviewThreadGateState
@@ -810,8 +810,9 @@ class TestAdversarialValidationPRFlow:
             newer_attempt = attempt_repository.start(100, head_sha)
             newer_validation.attempt_id = newer_attempt.attempt_id
             newer_validation.attempt_sequence = newer_attempt.sequence
-            if newer_completed:
+            if newer_state != "IN_PROGRESS":
                 attempt_repository.finish(newer_attempt.attempt_id, newer_validation.result)
+            if newer_state == "PUBLISHED":
                 dedicated_reviewer_publication("owner/repo", 100, head_sha, newer_validation)
                 attempt_repository.mark_published(newer_attempt.attempt_id)
             return older_validation
@@ -829,9 +830,12 @@ class TestAdversarialValidationPRFlow:
         ):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
 
-        if newer_completed:
+        if newer_state != "IN_PROGRESS":
             resolve_threads.assert_not_called()
-            dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, head_sha, newer_validation)
+            if newer_state == "PUBLISHED":
+                dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, head_sha, newer_validation)
+            else:
+                dedicated_reviewer_publication.assert_not_called()
             merge_pr.assert_not_called()
             assert attempt_repository.latest_completed_sequence(100, head_sha) == newer_validation.attempt_sequence
             assert any("Ignored late adversarial-validation attempt" in action for action in actions)
