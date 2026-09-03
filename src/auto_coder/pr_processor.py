@@ -92,6 +92,7 @@ def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> N
 _active_monitors: set[int] = set()
 _active_monitors_lock = threading.Lock()
 _cloud_review_delivery_lock = threading.RLock()
+_cloud_conflict_delivery_lock = threading.RLock()
 
 CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
@@ -114,6 +115,17 @@ class CodexCloudFeedbackResult:
     delivered: bool = False
     retryable: bool = False
     actions: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CloudConflictDelegationResult:
+    """Outcome of routing a merge conflict to an existing cloud session."""
+
+    delegated: bool = False
+    reason: str = ""
+
+    def __bool__(self) -> bool:
+        return self.delegated
 
 
 @dataclass
@@ -3072,14 +3084,15 @@ def _update_with_base_branch(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
-            if _delegate_cloud_merge_conflict_repair(repo_name, pr_data):
+            cloud_delegation = _delegate_cloud_merge_conflict_repair(repo_name, pr_data)
+            if cloud_delegation:
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
             if not _is_local_llm_pr(pr_data):
-                actions.append(f"PR #{pr_number} has no usable cloud conflict-repair session and was not created by local LLM; deferring conflict resolution.")
+                actions.append(f"Cloud merge-conflict repair could not be delegated for PR #{pr_number}: " f"{cloud_delegation.reason}; deferring conflict resolution.")
                 cmd.run_command(["git", "merge", "--abort"])
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
@@ -4067,6 +4080,14 @@ def _cloud_conflict_state_path(repo_name: str) -> Path:
     return Path.home() / ".auto-coder" / repo_name / "cloud_conflict_repairs.json"
 
 
+def _record_cloud_conflict_deliveries(state_path: Path, delivered: dict[str, str]) -> None:
+    """Atomically persist conflict delivery reservations and receipts."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, state_path)
+
+
 def _cloud_review_repair_state_path(repo_name: str) -> Path:
     """Return the durable deduplication state path for Codex review work."""
     return Path.home() / ".auto-coder" / repo_name / "cloud_review_repairs.json"
@@ -4234,7 +4255,7 @@ def _delegate_cloud_merge_conflict_repair(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
-) -> bool:
+) -> CloudConflictDelegationResult:
     """Delegate a current conflict to its originating cloud session when possible.
 
     ``True`` means this conflict state was either just delegated or was already
@@ -4243,7 +4264,7 @@ def _delegate_cloud_merge_conflict_repair(
     """
     origin = _resolve_cloud_conflict_origin(repo_name, pr_data, github_client)
     if origin is None:
-        return False
+        return CloudConflictDelegationResult(reason="no originating cloud implementation session could be resolved")
     client, task_id = origin
 
     # An inherited default method means that the provider does not opt in to
@@ -4251,7 +4272,7 @@ def _delegate_cloud_merge_conflict_repair(
     from .cloud_task_client_base import CloudTaskClientBase
 
     if type(client).send_followup is CloudTaskClientBase.send_followup:
-        return False
+        return CloudConflictDelegationResult(reason=f"cloud provider for session '{task_id}' does not support repair follow-up")
 
     pr_number = pr_data.get("number")
     base = pr_data.get("base") or {}
@@ -4259,43 +4280,59 @@ def _delegate_cloud_merge_conflict_repair(
     target = resolve_existing_pr_repair_target(repo_name, pr_data)
     if not target or not base_state:
         logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate conflict repair")
-        return False
+        return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
     state_path = _cloud_conflict_state_path(repo_name)
-    delivered: dict[str, str] = {}
-    try:
-        if state_path.exists():
-            loaded = json.loads(state_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
+    with _cloud_conflict_delivery_lock:
+        delivered: dict[str, str] = {}
+        try:
+            if state_path.exists():
+                loaded = json.loads(state_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("delivery state is not a JSON object")
                 delivered = {str(key): str(value) for key, value in loaded.items()}
-    except (OSError, ValueError) as exc:
-        logger.warning(f"Could not read cloud conflict repair state: {exc}")
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Could not read cloud conflict repair state: {exc}")
+            return CloudConflictDelegationResult(reason=f"prior repair delivery state could not be read: {exc}")
 
-    if fingerprint in delivered:
-        logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
-        return True
+        if fingerprint in delivered:
+            logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
+            return CloudConflictDelegationResult(delegated=True, reason="an equivalent repair request was already delegated")
+
+        # Reserve the conflict identity before the non-idempotent follow-up call.
+        # This makes an accepted delivery durable even if a later filesystem
+        # operation or process shutdown occurs. If this write fails, do not send.
+        delivered[fingerprint] = task_id
+        try:
+            _record_cloud_conflict_deliveries(state_path, delivered)
+        except OSError as exc:
+            logger.warning(f"Could not reserve cloud conflict repair delivery: {exc}")
+            return CloudConflictDelegationResult(reason=f"a durable repair delivery receipt could not be reserved: {exc}")
 
     details = Template(get_prompt_template("pr.cloud_merge_conflict_repair_details")).safe_substitute(base_branch=target.base_branch)
     message = build_existing_pr_repair_prompt(target, details)
+    failure_reason: Optional[str] = None
     try:
         accepted = client.send_followup(task_id, message)
     except Exception as exc:
         logger.warning(f"Cloud conflict repair delegation failed for PR #{pr_number}: {exc}")
-        return False
+        accepted = False
+        failure_reason = f"delivery to originating cloud session '{task_id}' failed: {exc}"
     if not accepted:
-        return False
+        if failure_reason is None:
+            failure_reason = f"delivery to originating cloud session '{task_id}' was rejected"
+        with _cloud_conflict_delivery_lock:
+            delivered.pop(fingerprint, None)
+            try:
+                _record_cloud_conflict_deliveries(state_path, delivered)
+            except OSError as exc:
+                logger.warning(f"Could not clear rejected cloud conflict repair reservation: {exc}")
+                failure_reason += f"; its delivery reservation could not be cleared: {exc}"
+        return CloudConflictDelegationResult(reason=failure_reason)
 
-    delivered[fingerprint] = task_id
-    try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps(delivered, indent=2, sort_keys=True), encoding="utf-8")
-    except OSError as exc:
-        # Delivery succeeded, so local repair must still stop. A persistence
-        # failure can cause a later retry but must never create parallel repair.
-        logger.warning(f"Could not persist cloud conflict repair state: {exc}")
     logger.info(f"Delegated merge-conflict repair for PR #{pr_number} to existing cloud task {task_id}")
-    return True
+    return CloudConflictDelegationResult(delegated=True, reason=f"repair was delivered to cloud session '{task_id}'")
 
 
 def _send_codex_cloud_error_feedback(
