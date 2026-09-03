@@ -11,7 +11,9 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     ChangeProvenanceItem,
+    EvidenceRecoveryEntry,
     IssueRequirement,
+    RequirementCoverageEntry,
     ReviewThreadDisposition,
     _apply_coverage_and_verdict_precedence,
     build_adversarial_validation_context,
@@ -68,6 +70,116 @@ def test_review_anchor_accepts_integer_and_normalizes_decimal_string(anchor_line
     assert len(result.findings) == 1
     assert result.findings[0].anchor_line == 1817
     assert isinstance(result.findings[0].anchor_line, int)
+
+
+def test_recovered_changed_file_allows_independently_verified_pass() -> None:
+    context = AdversarialValidationContext(
+        all_changed_files=["src/state.py"],
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+    )
+    result = AdversarialValidationResult(
+        result="PASS",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="Current-head focused execution")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(
+                path="src/state.py",
+                source="current-PR retrieval",
+                status="RECOVERED",
+                evidence="Retrieved and inspected the complete current-head file",
+                requirement_ids=["REQ-001"],
+            )
+        ],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "PASS"
+
+
+def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
+    attempts = [{"path": f"src/{index}.py", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "not present", "requirement_ids": ["REQ-001"]} for index in range(9)]
+
+    result = parse_adversarial_validation_response(json.dumps({"result": "INCONCLUSIVE", "findings": [], "evidence_recovery": attempts}))
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "schema_error"
+
+
+def test_inconclusive_without_recovery_or_irreducible_gap_is_rejected() -> None:
+    context = AdversarialValidationContext(
+        all_changed_files=["src/state.py"],
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-013", text="Recover decision-critical evidence")],
+    )
+    parsed = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "INCONCLUSIVE",
+                "summary": "The material file is unavailable",
+                "requirement_coverage": [
+                    {
+                        "requirement_id": "REQ-013",
+                        "status": "UNVERIFIED",
+                        "evidence": "The supplied manifest omitted src/state.py",
+                    }
+                ],
+                "findings": [],
+                "evidence_recovery": [],
+                "decision_critical_evidence_gaps": [],
+            }
+        )
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(parsed, context)
+
+    assert checked.result == "ERROR"
+    assert checked.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+    assert checked.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
+
+
+def test_inconclusive_rejects_recovery_scoped_only_to_verified_requirement() -> None:
+    context = AdversarialValidationContext(
+        issue_requirements=[
+            IssueRequirement(requirement_id="REQ-A", text="Recover state evidence"),
+            IssueRequirement(requirement_id="REQ-B", text="Verify audit evidence"),
+        ]
+    )
+    parsed = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "INCONCLUSIVE",
+                "summary": "State evidence is unavailable",
+                "requirement_coverage": [
+                    {"requirement_id": "REQ-A", "status": "UNVERIFIED", "evidence": "State file omitted"},
+                    {"requirement_id": "REQ-B", "status": "VERIFIED", "evidence": "Audit test passed"},
+                ],
+                "findings": [],
+                "evidence_recovery": [
+                    {
+                        "path": "tests/test_audit.py",
+                        "source": "focused execution",
+                        "status": "RECOVERED",
+                        "evidence": "Audit test passed",
+                        "requirement_ids": ["REQ-B"],
+                    }
+                ],
+                "decision_critical_evidence_gaps": [
+                    {
+                        "requirement_id": "REQ-B",
+                        "evidence_needed": "Additional audit output",
+                        "recovery_attempts": ["Ran the audit test"],
+                    }
+                ],
+            }
+        )
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(parsed, context)
+
+    assert checked.result == "ERROR"
+    assert checked.diagnostic_category == "inconclusive_evidence_scope_mismatch"
+    assert checked.diagnostic_reason == ("requirements without recovery attempts: REQ-A; requirements without decision-critical gaps: REQ-A; " "gaps for already-decided requirements: REQ-B")
 
 
 @pytest.mark.parametrize("anchor_line", ["abc", "0", "-1", 0, -1, 1.5, True])
@@ -1766,9 +1878,9 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
+        assert result.result == "ERROR"
         assert result.is_blocked
-        assert result.diagnostic_category == "incomplete_evidence_coverage"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -1794,8 +1906,8 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
-        assert result.diagnostic_category == "incomplete_requirement_coverage"
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -1829,8 +1941,8 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
-        assert "REQ-002-r2" in (result.diagnostic_reason or "")
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @pytest.mark.parametrize("top_level_result", ["PASS", "INCONCLUSIVE"])
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
@@ -1955,7 +2067,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_pass_with_explicit_unverified_requirement_is_rejected(self, mock_run_prompt, mock_build_ctx):
+    def test_normalized_inconclusive_without_recovery_contract_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -1985,12 +2097,13 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
-        assert "REQ-002-r2" in (result.diagnostic_reason or "")
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+        assert result.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_finding_wins_while_incomplete_coverage_remains_diagnostic(self, mock_run_prompt, mock_build_ctx):
+    def test_unverified_suspicion_without_recovery_contract_is_rejected(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -2022,9 +2135,10 @@ class TestRunAdversarialValidation:
             backend_manager=MagicMock(),
         )
 
-        assert result.result == "INCONCLUSIVE"
+        assert result.result == "ERROR"
         assert not result.needs_fix
         assert result.findings == []
+        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

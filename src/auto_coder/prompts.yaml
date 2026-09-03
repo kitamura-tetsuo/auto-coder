@@ -525,6 +525,9 @@ pr:
     Never derive `ADDRESSED` merely because: the implementation agent asserted it is fixed; a thread became GitHub `outdated` or its original line moved/disappeared from the diff; a newly added or renamed test passes; or a commit was pushed. Only actual demonstrated correction of the original reported behavior on the current head justifies `ADDRESSED`. A different path violating overlapping requirements does NOT keep the old thread STILL_VALID: mark the old concrete finding ADDRESSED and emit the different current counterexample as a new finding. Likewise, never reopen an addressed finding merely because an equivalent failure exists elsewhere; reopen it only if its own counterexample regresses. A regression test that does not exercise the originally failing state transition or invariant does not justify `ADDRESSED` either. Every disposition requires a concrete `rationale` grounded in the current implementation and specific `evidence` (a code path, patch excerpt, or dynamic-check result). Only produce a disposition for a thread ID that is exactly listed in the Claimed-Addressed Review Threads section below; never invent a disposition for any other thread. This determination is completely independent of the PR-level `result`: a thread may be ADDRESSED even when the PR overall is NEEDS_FIX for an unrelated defect, and the PR may otherwise PASS while a claimed thread remains STILL_VALID or INCONCLUSIVE.
 
     FINDING COMPACTION: One concrete production path/root defect normally produces exactly one finding, even when its consequences violate several requirements. Every demonstrated finding must include non-empty `finding_identity` and `correction_identity`; omission of either is a schema error. Give every perspective on the same root defect the same concise finding identity and, when they share the same required fix and regression oracle, the same correction identity. Prose differences in reachability, evidence, or regression-scenario descriptions do not change those identities. List every implicated stable ID in `requirement_ids`, and preserve all requirement-specific descriptions in the grouped finding. `finding_identity` identifies the concrete path/root defect, never a requirement ID or broad invariant. `correction_identity` identifies the independently actionable correction and test oracle; use a different correction identity for materially different fixes or observable failure contracts even when a root identity is shared. Sibling branches may share both identities only when they have the same root failure, required correction, and test oracle, and the finding explicitly enumerates every demonstrated branch. Current findings must describe only currently reproducible counterexamples, never restate resolved historical findings.
+    BOUNDED ROOT-CAUSE EXPLORATION: Finding one demonstrated violation is not a stopping condition. After the first confirmation, identify its violated invariant and examine up to $adjacent_exploration_budget additional candidate boundaries. Prioritize adjacent state transitions, lifecycle ownership, persistence/restart behavior, supported authoritative/oracle mechanisms, ambiguous provider results, and ordering/race cases. Stop when that deterministic candidate budget is exhausted. Include every independently demonstrated adjacent case in this response, grouped by shared finding/correction identity where appropriate. Distinguish independent root defects from several manifestations or impacted requirements of one defect. A merely plausible case is not a finding and must not become blocking.
+
+    BOUNDED EVIDENCE RECOVERY: The supplied patch is a navigation hint, not the authority or a completeness prerequisite. If it identifies partial or unavailable material evidence, first determine which requirements actually depend on it, then make at most $evidence_recovery_budget total recovery attempts using available current-repository inspection, current-PR file/diff retrieval, focused execution, tests, or another supported validator source. Record each attempt in `evidence_recovery`. RECOVERED means the current-head evidence was independently inspected; IRRELEVANT means the file cannot affect any Issue requirement and includes the scope basis. Missing evidence affects only the named dependent requirements. Do not reset unrelated coverage. Every UNVERIFIED requirement in an INCONCLUSIVE response must be named by at least one recovery attempt and one decision-critical gap; a gap for a VERIFIED or IRRELEVANT requirement cannot satisfy another requirement's contract. Before INCONCLUSIVE, exhaust useful bounded recovery and report only the smallest remaining decision-critical gap in `decision_critical_evidence_gaps`; a generic incomplete-manifest statement is invalid.
     Exception for a root thread explicitly labeled `Auto-Coder material test-oracle gap`: its original blocker is missing regression protection, not incorrect current production behavior. Return ADDRESSED only when the matching persisted gap is RESOLVED because a committed test directly exercises the recorded boundary and invariant, or INVALID with evidence that the original report failed the material-gap criteria. A merely passing, renamed, indirect, skipped, bypassed, or mock-only test is insufficient. Return STILL_VALID while the matching gap remains OPEN.
 
     OUTPUT FORMAT:
@@ -544,6 +547,22 @@ pr:
           "requirement_id": "<exact stable ID from the requirement manifest>",
           "status": "VERIFIED" | "VIOLATED" | "IRRELEVANT" | "UNVERIFIED",
           "evidence": "<specific patch, manifest, or oracle evidence; IRRELEVANT requires a scope reason>"
+        }
+      ],
+      "evidence_recovery": [
+        {
+          "path": "<initially unavailable path or artifact>",
+          "source": "repository inspection | current-PR retrieval | focused execution | tests | other supported source",
+          "status": "RECOVERED" | "UNAVAILABLE" | "IRRELEVANT",
+          "evidence": "<specific current-head evidence, failed attempt, or irrelevance basis>",
+          "requirement_ids": ["<only exact IDs materially depending on this evidence>"]
+        }
+      ],
+      "decision_critical_evidence_gaps": [
+        {
+          "requirement_id": "<one exact undecidable requirement ID>",
+          "evidence_needed": "<smallest concrete evidence still needed>",
+          "recovery_attempts": ["<supported mechanisms attempted and why each failed>"]
         }
       ],
       "findings": [
@@ -628,6 +647,8 @@ pr:
           "evidence": "The supplied patch and tests directly establish this requirement"
         }
       ],
+      "evidence_recovery": [],
+      "decision_critical_evidence_gaps": [],
       "findings": [],
       "test_oracle_gaps": [],
       "unexplained_changes": [],
@@ -639,7 +660,7 @@ pr:
 
     CHANGE-PROVENANCE CLARIFICATION: After every applicable Issue requirement is VERIFIED or justified IRRELEVANT, independently account for every material changed file or related change group. If repository evidence does not establish why one or more groups belong to the PR, return INCONCLUSIVE with no findings and aggregate all such groups in `unexplained_changes`. Missing change rationale is not an Issue requirement violation and must never be placed in `findings` or change requirement coverage to VIOLATED/UNVERIFIED. Use exact changed paths and group mechanically related files together. Do not request a code change or new commit merely to obtain an explanation. If a Claimed-Addressed Review Thread is a change-provenance clarification, treat the implementation-agent reply only as an unverified claim and navigation aid: independently compare every claim with the current diff, repository state, generation inputs/outputs, and relevant tests. Return ADDRESSED only when all listed provenance is verified; return STILL_VALID when the reply identifies an accidental change or repository evidence contradicts it, naming the concrete change to remove or correct; otherwise return INCONCLUSIVE. Do not emit a new `unexplained_changes` entry for the same unresolved clarification set already represented by that thread.
 
-    If no concrete violation is proven but any material file or Issue requirement remains unverified, return INCONCLUSIVE with an empty findings list and mark the corresponding requirement IDs UNVERIFIED. PASS requires exactly one VERIFIED or justified IRRELEVANT coverage entry for every stable ID below; a boolean completeness claim cannot substitute for the entries.
+    If no concrete violation is proven but decision-critical evidence remains unavailable after bounded recovery, return INCONCLUSIVE with an empty findings list, mark only the corresponding requirement IDs UNVERIFIED, and identify the irreducible gap and attempted sources. PASS requires exactly one VERIFIED or justified IRRELEVANT coverage entry for every stable ID below; a boolean completeness claim cannot substitute for the entries.
 
     Context:
     Repository: $repo_name
@@ -684,7 +705,7 @@ pr:
     - Focus strictly on behavioral correctness, invariant preservation, and specification coverage.
     - Review the complete changed-file and changed-test manifests against every Issue requirement before judging the implementation patches.
     - Patch evidence is grouped per file. A large early file must not cause you to ignore evidence for a later file.
-    - If coverage is INCOMPLETE and no violation is proven, return INCONCLUSIVE, never PASS.
+    - If initially supplied coverage is INCOMPLETE, apply bounded evidence recovery. Return INCONCLUSIVE only when decision-critical evidence remains unavailable afterward; independently recovered coverage may support PASS.
     - If any evidence proves a specification violation, return NEEDS_FIX even when other files or requirements remain unverified. Describe incomplete coverage in the summary without downgrading the concrete finding.
 
     INVESTIGATION QUESTIONS:
@@ -698,6 +719,8 @@ pr:
 
     INITIAL TEST-ORACLE DISCOVERY:
     This initial authoritative review may report a small, bounded set of OPEN material test-oracle gaps that satisfy every criterion in the material test-oracle-gap standard. Use discovery_phase INITIAL, rereview_exception_reason NONE, and empty rereview_exception_evidence. Do not mark requirement coverage VIOLATED merely because its implementation is correct but its regression oracle is missing. If one or more such gaps remain and there is no demonstrated implementation violation, return NEEDS_TESTS. Ask only for the focused regression scenario, not a production-code change.
+
+    Do not stop at the first demonstrated violation. Apply the bounded root-cause exploration policy and return neighboring confirmed manifestations together in this initial result.
 
   adversarial_validation_rereview: |-
     Previous reviewed head: $previous_head_sha
@@ -809,7 +832,7 @@ pr:
     1. Does the dynamic execution resolve or reject your suspected counterexample?
     2. If the dynamic test ran and proved the implementation behaves correctly per the specification, return `result: "PASS"`.
     3. If the dynamic test failed or revealed a defect, return `result: "NEEDS_FIX"` with the concrete counterexample.
-    4. If the test ran but did NOT test the suspected scenario, explain why and return `result: "INCONCLUSIVE"` or `result: "NEEDS_FIX"` if a concrete defect remains proven.
+    4. If the test ran but did NOT test the suspected scenario, record that focused execution as an UNAVAILABLE evidence-recovery attempt for every requirement it leaves UNVERIFIED, identify a decision-critical gap for each such requirement, and return `result: "INCONCLUSIVE"`; recovery or a gap for a VERIFIED/IRRELEVANT requirement cannot stand in for an undecided requirement. Return `result: "NEEDS_FIX"` instead if a concrete defect remains proven.
     5. For each thread listed in Claimed-Addressed Review Threads, independently re-determine ADDRESSED / STILL_VALID / INCONCLUSIVE grounded in this dynamic-check result and the current implementation — never merely repeat your initial disposition. If the dynamic evidence disproves an initial ADDRESSED, return STILL_VALID; if it proves an initial INCONCLUSIVE, return ADDRESSED or STILL_VALID as the evidence now shows.
 
     OUTPUT FORMAT:
@@ -823,6 +846,22 @@ pr:
           "requirement_id": "<exact stable ID from the requirement manifest>",
           "status": "VERIFIED" | "VIOLATED" | "IRRELEVANT" | "UNVERIFIED",
           "evidence": "<specific dynamic-check or oracle evidence>"
+        }
+      ],
+      "evidence_recovery": [
+        {
+          "path": "<focused check target or other initially missing artifact>",
+          "source": "focused execution | repository inspection | current-PR retrieval | tests",
+          "status": "RECOVERED" | "UNAVAILABLE" | "IRRELEVANT",
+          "evidence": "<specific result of the recovery attempt>",
+          "requirement_ids": ["<only exact IDs materially depending on this evidence>"]
+        }
+      ],
+      "decision_critical_evidence_gaps": [
+        {
+          "requirement_id": "<exact undecidable requirement ID; required for INCONCLUSIVE>",
+          "evidence_needed": "<smallest concrete evidence still needed>",
+          "recovery_attempts": ["<the focused execution and any other supported attempts>"]
         }
       ],
       "findings": [
@@ -859,7 +898,7 @@ pr:
   adversarial_validation_fix: |-
     Auto-Coder's adversarial validation produced blocking corrective feedback for PR #$pr_number in $repo_name at commit $head_sha. The report distinguishes demonstrated production-code violations from material test-oracle gaps. For a test-oracle gap, add only the focused committed regression protection requested; do not change production code unless a separate demonstrated violation requires it.
 
-    Apply fixes for every concrete finding below, add strict regression tests for the counterexamples, and update the existing PR branch. Re-read the linked Issue specification before editing. Specification gaps in the report are non-actionable metadata: do not implement, select, or promote any candidate policy solely to resolve a gap, and do not create or modify an Issue because of one. Do not dismiss findings merely because the current tests pass. Run the repository test script after making the changes. Do not post general PR comments.
+    Apply fixes for every concrete finding below, add strict regression tests for the counterexamples, and update the existing PR branch. Do not patch only the demonstrated example: identify and correct the shared lifecycle or correctness invariant. For that invariant, enumerate and evaluate adjacent states and transitions, supported authoritative/oracle sources, restart and persistence behavior, provider-result ambiguity, and relevant ordering/race boundaries. Re-read the linked Issue specification before editing. Specification gaps in the report are non-actionable metadata: do not implement, select, or promote any candidate policy solely to resolve a gap, and do not create or modify an Issue because of one. Do not dismiss findings merely because the current tests pass. Run the repository test script after making the changes. Do not post general PR comments.
 
     For each unresolved GitHub PR review thread you address as part of this work — regardless of which reviewer authored it (Codex GitHub review, Auto-Coder's adversarial reviewer, or any other automated or human reviewer) — inspect the feedback and, if it is actionable, make the necessary code change. Do NOT resolve, close, or otherwise mark any GitHub review thread as resolved yourself; leave that decision to Auto-Coder's independent validation. For each thread you believe you have successfully addressed, reply directly in that same thread with a concise explanation of the implementation change and the validation or regression-test evidence supporting the claim, ending the reply with the exact marker `<!-- auto-coder-review-addressed:v1 -->` on its own line. Only add this marker when you are confident the finding is actually corrected in the current code. If you cannot fix or verify it, disagree with the finding, or consider it already satisfied or invalid, leave the thread unresolved and do NOT add the marker — explain your reasoning in the reply instead. Address each thread independently: fixing one thread never implies that any other thread has been addressed.
 

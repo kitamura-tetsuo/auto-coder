@@ -30,7 +30,9 @@ ADVERSARIAL_RESPONSE_PREVIEW_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COMMENT_LIMIT = 60000
 ADVERSARIAL_VALIDATION_COMMENT_FIELD_LIMIT = 2000
 ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
-ADVERSARIAL_VALIDATION_CACHE_VERSION = "v10"
+ADVERSARIAL_VALIDATION_CACHE_VERSION = "v11"
+ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET = 8
+ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET = 8
 CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
 TEST_ORACLE_GAP_STATUSES = {"OPEN", "RESOLVED", "INVALID"}
 TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
@@ -95,6 +97,26 @@ class RequirementCoverageEntry:
 
 
 @dataclass
+class EvidenceRecoveryEntry:
+    """Independent attempt to recover initially absent validator evidence."""
+
+    path: str = ""
+    source: str = ""
+    status: str = "UNAVAILABLE"
+    evidence: str = ""
+    requirement_ids: List[str] = field(default_factory=list)
+
+
+@dataclass
+class DecisionCriticalEvidenceGap:
+    """Smallest irreducible evidence gap preventing a correctness decision."""
+
+    requirement_id: str = ""
+    evidence_needed: str = ""
+    recovery_attempts: List[str] = field(default_factory=list)
+
+
+@dataclass
 class ReviewThreadDisposition:
     """Validator's independent disposition for one claimed-addressed review thread.
 
@@ -152,6 +174,8 @@ class AdversarialValidationResult:
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
     requirement_coverage: List[RequirementCoverageEntry] = field(default_factory=list)
+    evidence_recovery: List[EvidenceRecoveryEntry] = field(default_factory=list)
+    decision_critical_evidence_gaps: List[DecisionCriticalEvidenceGap] = field(default_factory=list)
     specification_gaps: List[SpecificationGap] = field(default_factory=list)
     test_oracle_gaps: List[TestOracleGap] = field(default_factory=list)
     thread_dispositions: List[ReviewThreadDisposition] = field(default_factory=list)
@@ -1411,6 +1435,36 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         )
                     )
 
+                raw_recovery = parsed.get("evidence_recovery", [])
+                if not isinstance(raw_recovery, list) or len(raw_recovery) > ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET:
+                    return _parse_error(raw_response, "schema_error", "Malformed evidence recovery report", f"evidence_recovery must contain at most {ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET} entries")
+                evidence_recovery: List[EvidenceRecoveryEntry] = []
+                for item in raw_recovery:
+                    if not isinstance(item, dict):
+                        return _parse_error(raw_response, "schema_error", "Malformed evidence recovery entry", "evidence recovery entries must be objects")
+                    path = str(item.get("path", "")).strip()
+                    source = str(item.get("source", "")).strip()
+                    status = str(item.get("status", "")).strip().upper()
+                    evidence = str(item.get("evidence", "")).strip()
+                    requirement_ids = item.get("requirement_ids", [])
+                    if not path or not source or status not in {"RECOVERED", "UNAVAILABLE", "IRRELEVANT"} or not evidence or not isinstance(requirement_ids, list) or any(not isinstance(value, str) or not value.strip() for value in requirement_ids):
+                        return _parse_error(raw_response, "schema_error", "Malformed evidence recovery entry", "each recovery entry requires path, supported source, status, evidence, and requirement_ids")
+                    evidence_recovery.append(EvidenceRecoveryEntry(path=path, source=source, status=status, evidence=evidence, requirement_ids=[value.strip() for value in requirement_ids]))
+
+                raw_gaps = parsed.get("decision_critical_evidence_gaps", [])
+                if not isinstance(raw_gaps, list):
+                    return _parse_error(raw_response, "schema_error", "Malformed decision-critical evidence gaps", "decision_critical_evidence_gaps must be a list")
+                decision_gaps: List[DecisionCriticalEvidenceGap] = []
+                for item in raw_gaps:
+                    if not isinstance(item, dict):
+                        return _parse_error(raw_response, "schema_error", "Malformed decision-critical evidence gap", "evidence gap entries must be objects")
+                    requirement_id = str(item.get("requirement_id", "")).strip()
+                    evidence_needed = str(item.get("evidence_needed", "")).strip()
+                    attempts = item.get("recovery_attempts", [])
+                    if not requirement_id or not evidence_needed or not isinstance(attempts, list) or not attempts or any(not isinstance(value, str) or not value.strip() for value in attempts):
+                        return _parse_error(raw_response, "schema_error", "Malformed decision-critical evidence gap", "each gap requires one requirement, concrete evidence, and attempted recovery sources")
+                    decision_gaps.append(DecisionCriticalEvidenceGap(requirement_id=requirement_id, evidence_needed=evidence_needed, recovery_attempts=[value.strip() for value in attempts]))
+
                 raw_findings = parsed.get("findings")
                 findings: List[AdversarialValidationFinding] = []
                 unverified_suspicion = False
@@ -1606,6 +1660,8 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     raw_response=raw_response,
                     dynamic_check_requested=dynamic_check,
                     requirement_coverage=requirement_coverage,
+                    evidence_recovery=evidence_recovery,
+                    decision_critical_evidence_gaps=decision_gaps,
                     specification_gaps=specification_gaps,
                     test_oracle_gaps=test_oracle_gaps,
                     thread_dispositions=thread_dispositions,
@@ -1775,6 +1831,49 @@ def _reconcile_test_oracle_gap_lifecycle(
     return result
 
 
+def _enforce_inconclusive_recovery_contract(
+    result: AdversarialValidationResult,
+    incomplete_requirement_ids: List[str],
+) -> AdversarialValidationResult:
+    """Reject a final INCONCLUSIVE verdict without scoped recovery evidence."""
+    if result.result.strip().upper() != "INCONCLUSIVE" or result.dynamic_check_requested:
+        return result
+
+    missing_contract_parts: List[str] = []
+    if not result.evidence_recovery:
+        missing_contract_parts.append("bounded evidence-recovery attempts")
+    if not result.decision_critical_evidence_gaps:
+        missing_contract_parts.append("a decision-critical evidence gap")
+    if missing_contract_parts:
+        reason = f"INCONCLUSIVE requires {', '.join(missing_contract_parts)}"
+        result.result = "ERROR"
+        result.summary = f"Invalid validator response: {reason}"
+        result.diagnostic_category = "inconclusive_without_exhausted_evidence_recovery"
+        result.diagnostic_reason = reason
+        return result
+
+    incomplete_ids = set(incomplete_requirement_ids)
+    recovery_ids = {requirement_id for entry in result.evidence_recovery for requirement_id in entry.requirement_ids}
+    gap_ids = {gap.requirement_id for gap in result.decision_critical_evidence_gaps}
+    requirements_without_recovery = sorted(incomplete_ids - recovery_ids)
+    requirements_without_gap = sorted(incomplete_ids - gap_ids)
+    gaps_for_verified_requirements = sorted(gap_ids - incomplete_ids)
+    if requirements_without_recovery or requirements_without_gap or gaps_for_verified_requirements:
+        scope_errors: List[str] = []
+        if requirements_without_recovery:
+            scope_errors.append(f"requirements without recovery attempts: {', '.join(requirements_without_recovery)}")
+        if requirements_without_gap:
+            scope_errors.append(f"requirements without decision-critical gaps: {', '.join(requirements_without_gap)}")
+        if gaps_for_verified_requirements:
+            scope_errors.append(f"gaps for already-decided requirements: {', '.join(gaps_for_verified_requirements)}")
+        reason = "; ".join(scope_errors)
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: INCONCLUSIVE evidence was not scoped to undecided requirements"
+        result.diagnostic_category = "inconclusive_evidence_scope_mismatch"
+        result.diagnostic_reason = reason
+    return result
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -1783,6 +1882,17 @@ def _apply_coverage_and_verdict_precedence(
     if result.result == "ERROR" and result.diagnostic_category:
         return result
     expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
+    recovery_requirement_ids = {requirement_id for entry in result.evidence_recovery for requirement_id in entry.requirement_ids}
+    evidence_gap_requirement_ids = {gap.requirement_id for gap in result.decision_critical_evidence_gaps}
+    unknown_evidence_requirement_ids = sorted((recovery_requirement_ids | evidence_gap_requirement_ids) - expected_requirement_ids)
+    if unknown_evidence_requirement_ids:
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: evidence recovery referenced unknown stable requirement IDs"
+        result.diagnostic_category = "unknown_evidence_recovery_requirement_id"
+        result.diagnostic_reason = f"Evidence recovery references IDs outside the deterministic manifest: {', '.join(unknown_evidence_requirement_ids)}"
+        return result
+    recovered_paths = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files}
+    remaining_unverified_files = [path for path in context.unverified_files if path not in recovered_paths]
     coverage_by_id = {entry.requirement_id: entry for entry in result.requirement_coverage}
     unknown_requirement_ids = sorted(coverage_by_id.keys() - expected_requirement_ids)
     missing_requirement_ids = sorted(expected_requirement_ids - coverage_by_id.keys())
@@ -1862,9 +1972,9 @@ def _apply_coverage_and_verdict_precedence(
         result.result = "NEEDS_FIX"
         incomplete_coverage: List[str] = []
         coverage_details: List[str] = []
-        if context.unverified_files:
-            incomplete_coverage.append(f"{len(context.unverified_files)} changed file(s)")
-            coverage_details.append(f"changed files: {', '.join(context.unverified_files)}")
+        if remaining_unverified_files:
+            incomplete_coverage.append(f"{len(remaining_unverified_files)} changed file(s)")
+            coverage_details.append(f"changed files: {', '.join(remaining_unverified_files)}")
         if not expected_requirement_ids:
             incomplete_coverage.append("Issue requirement manifest was empty")
             coverage_details.append("Issue requirement manifest was empty")
@@ -1884,17 +1994,20 @@ def _apply_coverage_and_verdict_precedence(
 
     if result.open_test_oracle_gaps and result.result in {"PASS", "NEEDS_TESTS"}:
         result.result = "NEEDS_TESTS"
-        if context.unverified_files:
+        if remaining_unverified_files:
             result.diagnostic_category = "incomplete_evidence_coverage"
-            result.diagnostic_reason = f"Material changed-file evidence was incomplete for: {', '.join(context.unverified_files)}"
+            result.diagnostic_reason = f"Material changed-file evidence was incomplete for: {', '.join(remaining_unverified_files)}"
         elif not expected_requirement_ids or incomplete_requirement_ids:
             result.diagnostic_category = "incomplete_requirement_coverage"
             result.diagnostic_reason = "The deterministic Issue requirement manifest was empty" if not expected_requirement_ids else f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}"
 
-    if context.has_complete_file_coverage and expected_requirement_ids and not incomplete_requirement_ids and result.unexplained_changes:
+    if not remaining_unverified_files and expected_requirement_ids and not incomplete_requirement_ids and result.unexplained_changes:
         result.result = "INCONCLUSIVE"
         result.diagnostic_category = "change_provenance_clarification"
         result.diagnostic_reason = "Material changed-file purpose or provenance requires implementer clarification"
+        # Provenance clarification is an orthogonal merge gate after all Issue
+        # requirements and file evidence are complete, not an evidence-recovery
+        # failure for an undecidable requirement.
         return result
 
     if result.unexplained_changes:
@@ -1903,13 +2016,13 @@ def _apply_coverage_and_verdict_precedence(
         # existing diagnostic and must not be mislabeled as implementer provenance.
         result.unexplained_changes = []
 
-    if result.result.strip().upper() == "PASS" and not context.has_complete_file_coverage:
-        reason = f"Material changed-file evidence was incomplete for: {', '.join(context.unverified_files)}"
+    if result.result.strip().upper() == "PASS" and remaining_unverified_files:
+        reason = f"Material changed-file evidence was incomplete after bounded recovery for: {', '.join(remaining_unverified_files)}"
         result.result = "INCONCLUSIVE"
         result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_evidence_coverage"
         result.diagnostic_reason = reason
-        return result
+        return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
     if result.result.strip().upper() == "PASS" and (not expected_requirement_ids or incomplete_requirement_ids):
         if not expected_requirement_ids:
@@ -1920,7 +2033,7 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
         result.diagnostic_category = "incomplete_requirement_coverage"
         result.diagnostic_reason = reason
-    return result
+    return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
 
 def run_adversarial_validation(
@@ -2077,6 +2190,8 @@ def run_adversarial_validation(
         requirement_manifest=requirement_manifest,
         claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
         prior_test_oracle_gaps=prior_test_oracle_gaps,
+        adjacent_exploration_budget=ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET,
+        evidence_recovery_budget=ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET,
     )
 
     # 4. Invoke the strong model
