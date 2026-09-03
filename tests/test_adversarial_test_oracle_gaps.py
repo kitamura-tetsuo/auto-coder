@@ -31,7 +31,6 @@ def gap_payload(
     return {
         "gap_id": _stable_test_oracle_gap_id(requirement_id, boundary, invariant),
         "requirement_id": requirement_id,
-        "requirement_text": "Server mutation paths reject invalid candidates independently of the browser.",
         "authoritative_boundary": boundary,
         "invariant": invariant,
         "plausible_incorrect_implementation": "Delete the server-side rejection guard.",
@@ -104,9 +103,21 @@ def test_initial_gap_is_separate_from_a_production_violation_and_blocks_merge() 
     assert result.findings == []
     assert result.allows_auto_merge is False
     assert result.requirement_coverage[0].status == "VERIFIED"
+    assert result.test_oracle_gaps[0].requirement_text == "Server mutation paths reject invalid candidates independently of the browser."
     comment = format_adversarial_validation_comment(result, "sha-a")
     assert "missing regression protections, not demonstrated production-code violations" in comment
     assert "Focused regression scenario" in comment
+
+
+def test_llm_requirement_text_is_ignored_in_favor_of_manifest_text() -> None:
+    payload = gap_payload()
+    payload["requirement_text"] = "A harmlessly reformatted model paraphrase."
+
+    result = _apply_coverage_and_verdict_precedence(parsed_result(payload), context())
+
+    assert result.result == "NEEDS_TESTS"
+    assert result.diagnostic_category != "test_oracle_gap_requirement_text_mismatch"
+    assert result.test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
 
 
 def test_same_sha_inspection_cannot_resolve_an_open_gap() -> None:
@@ -122,7 +133,8 @@ def test_same_sha_inspection_cannot_resolve_an_open_gap() -> None:
     result = _apply_coverage_and_verdict_precedence(result, context())
 
     assert result.result == "NEEDS_TESTS"
-    assert result.open_test_oracle_gaps == [initial]
+    assert [gap.gap_id for gap in result.open_test_oracle_gaps] == [initial.gap_id]
+    assert result.open_test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
 
 
 def test_new_commit_with_focused_boundary_test_can_resolve_and_converge() -> None:
@@ -203,7 +215,9 @@ def test_resolved_gap_cannot_be_reopened_with_a_variant() -> None:
     result = _apply_coverage_and_verdict_precedence(result, context())
 
     assert result.result == "PASS"
-    assert result.test_oracle_gaps == [resolved]
+    assert [gap.gap_id for gap in result.test_oracle_gaps] == [resolved.gap_id]
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
+    assert result.test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
 
 
 def test_validation_run_persists_gap_identity_and_scope_for_rereview(tmp_path) -> None:
@@ -231,7 +245,7 @@ def test_validation_run_persists_gap_identity_and_scope_for_rereview(tmp_path) -
 
     with (
         patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
-        patch("auto_coder.adversarial_validator.run_llm_prompt", return_value=response),
+        patch("auto_coder.adversarial_validator.run_llm_prompt", return_value=response) as run_prompt,
     ):
         result = run_adversarial_validation(
             "owner/repo",
@@ -246,6 +260,43 @@ def test_validation_run_persists_gap_identity_and_scope_for_rereview(tmp_path) -
     assert saved is not None
     assert saved.last_head_sha == "sha-a"
     assert saved.test_oracle_gaps == result.test_oracle_gaps
+    assert saved.test_oracle_gaps[0].requirement_text == validation_context.issue_requirements[0].text
+    assert '"requirement_text"' not in run_prompt.call_args.args[0]
+
+
+def test_validation_run_rejects_unknown_gap_requirement_id(tmp_path) -> None:
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    payload = gap_payload()
+    payload["requirement_id"] = "REQ-999"
+    payload["gap_id"] = _stable_test_oracle_gap_id(
+        "REQ-999",
+        str(payload["authoritative_boundary"]),
+        str(payload["invariant"]),
+    )
+
+    with (
+        patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
+        patch(
+            "auto_coder.adversarial_validator.run_llm_prompt",
+            return_value=validation_response(payload, "NEEDS_TESTS"),
+        ),
+    ):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "unknown_test_oracle_gap_requirement_id"
+    assert result.test_oracle_gaps == []
 
 
 def test_failed_first_attempt_keeps_retry_in_initial_discovery_phase(tmp_path) -> None:
