@@ -1147,6 +1147,52 @@ def _extract_codex_jsonl_message(response: str) -> tuple[bool, Optional[str], Op
     return True, messages[-1], None
 
 
+def _extract_claude_jsonl_result(response: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Extract Claude CLI's final result from a ``stream-json`` event stream.
+
+    Claude streams one JSON object per line, beginning with ``system/init`` and
+    ending with a ``result`` event.  Once that envelope is detected, every line
+    and the terminal result are validated so truncated or failed streams cannot
+    accidentally authorize a merge.
+    """
+    lines = [line for line in response.splitlines() if line.strip()]
+    if not lines:
+        return False, None, None
+
+    try:
+        first_event = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return False, None, None
+
+    if not isinstance(first_event, dict) or first_event.get("type") != "system" or first_event.get("subtype") != "init":
+        return False, None, None
+
+    terminal_results: List[tuple[int, Dict[str, Any]]] = []
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            return True, None, f"non-JSON content in Claude event stream at line {line_number}: {exc.msg}"
+        if not isinstance(event, dict):
+            return True, None, f"Claude event at line {line_number} is not an object"
+        if event.get("type") == "result":
+            terminal_results.append((line_number, event))
+
+    if not terminal_results:
+        return True, None, "Claude event stream contained no terminal result"
+    if len(terminal_results) != 1:
+        return True, None, f"Claude event stream contained {len(terminal_results)} terminal results"
+
+    line_number, terminal = terminal_results[0]
+    if terminal.get("subtype") != "success" or terminal.get("is_error") is True:
+        subtype = terminal.get("subtype", "unknown")
+        return True, None, f"Claude emitted failed terminal result {subtype} at line {line_number}"
+    result = terminal.get("result")
+    if not isinstance(result, str) or not result.strip():
+        return True, None, f"Claude terminal result at line {line_number} contained no response text"
+    return True, result, None
+
+
 def _parse_error(response: str, category: str, summary: str, reason: str) -> AdversarialValidationResult:
     """Create and diagnose a fail-closed adversarial parse result."""
     response_length = len(response)
@@ -1344,6 +1390,15 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
             f"Invalid Codex validator event stream: {jsonl_error}",
             jsonl_error,
         )
+    if not jsonl_detected:
+        jsonl_detected, extracted_message, jsonl_error = _extract_claude_jsonl_result(raw_response)
+        if jsonl_detected and jsonl_error:
+            return _parse_error(
+                raw_response,
+                "cli_event_stream_error",
+                f"Invalid Claude validator event stream: {jsonl_error}",
+                jsonl_error,
+            )
     effective_response = extracted_message if jsonl_detected and extracted_message is not None else raw_response
     cleaned_response = effective_response.strip()
 
