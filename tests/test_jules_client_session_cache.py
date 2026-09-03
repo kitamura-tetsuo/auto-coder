@@ -88,7 +88,7 @@ class TestJulesSessionCache:
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.get")
-    def test_failed_fetch_is_not_cached(self, mock_get, mock_get_config):
+    def test_failed_fetch_is_cached_until_next_maintenance_cycle(self, mock_get, mock_get_config):
         _mock_llm_config(mock_get_config)
         error_response = Mock()
         error_response.status_code = 500
@@ -102,6 +102,12 @@ class TestJulesSessionCache:
         except RuntimeError:
             pass
 
+        with pytest.raises(RuntimeError, match="boom"):
+            client.list_sessions(repo_name="owner/repo")
+
+        assert mock_get.call_count == 1
+
+        invalidate_jules_sessions_cache()
         sessions = client.list_sessions(repo_name="owner/repo")
 
         assert mock_get.call_count == 2
@@ -109,11 +115,51 @@ class TestJulesSessionCache:
 
 
 class TestProducerLoopInvalidatesCache:
-    """The automation loop refreshes the listing exactly once per iteration."""
+    """The automation loop refreshes the listing only on hourly cycles."""
+
+    def test_refresh_is_delayed_and_failed_cycle_consumes_opportunity(self, mock_github_client):
+        with patch("src.auto_coder.automation_engine.time.monotonic", return_value=100.0):
+            engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+
+        with patch("src.auto_coder.automation_engine.time.monotonic") as monotonic:
+            monotonic.return_value = 3699.9
+            assert engine._claim_jules_session_list_refresh() is False
+
+            monotonic.return_value = 3700.0
+            assert engine._claim_jules_session_list_refresh() is True
+
+            # The opportunity was consumed when it was claimed, regardless of
+            # whether the subsequent listing succeeds or fails.
+            monotonic.return_value = 3701.0
+            assert engine._claim_jules_session_list_refresh() is False
+
+            monotonic.return_value = 7300.0
+            assert engine._claim_jules_session_list_refresh() is True
+
+    @pytest.mark.asyncio
+    async def test_producer_loop_skips_listing_and_maintenance_at_startup(self, mock_github_client):
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        calls = []
+
+        with (
+            patch("src.auto_coder.automation_engine.check_for_updates_and_restart"),
+            patch("src.auto_coder.automation_engine.invalidate_jules_sessions_cache", side_effect=lambda: calls.append("invalidate")),
+            patch("src.auto_coder.automation_engine.check_and_resume_or_archive_sessions", side_effect=lambda *_: calls.append("resume")),
+            patch.object(engine, "_check_and_handle_closed_branch", return_value=True),
+            patch.object(engine, "handle_stale_jules_issue_sessions", side_effect=lambda *_: calls.append("stale")),
+            patch.object(engine, "check_and_start_recurrent_jules_tasks_async", side_effect=lambda *_: calls.append("recurrent")),
+            patch("src.auto_coder.automation_engine.git_pull"),
+            patch.object(engine, "_get_candidates", side_effect=KeyboardInterrupt("Stop Loop")),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                await engine._producer_loop("owner/repo")
+
+        assert calls == []
 
     @pytest.mark.asyncio
     async def test_producer_loop_invalidates_cache_before_jules_checks(self, mock_github_client):
         engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        engine._next_jules_session_list_refresh = 0.0
         calls = []
 
         with (

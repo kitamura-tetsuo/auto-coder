@@ -39,12 +39,14 @@ class _SessionListCache:
 
     Listing every Jules session requires walking the whole paginated collection,
     which takes minutes once a repository accumulates a thousand sessions. The
-    automation loop needs that listing several times per iteration, so the raw
-    (unfiltered) result is cached here and reused until the loop explicitly
+    automation loop needs that listing several times per hourly maintenance
+    cycle, so the raw (unfiltered) result is cached here and reused until the loop
+    explicitly
     invalidates it via :func:`invalidate_jules_sessions_cache`.
     """
 
     sessions: Optional[List[Dict[str, Any]]] = None
+    error: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -54,11 +56,12 @@ _session_list_cache = _SessionListCache()
 def invalidate_jules_sessions_cache() -> None:
     """Drop the cached Jules session listing so the next call refetches it.
 
-    Call this once per automation loop iteration: every ``list_sessions`` call
-    within the same iteration then shares a single HTTP fetch.
+    Call this at the start of an eligible maintenance cycle: every
+    ``list_sessions`` call within that cycle then shares a single HTTP fetch.
     """
     with _session_list_cache.lock:
         _session_list_cache.sessions = None
+        _session_list_cache.error = None
 
 
 class JulesClient(CloudTaskClientBase):
@@ -219,14 +222,23 @@ class JulesClient(CloudTaskClientBase):
         return all_sessions
 
     def _get_all_sessions(self, page_size: int) -> List[Dict[str, Any]]:
-        """Return every Jules session, fetching them only once per loop iteration."""
+        """Return every Jules session, fetching them only once per maintenance cycle."""
         with _session_list_cache.lock:
             if _session_list_cache.sessions is not None:
                 logger.debug(f"Reusing cached Jules session listing ({len(_session_list_cache.sessions)} sessions)")
                 return _session_list_cache.sessions
+            if _session_list_cache.error is not None:
+                raise RuntimeError(_session_list_cache.error)
 
             logger.info(f"Listing Jules sessions (pageSize={page_size})")
-            all_sessions = self._fetch_all_sessions(page_size)
+            try:
+                all_sessions = self._fetch_all_sessions(page_size)
+            except Exception as exc:
+                # Remember a failed attempt for the remainder of this cycle.
+                # Otherwise each maintenance pass would independently retry the
+                # same expensive paginated request.
+                _session_list_cache.error = str(exc)
+                raise
             _session_list_cache.sessions = all_sessions
             return all_sessions
 
