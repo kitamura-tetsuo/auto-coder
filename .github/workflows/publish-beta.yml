@@ -32,5 +32,4 @@ jobs:
           build-args: AUTO_CODER_SOURCE_REVISION=${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
-            ghcr.io/${{ github.repository }}:beta
           provenance: true

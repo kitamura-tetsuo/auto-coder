@@ -82,6 +82,27 @@ def validate_repository_ownership(repo_name: str) -> DeploymentIdentity | None:
     return identity
 
 
+@contextmanager
+def repository_dispatch_authority(repo_name: str) -> Iterator[None]:
+    """Serialize ownership validation with the creation of durable active work.
+
+    Callers must establish their implementation slot while this context is held.
+    Reassignment uses the same registry lock and therefore either happens first
+    (making this validation fail) or happens after the slot is durable (making
+    reassignment fail).
+    """
+    identity = deployment_identity()
+    if identity is None:
+        yield
+        return
+    with _locked_registry(identity.ownership_file) as assignments:
+        owner = assignments.get(repo_name)
+        if owner != identity.channel:
+            detail = "unassigned" if owner is None else f"assigned to {owner}"
+            raise DeploymentChannelError(f"Repository {repo_name} is {detail}; {identity.channel} refuses to dispatch work")
+        yield
+
+
 def assign_repository(repo_name: str, channel: str, ownership_file: Path, runtime_parent: Path) -> None:
     """Atomically reassign a repository only when its old channel has no active work."""
     if channel not in VALID_CHANNELS:

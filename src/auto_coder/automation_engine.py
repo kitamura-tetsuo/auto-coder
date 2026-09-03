@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
+from .deployment_channel import repository_dispatch_authority
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
@@ -1135,10 +1136,11 @@ class AutomationEngine:
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
-        reserved = slots.reserve(owner, implementation_pr=implementation_pr)
-        if not reserved:
-            slots.reconcile(self.github)
+        with repository_dispatch_authority(repo_name):
             reserved = slots.reserve(owner, implementation_pr=implementation_pr)
+            if not reserved:
+                slots.reconcile(self.github)
+                reserved = slots.reserve(owner, implementation_pr=implementation_pr)
         if not reserved:
             result.actions = [f"Deferred - logical implementation limit is occupied ({owner.key})"]
             return result

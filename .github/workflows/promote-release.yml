@@ -6,6 +6,9 @@ on:
       digest:
         description: Existing tested beta manifest digest (sha256:...); use an older digest to roll back
         required: true
+      beta_sha:
+        description: Main commit SHA whose successful beta publication produced the digest
+        required: true
 
 permissions:
   contents: read
@@ -24,8 +27,11 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}
           DIGEST: ${{ inputs.digest }}
+          BETA_SHA: ${{ inputs.beta_sha }}
         run: |
           case "$DIGEST" in sha256:[0-9a-f][0-9a-f]*) ;; *) echo "Invalid digest" >&2; exit 2;; esac
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
+          TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$BETA_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          python scripts/deployment_artifacts.py require-tested-beta "$DIGEST" "$TESTED_DIGEST"
           docker buildx imagetools create --tag "$IMAGE:release" "$IMAGE@$DIGEST"
           test "$(docker buildx imagetools inspect "$IMAGE:release" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$DIGEST"
