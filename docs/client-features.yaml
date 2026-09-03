@@ -1,5 +1,18 @@
 # Client Features Documentation
 
+## Release and beta deployment channels
+
+Successful `main` builds publish one immutable GHCR image tagged by commit and
+advance `beta`; failed builds cannot move that tag. The operator-only promotion
+workflow retags an existing manifest digest as `release` without rebuilding and
+also supports rollback to an older digest. `compose.channels.yml` pins both
+instances by digest and gives release and beta separate durable state, workspace,
+cache, and log roots. Each externally deployed process records its channel and
+artifact identity, disables internal package updates, and fails closed unless a
+shared ownership registry assigns its repository to that channel. Repository
+assignment is atomic and cannot change channels while the old channel's durable
+implementation-slot state is active or unreadable.
+
 This file documents the client-facing features and tools provided by auto-coder.
 
 ## Structured PR processing outcomes

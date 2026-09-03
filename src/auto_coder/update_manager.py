@@ -41,6 +41,10 @@ class AutoUpdateResult:
 
 def _auto_update_disabled() -> bool:
     """Return True when auto-update checks are disabled by environment or config."""
+    # An immutable externally selected artifact is authoritative.  Updating the
+    # installed package here would make reported channel identity untruthful.
+    if os.environ.get("AUTO_CODER_CHANNEL") is not None:
+        return True
     flag = os.environ.get("AUTO_CODER_DISABLE_AUTO_UPDATE")
     if flag and flag.strip().lower() in {"1", "true", "yes", "on"}:
         return True

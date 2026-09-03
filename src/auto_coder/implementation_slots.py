@@ -47,7 +47,9 @@ class ImplementationSlotRepository:
             raise ValueError("max_concurrent_implementations must be a positive integer")
         self.repo_name = repo_name
         self.max_implementations = max_implementations
-        self.storage_path = storage_path or Path.home() / ".auto-coder" / repo_name / "implementation_slots.json"
+        runtime_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
+        default_root = Path(runtime_root) / "state" if runtime_root else Path.home() / ".auto-coder"
+        self.storage_path = storage_path or default_root / repo_name / "implementation_slots.json"
         self.lock_path = self.storage_path.with_suffix(".lock")
         self._thread_lock = threading.RLock()
         self._owner_locks: Dict[str, threading.RLock] = {}
