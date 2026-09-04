@@ -15,7 +15,7 @@ from auto_coder.adversarial_validator import (
     format_adversarial_validation_comment,
 )
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
-from auto_coder.cloud_manager import CloudTaskBinding
+from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
@@ -448,6 +448,85 @@ class TestAdversarialValidationCodexFeedback:
 
         resolver.assert_not_called()
         assert actions == ["Adversarial feedback was not delivered for PR #1676: no provider-owned cloud task association was found"]
+
+    def test_provider_initialization_failure_reports_non_delivery_without_fallback(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(1677, "jules-session", provider="jules")
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        resolver_error = RuntimeError("Jules configuration unavailable")
+        pr_data = {"number": 1676, "body": "Fixes #1677"}
+
+        with (
+            patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+            patch(
+                "auto_coder.cloud_manager.CloudManager.get_binding",
+                lambda self, number: self._read_bindings().get(str(number)),
+            ),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", side_effect=resolver_error) as resolver,
+        ):
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", "report", MagicMock())
+
+        resolver.assert_called_once_with("jules", "owner/repo")
+        assert actions == ["Adversarial feedback was not delivered for PR #1676: cloud provider 'jules' is unavailable: Jules configuration unavailable"]
+
+    def test_conflicting_linked_issue_bindings_fail_closed_before_provider_resolution(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(1677, "jules-session", provider="jules")
+        assert manager.add_session(1678, "codex-task", provider="codex-cloud")
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        pr_data = {"number": 1676, "body": "Fixes #1677\nFixes #1678"}
+
+        with (
+            patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+            patch(
+                "auto_coder.cloud_manager.CloudManager.get_binding",
+                lambda self, number: self._read_bindings().get(str(number)),
+            ),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider") as resolver,
+        ):
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", "report", MagicMock())
+
+        resolver.assert_not_called()
+        assert actions == ["Adversarial feedback was not delivered for PR #1676: multiple conflicting cloud task associations were found"]
+
+    def test_receipt_is_scoped_by_provider_when_raw_task_id_is_reused(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(99, "shared-id", provider="codex-cloud")
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        finding = "### Auto-Coder adversarial finding\n\nShared finding"
+        thread = ReviewThread(id="PRRT_shared", comments=[ReviewThreadComment(database_id=301, body=finding)])
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [thread]
+        codex = MagicMock()
+        codex.send_followup.return_value = True
+        jules = MagicMock()
+        jules.send_followup.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #99",
+            "head": {"ref": "provider-fix", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+
+        with (
+            patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+            patch(
+                "auto_coder.cloud_manager.CloudManager.get_binding",
+                lambda self, number: self._read_bindings().get(str(number)),
+            ),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "delivery.json"),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", side_effect=lambda provider, _repo: {"codex-cloud": codex, "jules": jules}[provider]) as resolver,
+        ):
+            first_actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+            assert manager.add_session(99, "shared-id", provider="jules")
+            second_actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+
+        assert resolver.call_count == 2
+        codex.send_followup.assert_called_once()
+        jules.send_followup.assert_called_once()
+        assert "codex-cloud task 'shared-id'" in first_actions[0]
+        assert "jules task 'shared-id'" in second_actions[0]
 
     def test_invalid_metadata_falls_back_to_pr_body_task_for_delivery(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"

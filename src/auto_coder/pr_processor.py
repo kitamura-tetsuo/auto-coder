@@ -4486,7 +4486,11 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     from .cloud_task_client_base import CloudTaskClientBase
     from .cloud_task_engine import CloudTaskEngine
 
-    client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
+    try:
+        client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
+    except Exception as exc:
+        logger.error(f"Failed to initialize cloud provider '{provider}' for adversarial feedback on PR #{pr_number}: {exc}")
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' is unavailable: {exc}"]
     if client is None:
         return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' is unavailable"]
     if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
