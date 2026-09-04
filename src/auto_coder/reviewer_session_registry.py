@@ -37,6 +37,17 @@ class TestOracleGap:
 
 
 @dataclass
+class RecoveredFileEvidence:
+    """Current-head evidence that resolved an initially incomplete file."""
+
+    path: str = ""
+    source: str = ""
+    status: str = "RECOVERED"
+    evidence: str = ""
+    requirement_ids: List[str] = field(default_factory=list)
+
+
+@dataclass
 class ReviewerSession:
     repository: str = ""
     pr_number: int = 0
@@ -46,6 +57,8 @@ class ReviewerSession:
     session_id: str = ""
     last_head_sha: str = ""
     test_oracle_gaps: List[TestOracleGap] = field(default_factory=list)
+    evidence_head_sha: str = ""
+    recovered_file_evidence: List[RecoveredFileEvidence] = field(default_factory=list)
 
 
 class ReviewerSessionRegistry:
@@ -86,6 +99,14 @@ class ReviewerSessionRegistry:
                     if not isinstance(raw_gap, dict):
                         return None
                     gaps.append(TestOracleGap(**raw_gap))
+                raw_evidence = raw.get("recovered_file_evidence", [])
+                if not isinstance(raw_evidence, list):
+                    return None
+                recovered_evidence: List[RecoveredFileEvidence] = []
+                for raw_entry in raw_evidence:
+                    if not isinstance(raw_entry, dict):
+                        return None
+                    recovered_evidence.append(RecoveredFileEvidence(**raw_entry))
                 return ReviewerSession(
                     repository=str(raw["repository"]),
                     pr_number=stored_pr_number,
@@ -95,6 +116,8 @@ class ReviewerSessionRegistry:
                     session_id=str(raw["session_id"]),
                     last_head_sha=str(raw["last_head_sha"]),
                     test_oracle_gaps=gaps,
+                    evidence_head_sha=str(raw.get("evidence_head_sha", "")),
+                    recovered_file_evidence=recovered_evidence,
                 )
             except (KeyError, TypeError, ValueError):
                 return None

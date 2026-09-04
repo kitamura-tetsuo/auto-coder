@@ -475,7 +475,7 @@ def test_non_authoritative_resolved_response_preserves_the_open_checkpoint(tmp_p
 
     saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
     assert result.result == "ERROR"
-    assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+    assert result.diagnostic_category == "pass_with_unresolved_changed_file_evidence"
     assert result.test_oracle_gaps[0].status == "RESOLVED"
     assert saved is not None
     assert saved.last_head_sha == "sha-a"
