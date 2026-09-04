@@ -769,7 +769,9 @@ def create_high_score_backend_manager() -> Optional[BackendManager]:
     if high_score_order:
         from .quota_selector import rank_high_score_backends_by_quota
 
-        selected_backends = rank_high_score_backends_by_quota(high_score_order, config) or high_score_order
+        selected_backends = rank_high_score_backends_by_quota(high_score_order, config)
+        if not selected_backends:
+            return None
         primary_backend = selected_backends[0]
 
         # Build models map for these backends
@@ -821,7 +823,9 @@ def create_high_score_cloud_backend_manager() -> Optional[BackendManager]:
     if high_score_cloud_order:
         from .quota_selector import rank_high_score_backends_by_quota
 
-        selected_backends = rank_high_score_backends_by_quota(high_score_cloud_order, config) or high_score_cloud_order
+        selected_backends = rank_high_score_backends_by_quota(high_score_cloud_order, config)
+        if not selected_backends:
+            return None
         primary_backend = selected_backends[0]
 
         # Build models map for these backends
@@ -873,7 +877,9 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
     if cloud_order:
         from .quota_selector import rank_high_score_backends_by_quota
 
-        selected_backends = rank_high_score_backends_by_quota(cloud_order, config) or cloud_order
+        selected_backends = rank_high_score_backends_by_quota(cloud_order, config)
+        if not selected_backends:
+            return None
         primary_backend = selected_backends[0]
 
         # Build models map for these backends
@@ -981,7 +987,9 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
 
     from .quota_selector import rank_high_score_backends_by_quota
 
-    selected_backends = rank_high_score_backends_by_quota(capable_backends, config) or capable_backends
+    selected_backends = rank_high_score_backends_by_quota(capable_backends, config)
+    if not selected_backends:
+        return None
     primary_backend = selected_backends[0]
 
     models = {}

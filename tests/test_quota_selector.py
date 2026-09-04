@@ -5,13 +5,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from auto_coder.automation_config import AutomationConfig
 from auto_coder.claude_usage_checker import ClaudeUsageQuota, ClaudeUsageWindow
 from auto_coder.cli_helpers import (
     create_cloud_backend_manager,
     create_high_score_backend_manager,
     create_high_score_cloud_backend_manager,
 )
-from auto_coder.codex_usage_checker import CodexResetCredits, CodexWeeklyUsage
+from auto_coder.codex_usage_checker import CodexResetCredits, CodexWeeklyUsage, parse_codex_weekly_usage
+from auto_coder.issue_processor import _process_issue_cloud_backend, _process_issue_high_score_cloud
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.quota_selector import (
     WEEK_SECONDS,
@@ -345,6 +347,38 @@ class TestQuotaSurplusSelection:
 
             assert ranked == ["claude-routine"]
 
+    @pytest.mark.parametrize(("strategy", "expected"), [("burst", ["codex-cloud", "qwen"]), ("surplus", ["qwen"])])
+    def test_strategy_admission_from_provider_payload_through_ranking(self, fixed_now, strategy, expected):
+        """Provider usage and loaded config retain strategy semantics through selection."""
+        reset_at = fixed_now + timedelta(days=2)
+        usage = parse_codex_weekly_usage(
+            {
+                "rate_limit": {
+                    "secondary_window": {
+                        "used_percent": 88,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": reset_at.timestamp(),
+                    }
+                },
+                "rate_limit_reset_credits": {"available_count": 1},
+            },
+            now=fixed_now,
+        )
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": strategy},
+                "backends": {
+                    "codex-cloud": {"type": "codex-cloud"},
+                    "qwen": {"type": "qwen"},
+                },
+            }
+        )
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage):
+            ranked = rank_high_score_backends_by_quota(["codex-cloud", "qwen"], config=config, now=fixed_now)
+        assert usage.remaining_percent == 12
+        assert usage.minimum_remaining_percent == 15
+        assert ranked == expected
+
     def test_unmetered_and_fallback_backends_preserve_order(self, fixed_now):
         """Test that unmetered backends retain stable ordering when quota metrics are not available."""
         config = LLMBackendConfiguration(
@@ -496,6 +530,88 @@ class TestHighScoreBackendManagerIntegration:
         call_args = mock_build.call_args[1]
         assert call_args["selected_backends"] == ["backend-b", "backend-a"]
         assert call_args["primary_backend"] == "backend-b"
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_exhausted_singleton_burst_backend_is_not_installed(self, mock_build, mock_get_config):
+        """Parsed provider exhaustion must survive ranking and manager creation."""
+        now = datetime.now(timezone.utc)
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": "burst"},
+                "backend_with_high_score": {"order": ["codex-cloud"]},
+                "backends": {"codex-cloud": {"type": "codex-cloud"}},
+            }
+        )
+        usage = parse_codex_weekly_usage(
+            {
+                "rate_limit": {
+                    "secondary_window": {
+                        "used_percent": 100,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                    }
+                }
+            },
+            now=now,
+        )
+        mock_get_config.return_value = config
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage):
+            manager = create_high_score_backend_manager()
+
+        assert usage.remaining_percent == 0
+        assert manager is None
+        mock_build.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("config_section", "processor"),
+        [
+            ("backend_with_high_score_cloud", _process_issue_high_score_cloud),
+            ("backend_cloud", _process_issue_cloud_backend),
+        ],
+    )
+    def test_direct_issue_processing_does_not_restore_all_ineligible_candidates(self, config_section, processor):
+        """Direct issue routing must preserve an empty quota-ranked failover list."""
+        now = datetime.now(timezone.utc)
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": "burst"},
+                config_section: {"order": ["codex-cloud", "disabled-cloud"]},
+                "backends": {
+                    "codex-cloud": {"type": "codex-cloud"},
+                    "disabled-cloud": {"type": "jules", "enabled": False},
+                },
+            }
+        )
+        usage = parse_codex_weekly_usage(
+            {
+                "rate_limit": {
+                    "secondary_window": {
+                        "used_percent": 100,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                    }
+                }
+            },
+            now=now,
+        )
+        fallback_actions = ["Used default backend"]
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=config),
+            patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+            patch("auto_coder.issue_processor._process_issue_codex_cloud_mode") as codex_dispatch,
+            patch("auto_coder.issue_processor._process_issue_jules_mode") as jules_dispatch,
+            patch("auto_coder.issue_processor._take_issue_actions", return_value=fallback_actions) as default_dispatch,
+            patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager", return_value=None),
+            patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=None),
+            patch("auto_coder.cli_helpers.create_cloud_backend_manager", return_value=None),
+        ):
+            actions = processor("owner/repo", {"number": 1685}, AutomationConfig(), MagicMock())
+
+        assert actions == fallback_actions
+        codex_dispatch.assert_not_called()
+        jules_dispatch.assert_not_called()
+        default_dispatch.assert_called_once()
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.build_backend_manager")
