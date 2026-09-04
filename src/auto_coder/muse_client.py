@@ -152,6 +152,7 @@ class _GitState:
     untracked_files: tuple[_WorkspaceFile, ...]
     ignored_files: tuple[_WorkspaceFile, ...]
     tracked_modes: tuple[_WorkspaceMode, ...]
+    directory_modes: tuple[_WorkspaceMode, ...]
     refs: tuple[tuple[str, str], ...]
 
 
@@ -192,6 +193,7 @@ class MuseClient(LLMClientBase):
         untracked_files = self._snapshot_files(self._git("ls-files", "--others", "--exclude-standard", "-z").stdout)
         ignored_files = self._snapshot_files(self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z").stdout)
         tracked_modes = self._snapshot_modes(self._git("ls-files", "-z").stdout)
+        directory_modes = self._snapshot_directory_modes()
         refs = self._snapshot_refs()
         return _GitState(
             branch=branch_result.stdout.decode().strip() if branch_result.returncode == 0 else None,
@@ -202,6 +204,7 @@ class MuseClient(LLMClientBase):
             untracked_files=untracked_files,
             ignored_files=ignored_files,
             tracked_modes=tracked_modes,
+            directory_modes=directory_modes,
             refs=refs,
         )
 
@@ -225,6 +228,18 @@ class MuseClient(LLMClientBase):
             path = Path.cwd() / relative_path
             if path.exists() and not path.is_symlink():
                 modes.append(_WorkspaceMode(relative_path, stat.S_IMODE(path.stat().st_mode)))
+        return tuple(modes)
+
+    @staticmethod
+    def _snapshot_directory_modes() -> tuple[_WorkspaceMode, ...]:
+        root = Path.cwd()
+        modes = [_WorkspaceMode(".", stat.S_IMODE(root.stat().st_mode))]
+        for current_root, directories, _files in os.walk(root, followlinks=False):
+            directories[:] = sorted(directory for directory in directories if not (Path(current_root) == root and directory == ".git"))
+            for directory in directories:
+                path = Path(current_root) / directory
+                if not path.is_symlink():
+                    modes.append(_WorkspaceMode(str(path.relative_to(root)), stat.S_IMODE(path.stat().st_mode)))
         return tuple(modes)
 
     def _snapshot_refs(self) -> tuple[tuple[str, str], ...]:
@@ -295,6 +310,10 @@ class MuseClient(LLMClientBase):
             path = Path.cwd() / workspace_mode.path
             if path.exists() and not path.is_symlink():
                 path.chmod(workspace_mode.mode)
+        for directory_mode in reversed(state.directory_modes):
+            path = Path.cwd() / directory_mode.path
+            if path.is_dir() and not path.is_symlink():
+                path.chmod(directory_mode.mode)
 
     @staticmethod
     def _trace_contains_git_mutation(trace_path: str) -> bool:
@@ -319,7 +338,9 @@ class MuseClient(LLMClientBase):
         lifecycle_changed = (after.branch, after.head) != (before.branch, before.head)
         refs_changed = after.refs != before.refs
         index_changed = after.staged_patch != before.staged_patch
-        noedit_changed = is_noedit and (after.status != before.status or after.unstaged_patch != before.unstaged_patch or after.untracked_files != before.untracked_files or after.ignored_files != before.ignored_files or after.tracked_modes != before.tracked_modes)
+        noedit_changed = is_noedit and (
+            after.status != before.status or after.unstaged_patch != before.unstaged_patch or after.untracked_files != before.untracked_files or after.ignored_files != before.ignored_files or after.tracked_modes != before.tracked_modes or after.directory_modes != before.directory_modes
+        )
         if is_noedit and (lifecycle_changed or noedit_changed):
             self._restore_repository(before)
         elif lifecycle_changed or refs_changed:
