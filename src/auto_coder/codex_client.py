@@ -240,16 +240,17 @@ class CodexClient(LLMClientBase):
         if not diagnostic:
             return None
 
-        # A structured terminal failure is authoritative.  Earlier reconnect
-        # notices describe intermediate recovery attempts and must not mask a
-        # later implementation/agent failure.
-        classification_text = terminal_messages[-1] if terminal_messages else diagnostic
-        low = classification_text.lower()
-        reconnect_counters = re.findall(r"reconnect(?:ing)?(?:\.\.\.)?\s*(\d+)\s*/\s*(\d+)", low)
+        # Exhaustion may be established by the preceding reconnect event, while
+        # the terminal event supplies the final provider cause. Conversely, an
+        # intermediate reconnect must not mask an unrelated terminal agent
+        # failure, so transport evidence comes from turn.failed when available.
+        all_diagnostics = diagnostic.lower()
+        terminal_diagnostic = terminal_messages[-1].lower() if terminal_messages else all_diagnostics
+        reconnect_counters = re.findall(r"reconnect(?:ing)?(?:\.\.\.)?\s*(\d+)\s*/\s*(\d+)", all_diagnostics)
         counter_exhausted = any(int(current) >= int(limit) for current, limit in reconnect_counters)
-        reconnect_exhausted = counter_exhausted or bool(re.search(r"reconnect(?:ion)? (?:attempts? )?(?:exhausted|failed)", low))
+        reconnect_exhausted = counter_exhausted or bool(re.search(r"reconnect(?:ion)? (?:attempts? )?(?:exhausted|failed)", all_diagnostics))
         provider_transport = any(
-            marker in low
+            marker in terminal_diagnostic
             for marker in (
                 "backend-api/codex",
                 "wss://",

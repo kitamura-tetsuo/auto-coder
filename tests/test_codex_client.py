@@ -106,6 +106,28 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_exhaustion_and_terminal_provider_evidence_can_span_events(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        reconnect = "Reconnecting... 5/5 (websocket transport error)"
+        terminal = "unexpected status 404 Not Found, url: wss://chatgpt.com/backend-api/codex/responses"
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"turn.started"}',
+                json.dumps({"type": "error", "message": reconnect}),
+                json.dumps({"type": "turn.failed", "message": terminal}),
+            ]
+        )
+        mock_run_command.return_value = CommandResult(False, stdout, "", 1)
+
+        with pytest.raises(AutoCoderRetryableBackendError) as exc_info:
+            CodexClient()._run_llm_cli("implement issue")
+
+        assert reconnect in str(exc_info.value)
+        assert terminal in str(exc_info.value)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("builtins.print")
     @patch("src.auto_coder.codex_client.get_llm_config")
     def test_success_returns_stdout_without_stderr_contamination(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
