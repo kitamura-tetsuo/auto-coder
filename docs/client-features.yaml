@@ -25,6 +25,16 @@ as red CI, merge gates, and cloud-task waits remain deferred rather than failure
 
 ## Configuration
 
+#### Muse Code local backend
+
+Meta Muse Code is available as the `muse` backend and as named aliases with
+`backend_type = "muse"`. Install and authenticate the `muse` CLI (or provide
+`MUSE_API_KEY`) before startup. Auto-Coder invokes `muse exec` once with the
+configured model and edit/no-edit options. Muse may inspect files, edit the
+working tree, and run tests, but Auto-Coder exclusively owns branches, HEAD,
+staging, commits, pushes, and pull-request lifecycle operations. A lifecycle
+mutation, or any repository mutation during no-edit execution, fails the run.
+
 #### Authoritative Codex Cloud task IDs
 
 Codex Cloud task associations use one shared parser across PR metadata, PR bodies,
