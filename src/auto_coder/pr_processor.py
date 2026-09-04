@@ -1664,6 +1664,8 @@ def _take_pr_actions(
         elif (processing_status is None or processing_status.outcome is not PRProcessingOutcome.FAILED) and ("ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions) or any("Skipping merge" in action for action in merge_actions)):
             actions.append(f"PR #{pr_number} processing deferred.")
 
+    except AutoCoderRetryableBackendError:
+        raise
     except Exception as e:
         actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
         if processing_status is not None:
@@ -1843,6 +1845,8 @@ def _apply_pr_actions_directly(
             # Trigger fallback due to no LLM response
             _trigger_fallback_for_pr_failure(repo_name, pr_data, "LLM merge risky/failed (no response)")
 
+    except AutoCoderRetryableBackendError:
+        raise
     except Exception as e:
         actions.append(f"Error applying PR actions directly: {e}")
         # Trigger fallback due to exception

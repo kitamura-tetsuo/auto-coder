@@ -109,6 +109,8 @@ def _take_issue_actions(
         )
         actions.extend(action_results)
 
+    except AutoCoderRetryableBackendError:
+        raise
     except Exception as e:
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
         actions.append(f"Error processing issue #{issue_number}: {e}")
