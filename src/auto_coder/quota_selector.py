@@ -74,6 +74,7 @@ def evaluate_backend_quota(
     now: Optional[datetime] = None,
     consumption_curve: Optional[Callable[[float, float], float]] = None,
     quota_period_seconds: float = WEEK_SECONDS,
+    strategy: str = "surplus",
 ) -> BackendQuotaEvaluation:
     """Evaluate eligibility and quota surplus for a single backend candidate.
 
@@ -118,7 +119,7 @@ def evaluate_backend_quota(
                 usage_retrieval_failed=True,
                 reason="Codex Cloud credentials or usage data unavailable",
             )
-        if not usage.can_start_task:
+        if not usage.allows_task(strategy):
             credit_count = usage.reset_credits.available_count
             return BackendQuotaEvaluation(
                 backend_name=backend_name,
@@ -127,7 +128,7 @@ def evaluate_backend_quota(
                 reset_at=usage.reset_at,
                 reset_credit_count=credit_count,
                 reset_credit_available=None if credit_count is None else credit_count > 0,
-                reason=f"Codex Cloud quota insufficient ({usage.remaining_percent:.1f}% < {usage.minimum_remaining_percent:.1f}%)",
+                reason=_codex_ineligible_reason("Codex Cloud", usage.remaining_percent, usage.minimum_remaining_percent, strategy),
             )
 
         actual_ratio = usage.remaining_percent / 100.0
@@ -155,7 +156,7 @@ def evaluate_backend_quota(
         if creds is not None:
             usage = get_codex_weekly_usage(now=current_time)
             if usage is not None:
-                if not usage.can_start_task:
+                if not usage.allows_task(strategy):
                     credit_count = usage.reset_credits.available_count
                     return BackendQuotaEvaluation(
                         backend_name=backend_name,
@@ -164,7 +165,7 @@ def evaluate_backend_quota(
                         reset_at=usage.reset_at,
                         reset_credit_count=credit_count,
                         reset_credit_available=None if credit_count is None else credit_count > 0,
-                        reason=f"Codex quota insufficient ({usage.remaining_percent:.1f}% < {usage.minimum_remaining_percent:.1f}%)",
+                        reason=_codex_ineligible_reason("Codex", usage.remaining_percent, usage.minimum_remaining_percent, strategy),
                     )
                 actual_ratio = usage.remaining_percent / 100.0
                 reset_at = usage.reset_at if usage.reset_at.tzinfo else usage.reset_at.replace(tzinfo=timezone.utc)
@@ -278,6 +279,12 @@ def evaluate_backend_quota(
     )
 
 
+def _codex_ineligible_reason(name: str, remaining_percent: float, minimum_remaining_percent: float, strategy: str) -> str:
+    if strategy == "burst":
+        return f"{name} quota exhausted ({remaining_percent:.1f}% remaining)"
+    return f"{name} quota insufficient ({remaining_percent:.1f}% < {minimum_remaining_percent:.1f}%)"
+
+
 def rank_high_score_backends_by_quota(
     candidate_backends: Union[Sequence[BackendPriorityCandidate], BackendPriorityGroup],
     config: Optional[object] = None,
@@ -348,6 +355,7 @@ def _rank_backends(
             now=now,
             consumption_curve=consumption_curve,
             quota_period_seconds=quota_period_seconds,
+            strategy=strategy,
         )
         for b in backend_names
     ]

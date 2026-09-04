@@ -11,7 +11,7 @@ from auto_coder.cli_helpers import (
     create_high_score_backend_manager,
     create_high_score_cloud_backend_manager,
 )
-from auto_coder.codex_usage_checker import CodexResetCredits, CodexWeeklyUsage
+from auto_coder.codex_usage_checker import CodexResetCredits, CodexWeeklyUsage, parse_codex_weekly_usage
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.quota_selector import (
     WEEK_SECONDS,
@@ -344,6 +344,38 @@ class TestQuotaSurplusSelection:
             )
 
             assert ranked == ["claude-routine"]
+
+    @pytest.mark.parametrize(("strategy", "expected"), [("burst", ["codex-cloud", "qwen"]), ("surplus", ["qwen"])])
+    def test_strategy_admission_from_provider_payload_through_ranking(self, fixed_now, strategy, expected):
+        """Provider usage and loaded config retain strategy semantics through selection."""
+        reset_at = fixed_now + timedelta(days=2)
+        usage = parse_codex_weekly_usage(
+            {
+                "rate_limit": {
+                    "secondary_window": {
+                        "used_percent": 88,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": reset_at.timestamp(),
+                    }
+                },
+                "rate_limit_reset_credits": {"available_count": 1},
+            },
+            now=fixed_now,
+        )
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": strategy},
+                "backends": {
+                    "codex-cloud": {"type": "codex-cloud"},
+                    "qwen": {"type": "qwen"},
+                },
+            }
+        )
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage):
+            ranked = rank_high_score_backends_by_quota(["codex-cloud", "qwen"], config=config, now=fixed_now)
+        assert usage.remaining_percent == 12
+        assert usage.minimum_remaining_percent == 15
+        assert ranked == expected
 
     def test_unmetered_and_fallback_backends_preserve_order(self, fixed_now):
         """Test that unmetered backends retain stable ordering when quota metrics are not available."""

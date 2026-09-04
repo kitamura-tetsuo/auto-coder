@@ -8,6 +8,7 @@ import pytest
 
 from auto_coder.codex_usage_checker import (
     CODEX_USAGE_URL,
+    codex_cloud_quota_allows_task,
     get_codex_weekly_usage,
     load_codex_oauth_credentials,
     parse_codex_weekly_usage,
@@ -53,6 +54,30 @@ def test_quota_boundary_is_inclusive():
     denied = parse_codex_weekly_usage(_payload(19.9, timedelta(days=3)), now=NOW)
     assert allowed.can_start_task is True
     assert denied.can_start_task is False
+
+
+def test_quota_facts_separate_remaining_quota_from_reserve_threshold():
+    usage = parse_codex_weekly_usage(_payload(12, timedelta(days=2)), now=NOW)
+    assert usage.has_remaining_quota is True
+    assert usage.meets_reserve_threshold is False
+    assert usage.allows_task("burst") is True
+    assert usage.allows_task("surplus") is False
+
+
+def test_burst_rejects_confirmed_exhaustion_without_using_reset_credit():
+    payload = _payload(0, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = {"available_count": 1}
+    usage = parse_codex_weekly_usage(payload, now=NOW)
+    assert usage.has_remaining_quota is False
+    assert usage.allows_task("burst") is False
+    assert usage.reset_credits.available_count == 1
+
+
+@pytest.mark.parametrize(("strategy", "expected"), [("burst", True), ("surplus", False)])
+def test_cloud_quota_guard_uses_strategy(strategy, expected):
+    usage = parse_codex_weekly_usage(_payload(12, timedelta(days=2)), now=NOW)
+    with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage):
+        assert codex_cloud_quota_allows_task(strategy) is expected
 
 
 def test_primary_window_is_used_when_it_is_weekly():

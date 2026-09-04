@@ -2,12 +2,14 @@
 Unit tests for CodexCloudClient.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from auto_coder.cloud_task_client_base import CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
+from auto_coder.codex_usage_checker import codex_cloud_quota_allows_task, parse_codex_weekly_usage
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
@@ -137,6 +139,41 @@ class TestCodexCloudClient:
             with pytest.raises(RuntimeError, match="weekly quota"):
                 client.start_task("Implement the issue")
             mock_run.assert_not_called()
+
+    def test_start_task_preserves_burst_admission_at_execution_gate(self, mock_backend_config):
+        mock_backend_config.quota_selection_strategy = "burst"
+        now = datetime.now(timezone.utc)
+        usage = parse_codex_weekly_usage(
+            {
+                "rate_limit": {
+                    "secondary_window": {
+                        "used_percent": 88,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                    }
+                },
+                "rate_limit_reset_credits": {"available_count": 1},
+            },
+            now=now,
+        )
+        result = MagicMock(
+            returncode=0,
+            stdout="https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
+            stderr="",
+        )
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+            patch("auto_coder.codex_cloud_client.codex_cloud_quota_allows_task", wraps=codex_cloud_quota_allows_task) as quota_guard,
+            patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result) as run_command,
+        ):
+            task_id = CodexCloudClient("codex-cloud").start_task("Implement the issue")
+        assert task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+        assert usage.remaining_percent == 12
+        assert usage.minimum_remaining_percent == 15
+        assert usage.reset_credits.available_count == 1
+        quota_guard.assert_called_once_with(strategy="burst")
+        run_command.assert_called_once()
 
     def test_list_tasks(self, mock_backend_config):
         """Test listing tasks with codex cloud list --json."""
