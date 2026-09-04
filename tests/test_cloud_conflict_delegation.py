@@ -8,6 +8,7 @@ from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
 from src.auto_coder.pr_processor import (
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
+    _merge_pr,
     _record_cloud_conflict_deliveries,
     _resolve_cloud_conflict_origin,
     _update_with_base_branch,
@@ -95,6 +96,35 @@ def test_production_conflict_path_reports_confirmed_followup_in_actions_and_pr(t
     assert "PR #1589" in comment
     assert "head `H1`" in comment
     assert "merge-conflict-repair" in comment
+
+
+def test_direct_merge_path_propagates_confirmed_followup_to_action_sink(tmp_path) -> None:
+    """A failed API merge must expose acceptance before deferring cloud repair."""
+    cloud_client = FollowupClient()
+    github = Mock(token="token")
+    github.get_pr_comments.return_value = []
+    api = Mock()
+    api.pulls.merge.return_value = {"merged": False}
+    conflicting_pr = pr_data()
+    conflicting_pr["mergeable"] = False
+    api.pulls.get.return_value = conflicting_pr
+
+    with (
+        patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api),
+        patch("src.auto_coder.pr_processor._get_review_thread_gate_state", return_value=Mock(lookup_error=None, has_unresolved=False)),
+        patch("src.auto_coder.pr_processor._get_allowed_merge_methods", return_value=[]),
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(cloud_client, "task_e_direct")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+        patch("src.auto_coder.pr_processor._resolve_pr_merge_conflicts") as local_resolution,
+        patch("src.auto_coder.pr_processor.log_action") as action_sink,
+    ):
+        merged = _merge_pr("owner/repo", 1589, {}, AutomationConfig(), github)
+
+    assert merged is False
+    assert len(cloud_client.messages) == 1
+    action_sink.assert_any_call("Codex Cloud task 'task_e_direct' accepted merge-conflict-repair follow-up for PR #1589 at head H1")
+    action_sink.assert_any_call("Delegated merge-conflict repair for PR #1589 to its existing cloud session")
+    local_resolution.assert_not_called()
 
 
 def test_delegation_rejects_invalid_metadata_and_uses_provider_task_from_pr_body(tmp_path) -> None:
