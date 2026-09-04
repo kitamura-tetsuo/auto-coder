@@ -12,7 +12,7 @@ from auto_coder.claude_usage_checker import (
     ClaudeUsageWindow,
 )
 from auto_coder.cli import main
-from auto_coder.codex_usage_checker import CodexOAuthCredentials, CodexWeeklyUsage
+from auto_coder.codex_usage_checker import CodexOAuthCredentials, CodexResetCredits, CodexWeeklyUsage
 
 
 def _mock_claude_quota(insufficient: bool = False, reason: str = "") -> ClaudeUsageQuota:
@@ -38,6 +38,7 @@ def _mock_codex_usage(can_start: bool = True) -> CodexWeeklyUsage:
         reset_at=datetime(2026, 8, 30, 0, 0, tzinfo=timezone.utc),
         days_until_reset=6,
         minimum_remaining_percent=5.0,
+        reset_credits=CodexResetCredits(available_count=2, status="available"),
     )
 
 
@@ -73,6 +74,7 @@ class TestUsageAmountCLI:
             assert "Codex Usage (ChatGPT OAuth)" in result.output
             assert "Weekly Window: 25.0% used, 75.0% remaining" in result.output
             assert "Task Start Allowed: Yes" in result.output
+            assert "Reset Credits: 2" in result.output
 
     def test_usage_amount_claude_only_target_arg(self):
         """Test usage-amount claude only outputs Claude usage."""
@@ -141,6 +143,7 @@ class TestUsageAmountCLI:
             assert parsed["codex"]["available"] is True
             assert parsed["codex"]["can_start_task"] is True
             assert parsed["codex"]["remaining_percent"] == 75.0
+            assert parsed["codex"]["reset_credit_count"] == 2
 
     def test_usage_amount_claude_missing_credentials(self):
         """Test usage-amount when Claude OAuth token is missing."""

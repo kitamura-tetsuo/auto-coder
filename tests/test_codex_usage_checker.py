@@ -64,6 +64,31 @@ def test_primary_window_is_used_when_it_is_weekly():
     assert usage.remaining_percent == 80
 
 
+@pytest.mark.parametrize("count", [3, 0])
+def test_reset_credit_count_is_parsed_without_an_extra_request(count):
+    payload = _payload(80, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = {"available_count": count}
+    usage = parse_codex_weekly_usage(payload, now=NOW)
+    assert usage.reset_credits.available_count == count
+    assert usage.reset_credits.status == "available"
+
+
+def test_missing_reset_credit_data_is_unavailable_not_zero():
+    usage = parse_codex_weekly_usage(_payload(80, timedelta(days=2)), now=NOW)
+    assert usage.reset_credits.available_count is None
+    assert usage.reset_credits.status == "missing"
+
+
+@pytest.mark.parametrize("credits", [{"available_count": "1"}, {"available_count": -1}, "bad"])
+def test_malformed_reset_credit_data_does_not_destroy_valid_quota(credits):
+    payload = _payload(80, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = credits
+    usage = parse_codex_weekly_usage(payload, now=NOW)
+    assert usage.remaining_percent == 80
+    assert usage.reset_credits.available_count is None
+    assert usage.reset_credits.status == "malformed"
+
+
 def test_missing_weekly_window_is_rejected():
     with pytest.raises(ValueError, match="weekly"):
         parse_codex_weekly_usage({"rate_limit": {"primary_window": {"used_percent": 10, "limit_window_seconds": 18_000, "reset_at": 1}}}, now=NOW)

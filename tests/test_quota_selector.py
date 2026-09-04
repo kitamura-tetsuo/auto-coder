@@ -11,7 +11,7 @@ from auto_coder.cli_helpers import (
     create_high_score_backend_manager,
     create_high_score_cloud_backend_manager,
 )
-from auto_coder.codex_usage_checker import CodexWeeklyUsage
+from auto_coder.codex_usage_checker import CodexResetCredits, CodexWeeklyUsage
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.quota_selector import (
     WEEK_SECONDS,
@@ -230,6 +230,81 @@ class TestQuotaSurplusSelection:
             ranked = rank_high_score_backends_by_quota([{"backend-a", "backend-b"}, "backend-c"], now=fixed_now)
 
         assert ranked == ["backend-b", "backend-a", "backend-c"]
+
+    def test_burst_prefers_earliest_reset_in_equal_priority_group(self, fixed_now):
+        evaluations = {
+            "later": BackendQuotaEvaluation(backend_name="later", actual_remaining_ratio=0.8, time_until_reset_seconds=500),
+            "earlier": BackendQuotaEvaluation(backend_name="earlier", actual_remaining_ratio=0.2, time_until_reset_seconds=100),
+        }
+        config = LLMBackendConfiguration(quota_selection_strategy="burst")
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=lambda backend_name, **kwargs: evaluations[backend_name]):
+            ranked = rank_high_score_backends_by_quota({"later", "earlier"}, config=config, now=fixed_now)
+        assert ranked == ["earlier", "later"]
+
+    def test_burst_does_not_cross_ordered_priority_boundaries(self, fixed_now):
+        evaluations = {
+            "first": BackendQuotaEvaluation(backend_name="first", actual_remaining_ratio=0.5, time_until_reset_seconds=500),
+            "later": BackendQuotaEvaluation(backend_name="later", actual_remaining_ratio=0.5, time_until_reset_seconds=1),
+        }
+        config = LLMBackendConfiguration(quota_selection_strategy="burst")
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=lambda backend_name, **kwargs: evaluations[backend_name]):
+            ranked = rank_high_score_backends_by_quota(["first", "later"], config=config, now=fixed_now)
+        assert ranked == ["first", "later"]
+
+    def test_loaded_burst_configuration_reorders_only_declared_equal_group(self, fixed_now):
+        """Production config input preserves the group through the selector boundary."""
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": "burst"},
+                "backend_with_high_score": {"order": [["later", "earlier"], "metered"]},
+            }
+        )
+        evaluations = {
+            "later": BackendQuotaEvaluation(backend_name="later", actual_remaining_ratio=0.8, time_until_reset_seconds=500),
+            "earlier": BackendQuotaEvaluation(backend_name="earlier", actual_remaining_ratio=0.2, time_until_reset_seconds=100),
+            "metered": BackendQuotaEvaluation(backend_name="metered"),
+        }
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=lambda backend_name, **kwargs: evaluations[backend_name]):
+            ranked = rank_high_score_backends_by_quota(config.backend_with_high_score_order, config=config, now=fixed_now)
+        assert config.quota_selection_strategy == "burst"
+        assert ranked == ["earlier", "later", "metered"]
+
+    def test_burst_strategy_and_equal_group_survive_config_round_trip(self, tmp_path):
+        path = tmp_path / "llm_config.toml"
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": "burst"},
+                "backend_with_high_score": {"order": [["codex-cloud", "claude-routine"], "muse"]},
+            }
+        )
+        config.save_to_file(str(path))
+        restored = LLMBackendConfiguration.load_from_file(str(path))
+        assert restored.quota_selection_strategy == "burst"
+        assert restored.backend_with_high_score_order == [["codex-cloud", "claude-routine"], "muse"]
+
+    @pytest.mark.parametrize(("count", "expected"), [(1, True), (0, False)])
+    def test_exhausted_codex_exposes_reset_credit_state(self, fixed_now, count, expected):
+        usage = CodexWeeklyUsage(
+            remaining_percent=0,
+            reset_at=fixed_now + timedelta(days=2),
+            days_until_reset=2,
+            minimum_remaining_percent=15,
+            reset_credits=CodexResetCredits(available_count=count, status="available"),
+        )
+        config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud")})
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage):
+            evaluation = evaluate_backend_quota("codex-cloud", config=config, now=fixed_now)
+        assert evaluation.is_eligible is False
+        assert evaluation.reset_credit_count == count
+        assert evaluation.reset_credit_available is expected
+
+    def test_failed_codex_usage_has_unknown_quota_and_credit_state(self, fixed_now):
+        config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud")})
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=None):
+            evaluation = evaluate_backend_quota("codex-cloud", config=config, now=fixed_now)
+        assert evaluation.usage_retrieval_failed is True
+        assert evaluation.actual_remaining_ratio is None
+        assert evaluation.reset_credit_available is None
 
     def test_ineligible_backend_is_filtered_out(self, fixed_now):
         """Test that ineligibility (quota limit reached, disabled, missing credentials) filters out candidates."""

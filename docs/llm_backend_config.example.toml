@@ -264,6 +264,14 @@ options_for_noedit = []
 
 # Fallback Backend for Failed PRs
 # --------------------------------
+# Quota ranking defaults to the balanced surplus strategy. Burst consumes usable
+# subscription quotas in an equal-priority group by earliest reset before an
+# ordered metered fallback. Nested arrays declare equal priority.
+# [quota_selection]
+# strategy = "burst" # "surplus" (default) or "burst"
+# [backend_with_high_score]
+# order = [["codex-cloud", "claude-routine"], "muse"]
+#
 # The `backend_with_high_score` section allows you to specify a fallback backend
 # to use when PR processing fails. This is useful for resilience and ensuring
 # that PR processing can continue even when the default backend is unavailable.

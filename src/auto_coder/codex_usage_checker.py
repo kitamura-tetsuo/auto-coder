@@ -3,7 +3,7 @@
 import base64
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
@@ -25,11 +25,20 @@ class CodexOAuthCredentials:
 
 
 @dataclass(frozen=True)
+class CodexResetCredits:
+    """Read-only reset-credit state returned with the Codex usage response."""
+
+    available_count: Optional[int] = None
+    status: str = "missing"
+
+
+@dataclass(frozen=True)
 class CodexWeeklyUsage:
     remaining_percent: float = 0.0
     reset_at: datetime = datetime.min.replace(tzinfo=timezone.utc)
     days_until_reset: int = 0
     minimum_remaining_percent: float = 5.0
+    reset_credits: CodexResetCredits = field(default_factory=CodexResetCredits)
 
     @property
     def can_start_task(self) -> bool:
@@ -111,11 +120,24 @@ def parse_codex_weekly_usage(payload: Mapping[str, object], now: Optional[dateti
     current_time = now or datetime.now(timezone.utc)
     days_until_reset = max(0, int((reset_at - current_time).total_seconds() // 86400))
     threshold = float((days_until_reset + 1) * 5)
+    credit_value = payload.get("rate_limit_reset_credits")
+    credit_mapping = _mapping(credit_value)
+    if credit_mapping is None:
+        credit_status = "missing" if credit_value is None else "malformed"
+        reset_credits = CodexResetCredits(status=credit_status)
+    else:
+        available_count = credit_mapping.get("available_count")
+        if isinstance(available_count, int) and not isinstance(available_count, bool) and available_count >= 0:
+            reset_credits = CodexResetCredits(available_count=available_count, status="available")
+        else:
+            reset_credits = CodexResetCredits(status="malformed")
+
     return CodexWeeklyUsage(
         remaining_percent=100.0 - float(used_percent),
         reset_at=reset_at,
         days_until_reset=days_until_reset,
         minimum_remaining_percent=threshold,
+        reset_credits=reset_credits,
     )
 
 
@@ -152,5 +174,7 @@ def codex_cloud_quota_allows_task() -> bool:
     if usage is None:
         return False
     decision = "start" if usage.can_start_task else "skip"
-    logger.info(f"Codex weekly quota: remaining={usage.remaining_percent:.1f}%, " f"reset_at={usage.reset_at.isoformat()}, days_until_reset={usage.days_until_reset}, " f"required={usage.minimum_remaining_percent:.1f}%, decision={decision}")
+    credits = usage.reset_credits.available_count
+    credits_display = str(credits) if credits is not None else f"unavailable ({usage.reset_credits.status})"
+    logger.info(f"Codex weekly quota: remaining={usage.remaining_percent:.1f}%, " f"reset_at={usage.reset_at.isoformat()}, days_until_reset={usage.days_until_reset}, " f"required={usage.minimum_remaining_percent:.1f}%, reset_credits={credits_display}, decision={decision}")
     return usage.can_start_task
