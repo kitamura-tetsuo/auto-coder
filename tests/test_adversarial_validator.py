@@ -1,6 +1,9 @@
 """Tests for the adversarial validation module."""
 
 import json
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -11,6 +14,7 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
     ChangeProvenanceItem,
+    DynamicCheckExecution,
     EvidenceRecoveryEntry,
     IssueRequirement,
     RequirementCoverageEntry,
@@ -27,12 +31,207 @@ from auto_coder.adversarial_validator import (
     is_test_file,
     parse_adversarial_validation_response,
     run_adversarial_validation,
+    run_exact_head_dynamic_check,
 )
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
-from auto_coder.reviewer_session_registry import ReviewerSession
+from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.trace_logger import get_trace_logger
+from auto_coder.utils import CommandResult
+
+
+def test_exact_head_dynamic_check_bypasses_container_and_asserts_sha_before_and_after() -> None:
+    sha = "b" * 40
+    with patch("auto_coder.adversarial_validator.CommandExecutor") as executor_type:
+        executor = executor_type.return_value
+        executor.DEFAULT_TIMEOUTS = {"test": 60}
+        executor.run_command.side_effect = [
+            CommandResult(True, f"{sha}\n", "", 0),
+            CommandResult(True, "focused test passed", "", 0),
+            CommandResult(True, f"{sha}\n", "", 0),
+        ]
+
+        result = run_exact_head_dynamic_check(AutomationConfig(), "tests/test_feature.py::test_head", sha)
+
+    assert result == DynamicCheckExecution(success=True, output="focused test passed", executed_sha=sha)
+    assert executor.run_command.call_args_list[1].args[0] == [
+        "bash",
+        AutomationConfig().TEST_SCRIPT_PATH,
+        "tests/test_feature.py::test_head",
+    ]
+    assert executor.run_command.call_args_list[1].kwargs["env_overrides"] == {"INSIDE_TARGET_EXECUTION": "true"}
+    assert all(call.args[0][:2] != ["docker", "exec"] for call in executor.run_command.call_args_list)
+
+
+def test_exact_head_dynamic_check_real_script_does_not_redirect_in_autocoder_container(tmp_path, monkeypatch, _use_real_commands) -> None:
+    """Exercise the shipped script's supported container-routing boundary."""
+    repo = tmp_path / "validated-head"
+    repo.mkdir()
+    (repo / "scripts").mkdir()
+    (repo / "src" / "auto_coder").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    script = repo / "scripts" / "test.sh"
+    script.write_text((Path(__file__).parents[1] / "scripts" / "test.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    script.chmod(0o755)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "uv").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "uv").chmod(0o755)
+    docker_marker = tmp_path / "docker-was-called"
+    (bin_dir / "docker").write_text(f"#!/bin/sh\ntouch '{docker_marker}'\nexit 42\n", encoding="utf-8")
+    (bin_dir / "docker").chmod(0o755)
+
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "validated head"],
+        cwd=repo,
+        check=True,
+    )
+    expected_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AM_I_AUTOCODER_CONTAINER", "true")
+    monkeypatch.setenv("REPO_NAME", "owner/repo")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    config = AutomationConfig()
+    config.TEST_SCRIPT_PATH = str(script)
+
+    result = run_exact_head_dynamic_check(config, "tests/test_head.py", expected_sha)
+
+    assert result.success
+    assert result.executed_sha == expected_sha
+    assert result.verification_error is None
+    assert not docker_marker.exists(), "the shipped test script redirected to an unrelated target checkout"
+
+
+def test_exact_head_dynamic_check_rejects_known_mismatch_without_running_test() -> None:
+    with patch("auto_coder.adversarial_validator.CommandExecutor") as executor_type:
+        executor = executor_type.return_value
+        executor.run_command.return_value = CommandResult(True, f"{'a' * 40}\n", "", 0)
+
+        result = run_exact_head_dynamic_check(AutomationConfig(), "all", "b" * 40)
+
+    assert result.executed_sha == "a" * 40
+    assert "execution-target mismatch" in (result.verification_error or "")
+    executor.run_command.assert_called_once_with(["git", "rev-parse", "HEAD"])
+
+
+@pytest.mark.parametrize(
+    ("execution", "expected_result", "expected_category"),
+    [
+        (
+            DynamicCheckExecution(executed_sha="a" * 40, verification_error="execution-target mismatch"),
+            "ERROR",
+            "dynamic_check_head_mismatch",
+        ),
+        (
+            DynamicCheckExecution(verification_error="git could not identify HEAD"),
+            "INCONCLUSIVE",
+            "dynamic_check_head_unverifiable",
+        ),
+    ],
+)
+@patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
+@patch("auto_coder.adversarial_validator.run_llm_prompt")
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+def test_dynamic_check_invalid_revision_evidence_fails_closed_without_followup(
+    mock_build_context,
+    mock_prompt,
+    mock_dynamic_check,
+    execution: DynamicCheckExecution,
+    expected_result: str,
+    expected_category: str,
+) -> None:
+    mock_build_context.return_value = AdversarialValidationContext(
+        repo_name="owner/repo",
+        pr_number=100,
+        pr_title="Exact head",
+        pr_diff="diff content",
+        changed_tests=["tests/test_feature.py"],
+        issue_context="REQ-001: validate exact head",
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="validate exact head")],
+    )
+    mock_prompt.return_value = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "Need focused evidence",
+            "dynamic_check_requested": "tests/test_feature.py::test_head",
+            "findings": [],
+        }
+    )
+    mock_dynamic_check.return_value = execution
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("codex", "cli", "model")
+
+    result = run_adversarial_validation(
+        "owner/repo",
+        {"number": 100, "head_sha": "b" * 40},
+        AutomationConfig(),
+        backend_manager=manager,
+    )
+
+    assert result.result == expected_result
+    assert result.diagnostic_category == expected_category
+    assert result.result != "NEEDS_TESTS"
+    manager.continue_session.assert_not_called()
+
+
+@patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+def test_mismatched_dynamic_execution_preserves_persisted_open_gap(mock_build_context, mock_dynamic_check, tmp_path) -> None:
+    """Invalid execution evidence cannot mutate the durable gap lifecycle."""
+    old_sha = "a" * 40
+    head_sha = "b" * 40
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(
+        ReviewerSession(
+            repository="owner/repo",
+            pr_number=100,
+            backend_name="codex",
+            backend_type="cli",
+            model_name="model",
+            session_id="review-session",
+            last_head_sha=old_sha,
+            test_oracle_gaps=[TestOracleGap(gap_id="gap-1", requirement_id="REQ-001", status="OPEN")],
+        )
+    )
+    mock_build_context.return_value = AdversarialValidationContext(
+        repo_name="owner/repo",
+        pr_number=100,
+        pr_title="Exact head",
+        pr_diff="diff content",
+        changed_tests=["tests/test_feature.py"],
+        issue_context="REQ-001: validate exact head",
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="validate exact head")],
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("codex", "cli", "model")
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "Need focused evidence",
+            "dynamic_check_requested": "tests/test_feature.py::test_head",
+            "findings": [],
+        }
+    )
+    mock_dynamic_check.return_value = DynamicCheckExecution(executed_sha=old_sha, verification_error=f"execution-target mismatch: expected {head_sha}, found {old_sha}")
+
+    result = run_adversarial_validation(
+        "owner/repo",
+        {"number": 100, "head_sha": head_sha},
+        AutomationConfig(),
+        backend_manager=manager,
+        session_registry=registry,
+    )
+
+    assert result.result == "ERROR"
+    assert [(gap.gap_id, gap.status) for gap in result.test_oracle_gaps] == [("gap-1", "OPEN")]
+    assert manager.continue_session.call_count == 1, "invalid evidence must not trigger a reviewer follow-up"
+    persisted = registry.get("owner/repo", 100, "codex", "cli", "model")
+    assert persisted is not None
+    assert [(gap.gap_id, gap.status) for gap in persisted.test_oracle_gaps] == [("gap-1", "OPEN")]
 
 
 def _demonstrated_finding_with_anchor(anchor_line: object) -> dict[str, object]:
@@ -1644,7 +1843,7 @@ class TestRunAdversarialValidation:
 }"""
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert result.is_pass
@@ -1686,7 +1885,7 @@ class TestRunAdversarialValidation:
 }"""
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert result.needs_fix
@@ -1770,7 +1969,7 @@ class TestRunAdversarialValidation:
         )
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert not result.is_pass
@@ -1844,7 +2043,7 @@ class TestRunAdversarialValidation:
         )
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=None)
         assert not result.is_pass
@@ -1854,7 +2053,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_concrete_finding_prevents_later_dynamic_uncertainty_from_erasing_it(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """A concrete finding wins immediately and is not downgraded by a later check."""
         mock_build_ctx.return_value = AdversarialValidationContext(
@@ -1893,14 +2092,10 @@ class TestRunAdversarialValidation:
             '{"result": "PASS", "summary": "Reviewer confirmed reload output satisfies spec", "requirement_coverage_complete": true, "unverified_requirements": [], "findings": []}',
         ]
         # run_local_tests returns dict with output and errors
-        mock_run_tests.return_value = {
-            "success": True,
-            "output": "PASSED tests/test_feature.py::test_reload_scenario",
-            "errors": "DeprecationWarning: something deprecated",
-        }
+        mock_run_tests.return_value = DynamicCheckExecution(success=True, output="PASSED tests/test_feature.py::test_reload_scenario", errors="DeprecationWarning: something deprecated", executed_sha="b" * 40)
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert result.needs_fix
@@ -2195,7 +2390,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_dynamic_followup_overturns_initial_addressed_disposition(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """The dynamic check disproves an initial ADDRESSED claim; the
         follow-up's fresh STILL_VALID must win, never the stale initial one."""
@@ -2217,10 +2412,10 @@ class TestRunAdversarialValidation:
     {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
   ]
 }"""
-        mock_run_tests.return_value = {"success": False, "output": "FAILED tests/test_feature.py::test_reload", "errors": ""}
+        mock_run_tests.return_value = DynamicCheckExecution(success=False, output="FAILED tests/test_feature.py::test_reload", executed_sha="b" * 40)
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         manager = MagicMock()
         manager._last_session_id = "review-session"
@@ -2240,7 +2435,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_dynamic_followup_confirms_initial_inconclusive_as_addressed(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """The dynamic check proves an initially INCONCLUSIVE thread is fixed."""
         mock_build_ctx.return_value = AdversarialValidationContext(
@@ -2261,10 +2456,10 @@ class TestRunAdversarialValidation:
     {"thread_id": "thread-1", "status": "INCONCLUSIVE", "rationale": "Cannot tell from the diff alone", "evidence": "No dynamic evidence yet"}
   ]
 }"""
-        mock_run_tests.return_value = {"success": True, "output": "PASSED tests/test_feature.py::test_reload", "errors": ""}
+        mock_run_tests.return_value = DynamicCheckExecution(success=True, output="PASSED tests/test_feature.py::test_reload", executed_sha="b" * 40)
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         manager = MagicMock()
         manager._last_session_id = "review-session"
@@ -2284,7 +2479,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_dynamic_followup_omitting_dispositions_does_not_resurrect_stale_ones(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """If the follow-up response omits thread_dispositions entirely, the
         claimed thread must fail closed to unresolved rather than silently
@@ -2307,10 +2502,10 @@ class TestRunAdversarialValidation:
     {"thread_id": "thread-1", "status": "ADDRESSED", "rationale": "Looks fixed", "evidence": "Code inspection"}
   ]
 }"""
-        mock_run_tests.return_value = {"success": True, "output": "PASSED", "errors": ""}
+        mock_run_tests.return_value = DynamicCheckExecution(success=True, output="PASSED", executed_sha="b" * 40)
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         manager = MagicMock()
         manager._last_session_id = "review-session"
@@ -2326,7 +2521,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_run_adversarial_validation_dynamic_check_failure_routes_to_reviewer(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """Failing dynamic check is sent to the reviewer for semantic determination against the counterexample."""
         mock_build_ctx.return_value = AdversarialValidationContext(
@@ -2368,14 +2563,10 @@ class TestRunAdversarialValidation:
   ]
 }""",
         ]
-        mock_run_tests.return_value = {
-            "success": False,
-            "output": "FAILED tests/test_feature.py::test_reload",
-            "errors": "AssertionError: 1 != 2",
-        }
+        mock_run_tests.return_value = DynamicCheckExecution(success=False, output="FAILED tests/test_feature.py::test_reload", errors="AssertionError: 1 != 2", executed_sha="b" * 40)
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         manager = MagicMock()
         manager._last_session_id = "review-session"
@@ -2407,7 +2598,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_run_adversarial_validation_dynamic_check_exception_fails_closed(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
@@ -2422,7 +2613,7 @@ class TestRunAdversarialValidation:
         mock_run_tests.side_effect = RuntimeError("Test runner crashed")
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert not result.is_pass
@@ -2432,7 +2623,7 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    @patch("auto_coder.fix_to_pass_tests_runner.run_local_tests")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
     def test_dynamic_check_exception_discards_initial_thread_dispositions(self, mock_run_tests, mock_run_prompt, mock_build_ctx):
         """If the dynamic check that would re-adjudicate a claimed thread
         fails before a final disposition is obtained, the provisional initial
@@ -2459,7 +2650,7 @@ class TestRunAdversarialValidation:
         mock_run_tests.side_effect = RuntimeError("Test runner crashed")
 
         config = AutomationConfig()
-        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1"}
+        pr_data = {"number": 100, "title": "Add feature", "body": "Fixes #1", "head_sha": "b" * 40}
 
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
 
