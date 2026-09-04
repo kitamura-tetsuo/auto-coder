@@ -161,6 +161,34 @@ def test_muse_cannot_hide_transient_branch_mutation_by_disabling_trace(tmp_path:
     assert _git(repo, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
 
 
+def test_muse_executes_without_inotify_and_portable_watch_enforces_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = _muse_script(tmp_path, "printf 'after\\n' > tracked.txt")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    libc_without_inotify = object()
+
+    with patch("src.auto_coder.muse_client.ctypes.CDLL", return_value=libc_without_inotify):
+        assert _manager(config)._run_llm_cli("implement") == "ACTION_SUMMARY: Muse completed"
+
+    assert (repo / "tracked.txt").read_text() == "after\n"
+
+
+def test_portable_watch_rejects_trace_bypass_without_inotify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    refs_before = _git(repo, "for-each-ref", "--format=%(refname) %(objectname)")
+    script = _muse_script(tmp_path, "env -u GIT_TRACE2_EVENT git branch temporary; env -u GIT_TRACE2_EVENT git branch -D temporary")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with patch("src.auto_coder.muse_client.ctypes.CDLL", return_value=object()), pytest.raises(RuntimeError, match="Git lifecycle command"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert _git(repo, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
+
+
 def test_noedit_mutation_is_rejected_and_repository_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _muse_script(tmp_path, "printf 'bad\\n' > tracked.txt; printf 'new\\n' > untracked.txt")

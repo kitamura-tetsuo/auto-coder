@@ -67,15 +67,12 @@ def _read_only_special_git_command(name: object, argv: object) -> bool:
 
 
 class _GitMetadataWatch:
-    """Kernel-owned watch for repository metadata writes during Muse execution."""
+    """Watch repository metadata using inotify or a portable stat journal."""
 
     _WRITE_EVENTS = 0x00000FCE
 
     def __init__(self) -> None:
-        libc = ctypes.CDLL(None, use_errno=True)
-        self._fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-        if self._fd < 0:
-            raise RuntimeError("Muse requires Linux inotify to enforce Git lifecycle isolation")
+        self._fd = -1
         git_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir"], capture_output=True, text=True)
         common_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True, text=True)
         if git_dir_result.returncode != 0 or common_dir_result.returncode != 0:
@@ -83,20 +80,46 @@ class _GitMetadataWatch:
             raise RuntimeError("Unable to locate Git metadata for Muse lifecycle enforcement")
         git_dir = Path(git_dir_result.stdout.strip())
         common_dir = Path(common_dir_result.stdout.strip())
-        paths = [git_dir / "HEAD", git_dir / "index"]
-        for root in {common_dir / "refs", common_dir / "logs"}:
+        self._files = (git_dir / "HEAD", git_dir / "index")
+        self._roots = tuple({common_dir / "refs", common_dir / "logs"})
+        self._baseline = self._metadata_snapshot()
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            inotify_init1 = libc.inotify_init1
+            inotify_add_watch = libc.inotify_add_watch
+        except AttributeError:
+            return
+        self._fd = inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if self._fd < 0:
+            return
+        paths = list(self._files)
+        for root in self._roots:
             if root.exists():
                 paths.extend(path for path in (root, *root.rglob("*")) if path.is_dir())
         for path in paths:
-            if path.exists() and libc.inotify_add_watch(self._fd, os.fsencode(path), self._WRITE_EVENTS) < 0:
+            if path.exists() and inotify_add_watch(self._fd, os.fsencode(path), self._WRITE_EVENTS) < 0:
                 self.close()
-                raise RuntimeError(f"Unable to protect Git metadata path during Muse execution: {path}")
+                return
+
+    def _metadata_snapshot(self) -> tuple[tuple[str, int, int, int, int], ...]:
+        paths = [path for path in self._files if path.exists()]
+        for root in self._roots:
+            if root.exists():
+                paths.extend((root, *root.rglob("*")))
+        snapshot = []
+        for path in paths:
+            stat = path.lstat()
+            snapshot.append((str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        return tuple(sorted(snapshot))
 
     def mutation_observed(self) -> bool:
-        try:
-            return bool(os.read(self._fd, 1024 * 1024))
-        except BlockingIOError:
-            return False
+        if self._fd >= 0:
+            try:
+                if os.read(self._fd, 1024 * 1024):
+                    return True
+            except BlockingIOError:
+                pass
+        return self._metadata_snapshot() != self._baseline
 
     def close(self) -> None:
         if getattr(self, "_fd", -1) >= 0:
