@@ -3,8 +3,10 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from auto_coder.backend_manager import BackendManager
-from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
 
 
 class SessionClient:
@@ -80,6 +82,20 @@ def test_stale_implementation_session_fallback_clears_cached_client_id(tmp_path)
     assert client.fresh_prompts == ["implementation context"]
     assert client.get_last_session_id() is None
     assert manager._last_session_id is None
+
+
+def test_retryable_outage_during_automatic_resume_does_not_start_fresh_execution(tmp_path):
+    client = SessionClient(fresh_session_id="persisted-session")
+    client.continue_error = AutoCoderRetryableBackendError("Codex transport reconnects exhausted")
+    manager = _manager(tmp_path, {"codex": client})
+    manager._last_backend = "codex"
+    manager._last_session_id = "persisted-session"
+
+    with pytest.raises(AutoCoderRetryableBackendError, match="reconnects exhausted"):
+        manager._run_llm_cli("implementation context")
+
+    assert client.continued == [("persisted-session", "implementation context", False)]
+    assert client.fresh_prompts == []
 
 
 def test_resume_usage_limit_rotates_backend_without_same_client_fresh_retry(tmp_path):

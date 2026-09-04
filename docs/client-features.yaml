@@ -23,6 +23,11 @@ human-readable action diagnostics and are also added to the top-level errors, so
 single-item completion output cannot report a false success. Expected states such
 as red CI, merge gates, and cloud-task waits remain deferred rather than failures.
 
+Codex CLI provider transport failures are classified from structured diagnostic
+events (with a conservative text fallback). Exhausted reconnects defer the
+current target to normal scheduling without consuming an implementation attempt,
+while preserving the provider status and endpoint diagnostic for operators.
+
 ## Configuration
 
 #### Muse Code local backend

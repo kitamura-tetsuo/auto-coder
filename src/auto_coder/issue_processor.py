@@ -18,7 +18,7 @@ from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessRe
 from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
@@ -109,6 +109,8 @@ def _take_issue_actions(
         )
         actions.extend(action_results)
 
+    except AutoCoderRetryableBackendError:
+        raise
     except Exception as e:
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
         actions.append(f"Error processing issue #{issue_number}: {e}")
@@ -1220,6 +1222,8 @@ def _apply_issue_actions_directly(
                 else:
                     actions.append("LLM CLI did not provide a clear response for issue analysis")
 
+    except AutoCoderRetryableBackendError:
+        raise
     except Exception as e:
         logger.error(f"Error applying issue actions directly: {e}")
 

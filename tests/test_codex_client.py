@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.codex_client import CodexClient
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
+from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.utils import CommandResult
 
@@ -46,6 +46,85 @@ class TestCodexClient:
         client = CodexClient()
         output = client._run_llm_cli("hello world")
         assert "line1" in output and "line2" in output
+
+    @pytest.mark.parametrize(
+        "provider_message",
+        [
+            "Reconnecting... 5/5 (unexpected status 404 Not Found, url: wss://chatgpt.com/backend-api/codex/responses)",
+            "Reconnect 7/7: websocket transport error for wss://provider.example/responses",
+            "Reconnect attempts exhausted: failed to connect to backend-api/codex/responses",
+        ],
+    )
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_provider_reconnect_failure_is_typed_and_preserves_diagnostic(self, mock_run_command, mock_run, provider_message):
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"turn.started"}',
+                json.dumps({"type": "error", "message": provider_message}),
+            ]
+        )
+        mock_run_command.return_value = CommandResult(False, stdout, "", 1)
+
+        client = CodexClient()
+
+        with pytest.raises(AutoCoderRetryableBackendError, match="Retryable Codex backend/transport failure") as exc_info:
+            client._run_llm_cli("implement issue")
+        assert provider_message in str(exc_info.value)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_ordinary_nonzero_exit_is_not_retryable(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(False, "compilation failed", "invalid agent output", 1)
+
+        with pytest.raises(RuntimeError, match="codex CLI failed with return code 1") as exc_info:
+            CodexClient()._run_llm_cli("implement issue")
+
+        assert not isinstance(exc_info.value, AutoCoderRetryableBackendError)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_intermediate_reconnect_does_not_mask_terminal_agent_failure(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"turn.started"}',
+                '{"type":"error","message":"Reconnecting... 1/5 (websocket transport error)"}',
+                '{"type":"turn.failed","message":"Agent output was invalid"}',
+            ]
+        )
+        mock_run_command.return_value = CommandResult(False, stdout, "", 1)
+
+        with pytest.raises(RuntimeError, match="codex CLI failed with return code 1") as exc_info:
+            CodexClient()._run_llm_cli("implement issue")
+
+        assert not isinstance(exc_info.value, AutoCoderRetryableBackendError)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_exhaustion_and_terminal_provider_evidence_can_span_events(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        reconnect = "Reconnecting... 5/5 (websocket transport error)"
+        terminal = "unexpected status 404 Not Found, url: wss://chatgpt.com/backend-api/codex/responses"
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"turn.started"}',
+                json.dumps({"type": "error", "message": reconnect}),
+                json.dumps({"type": "turn.failed", "message": terminal}),
+            ]
+        )
+        mock_run_command.return_value = CommandResult(False, stdout, "", 1)
+
+        with pytest.raises(AutoCoderRetryableBackendError) as exc_info:
+            CodexClient()._run_llm_cli("implement issue")
+
+        assert reconnect in str(exc_info.value)
+        assert terminal in str(exc_info.value)
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")

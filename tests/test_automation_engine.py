@@ -198,6 +198,53 @@ class TestAutomationEngine:
         increment.assert_not_called()
         cloud_runs.assert_not_called()
 
+    def test_codex_transport_outage_defers_issue_without_consuming_attempt(self):
+        """A subprocess-originated outage remains retryable across the Issue boundary."""
+        from auto_coder.codex_client import CodexClient
+        from auto_coder.utils import CommandResult
+
+        github = MagicMock()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        candidate = Candidate(type="issue", data={"number": 1673, "title": "Transport", "labels": []}, priority=0)
+        event_stream = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-1673"}',
+                '{"type":"turn.started"}',
+                '{"type":"error","message":"Reconnecting... 4/4 (unexpected status 404 Not Found, url: wss://chatgpt.com/backend-api/codex/responses)"}',
+            ]
+        )
+
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+        label_context.__exit__.return_value = None
+        backend_manager = MagicMock()
+        backend_manager._run_llm_cli.side_effect = lambda _prompt: CodexClient()._run_llm_cli("implement issue 1673")
+        successful_command = MagicMock(returncode=0, stdout="", stderr="", success=True)
+        with (
+            patch.object(engine, "_get_authoritative_item_type", return_value="issue"),
+            patch("auto_coder.automation_engine.LabelManager", return_value=label_context),
+            patch("auto_coder.issue_processor.LabelManager", return_value=label_context),
+            patch("auto_coder.issue_processor.BranchManager", return_value=label_context),
+            patch("auto_coder.issue_processor.get_llm_backend_manager", return_value=backend_manager),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+            patch("auto_coder.issue_processor.get_current_branch", return_value="main"),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.issue_processor.cmd.run_command", successful_command),
+            patch("auto_coder.codex_client.subprocess.run") as version_check,
+            patch("auto_coder.codex_client.CommandExecutor.run_command", return_value=CommandResult(False, event_stream, "", 1)) as execution,
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+        ):
+            version_check.return_value.returncode = 0
+            result = engine._process_single_candidate_reserved("owner/repo", candidate, engine.config)
+
+        assert result.outcome == PRProcessingOutcome.DEFERRED
+        assert result.success is True
+        assert "404 Not Found" in (result.error or "")
+        assert "/backend-api/codex/responses" in result.actions[0]
+        assert execution.call_count == 1
+        backend_manager._run_llm_cli.assert_called_once()
+        increment.assert_not_called()
+
     def test_ineligible_issue_does_not_reserve_implementation_slot(self, tmp_path):
         """An allowlist rejection must leave capacity for eligible work."""
         github = MagicMock()

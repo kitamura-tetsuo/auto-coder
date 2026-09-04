@@ -20,3 +20,14 @@ class AutoCoderTimeoutError(RuntimeError):
     """
 
     pass
+
+
+class AutoCoderRetryableBackendError(RuntimeError):
+    """A provider transport outage that should be deferred by the scheduler.
+
+    Unlike an implementation failure, this exception says that the coding agent
+    could not complete its turn.  Callers must preserve it across orchestration
+    boundaries so the target remains eligible without consuming attempt state.
+    """
+
+    pass

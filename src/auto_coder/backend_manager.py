@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
@@ -517,7 +517,7 @@ class BackendManager(LLMBackendManagerBase):
                         temp_env_cls=TemporaryEnvironment,
                         session_id=self._last_session_id if should_resume else None,
                     )
-                except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
+                except (AutoCoderUsageLimitError, AutoCoderTimeoutError, AutoCoderRetryableBackendError):
                     raise
                 except (ValueError, RuntimeError, NotImplementedError) as exc:
                     if not should_resume:

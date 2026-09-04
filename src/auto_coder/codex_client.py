@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
@@ -200,6 +200,69 @@ class CodexClient(LLMClientBase):
         diagnostic_events = [event for event in events if str(event.get("type", "")) in {"error", "turn.failed"} or event.get("is_error") is True or "error" in event]
         diagnostic_output = "\n".join([stderr, *(json.dumps(event, ensure_ascii=False) for event in diagnostic_events)])
         return has_usage_marker_match(diagnostic_output, usage_markers)
+
+    @staticmethod
+    def _retryable_backend_diagnostic(stdout: str, stderr: str) -> Optional[str]:
+        """Return provider evidence when Codex exhausted a transport reconnect.
+
+        JSONL diagnostic events are preferred so source code and command output
+        cannot accidentally classify a failed implementation as an outage.  A
+        plain-text fallback supports CLI versions which emit diagnostics only on
+        stderr.  Detection intentionally uses semantic signals rather than a
+        captured request ID, endpoint, status, or fixed reconnect count.
+        """
+        diagnostic_messages: list[str] = []
+        terminal_messages: list[str] = []
+        saw_json_event = False
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type", ""))
+            if event_type in {"thread.started", "turn.started", "error", "turn.failed"}:
+                saw_json_event = True
+            if event_type in {"error", "turn.failed"} or event.get("is_error") is True:
+                message = event.get("message") or event.get("error")
+                if message:
+                    diagnostic_messages.append(str(message))
+                    if event_type == "turn.failed":
+                        terminal_messages.append(str(message))
+
+        if stderr:
+            diagnostic_messages.append(stderr)
+        if not saw_json_event and stdout:
+            diagnostic_messages.append(stdout)
+
+        diagnostic = "\n".join(diagnostic_messages).strip()
+        if not diagnostic:
+            return None
+
+        # Exhaustion may be established by the preceding reconnect event, while
+        # the terminal event supplies the final provider cause. Conversely, an
+        # intermediate reconnect must not mask an unrelated terminal agent
+        # failure, so transport evidence comes from turn.failed when available.
+        all_diagnostics = diagnostic.lower()
+        terminal_diagnostic = terminal_messages[-1].lower() if terminal_messages else all_diagnostics
+        reconnect_counters = re.findall(r"reconnect(?:ing)?(?:\.\.\.)?\s*(\d+)\s*/\s*(\d+)", all_diagnostics)
+        counter_exhausted = any(int(current) >= int(limit) for current, limit in reconnect_counters)
+        reconnect_exhausted = counter_exhausted or bool(re.search(r"reconnect(?:ion)? (?:attempts? )?(?:exhausted|failed)", all_diagnostics))
+        provider_transport = any(
+            marker in terminal_diagnostic
+            for marker in (
+                "backend-api/codex",
+                "wss://",
+                "websocket",
+                "transport",
+                "connection reset",
+                "connection refused",
+                "service unavailable",
+                "upstream unavailable",
+            )
+        )
+        return diagnostic if reconnect_exhausted and provider_transport else None
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
@@ -409,6 +472,11 @@ class CodexClient(LLMClientBase):
                     status = "error"
                     error_message = full_output
                     raise AutoCoderUsageLimitError(full_output)
+                backend_diagnostic = self._retryable_backend_diagnostic(stdout, stderr)
+                if backend_diagnostic:
+                    status = "error"
+                    error_message = f"Retryable Codex backend/transport failure: {backend_diagnostic}"
+                    raise AutoCoderRetryableBackendError(error_message)
                 status = "error"
                 error_message = f"codex CLI failed with return code {result.returncode}\n{full_output}"
                 raise RuntimeError(error_message)
@@ -433,6 +501,8 @@ class CodexClient(LLMClientBase):
             raise
         except AutoCoderTimeoutError:
             # Re-raise timeout errors
+            raise
+        except AutoCoderRetryableBackendError:
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to run codex CLI: {e}")
