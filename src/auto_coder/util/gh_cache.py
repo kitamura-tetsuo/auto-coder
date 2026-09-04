@@ -1888,7 +1888,10 @@ class GitHubClient:
                 break
             page += 1
         else:
-            logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
+            message = f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages"
+            if fresh:
+                raise RuntimeError(message)
+            logger.warning(message)
 
         return result
 
