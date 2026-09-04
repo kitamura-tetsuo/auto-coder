@@ -272,6 +272,75 @@ class TestAutomationEngine:
         assert slots.reserve(ImplementationOwner("issue", 200)) is True
 
     @pytest.mark.parametrize(
+        ("jules_mode", "explicit_only", "force"),
+        [
+            (False, False, False),
+            (True, False, False),
+            (False, True, False),
+            (True, True, True),
+        ],
+    )
+    def test_current_readiness_label_gates_every_issue_dispatch_before_ownership(self, tmp_path, jules_mode, explicit_only, force):
+        """Cached labels, cloud routing, --only, and --force cannot bypass readiness."""
+        github = MagicMock()
+        github.get_issue_dispatch_snapshot_strict.return_value = {
+            "number": 1699,
+            "body": "## Requirements\n- REQ-001: Implement the feature.",
+            "labels": [],
+        }
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+        candidate = Candidate(
+            type="issue",
+            data={"number": 1699, "title": "Ready gate", "labels": ["implementation-ready", "urgent"]},
+            priority=3,
+        )
+
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            candidate,
+            engine.config,
+            jules_mode=jules_mode,
+            explicit_only=explicit_only,
+            force=force,
+        )
+
+        assert result.success is False
+        assert result.error is None
+        assert result.actions == ["Skipped - missing implementation-ready label"]
+        assert slots.active_owners() == ()
+        assert not (tmp_path / "slots.json").exists()
+        engine._process_single_candidate_reserved.assert_not_called()
+        github.try_add_labels.assert_not_called()
+
+    def test_authoritative_readiness_transition_controls_existing_dispatch_path(self, tmp_path):
+        """Each processing attempt observes the current REST label state."""
+        snapshot = {
+            "number": 1699,
+            "body": "## Requirements\n- REQ-001: Implement the feature.",
+            "labels": [],
+        }
+        github = MagicMock()
+        github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: dict(snapshot)
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        dispatched = CandidateProcessingResult(type="issue", number=1699, title="Ready gate", success=True, actions=["dispatched"])
+        engine._process_single_candidate_reserved = Mock(return_value=dispatched)
+        candidate = Candidate(type="issue", data={"number": 1699, "title": "Ready gate", "labels": []}, priority=0)
+
+        blocked = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        snapshot["labels"] = [{"name": "implementation-ready"}]
+        accepted = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        snapshot["labels"] = []
+        blocked_again = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert blocked.actions == blocked_again.actions == ["Skipped - missing implementation-ready label"]
+        assert accepted.actions == ["dispatched"]
+        engine._process_single_candidate_reserved.assert_called_once()
+
+    @pytest.mark.parametrize(
         "body, reason",
         [
             ("## Requirements\n\n### 1. First requirement\n...", "no valid REQ-NNN entries"),
@@ -287,7 +356,7 @@ class TestAutomationEngine:
                 self.comments = []
 
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": body}
+                return {"number": number, "body": body, "labels": [{"name": "implementation-ready"}]}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
@@ -325,7 +394,7 @@ class TestAutomationEngine:
                 self.lookup_error = False
 
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": "## Requirements\n### 1. Invalid"}
+                return {"number": number, "body": "## Requirements\n### 1. Invalid", "labels": [{"name": "implementation-ready"}]}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 if self.lookup_error:
@@ -377,7 +446,7 @@ class TestAutomationEngine:
             }
         ]
         github.get_item_type_strict.return_value = "issue"
-        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1684, "body": issue_body}
+        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1684, "body": issue_body, "labels": [{"name": "implementation-ready"}]}
         github.get_issue_comments_strict.return_value = []
         engine = AutomationEngine(github, config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
@@ -430,7 +499,7 @@ class TestAutomationEngine:
                 return None
 
             def json(self):
-                return {"number": 1684, "body": authoritative["body"]}
+                return {"number": 1684, "body": authoritative["body"], "labels": [{"name": "implementation-ready"}]}
 
         client_context = MagicMock()
         client_context.__enter__.return_value.get.return_value = Response()
@@ -473,7 +542,7 @@ class TestAutomationEngine:
                 self.body = "## Requirements\n### 1. Invalid"
 
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": self.body}
+                return {"number": number, "body": self.body, "labels": [{"name": "implementation-ready"}]}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
@@ -501,7 +570,7 @@ class TestAutomationEngine:
     def test_legacy_issue_without_requirements_section_enters_normal_dispatch(self, tmp_path):
         github = MagicMock()
         github.get_item_type_strict.return_value = "issue"
-        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1685, "body": "Implement observable behavior."}
+        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1685, "body": "Implement observable behavior.", "labels": [{"name": "implementation-ready"}]}
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1685, title="Legacy", success=True, actions=["dispatched"]))
@@ -518,7 +587,7 @@ class TestAutomationEngine:
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": ""}
+                return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
 
             def get_issue(self, _repo_name, number):
                 return {"number": number, "state": "open"}
@@ -546,7 +615,7 @@ class TestAutomationEngine:
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": ""}
+                return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
@@ -833,7 +902,7 @@ class TestAutomationEngine:
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
-                return {"number": item_number, "body": ""}
+                return {"number": item_number, "body": "", "labels": [{"name": "implementation-ready"}]}
 
             def get_item_type_strict(self, repo_name, item_number):
                 return "issue"

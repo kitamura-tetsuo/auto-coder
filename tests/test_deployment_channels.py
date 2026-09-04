@@ -88,7 +88,7 @@ def test_running_old_channel_cannot_dispatch_after_idle_reassignment(monkeypatch
     class GitHubStub:
         def get_issue_dispatch_snapshot_strict(self, repo_name, number):
             assert (repo_name, number) == ("owner/repo", 101)
-            return {"number": number, "body": ""}
+            return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
 
         def get_item_type_strict(self, repo_name, number):
             assert (repo_name, number) == ("owner/repo", 101)

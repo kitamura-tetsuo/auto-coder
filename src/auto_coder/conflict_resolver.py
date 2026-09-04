@@ -619,24 +619,16 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
                                 if issue_number:
                                     logger.info(f"Found issue #{issue_number} for closed Jules PR #{pr_number}. Re-creating session.")
-                                    # Increment attempt (add attempt)
-                                    increment_attempt(repo_name, issue_number)
-
-                                    # Start new Jules session for the issue
                                     github_client = GitHubClient.get_instance()
-                                    issue = github_client.get_issue(repo_name, issue_number)
-                                    if issue:
-                                        issue_data = github_client.get_issue_details(issue)
-                                        from .issue_processor import _process_issue_jules_mode
+                                    # Re-enter through the engine's shared Issue admission
+                                    # boundary. In particular, do not increment the attempt
+                                    # or start Jules until current readiness has been checked.
+                                    from .automation_engine import AutomationEngine
 
-                                        _process_issue_jules_mode(
-                                            repo_name=repo_name,
-                                            issue_data=issue_data,
-                                            config=config,
-                                            github_client=github_client,
-                                        )
-                                    else:
-                                        logger.warning(f"Failed to fetch issue #{issue_number} details from GitHub to recreate Jules session")
+                                    engine = AutomationEngine(github_client, config=config)
+                                    actions = engine._process_unlocked_issue(repo_name, issue_number, config, jules_mode=True)
+                                    for action in actions:
+                                        logger.info(f"Issue #{issue_number}: {action}")
                                 else:
                                     logger.warning(f"No issue found associated with session ID '{session_id}' to recreate Jules session")
                             else:

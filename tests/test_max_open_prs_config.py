@@ -213,7 +213,7 @@ class TestAutomationEngineCandidateCollectionWithThreshold:
         assert slots.start_execution(ImplementationOwner("issue", 99)) is not None
         engine.implementation_slots = slots
         mock_github.get_item_type_strict.return_value = "issue"
-        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": ""}
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
 
         def process_reserved(*_args, **_kwargs):
             assert slots.active_execution_ids(ImplementationOwner("issue", 1680))

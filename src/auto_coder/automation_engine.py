@@ -47,6 +47,7 @@ logger = get_logger(__name__)
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
+IMPLEMENTATION_READY_LABEL = "implementation-ready"
 
 
 class AutomationEngine:
@@ -1136,6 +1137,21 @@ class AutomationEngine:
                 return result
             if "pull_request" in current_issue:
                 result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as pr"
+                return result
+
+            # Readiness is intentionally decided from the same cache-bypassing
+            # snapshot as the dispatch type and requirement contract. Candidate
+            # data may have been collected earlier, so trusting its labels would
+            # allow a subsequently removed readiness label to start work. Keep
+            # this before slot resolution and every implementation ownership side
+            # effect; explicit/forced processing therefore cannot bypass it.
+            current_labels = current_issue.get("labels", [])
+            if not isinstance(current_labels, list):
+                current_labels = []
+            label_names = {str(label.get("name", "") if isinstance(label, dict) else label).strip().lower() for label in current_labels if isinstance(label, (dict, str))}
+            if IMPLEMENTATION_READY_LABEL not in label_names:
+                logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
+                result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
 
             current_body = str(current_issue.get("body") or "")
