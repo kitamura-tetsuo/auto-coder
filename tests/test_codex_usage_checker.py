@@ -148,6 +148,24 @@ def test_fetch_failure_fails_closed():
         assert get_codex_weekly_usage(now=NOW) is None
 
 
+def test_successful_usage_retrieval_preserves_reset_credits_in_one_request():
+    response = MagicMock(status_code=200)
+    payload = _payload(75, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = {"available_count": 2}
+    response.json.return_value = payload
+    with (
+        patch("auto_coder.codex_usage_checker.load_codex_oauth_credentials") as load_credentials,
+        patch("auto_coder.codex_usage_checker.httpx.get", return_value=response) as get,
+    ):
+        load_credentials.return_value.access_token = "oauth-token"
+        load_credentials.return_value.account_id = "account-id"
+        usage = get_codex_weekly_usage(now=NOW)
+
+    assert usage is not None
+    assert usage.reset_credits.available_count == 2
+    get.assert_called_once()
+
+
 def test_malformed_response_fails_closed():
     response = MagicMock(status_code=200)
     response.json.return_value = {"unexpected": True}
