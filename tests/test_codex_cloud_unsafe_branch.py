@@ -53,7 +53,7 @@ def test_work_pr_is_closed_and_existing_task_reissues_without_local_processing(
 
     github_client.close_pr.assert_called_once()
     followup.assert_called_once()
-    task_id, prompt = followup.call_args.args
+    task_id, prompt = followup.call_args.args[:2]
     assert task_id == "task_e_reissue161"
     assert "unique to this task or its linked issue" in prompt
     assert "Do not reuse, update, push to, or force-push the remote `work` branch" in prompt

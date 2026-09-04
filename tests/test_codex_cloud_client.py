@@ -169,6 +169,24 @@ class TestCodexCloudClient:
 
         wham.send_follow_up.assert_called_once()
 
+    def test_stable_identity_reconciles_when_rendered_prompt_changes(self, mock_backend_config, tmp_path):
+        """Mutable branch/head context must not create a second logical request."""
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
+        ):
+            client = CodexCloudClient("codex-cloud", repo_name="owner/repo")
+            wham = MagicMock()
+            wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            wham.reconcile_follow_up.return_value = True
+            wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, 429)
+            client.wham_client = wham
+
+            assert client.send_followup("task_e_123", "repair feedback at head-a", ("feedback-F",)) is False
+            assert client.send_followup("task_e_123", "repair feedback at head-b", ("feedback-F",)) is True
+
+        wham.send_follow_up.assert_called_once()
+
     def test_confirmed_rejection_remains_retryable_and_success_clears_reservation(self, mock_backend_config, tmp_path):
         """A proven rejection removes the reservation, while 2xx preserves normal success."""
         with (

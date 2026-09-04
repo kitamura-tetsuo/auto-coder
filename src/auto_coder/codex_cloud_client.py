@@ -37,6 +37,7 @@ class PendingCodexFollowUp:
     task_id: str = ""
     message_fingerprint: str = ""
     pre_send_turn_id: str = ""
+    status: str = "indeterminate"
 
 
 def _codex_followup_state_path(repo_name: Optional[str]) -> Path:
@@ -483,58 +484,78 @@ class CodexCloudClient(CloudTaskClientBase):
         logger.warning(f"Failed to send continuation follow-up to Codex Cloud task '{task_id}'")
         return False
 
-    def send_followup(self, task_id: str, message: str) -> bool:
+    def get_followup_delivery(self, task_id: str, logical_identity: str) -> FollowUpDeliveryOutcome:
+        """Return durable delivery state, reconciling an ambiguous record."""
+        state_path = _codex_followup_state_path(self.repo_name)
+        key = hashlib.sha256(f"{task_id}\0{logical_identity}".encode("utf-8")).hexdigest()
+        with _followup_state_lock:
+            try:
+                records = _load_pending_followups(state_path)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning(f"Cannot read Codex follow-up delivery state; failing closed: {exc}")
+                return FollowUpDeliveryOutcome.INDETERMINATE
+            record = records.get(key)
+        if record is None:
+            return FollowUpDeliveryOutcome.NOT_DELIVERED
+        if record.status == FollowUpDeliveryOutcome.DELIVERED.value:
+            return FollowUpDeliveryOutcome.DELIVERED
+
+        wham = self.wham_client or CodexWhamClient()
+        if wham.reconcile_follow_up(task_id, record.pre_send_turn_id, record.message_fingerprint) is not True:
+            return FollowUpDeliveryOutcome.INDETERMINATE
+        record.status = FollowUpDeliveryOutcome.DELIVERED.value
+        with _followup_state_lock:
+            records = _load_pending_followups(state_path)
+            records[key] = record
+            _save_pending_followups(state_path, records)
+        logger.info(f"Reconciled previously ambiguous Codex follow-up '{logical_identity}' as delivered")
+        return FollowUpDeliveryOutcome.DELIVERED
+
+    def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
         if not is_valid_codex_cloud_task_id(task_id) or not message:
             logger.warning("Codex Cloud follow-up requires a task ID and message")
             return False
 
         wham = self.wham_client or CodexWhamClient()
-        fingerprint = hashlib.sha256(f"{task_id}\0{message}".encode("utf-8")).hexdigest()
+        message_fingerprint = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        identities = logical_identities or (message_fingerprint,)
+        keys = {hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest() for identity in identities}
         state_path = _codex_followup_state_path(self.repo_name)
-        with _followup_state_lock:
-            try:
-                pending = _load_pending_followups(state_path)
-            except (OSError, ValueError, TypeError) as exc:
-                logger.warning(f"Cannot read Codex follow-up delivery state; failing closed: {exc}")
-                return False
-            previous = pending.get(fingerprint)
-
-        if previous is not None:
-            if wham.reconcile_follow_up(task_id, previous.pre_send_turn_id, message) is not True:
-                logger.warning(f"Codex follow-up '{fingerprint[:12]}' remains indeterminate; duplicate POST deferred")
-                return False
-            # Reconciliation matches exposed user content when available and
-            # otherwise requires observable assistant advancement.
-            with _followup_state_lock:
-                pending = _load_pending_followups(state_path)
-                pending.pop(fingerprint, None)
-                _save_pending_followups(state_path, pending)
-            self.active_tasks[task_id] = message
-            logger.info(f"Reconciled previously ambiguous Codex follow-up for task '{task_id}' as delivered")
+        states = [self.get_followup_delivery(task_id, identity) for identity in identities]
+        if states and all(state is FollowUpDeliveryOutcome.DELIVERED for state in states):
             return True
+        if any(state is not FollowUpDeliveryOutcome.NOT_DELIVERED for state in states):
+            logger.warning("Codex follow-up contains an indeterminate or partially delivered logical identity; duplicate POST deferred")
+            return False
 
         turn_id = wham.resolve_latest_assistant_turn(task_id)
         if not turn_id:
             logger.warning(f"Codex Cloud task '{task_id}' has no usable assistant turn for follow-up")
             return False
 
-        record = PendingCodexFollowUp(task_id=task_id, message_fingerprint=fingerprint, pre_send_turn_id=turn_id)
+        record = PendingCodexFollowUp(task_id=task_id, message_fingerprint=message_fingerprint, pre_send_turn_id=turn_id)
         with _followup_state_lock:
             try:
                 pending = _load_pending_followups(state_path)
-                pending[fingerprint] = record
+                for key in keys:
+                    pending[key] = record
                 _save_pending_followups(state_path, pending)
             except (OSError, ValueError, TypeError) as exc:
                 logger.warning(f"Cannot durably reserve Codex follow-up; request was not sent: {exc}")
                 return False
 
         result = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
-        if result.outcome is not FollowUpDeliveryOutcome.INDETERMINATE:
-            with _followup_state_lock:
-                pending = _load_pending_followups(state_path)
-                pending.pop(fingerprint, None)
-                _save_pending_followups(state_path, pending)
+        with _followup_state_lock:
+            pending = _load_pending_followups(state_path)
+            if result.delivered:
+                confirmed = PendingCodexFollowUp(task_id=task_id, message_fingerprint=message_fingerprint, pre_send_turn_id=turn_id, status=FollowUpDeliveryOutcome.DELIVERED.value)
+                for key in keys:
+                    pending[key] = confirmed
+            elif result.outcome is FollowUpDeliveryOutcome.NOT_DELIVERED:
+                for key in keys:
+                    pending.pop(key, None)
+            _save_pending_followups(state_path, pending)
         if result.delivered:
             self.active_tasks[task_id] = message
             logger.info(f"Assigned follow-up work to Codex Cloud task '{task_id}'")

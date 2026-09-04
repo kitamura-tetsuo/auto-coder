@@ -614,13 +614,16 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=cloud_client),
         ):
             first = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
-            second = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+            pr_data["head"] = {"ref": "codex/issue-99", "sha": "head456"}
+            second = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head456", finding, github, [finding])
 
         assert "could not receive adversarial feedback" in first[0]
-        assert any("Recorded codex-cloud adversarial feedback delivery" in action for action in second)
+        assert "all actionable feedback was already delivered" in second[0]
         wham.send_follow_up.assert_called_once()
         github.add_comment_to_pr.assert_called_once()
         assert "auto-coder-cloud-review-feedback:v1:" in github.add_comment_to_pr.call_args.args[2]
+        state = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
+        assert len(state["delivered_feedback"]) == 1
 
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
@@ -720,7 +723,7 @@ class TestAdversarialValidationCodexFeedback:
             )
 
         cloud_client.send_followup.assert_called_once()
-        task_id, prompt = cloud_client.send_followup.call_args.args
+        task_id, prompt = cloud_client.send_followup.call_args.args[:2]
         assert task_id == "task_e_abc123"
         assert "PR #100" in prompt
         assert "head123" in prompt

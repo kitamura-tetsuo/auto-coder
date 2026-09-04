@@ -2,6 +2,7 @@
 Unit tests for CodexWhamClient and internal WHAM backend API integration.
 """
 
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -232,7 +233,7 @@ class TestCodexWhamClient:
             WhamTurn(id="task_e_900~assttrn_2", role="assistant"),
         ]
         with patch.object(client, "get_task_turns", return_value=turns):
-            assert client.reconcile_follow_up("task_e_900", turns[0].id, prompt) is True
+            assert client.reconcile_follow_up("task_e_900", turns[0].id, hashlib.sha256(prompt.encode("utf-8")).hexdigest()) is True
 
     def test_reconcile_follow_up_does_not_accept_unrelated_user_advancement(self, client):
         turns = [
@@ -241,7 +242,7 @@ class TestCodexWhamClient:
             WhamTurn(id="task_e_900~assttrn_2", role="assistant"),
         ]
         with patch.object(client, "get_task_turns", return_value=turns):
-            assert client.reconcile_follow_up("task_e_900", turns[0].id, "expected work") is None
+            assert client.reconcile_follow_up("task_e_900", turns[0].id, hashlib.sha256(b"expected work").hexdigest()) is None
 
     def test_send_follow_up_success(self, client):
         """Verify send_follow_up posts payload and returns True on HTTP 200/201."""

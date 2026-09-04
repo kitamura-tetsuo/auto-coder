@@ -92,7 +92,7 @@ def test_review_repair_uses_existing_task_and_deduplicates_unchanged_state(tmp_p
     assert first == ["Requested Codex Cloud task 'task_e_review5262' to address unresolved review threads for PR #5262"]
     assert second == ["Codex Cloud review repair was already requested for PR #5262 for all current actionable feedback"]
     send_followup.assert_called_once()
-    task_id, prompt = send_followup.call_args.args
+    task_id, prompt = send_followup.call_args.args[:2]
     assert task_id == "task_e_review5262"
     assert "existing pull request #5262" in prompt
     assert "codex/review-5262" in prompt

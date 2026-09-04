@@ -6,6 +6,7 @@ turn resolution, and follow-up messaging.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -375,7 +376,7 @@ class CodexWhamClient:
         logger.info(f"Resolved latest assistant turn for Codex Cloud task '{task_id}': '{turn_id}'")
         return turn_id
 
-    def reconcile_follow_up(self, task_id: str, pre_send_turn_id: str, prompt: str) -> Optional[bool]:
+    def reconcile_follow_up(self, task_id: str, pre_send_turn_id: str, message_fingerprint: str) -> Optional[bool]:
         """Reconcile an ambiguous POST against current remote turn state.
 
         ``True`` means the task advanced consistently with the submitted
@@ -410,7 +411,8 @@ class CodexWhamClient:
         if user_turns:
             # When WHAM exposes submitted content, require the stable logical
             # message itself rather than mistaking unrelated advancement for it.
-            return True if any(prompt in _strings(turn.raw_data) for turn in user_turns) else None
+            exposed_strings = [text for turn in user_turns for text in _strings(turn.raw_data)]
+            return True if any(hashlib.sha256(text.encode("utf-8")).hexdigest() == message_fingerprint for text in exposed_strings) else None
         if any(turn.id != pre_send_turn_id and ("assttrn_" in turn.id or turn.role.lower() in ("assistant", "agent", "bot", "asst")) for turn in later_turns):
             return True
         return None
