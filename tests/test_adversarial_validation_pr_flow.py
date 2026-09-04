@@ -26,6 +26,7 @@ from auto_coder.pr_processor import (
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
+    _get_claimed_review_thread_state,
     _get_codex_review_state,
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
@@ -2160,6 +2161,15 @@ class TestClaimedReviewThreadValidationFlow:
         client.get_pr_comments_strict = MagicMock(return_value=[])
         client.get_pull_request = MagicMock(return_value={"head": {"sha": new_sha}})
 
+        # Prove the supported GitHub thread boundary produces the exact
+        # blocking state consumed by the merge lifecycle.  Keeping this
+        # separately asserted makes the regression deterministic even when a
+        # developer's repository-scoped reviewer allowlist differs.
+        with patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]):
+            github_thread_state = _get_claimed_review_thread_state(client, "owner/repo", 123)
+        assert github_thread_state.has_blocking_unresolved is True
+        assert github_thread_state.blocking_unresolved == (thread,)
+
         validation = AdversarialValidationResult(
             result="INCONCLUSIVE",
             summary="The old finding is still not addressed",
@@ -2181,6 +2191,7 @@ class TestClaimedReviewThreadValidationFlow:
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
             patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
             patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=github_thread_state),
             patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
             patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=reviewer_login, app_id=1)),
             patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
