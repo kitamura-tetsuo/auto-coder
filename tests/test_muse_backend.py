@@ -252,6 +252,25 @@ def test_noedit_mode_only_change_is_rejected_and_restored(tmp_path: Path, monkey
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
+def test_noedit_tracked_non_executable_mode_change_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    target = repo / "tracked.txt"
+    target.chmod(0o644)
+    script = _muse_script(tmp_path, "chmod 600 tracked.txt")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    manager = _manager(config)
+    manager._is_noedit = True
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        manager._run_llm_cli("review")
+
+    assert target.read_text() == "before\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    assert _git(repo, "status", "--porcelain") == ""
+
+
 def test_noedit_ignored_file_mutation_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     (repo / ".gitignore").write_text("secrets.cache\n")
