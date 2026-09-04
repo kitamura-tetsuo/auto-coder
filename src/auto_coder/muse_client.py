@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import shlex
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -128,14 +129,22 @@ class _GitMetadataWatch:
 
 
 @dataclass(frozen=True)
+class _WorkspaceFile:
+    path: str
+    contents: bytes
+    is_symlink: bool
+    mode: int
+
+
+@dataclass(frozen=True)
 class _GitState:
     branch: Optional[str]
     head: str
     status: bytes
     staged_patch: bytes
     unstaged_patch: bytes
-    untracked_files: tuple[tuple[str, bytes, bool], ...]
-    ignored_files: tuple[tuple[str, bytes, bool], ...]
+    untracked_files: tuple[_WorkspaceFile, ...]
+    ignored_files: tuple[_WorkspaceFile, ...]
     refs: tuple[tuple[str, str], ...]
 
 
@@ -188,15 +197,15 @@ class MuseClient(LLMClientBase):
         )
 
     @staticmethod
-    def _snapshot_files(raw_paths: bytes) -> tuple[tuple[str, bytes, bool], ...]:
+    def _snapshot_files(raw_paths: bytes) -> tuple[_WorkspaceFile, ...]:
         files = []
         for raw_path in filter(None, raw_paths.split(b"\0")):
             relative_path = os.fsdecode(raw_path)
             path = Path.cwd() / relative_path
             if path.is_symlink():
-                files.append((relative_path, os.fsencode(os.readlink(path)), True))
+                files.append(_WorkspaceFile(relative_path, os.fsencode(os.readlink(path)), True, stat.S_IMODE(path.lstat().st_mode)))
             elif path.is_file():
-                files.append((relative_path, path.read_bytes(), False))
+                files.append(_WorkspaceFile(relative_path, path.read_bytes(), False, stat.S_IMODE(path.stat().st_mode)))
         return tuple(files)
 
     def _snapshot_refs(self) -> tuple[tuple[str, str], ...]:
@@ -255,13 +264,14 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError("Muse changed repository state and Auto-Coder could not restore its pre-run patch")
             if cached and self._git("checkout-index", "-a", "-f").returncode != 0:
                 raise RuntimeError("Muse changed repository state and Auto-Coder could not restore its working tree")
-        for relative_path, contents, is_symlink in state.untracked_files + state.ignored_files:
-            path = Path.cwd() / relative_path
+        for workspace_file in state.untracked_files + state.ignored_files:
+            path = Path.cwd() / workspace_file.path
             path.parent.mkdir(parents=True, exist_ok=True)
-            if is_symlink:
-                path.symlink_to(os.fsdecode(contents))
+            if workspace_file.is_symlink:
+                path.symlink_to(os.fsdecode(workspace_file.contents))
             else:
-                path.write_bytes(contents)
+                path.write_bytes(workspace_file.contents)
+                path.chmod(workspace_file.mode)
 
     @staticmethod
     def _trace_contains_git_mutation(trace_path: str) -> bool:

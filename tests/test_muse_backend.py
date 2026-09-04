@@ -228,6 +228,30 @@ def test_noedit_restores_preexisting_index_and_untracked_content(tmp_path: Path,
     assert _git(repo, "status", "--porcelain") == before_status
 
 
+@pytest.mark.parametrize(("filename", "ignored"), [("script.sh", False), ("ignored-script.sh", True)])
+def test_noedit_mode_only_change_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, filename: str, ignored: bool) -> None:
+    repo = _repository(tmp_path)
+    if ignored:
+        (repo / ".gitignore").write_text(f"{filename}\n")
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "-m", "ignore script")
+    target = repo / filename
+    target.write_bytes(b"unchanged bytes\n")
+    target.chmod(0o644)
+    script = _muse_script(tmp_path, f"chmod +x {filename}")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    manager = _manager(config)
+    manager._is_noedit = True
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        manager._run_llm_cli("review")
+
+    assert target.read_bytes() == b"unchanged bytes\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
 def test_noedit_ignored_file_mutation_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     (repo / ".gitignore").write_text("secrets.cache\n")
