@@ -99,6 +99,7 @@ _cloud_conflict_delivery_lock = threading.RLock()
 CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX = "auto-coder-cloud-review-feedback:v1:"
+CLOUD_CONFLICT_FOLLOWUP_MARKER_PREFIX = "auto-coder-cloud-conflict-followup:v1:"
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class CloudConflictDelegationResult:
 
     delegated: bool = False
     reason: str = ""
+    accepted_action: str = ""
 
     def __bool__(self) -> bool:
         return self.delegated
@@ -3112,6 +3114,7 @@ def _update_with_base_branch(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
+    github_client: Optional[Any] = None,
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -3200,9 +3203,17 @@ def _update_with_base_branch(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
 
-            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data)
+            reporting_client = github_client
+            if reporting_client is None:
+                try:
+                    reporting_client = GitHubClient.get_instance()
+                except Exception as exc:
+                    logger.warning(f"Could not initialize GitHub reporting for PR #{pr_number}: {exc}")
+            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, reporting_client)
             if cloud_delegation:
                 cmd.run_command(["git", "merge", "--abort"])
+                if cloud_delegation.accepted_action:
+                    actions.append(cloud_delegation.accepted_action)
                 actions.append(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 return actions
@@ -4220,6 +4231,28 @@ def _load_cloud_conflict_deliveries(state_path: Path) -> dict[str, CloudConflict
     return records
 
 
+def _report_cloud_conflict_followup(
+    github_client: Optional[Any],
+    repo_name: str,
+    pr_number: int,
+    task_id: str,
+    head_sha: str,
+    base_state: str,
+) -> bool:
+    """Publish one durable, delivery-specific receipt without affecting delivery state."""
+    if github_client is None:
+        return False
+    identity = f"{repo_name}#{pr_number}:{task_id}:{head_sha}:{base_state}:merge-conflict-repair"
+    marker = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    body = "\n".join(
+        (
+            f"<!-- {CLOUD_CONFLICT_FOLLOWUP_MARKER_PREFIX}{marker} -->",
+            "🤖 Auto-Coder: Codex Cloud accepted a merge-conflict-repair follow-up " f"for PR #{pr_number} at head `{head_sha}` (base revision `{base_state}`) " f"on task `{task_id}`.",
+        )
+    )
+    return _add_unique_pr_comment(github_client, repo_name, pr_number, body)
+
+
 def _cloud_review_repair_state_path(repo_name: str) -> Path:
     """Return the durable deduplication state path for Codex review work."""
     return Path.home() / ".auto-coder" / repo_name / "cloud_review_repairs.json"
@@ -4510,7 +4543,10 @@ def _delegate_cloud_merge_conflict_repair_result(
     if type(client).send_followup is CloudTaskClientBase.send_followup:
         return CloudConflictDelegationResult(reason=f"cloud provider for session '{task_id}' does not support repair follow-up")
 
-    pr_number = pr_data.get("number")
+    raw_pr_number = pr_data.get("number")
+    if not isinstance(raw_pr_number, int) or isinstance(raw_pr_number, bool):
+        return CloudConflictDelegationResult(reason="the PR number required for repair is unavailable")
+    pr_number = raw_pr_number
     base = pr_data.get("base") or {}
     base_state = base.get("sha") or pr_data.get("base_sha") or pr_data.get("base_branch") or base.get("ref")
     target = resolve_existing_pr_repair_target(repo_name, pr_data)
@@ -4519,6 +4555,7 @@ def _delegate_cloud_merge_conflict_repair_result(
         return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
+    accepted_action = f"Codex Cloud task '{task_id}' accepted merge-conflict-repair follow-up for " f"PR #{pr_number} at head {target.head_sha}"
     state_path = _cloud_conflict_state_path(repo_name)
     with _cloud_conflict_delivery_lock:
         delivered: dict[str, CloudConflictDeliveryRecord] = {}
@@ -4531,7 +4568,15 @@ def _delegate_cloud_merge_conflict_repair_result(
         existing = delivered.get(fingerprint)
         if existing and existing.status == "confirmed":
             logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
-            return CloudConflictDelegationResult(delegated=True, reason="an equivalent repair request was already delegated")
+            try:
+                _report_cloud_conflict_followup(github_client, repo_name, pr_number, existing.task_id, target.head_sha, str(base_state))
+            except Exception as exc:
+                logger.warning(f"Could not publish accepted cloud conflict follow-up receipt on PR #{pr_number}: {exc}")
+            return CloudConflictDelegationResult(
+                delegated=True,
+                reason="an equivalent repair request was already delegated",
+                accepted_action=accepted_action,
+            )
         if existing:
             return CloudConflictDelegationResult(reason=(f"delivery to originating cloud session '{existing.task_id}' has unconfirmed status; " "not resending a potentially accepted request"))
 
@@ -4575,7 +4620,17 @@ def _delegate_cloud_merge_conflict_repair_result(
             # interpreted as confirmed on a later pass or resent speculatively.
             logger.warning(f"Could not confirm cloud conflict repair delivery: {exc}")
     logger.info(f"Delegated merge-conflict repair for PR #{pr_number} to existing cloud task {task_id}")
-    return CloudConflictDelegationResult(delegated=True, reason=f"repair was delivered to cloud session '{task_id}'")
+    try:
+        _report_cloud_conflict_followup(github_client, repo_name, pr_number, task_id, target.head_sha, str(base_state))
+    except Exception as exc:
+        # Cloud acceptance is authoritative and must remain independent of the
+        # best-effort GitHub publication. A later pass retries only this receipt.
+        logger.warning(f"Could not publish accepted cloud conflict follow-up receipt on PR #{pr_number}: {exc}")
+    return CloudConflictDelegationResult(
+        delegated=True,
+        reason=f"repair was delivered to cloud session '{task_id}'",
+        accepted_action=accepted_action,
+    )
 
 
 def _delegate_cloud_merge_conflict_repair(
@@ -4902,7 +4957,10 @@ def _merge_pr(
                 log_action(f"Skipped merge conflict resolution for dependency-bot PR #{pr_number}")
                 return False
 
-            if _delegate_cloud_merge_conflict_repair(repo_name, pr_info, client):
+            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_info, client)
+            if cloud_delegation:
+                if cloud_delegation.accepted_action:
+                    log_action(cloud_delegation.accepted_action)
                 log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
                 return False
 
