@@ -359,6 +359,7 @@ class TestAutomationEngineEmptyPRRequeue:
         engine.github.get_open_prs_json.return_value = [empty_pr]
         engine.github.get_issue.return_value = {"state": "open", "number": 4800}
         engine.github.get_open_issues.return_value = []
+        engine.github.get_open_issues_json.return_value = []
         engine.github.get_open_sub_issues.return_value = []
 
         with patch.object(engine, "_create_candidate_from_single") as mock_create_cand:

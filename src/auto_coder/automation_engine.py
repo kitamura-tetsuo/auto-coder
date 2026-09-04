@@ -865,10 +865,15 @@ class AutomationEngine:
             max_pr_priority = max([candidate.priority for candidate in candidates]) if candidates else 0
             should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < threshold and max_pr_priority < 2)
 
-            if should_collect_issues:
+            # Urgent Issues use a narrow REST label query when the ordinary scan is
+            # suppressed. This keeps emergency work discoverable without paying for
+            # (or queueing) a complete ordinary-Issue scan on every PR-heavy cycle.
+            issue_labels = None if should_collect_issues else ["urgent"]
+            if should_collect_issues or issue_labels:
                 # Collect issue candidates
-                # Use optimized GraphQL query to fetch all issue details in one go, avoiding N+1 API calls
-                all_issues = self.github.get_open_issues_json(repo_name)
+                # Use the REST-backed collector so ordinary and narrow scans share
+                # identical normalization and eligibility safeguards.
+                all_issues = self.github.get_open_issues_json(repo_name, labels=issue_labels) if issue_labels else self.github.get_open_issues_json(repo_name)
 
                 # Update snapshot
                 self.open_issues_snapshot = all_issues

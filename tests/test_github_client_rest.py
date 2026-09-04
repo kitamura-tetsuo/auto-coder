@@ -138,6 +138,37 @@ class TestGitHubClientREST:
             mock_sub.assert_called_once_with("owner/repo", 456)
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_open_issues_json_filters_urgent_at_rest_origin(self, mock_get_ghapi_client, mock_github_token):
+        """A narrow discovery request must reach GitHub's supported label filter."""
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+        mock_api.issues.list_for_repo.return_value = [
+            {
+                "number": 1680,
+                "title": "Emergency repair",
+                "body": "",
+                "state": "open",
+                "labels": [{"name": "urgent"}],
+                "assignees": [],
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "html_url": "https://github.com/owner/repo/issues/1680",
+                "user": {"login": "maintainer", "id": 7},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0},
+            }
+        ]
+        client = GitHubClient.get_instance(mock_github_token)
+        client._open_issues_cache = None
+
+        with patch.object(client, "get_linked_prs", return_value=[]):
+            result = client.get_open_issues_json("owner/repo", labels=["urgent"])
+
+        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100, labels="urgent")
+        assert [(issue["number"], issue["labels"]) for issue in result] == [(1680, ["urgent"])]
+        assert client._open_issues_cache is None
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):
         """Test get_issue uses REST API correctly."""
         # Setup

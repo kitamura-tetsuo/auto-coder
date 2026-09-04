@@ -381,7 +381,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
   - Environment variable: `AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES` or `AUTO_CODER_MAX_OPEN_PRS`
   - Default: `3`
   - Behavior:
-    - When open PR candidate count is at or above the threshold (or if any PR candidate has high priority >= 2), collection of new issues is skipped to prioritize resolving existing open PRs.
+    - When open PR candidate count is at or above the threshold (or if any PR candidate has high priority >= 2), the full collection of new issues is skipped to prioritize resolving existing open PRs. A narrow REST query for open Issues labeled `urgent` still runs, so emergency-lane work remains discoverable while ordinary Issues remain suppressed. Discovered urgent Issues retain the normal author, age, dependency, linked-PR, admission-capacity, and duplicate-execution safeguards.
     - When open PR candidate count is below the threshold and all PRs have low priority (< 2), or when 0 PR candidates exist, issues are collected and processed.
     - Supports repository-scoped configuration overrides in `config.toml`.
   - Configuration file: "~/.auto-coder/config.toml"
