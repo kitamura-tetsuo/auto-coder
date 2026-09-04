@@ -1836,7 +1836,11 @@ class GitHubClient:
 
     def get_pr_comments_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get PR conversation comments while preserving REST lookup failures."""
-        return self._get_issue_comments(repo_name, pr_number, fresh=True)
+        return self.get_issue_comments_strict(repo_name, pr_number)
+
+    def get_issue_comments_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        """Get Issue comments freshly while preserving REST lookup failures."""
+        return self._get_issue_comments(repo_name, issue_number, fresh=True)
 
     def get_issue_comments(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Get all comments for an issue (or PR conversation).

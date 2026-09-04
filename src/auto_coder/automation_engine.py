@@ -1139,7 +1139,15 @@ class AutomationEngine:
             if contract.error:
                 fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{candidate.data.get('body') or ''}\0{contract.error}".encode("utf-8")).hexdigest()
                 marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
-                comments = self.github.get_issue_comments(repo_name, item_number)
+                try:
+                    comments = self.github.get_issue_comments_strict(repo_name, item_number)
+                except Exception as exc:
+                    # An unavailable comment listing is not authoritative evidence
+                    # that the diagnostic is absent. Fail closed so a transient read
+                    # failure can never turn into a duplicate write.
+                    result.error = f"Cannot safely check requirement contract diagnostics: {exc}"
+                    logger.warning(f"Deferred invalid Issue #{item_number} because diagnostic lookup failed: {exc}")
+                    return result
                 already_reported = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
                 if not already_reported:
                     diagnostic = (

@@ -285,7 +285,7 @@ class TestAutomationEngine:
             def get_item_type_strict(self, _repo_name, _number):
                 return "issue"
 
-            def get_issue_comments(self, _repo_name, _number):
+            def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
@@ -312,6 +312,47 @@ class TestAutomationEngine:
         assert not (tmp_path / "slots.json").exists()
         engine._process_single_candidate_reserved.assert_not_called()
 
+    def test_invalid_contract_comment_read_failure_defers_without_duplicate(self, tmp_path):
+        """An ambiguous comment read must never be treated as an empty listing."""
+
+        class GitHubStub:
+            def __init__(self):
+                self.comments = []
+                self.lookup_error = False
+
+            def get_item_type_strict(self, _repo_name, _number):
+                return "issue"
+
+            def get_issue_comments_strict(self, _repo_name, _number):
+                if self.lookup_error:
+                    raise RuntimeError("transient comment API failure")
+                return list(self.comments)
+
+            def add_comment_to_issue(self, _repo_name, _number, comment):
+                self.comments.append({"body": comment})
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+        candidate = Candidate(
+            type="issue",
+            data={"number": 1684, "title": "Invalid", "body": "## Requirements\n### 1. Invalid", "labels": []},
+            priority=0,
+        )
+
+        first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        github.lookup_error = True
+        second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert "no valid REQ-NNN entries" in (first.error or "")
+        assert second.error == "Cannot safely check requirement contract diagnostics: transient comment API failure"
+        assert len(github.comments) == 1
+        assert slots.active_owners() == ()
+        assert not (tmp_path / "slots.json").exists()
+        engine._process_single_candidate_reserved.assert_not_called()
+
     def test_rest_issue_candidate_preserves_body_through_intake_rejection(self, tmp_path):
         """The supported REST collection path carries the contract to the gate."""
         github = MagicMock()
@@ -332,7 +373,7 @@ class TestAutomationEngine:
             }
         ]
         github.get_item_type_strict.return_value = "issue"
-        github.get_issue_comments.return_value = []
+        github.get_issue_comments_strict.return_value = []
         engine = AutomationEngine(github, config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine.implementation_slots = slots
@@ -362,7 +403,7 @@ class TestAutomationEngine:
             def get_item_type_strict(self, _repo_name, _number):
                 return "issue"
 
-            def get_issue_comments(self, _repo_name, _number):
+            def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
@@ -397,7 +438,7 @@ class TestAutomationEngine:
 
         assert result.success is True
         engine._process_single_candidate_reserved.assert_called_once()
-        github.get_issue_comments.assert_not_called()
+        github.get_issue_comments_strict.assert_not_called()
 
     def test_urgent_label_reaches_durable_emergency_admission_boundary(self, tmp_path):
         """Fetched Issue labels must preserve urgency through engine admission."""
