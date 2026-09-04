@@ -120,7 +120,16 @@ def run_exact_head_dynamic_check(
     command = ["bash", config.TEST_SCRIPT_PATH]
     if check_target != "all":
         command.append(check_target)
-    test_result = executor.run_command(command, timeout=executor.DEFAULT_TIMEOUTS["test"])
+    # scripts/test.sh normally redirects from the Auto-Coder service container
+    # to its configured target container.  This worktree is itself the verified
+    # execution target, so explicitly suppress that redirect at the script's
+    # supported boundary.  Otherwise the surrounding SHA assertions would
+    # prove only the caller's checkout, not the repository that ran the tests.
+    test_result = executor.run_command(
+        command,
+        timeout=executor.DEFAULT_TIMEOUTS["test"],
+        env_overrides={"INSIDE_TARGET_EXECUTION": "true"},
+    )
 
     after = executor.run_command(["git", "rev-parse", "HEAD"])
     if not after.success or not after.stdout.strip():

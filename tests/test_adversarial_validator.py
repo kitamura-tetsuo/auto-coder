@@ -1,6 +1,9 @@
 """Tests for the adversarial validation module."""
 
 import json
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -33,7 +36,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
-from auto_coder.reviewer_session_registry import ReviewerSession
+from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.trace_logger import get_trace_logger
 from auto_coder.utils import CommandResult
 
@@ -57,7 +60,50 @@ def test_exact_head_dynamic_check_bypasses_container_and_asserts_sha_before_and_
         AutomationConfig().TEST_SCRIPT_PATH,
         "tests/test_feature.py::test_head",
     ]
+    assert executor.run_command.call_args_list[1].kwargs["env_overrides"] == {"INSIDE_TARGET_EXECUTION": "true"}
     assert all(call.args[0][:2] != ["docker", "exec"] for call in executor.run_command.call_args_list)
+
+
+def test_exact_head_dynamic_check_real_script_does_not_redirect_in_autocoder_container(tmp_path, monkeypatch, _use_real_commands) -> None:
+    """Exercise the shipped script's supported container-routing boundary."""
+    repo = tmp_path / "validated-head"
+    repo.mkdir()
+    (repo / "scripts").mkdir()
+    (repo / "src" / "auto_coder").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    script = repo / "scripts" / "test.sh"
+    script.write_text((Path(__file__).parents[1] / "scripts" / "test.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    script.chmod(0o755)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "uv").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "uv").chmod(0o755)
+    docker_marker = tmp_path / "docker-was-called"
+    (bin_dir / "docker").write_text(f"#!/bin/sh\ntouch '{docker_marker}'\nexit 42\n", encoding="utf-8")
+    (bin_dir / "docker").chmod(0o755)
+
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "validated head"],
+        cwd=repo,
+        check=True,
+    )
+    expected_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AM_I_AUTOCODER_CONTAINER", "true")
+    monkeypatch.setenv("REPO_NAME", "owner/repo")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    config = AutomationConfig()
+    config.TEST_SCRIPT_PATH = str(script)
+
+    result = run_exact_head_dynamic_check(config, "tests/test_head.py", expected_sha)
+
+    assert result.success
+    assert result.executed_sha == expected_sha
+    assert result.verification_error is None
+    assert not docker_marker.exists(), "the shipped test script redirected to an unrelated target checkout"
 
 
 def test_exact_head_dynamic_check_rejects_known_mismatch_without_running_test() -> None:
@@ -130,6 +176,62 @@ def test_dynamic_check_invalid_revision_evidence_fails_closed_without_followup(
     assert result.diagnostic_category == expected_category
     assert result.result != "NEEDS_TESTS"
     manager.continue_session.assert_not_called()
+
+
+@patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+def test_mismatched_dynamic_execution_preserves_persisted_open_gap(mock_build_context, mock_dynamic_check, tmp_path) -> None:
+    """Invalid execution evidence cannot mutate the durable gap lifecycle."""
+    old_sha = "a" * 40
+    head_sha = "b" * 40
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(
+        ReviewerSession(
+            repository="owner/repo",
+            pr_number=100,
+            backend_name="codex",
+            backend_type="cli",
+            model_name="model",
+            session_id="review-session",
+            last_head_sha=old_sha,
+            test_oracle_gaps=[TestOracleGap(gap_id="gap-1", requirement_id="REQ-001", status="OPEN")],
+        )
+    )
+    mock_build_context.return_value = AdversarialValidationContext(
+        repo_name="owner/repo",
+        pr_number=100,
+        pr_title="Exact head",
+        pr_diff="diff content",
+        changed_tests=["tests/test_feature.py"],
+        issue_context="REQ-001: validate exact head",
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="validate exact head")],
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("codex", "cli", "model")
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "INCONCLUSIVE",
+            "summary": "Need focused evidence",
+            "dynamic_check_requested": "tests/test_feature.py::test_head",
+            "findings": [],
+        }
+    )
+    mock_dynamic_check.return_value = DynamicCheckExecution(executed_sha=old_sha, verification_error=f"execution-target mismatch: expected {head_sha}, found {old_sha}")
+
+    result = run_adversarial_validation(
+        "owner/repo",
+        {"number": 100, "head_sha": head_sha},
+        AutomationConfig(),
+        backend_manager=manager,
+        session_registry=registry,
+    )
+
+    assert result.result == "ERROR"
+    assert [(gap.gap_id, gap.status) for gap in result.test_oracle_gaps] == [("gap-1", "OPEN")]
+    assert manager.continue_session.call_count == 1, "invalid evidence must not trigger a reviewer follow-up"
+    persisted = registry.get("owner/repo", 100, "codex", "cli", "model")
+    assert persisted is not None
+    assert [(gap.gap_id, gap.status) for gap in persisted.test_oracle_gaps] == [("gap-1", "OPEN")]
 
 
 def _demonstrated_finding_with_anchor(anchor_line: object) -> dict[str, object]:
