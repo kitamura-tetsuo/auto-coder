@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import shlex
@@ -63,6 +64,44 @@ def _read_only_special_git_command(name: object, argv: object) -> bool:
     if name == "tag":
         return not any(not argument.startswith("-") for argument in arguments)
     return False
+
+
+class _GitMetadataWatch:
+    """Kernel-owned watch for repository metadata writes during Muse execution."""
+
+    _WRITE_EVENTS = 0x00000FCE
+
+    def __init__(self) -> None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        self._fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if self._fd < 0:
+            raise RuntimeError("Muse requires Linux inotify to enforce Git lifecycle isolation")
+        git_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir"], capture_output=True, text=True)
+        common_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True, text=True)
+        if git_dir_result.returncode != 0 or common_dir_result.returncode != 0:
+            self.close()
+            raise RuntimeError("Unable to locate Git metadata for Muse lifecycle enforcement")
+        git_dir = Path(git_dir_result.stdout.strip())
+        common_dir = Path(common_dir_result.stdout.strip())
+        paths = [git_dir / "HEAD", git_dir / "index"]
+        for root in {common_dir / "refs", common_dir / "logs"}:
+            if root.exists():
+                paths.extend(path for path in (root, *root.rglob("*")) if path.is_dir())
+        for path in paths:
+            if path.exists() and libc.inotify_add_watch(self._fd, os.fsencode(path), self._WRITE_EVENTS) < 0:
+                self.close()
+                raise RuntimeError(f"Unable to protect Git metadata path during Muse execution: {path}")
+
+    def mutation_observed(self) -> bool:
+        try:
+            return bool(os.read(self._fd, 1024 * 1024))
+        except BlockingIOError:
+            return False
+
+    def close(self) -> None:
+        if getattr(self, "_fd", -1) >= 0:
+            os.close(self._fd)
+            self._fd = -1
 
 
 @dataclass(frozen=True)
@@ -240,6 +279,7 @@ class MuseClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         before = self._snapshot()
+        metadata_watch = _GitMetadataWatch()
         processed = self.config_backend.replace_placeholders(model_name=self.model_name) if self.config_backend else {}
         options = processed.get("options_for_noedit" if is_noedit and self.options_for_noedit else "options", self.options_for_noedit if is_noedit and self.options_for_noedit else self.options)
         command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse"))
@@ -260,16 +300,19 @@ class MuseClient(LLMClientBase):
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, env=env)
         except subprocess.TimeoutExpired as exc:
-            mutation_observed = self._trace_contains_git_mutation(trace_path)
+            mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+            metadata_watch.close()
             os.unlink(trace_path)
             self._assert_invariants(before, is_noedit, mutation_observed)
             raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
         except OSError as exc:
+            metadata_watch.close()
             os.unlink(trace_path)
             raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
 
         output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        mutation_observed = self._trace_contains_git_mutation(trace_path)
+        mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+        metadata_watch.close()
         os.unlink(trace_path)
         self._assert_invariants(before, is_noedit, mutation_observed)
         markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
