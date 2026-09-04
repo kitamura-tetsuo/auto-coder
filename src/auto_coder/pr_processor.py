@@ -4374,17 +4374,39 @@ def _review_feedback_identity(prefix: str, thread: ReviewThread, comment_index: 
     return prefix + hashlib.sha256(anchor.encode("utf-8")).hexdigest()
 
 
-def _adversarial_feedback_generation_identity(feedback_identity: str, head_sha: str, validation_report: str) -> str:
+def _cloud_task_remediation_token(client: Any, task_id: str) -> str:
+    """Return durable evidence that the owning task completed later activity."""
+    from .cloud_task_client_base import CloudTask, CloudTaskState
+
+    try:
+        task = client.get_task(task_id)
+    except Exception as exc:
+        logger.warning(f"Could not inspect cloud task '{task_id}' remediation activity: {exc}")
+        return ""
+    if not isinstance(task, CloudTask) or task.state not in {CloudTaskState.COMPLETED, CloudTaskState.FAILED, CloudTaskState.PAUSED}:
+        return ""
+    activity = task.updated_at.isoformat() if task.updated_at is not None else ""
+    if not activity and isinstance(task.raw_data, dict):
+        for key in ("updated_at", "updatedAt", "completed_at", "completedAt", "latest_turn_id", "latestTurnId"):
+            value = task.raw_data.get(key)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                activity = f"{key}:{value}"
+                break
+    if not activity:
+        return ""
+    return hashlib.sha256(f"{task.task_id}\n{activity}".encode("utf-8")).hexdigest()
+
+
+def _adversarial_feedback_generation_identity(feedback_identity: str, remediation_token: str, validation_report: str) -> str:
     """Identify one finding delivery within a durable remediation generation.
 
-    A validated head normally advances after cloud repair. An implementer's
-    new provenance evidence can also advance correction/revalidation without
-    a commit, so its durable report marker participates in the token. Keeping
-    the stable finding identity separate preserves cross-path deduplication
-    with ordinary unresolved-thread routing.
+    Only observed terminal activity by the owning implementation task, or new
+    implementer provenance evidence, advances this token. A head SHA is not
+    evidence of remediation because unrelated commits can change it. Keeping
+    the stable finding identity separate preserves cross-path deduplication.
     """
     provenance_match = re.search(r"<!-- auto-coder-change-provenance-evidence:v1:[a-f0-9]+ -->", validation_report)
-    lifecycle_token = f"{head_sha}\n{provenance_match.group(0) if provenance_match else ''}"
+    lifecycle_token = f"{remediation_token}\n{provenance_match.group(0) if provenance_match else ''}"
     generation = hashlib.sha256(lifecycle_token.encode("utf-8")).hexdigest()
     return f"{feedback_identity}:remediation:{generation}"
 
@@ -4886,6 +4908,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 
     state_path = _cloud_review_repair_state_path(repo_name)
     prefix = f"{repo_name}#{pr_number}:{provider}:{task_id}:"
+    remediation_token = _cloud_task_remediation_token(client, task_id)
     if github_client is None:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]
     try:
@@ -4898,7 +4921,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         (
             thread.comments[0].body,
             _review_feedback_identity(prefix, thread, 0),
-            _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), head_sha, validation_report),
+            _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), remediation_token, validation_report),
         )
         for thread in review_threads
         if not thread.is_resolved

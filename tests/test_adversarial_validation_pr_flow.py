@@ -1,6 +1,7 @@
 """Integration tests for adversarial validation in the PR processor flow."""
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from auto_coder.adversarial_validator import (
 )
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
+from auto_coder.cloud_task_client_base import CloudTask, CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
 from auto_coder.github_app_reviewer import ReviewPublicationResult
@@ -427,6 +429,15 @@ class TestAdversarialValidationCodexFeedback:
         github.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_persisted_gap", comments=[ReviewThreadComment(database_id=1692, body=finding)])]
         backend = MagicMock()
         backend.send_followup.return_value = True
+
+        def task_at(hour):
+            return CloudTask(
+                task_id="implementation-task",
+                state=CloudTaskState.COMPLETED,
+                updated_at=datetime(2026, 9, 4, hour, tzinfo=timezone.utc),
+            )
+
+        backend.get_task.side_effect = [task_at(1), task_at(1), task_at(1), task_at(2), task_at(2), task_at(2), task_at(2)]
         state_path = tmp_path / "review-repairs.json"
         pr_data = {
             "number": 100,
@@ -443,9 +454,13 @@ class TestAdversarialValidationCodexFeedback:
             actions_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
             duplicate_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
 
-            # Reloading the durable file on every call models later processing
-            # passes. Each changed validated head is one corrective generation.
+            # An unrelated changed head is production-reachable but is not
+            # evidence that the owning implementation task attempted repair.
             pr_data["head"]["sha"] = "head-b"
+            unrelated_head = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
+
+            # A later terminal activity token from the provider is durable,
+            # backend-neutral evidence that its corrective lifecycle advanced.
             actions_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
             duplicate_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
             # A supported implementer-provenance correction can trigger a new
@@ -460,6 +475,7 @@ class TestAdversarialValidationCodexFeedback:
         assert all("latest corrective attempt did not resolve" in prompt for prompt in prompts[1:])
         assert all(finding in prompt for prompt in prompts)
         assert "all actionable feedback was already delivered" in duplicate_a[0]
+        assert "all actionable feedback was already delivered" in unrelated_head[0]
         assert "all actionable feedback was already delivered" in duplicate_b[0]
         assert "all actionable feedback was already delivered" in duplicate_c[0]
         assert all("Sent adversarial NEEDS_FIX report" in actions[0] for actions in (actions_a, actions_b, actions_c))
