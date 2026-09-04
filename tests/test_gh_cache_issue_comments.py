@@ -102,3 +102,29 @@ class TestGetIssueCommentsPagination:
             client.get_pr_comments_strict("owner/repo", 4787)
 
         assert mock_api.call_args.kwargs["headers"] == {"Cache-Control": "no-cache"}
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_strict_issue_comment_lookup_propagates_api_error(self, mock_get_api):
+        mock_api = Mock()
+        mock_api.side_effect = RuntimeError("API error")
+        mock_get_api.return_value = mock_api
+
+        client = _make_client()
+
+        with pytest.raises(RuntimeError, match="API error"):
+            client.get_issue_comments_strict("owner/repo", 4787)
+
+        assert mock_api.call_args.kwargs["headers"] == {"Cache-Control": "no-cache"}
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_strict_issue_comment_lookup_rejects_truncated_pagination(self, mock_get_api):
+        mock_api = Mock()
+        mock_api.return_value = [_comment(i) for i in range(100)]
+        mock_get_api.return_value = mock_api
+
+        client = _make_client()
+
+        with pytest.raises(RuntimeError, match="page safety limit"):
+            client.get_issue_comments_strict("owner/repo", 4787)
+
+        assert mock_api.call_count == COMMENTS_MAX_PAGES

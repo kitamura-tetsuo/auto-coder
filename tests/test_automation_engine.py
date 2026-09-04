@@ -285,7 +285,7 @@ class TestAutomationEngine:
             def get_item_type_strict(self, _repo_name, _number):
                 return "issue"
 
-            def get_issue_comments(self, _repo_name, _number):
+            def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
@@ -312,6 +312,50 @@ class TestAutomationEngine:
         assert not (tmp_path / "slots.json").exists()
         engine._process_single_candidate_reserved.assert_not_called()
 
+    def test_comment_lookup_failure_suppresses_duplicate_invalid_contract_diagnostic(self, tmp_path):
+        """A transient REST read failure cannot be interpreted as no marker."""
+
+        class GitHubStub:
+            def __init__(self):
+                self.comments = []
+                self.lookup_available = True
+
+            def get_item_type_strict(self, _repo_name, _number):
+                return "issue"
+
+            def get_issue_comments_strict(self, _repo_name, _number):
+                if not self.lookup_available:
+                    raise RuntimeError("transient REST failure")
+                return list(self.comments)
+
+            def add_comment_to_issue(self, _repo_name, _number, comment):
+                self.comments.append({"body": comment})
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+        candidate = Candidate(
+            type="issue",
+            data={"number": 1684, "title": "Invalid contract", "body": "## Requirements\n### 1. Invalid", "labels": []},
+            priority=0,
+        )
+
+        first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        github.lookup_available = False
+        second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert first.error == second.error
+        assert len(github.comments) == 1
+        assert second.actions == [
+            f"Rejected - invalid requirement contract: {second.error}",
+            "Diagnostic comment deferred because existing Issue comments could not be verified",
+        ]
+        assert slots.active_owners() == ()
+        assert not (tmp_path / "slots.json").exists()
+        engine._process_single_candidate_reserved.assert_not_called()
+
     def test_rest_issue_candidate_preserves_body_through_intake_rejection(self, tmp_path):
         """The supported REST collection path carries the contract to the gate."""
         github = MagicMock()
@@ -332,7 +376,7 @@ class TestAutomationEngine:
             }
         ]
         github.get_item_type_strict.return_value = "issue"
-        github.get_issue_comments.return_value = []
+        github.get_issue_comments_strict.return_value = []
         engine = AutomationEngine(github, config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine.implementation_slots = slots
@@ -362,7 +406,7 @@ class TestAutomationEngine:
             def get_item_type_strict(self, _repo_name, _number):
                 return "issue"
 
-            def get_issue_comments(self, _repo_name, _number):
+            def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
@@ -397,7 +441,7 @@ class TestAutomationEngine:
 
         assert result.success is True
         engine._process_single_candidate_reserved.assert_called_once()
-        github.get_issue_comments.assert_not_called()
+        github.get_issue_comments_strict.assert_not_called()
 
     def test_urgent_label_reaches_durable_emergency_admission_boundary(self, tmp_path):
         """Fetched Issue labels must preserve urgency through engine admission."""

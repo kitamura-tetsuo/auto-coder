@@ -1139,7 +1139,18 @@ class AutomationEngine:
             if contract.error:
                 fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{candidate.data.get('body') or ''}\0{contract.error}".encode("utf-8")).hexdigest()
                 marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
-                comments = self.github.get_issue_comments(repo_name, item_number)
+                try:
+                    comments = self.github.get_issue_comments_strict(repo_name, item_number)
+                except Exception as exc:
+                    # Absence of evidence is not evidence that no marker exists.
+                    # Reject implementation but do not risk posting a duplicate.
+                    logger.warning(f"Could not verify requirement-contract diagnostic state for Issue #{item_number}; " f"suppressing comment creation: {exc}")
+                    result.actions = [
+                        f"Rejected - invalid requirement contract: {contract.error}",
+                        "Diagnostic comment deferred because existing Issue comments could not be verified",
+                    ]
+                    result.error = contract.error
+                    return result
                 already_reported = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
                 if not already_reported:
                     diagnostic = (

@@ -1851,6 +1851,14 @@ class GitHubClient:
             logger.error(f"Failed to get comments for issue/PR #{issue_number}: {e}")
             return []
 
+    def get_issue_comments_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        """Get Issue comments without converting an incomplete lookup to no comments.
+
+        Callers making an idempotency decision must distinguish an authoritative
+        empty list from a failed or truncated REST lookup.
+        """
+        return self._get_issue_comments(repo_name, issue_number, fresh=True)
+
     def _get_issue_comments(self, repo_name: str, issue_number: int, fresh: bool = False) -> List[Dict[str, Any]]:
         """Fetch every comment page and let callers decide how to handle errors."""
         owner, repo = repo_name.split("/")
@@ -1885,6 +1893,8 @@ class GitHubClient:
             page += 1
         else:
             logger.warning(f"Stopped fetching comments for issue/PR #{issue_number} after {COMMENTS_MAX_PAGES} pages")
+            if fresh:
+                raise RuntimeError(f"Issue comment listing exceeded the {COMMENTS_MAX_PAGES}-page safety limit")
 
         return result
 
