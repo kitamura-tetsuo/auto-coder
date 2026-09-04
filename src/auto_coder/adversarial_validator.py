@@ -19,6 +19,7 @@ from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linke
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .requirement_contract import parse_requirement_contract
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
@@ -796,58 +797,10 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
     return requirements
 
 
-_MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
-_EXPLICIT_REQUIREMENT_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
-_EXPLICIT_REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(\S.*)$")
-
-
 def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
-    """Parse an exact Markdown Requirements section without interpreting other prose."""
-    section_lines: List[str] = []
-    in_section = False
-    found = False
-    for line in issue.body.splitlines():
-        heading = _MARKDOWN_HEADING.match(line)
-        if heading:
-            if in_section:
-                break
-            if heading.group(2) == "Requirements":
-                found = True
-                in_section = True
-            continue
-        if in_section:
-            section_lines.append(line)
-
-    if not found:
-        return False, [], None
-
-    entries: List[tuple[str, str]] = []
-    malformed: List[str] = []
-    seen: set[str] = set()
-    duplicates: set[str] = set()
-    for raw_line in section_lines:
-        line = raw_line.strip()
-        if not line or line.startswith("<!--") or line.endswith("-->"):
-            continue
-        content = _EXPLICIT_REQUIREMENT_PREFIX.sub("", line, count=1)
-        match = _EXPLICIT_REQUIREMENT.fullmatch(content)
-        if not match:
-            malformed.append(line)
-            continue
-        backticked_id, plain_id, text = match.groups()
-        requirement_id = backticked_id or plain_id
-        if requirement_id in seen:
-            duplicates.add(requirement_id)
-        seen.add(requirement_id)
-        entries.append((requirement_id, text.strip()))
-
-    if duplicates:
-        return True, [], f"Issue #{issue.number} Requirements section contains duplicate IDs: {', '.join(sorted(duplicates))}"
-    if malformed:
-        return True, [], f"Issue #{issue.number} Requirements section contains malformed entries: {malformed[0]}"
-    if not entries:
-        return True, [], f"Issue #{issue.number} Requirements section contains no valid REQ-NNN entries"
-    return True, entries, None
+    """Adapt the shared contract oracle to the adversarial manifest builder."""
+    result = parse_requirement_contract(issue.number, issue.body)
+    return result.explicit, result.entries, result.error
 
 
 def build_issue_requirement_manifest(resolution: IssueOracleResolution) -> IssueRequirementManifest:

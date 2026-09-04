@@ -15,6 +15,18 @@ implementation-slot state is active or unreadable.
 
 This file documents the client-facing features and tools provided by auto-coder.
 
+## Issue requirement-contract intake gate
+
+Before any implementation slot, label, branch, local backend, or cloud task is
+started for an Issue, Auto-Coder validates an explicit Markdown
+`## Requirements` section with the same deterministic parser used by adversarial
+PR validation. Explicit contracts must contain only unique `REQ-NNN:` entries;
+empty, malformed, and duplicate-ID contracts are rejected with an actionable
+Issue comment. A versioned body fingerprint prevents repeat scans from posting
+the same diagnostic, while an edited body is evaluated again and can proceed
+normally once valid. Issues without an explicit Requirements section continue to
+use legacy requirement extraction.
+
 ## Structured PR processing outcomes
 
 PR processing propagates a machine-readable `success`, `deferred`, or `failed`

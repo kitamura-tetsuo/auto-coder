@@ -267,6 +267,138 @@ class TestAutomationEngine:
         assert slots.active_owners() == ()
         assert slots.reserve(ImplementationOwner("issue", 200)) is True
 
+    @pytest.mark.parametrize(
+        "body, reason",
+        [
+            ("## Requirements\n\n### 1. First requirement\n...", "no valid REQ-NNN entries"),
+            ("## Requirements\n- Must do something", "malformed entries"),
+            ("## Requirements\nREQ-001: One.\nREQ-001: Again.", "duplicate IDs"),
+        ],
+    )
+    def test_invalid_requirement_contract_is_diagnosed_before_slot_reservation(self, tmp_path, body, reason):
+        """Fetched Issue data reaches the contract gate before lifecycle ownership."""
+
+        class GitHubStub:
+            def __init__(self):
+                self.comments = []
+
+            def get_item_type_strict(self, _repo_name, _number):
+                return "issue"
+
+            def get_issue_comments(self, _repo_name, _number):
+                return list(self.comments)
+
+            def add_comment_to_issue(self, _repo_name, _number, comment):
+                self.comments.append({"body": comment})
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+        candidate = Candidate(type="issue", data={"number": 1684, "title": "Invalid contract", "body": body, "labels": []}, priority=0)
+
+        first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+        second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+
+        assert first.success is False
+        assert second.success is False
+        assert reason in (first.error or "")
+        assert first.actions == [f"Rejected - invalid requirement contract: {first.error}"]
+        assert len(github.comments) == 1
+        assert "Implementation has not started" in github.comments[0]["body"]
+        assert "REQ-NNN:" in github.comments[0]["body"]
+        assert slots.active_owners() == ()
+        assert not (tmp_path / "slots.json").exists()
+        engine._process_single_candidate_reserved.assert_not_called()
+
+    def test_rest_issue_candidate_preserves_body_through_intake_rejection(self, tmp_path):
+        """The supported REST collection path carries the contract to the gate."""
+        github = MagicMock()
+        issue_body = "## Requirements\n### 1. Numbered prose is not a contract"
+        github.get_open_prs_json.return_value = []
+        github.get_open_issues_json.return_value = [
+            {
+                "number": 1684,
+                "title": "REST candidate",
+                "body": issue_body,
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+                "has_open_sub_issues": False,
+                "open_sub_issue_numbers": [],
+                "parent_issue_number": None,
+                "linked_pr_numbers": [],
+            }
+        ]
+        github.get_item_type_strict.return_value = "issue"
+        github.get_issue_comments.return_value = []
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+
+        with patch("auto_coder.automation_engine.LabelManager", return_value=label_context):
+            candidates = engine._get_candidates("owner/repo")
+        assert len(candidates) == 1
+        assert candidates[0].data["body"] == issue_body
+
+        result = engine._process_single_candidate_unified("owner/repo", candidates[0], engine.config)
+
+        assert "no valid REQ-NNN entries" in (result.error or "")
+        github.add_comment_to_issue.assert_called_once()
+        assert slots.active_owners() == ()
+        engine._process_single_candidate_reserved.assert_not_called()
+
+    def test_edited_valid_requirement_contract_enters_normal_dispatch(self, tmp_path):
+        """A body repair is re-evaluated without stale intake ownership cleanup."""
+
+        class GitHubStub:
+            def __init__(self):
+                self.comments = []
+
+            def get_item_type_strict(self, _repo_name, _number):
+                return "issue"
+
+            def get_issue_comments(self, _repo_name, _number):
+                return list(self.comments)
+
+            def add_comment_to_issue(self, _repo_name, _number, comment):
+                self.comments.append({"body": comment})
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine.implementation_slots = slots
+        candidate = Candidate(type="issue", data={"number": 1684, "title": "Repairable", "body": "## Requirements\n### 1. Invalid", "labels": []}, priority=0)
+
+        rejected = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        candidate.data["body"] = "## Requirements\n- REQ-001: Enter normal dispatch."
+        engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1684, title="Repairable", success=True, actions=["dispatched"]))
+        accepted = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert rejected.success is False
+        assert accepted.success is True
+        assert accepted.actions == ["dispatched"]
+        engine._process_single_candidate_reserved.assert_called_once()
+        assert slots.active_execution_ids(ImplementationOwner("issue", 1684)) == ()
+
+    def test_legacy_issue_without_requirements_section_enters_normal_dispatch(self, tmp_path):
+        github = MagicMock()
+        github.get_item_type_strict.return_value = "issue"
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1685, title="Legacy", success=True, actions=["dispatched"]))
+        candidate = Candidate(type="issue", data={"number": 1685, "title": "Legacy", "body": "Implement observable behavior.", "labels": []}, priority=0)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        engine._process_single_candidate_reserved.assert_called_once()
+        github.get_issue_comments.assert_not_called()
+
     def test_urgent_label_reaches_durable_emergency_admission_boundary(self, tmp_path):
         """Fetched Issue labels must preserve urgency through engine admission."""
 
