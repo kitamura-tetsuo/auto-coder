@@ -84,6 +84,35 @@ def test_muse_commit_is_rejected_and_head_is_restored(tmp_path: Path, monkeypatc
     assert _git(repo, "status", "--porcelain") == "M tracked.txt"
 
 
+def test_muse_staging_without_commit_is_rejected_and_unstaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = _muse_script(tmp_path, "printf 'staged-by-muse\\n' > tracked.txt; git add tracked.txt")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert _git(repo, "diff", "--cached") == ""
+    assert (repo / "tracked.txt").read_text() == "staged-by-muse\n"
+
+
+def test_muse_created_branch_is_rejected_and_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    original_branch = _git(repo, "branch", "--show-current")
+    script = _muse_script(tmp_path, f"git branch muse-temporary; git switch {original_branch}")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert _git(repo, "branch", "--list", "muse-temporary") == ""
+    assert _git(repo, "branch", "--show-current") == original_branch
+
+
 def test_noedit_mutation_is_rejected_and_repository_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _muse_script(tmp_path, "printf 'bad\\n' > tracked.txt; printf 'new\\n' > untracked.txt")
@@ -121,6 +150,66 @@ def test_noedit_restores_preexisting_index_and_untracked_content(tmp_path: Path,
     assert (repo / "untracked.txt").read_text() == "untracked-before\n"
     assert _git(repo, "diff", "--cached")
     assert _git(repo, "status", "--porcelain") == before_status
+
+
+def test_noedit_ignored_file_mutation_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    (repo / ".gitignore").write_text("secrets.cache\n")
+    (repo / "secrets.cache").write_bytes(b"before\x00secret")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore cache")
+    script = _muse_script(tmp_path, "printf 'after' > secrets.cache; printf 'created' > another.cache")
+    (repo / ".gitignore").write_text("secrets.cache\nanother.cache\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore another cache")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    manager = _manager(config)
+    manager._is_noedit = True
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        manager._run_llm_cli("review")
+
+    assert (repo / "secrets.cache").read_bytes() == b"before\x00secret"
+    assert not (repo / "another.cache").exists()
+
+
+@pytest.mark.parametrize(
+    ("action", "timeout", "usage_markers"),
+    [("sleep 2", 1, []), ("echo CUSTOM_QUOTA", 30, ["CUSTOM_QUOTA"])],
+)
+def test_muse_timeout_and_configured_usage_limit_rotate_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, action: str, timeout: int, usage_markers: list[str]) -> None:
+    repo = _repository(tmp_path)
+    script = _muse_script(tmp_path, action)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse": BackendConfig(name="muse", backend_type="muse", timeout=timeout, usage_markers=usage_markers),
+            "fallback": BackendConfig(name="fallback", backend_type="qwen"),
+        }
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    fallback_client = type(
+        "FallbackClient",
+        (),
+        {"model_name": "fallback", "_run_llm_cli": lambda self, prompt, is_noedit=False: "fallback-success", "get_last_session_id": lambda self: None},
+    )()
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config), patch("src.auto_coder.qwen_client.QwenClient", return_value=fallback_client):
+        manager = build_backend_manager(["muse", "fallback"], "muse", {})
+        assert manager._run_llm_cli("implement") == "fallback-success"
+        assert manager.get_last_backend_and_model() == ("fallback", "fallback")
+
+
+def test_muse_nonzero_exit_remains_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = _muse_script(tmp_path, "echo failed >&2; exit 17")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with pytest.raises(RuntimeError, match="return code 17"):
+        _manager(config)._run_llm_cli("implement")
 
 
 def test_muse_alias_prerequisite_failure_is_actionable() -> None:
