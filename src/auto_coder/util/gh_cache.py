@@ -919,6 +919,21 @@ class GitHubClient:
         returns both issues and pull requests; a pull request is distinguished by the
         presence of the ``pull_request`` field.
         """
+        item = self._get_issue_dispatch_snapshot_strict(repo_name, item_number)
+        return "pr" if "pull_request" in item else "issue"
+
+    @retry_with_backoff()
+    def get_issue_dispatch_snapshot_strict(self, repo_name: str, item_number: int) -> Dict[str, Any]:
+        """Return a cache-bypassing Issue API snapshot for dispatch safety gates.
+
+        Candidate collection is intentionally cached, but fields that decide whether
+        implementation may start must come from one current, authoritative snapshot.
+        Keeping type and body together also prevents them from being observed from
+        different Issue revisions between separate requests.
+        """
+        return self._get_issue_dispatch_snapshot_strict(repo_name, item_number)
+
+    def _get_issue_dispatch_snapshot_strict(self, repo_name: str, item_number: int) -> Dict[str, Any]:
         owner, repo = repo_name.split("/")
         headers = {
             "Accept": "application/vnd.github+json",
@@ -935,7 +950,7 @@ class GitHubClient:
 
         if not isinstance(item, dict) or item.get("number") != item_number:
             raise ValueError(f"GitHub returned an ambiguous item for {repo_name}#{item_number}")
-        return "pr" if "pull_request" in item else "issue"
+        return item
 
     def get_issue_details(self, issue: Any) -> Dict[str, Any]:
         """Extract detailed information from an issue.

@@ -22,10 +22,12 @@ started for an Issue, Auto-Coder validates an explicit Markdown
 `## Requirements` section with the same deterministic parser used by adversarial
 PR validation. Explicit contracts must contain only unique `REQ-NNN:` entries;
 empty, malformed, and duplicate-ID contracts are rejected with an actionable
-Issue comment. A versioned body fingerprint prevents repeat scans from posting
-the same diagnostic, while an edited body is evaluated again and can proceed
-normally once valid. Issues without an explicit Requirements section continue to
-use legacy requirement extraction.
+Issue comment. The intake gate bypasses the candidate-list cache and reads the
+current Issue type and body in one authoritative snapshot. A versioned body
+fingerprint prevents repeat scans from posting the same diagnostic, while an
+edited body is evaluated again and can proceed normally once valid. Issues
+without an explicit Requirements section continue to use legacy requirement
+extraction.
 
 ## Structured PR processing outcomes
 

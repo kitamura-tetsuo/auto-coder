@@ -9,6 +9,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 """Tests for automation engine functionality."""
@@ -166,9 +167,9 @@ class TestAutomationEngine:
         """A pull request presented as an Issue candidate must never reach Issue dispatch."""
 
         class GitHubStub:
-            def get_item_type_strict(self, repo_name, item_number):
+            def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
                 assert (repo_name, item_number) == ("owner/repo", 5266)
-                return "pr"
+                return {"number": item_number, "body": "", "pull_request": {}}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         candidate = Candidate(
@@ -282,8 +283,8 @@ class TestAutomationEngine:
             def __init__(self):
                 self.comments = []
 
-            def get_item_type_strict(self, _repo_name, _number):
-                return "issue"
+            def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
+                return {"number": number, "body": body}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
@@ -320,8 +321,8 @@ class TestAutomationEngine:
                 self.comments = []
                 self.lookup_error = False
 
-            def get_item_type_strict(self, _repo_name, _number):
-                return "issue"
+            def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
+                return {"number": number, "body": "## Requirements\n### 1. Invalid"}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 if self.lookup_error:
@@ -373,6 +374,7 @@ class TestAutomationEngine:
             }
         ]
         github.get_item_type_strict.return_value = "issue"
+        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1684, "body": issue_body}
         github.get_issue_comments_strict.return_value = []
         engine = AutomationEngine(github, config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
@@ -393,15 +395,82 @@ class TestAutomationEngine:
         assert slots.active_owners() == ()
         engine._process_single_candidate_reserved.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "cached_body,current_body,first_rejected,second_rejected",
+        [
+            ("## Requirements\n### 1. Invalid", "## Requirements\n- REQ-001: Repaired.", True, False),
+            ("## Requirements\n- REQ-001: Initially valid.", "## Requirements\nREQ-1: Broken.", False, True),
+        ],
+    )
+    def test_cached_rest_scan_validates_current_issue_body_before_dispatch(self, tmp_path, cached_body, current_body, first_rejected, second_rejected):
+        """Ordinary cached scans cannot stale either contract transition."""
+        authoritative = {"body": cached_body}
+        raw_issue = {
+            "number": 1684,
+            "title": "Editable contract",
+            "body": cached_body,
+            "state": "open",
+            "labels": [],
+            "assignees": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "html_url": "https://github.com/owner/repo/issues/1684",
+            "user": {"login": "author", "id": 1},
+            "comments": 0,
+            "sub_issues_summary": {"total": 0},
+        }
+        api = MagicMock()
+        api.issues.list_for_repo.return_value = [raw_issue]
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"number": 1684, "body": authoritative["body"]}
+
+        client_context = MagicMock()
+        client_context.__enter__.return_value.get.return_value = Response()
+        GitHubClient.reset_singleton()
+        github = GitHubClient.get_instance(token="test-token")
+        github.get_open_prs_json = Mock(return_value=[])
+        github.get_linked_prs = Mock(return_value=[])
+        github.get_issue_comments_strict = Mock(return_value=[])
+        github.add_comment_to_issue = Mock()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1684, title="Editable contract", success=True, actions=["dispatched"]))
+        label_context = MagicMock()
+        label_context.__enter__.return_value = True
+
+        with (
+            patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api),
+            patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context),
+            patch("auto_coder.automation_engine.LabelManager", return_value=label_context),
+        ):
+            first_candidates = engine._get_candidates("owner/repo")
+            first = engine._process_single_candidate_unified("owner/repo", first_candidates[0], engine.config)
+            authoritative["body"] = current_body
+            second_candidates = engine._get_candidates("owner/repo")
+            second = engine._process_single_candidate_unified("owner/repo", second_candidates[0], engine.config)
+
+        assert second_candidates[0].data["body"] == cached_body
+        assert (first.error is not None) is first_rejected
+        assert (second.error is not None) is second_rejected
+        assert engine._process_single_candidate_reserved.call_count == int(not first_rejected) + int(not second_rejected)
+        assert github.add_comment_to_issue.call_count == int(first_rejected) + int(second_rejected)
+        GitHubClient.reset_singleton()
+
     def test_edited_valid_requirement_contract_enters_normal_dispatch(self, tmp_path):
         """A body repair is re-evaluated without stale intake ownership cleanup."""
 
         class GitHubStub:
             def __init__(self):
                 self.comments = []
+                self.body = "## Requirements\n### 1. Invalid"
 
-            def get_item_type_strict(self, _repo_name, _number):
-                return "issue"
+            def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
+                return {"number": number, "body": self.body}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
@@ -416,7 +485,7 @@ class TestAutomationEngine:
         candidate = Candidate(type="issue", data={"number": 1684, "title": "Repairable", "body": "## Requirements\n### 1. Invalid", "labels": []}, priority=0)
 
         rejected = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-        candidate.data["body"] = "## Requirements\n- REQ-001: Enter normal dispatch."
+        github.body = "## Requirements\n- REQ-001: Enter normal dispatch."
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1684, title="Repairable", success=True, actions=["dispatched"]))
         accepted = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
@@ -429,6 +498,7 @@ class TestAutomationEngine:
     def test_legacy_issue_without_requirements_section_enters_normal_dispatch(self, tmp_path):
         github = MagicMock()
         github.get_item_type_strict.return_value = "issue"
+        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1685, "body": "Implement observable behavior."}
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1685, title="Legacy", success=True, actions=["dispatched"]))
@@ -444,8 +514,8 @@ class TestAutomationEngine:
         """Fetched Issue labels must preserve urgency through engine admission."""
 
         class GitHubStub:
-            def get_item_type_strict(self, _repo_name, _number):
-                return "issue"
+            def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
+                return {"number": number, "body": ""}
 
             def get_issue(self, _repo_name, number):
                 return {"number": number, "state": "open"}
@@ -472,8 +542,8 @@ class TestAutomationEngine:
         """A previously collected urgent candidate cannot inherit an active execution."""
 
         class GitHubStub:
-            def get_item_type_strict(self, _repo_name, _number):
-                return "issue"
+            def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
+                return {"number": number, "body": ""}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
@@ -634,7 +704,7 @@ class TestAutomationEngine:
         """An unavailable authoritative type lookup must not authorize Issue work."""
 
         class GitHubStub:
-            def get_item_type_strict(self, repo_name, item_number):
+            def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
                 raise RuntimeError("GitHub unavailable")
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
@@ -722,10 +792,10 @@ class TestAutomationEngine:
                 # Stale cached response: still looks like an ordinary open Issue.
                 return {"number": 5266, "title": "Cloud-created PR", "state": "open"}
 
-            def get_item_type_strict(self, repo_name, item_number):
+            def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
                 # Authoritative, cache-bypassing lookup: GitHub now reports a PR.
                 assert (repo_name, item_number) == ("owner/repo", 5266)
-                return "pr"
+                return {"number": item_number, "body": "", "pull_request": {}}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         candidate = Candidate(
@@ -759,6 +829,9 @@ class TestAutomationEngine:
         """A genuine Issue must retain normal single-candidate dispatch behavior."""
 
         class GitHubStub:
+            def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
+                return {"number": item_number, "body": ""}
+
             def get_item_type_strict(self, repo_name, item_number):
                 return "issue"
 

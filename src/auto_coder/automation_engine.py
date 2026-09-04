@@ -1127,17 +1127,21 @@ class AutomationEngine:
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
             try:
-                authoritative_type = self._get_authoritative_item_type(repo_name, item_number)
+                current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
                 result.error = str(exc)
                 return result
-            if authoritative_type != "issue":
-                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as {authoritative_type}"
+            if not isinstance(current_issue, dict) or current_issue.get("number") != item_number:
+                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub returned an ambiguous item snapshot"
+                return result
+            if "pull_request" in current_issue:
+                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as pr"
                 return result
 
-            contract = parse_requirement_contract(item_number, str(candidate.data.get("body") or ""))
+            current_body = str(current_issue.get("body") or "")
+            contract = parse_requirement_contract(item_number, current_body)
             if contract.error:
-                fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{candidate.data.get('body') or ''}\0{contract.error}".encode("utf-8")).hexdigest()
+                fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{current_body}\0{contract.error}".encode("utf-8")).hexdigest()
                 marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
                 try:
                     comments = self.github.get_issue_comments_strict(repo_name, item_number)

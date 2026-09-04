@@ -427,6 +427,7 @@ class TestUnlockAndRetryLinkedIssue:
         pr_data["labels"] = [{"name": "@auto-coder"}]
         issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
         github_client.get_item_type_strict.return_value = "issue"
+        github_client.get_issue_dispatch_snapshot_strict.return_value = {"number": 4636, "body": ""}
         github_client.get_issue.return_value = issue_data
         github_client.get_issue_details.return_value = issue_data
         github_client.get_all_sub_issues.return_value = []
