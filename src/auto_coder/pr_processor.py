@@ -4374,6 +4374,21 @@ def _review_feedback_identity(prefix: str, thread: ReviewThread, comment_index: 
     return prefix + hashlib.sha256(anchor.encode("utf-8")).hexdigest()
 
 
+def _adversarial_feedback_generation_identity(feedback_identity: str, head_sha: str, validation_report: str) -> str:
+    """Identify one finding delivery within a durable remediation generation.
+
+    A validated head normally advances after cloud repair. An implementer's
+    new provenance evidence can also advance correction/revalidation without
+    a commit, so its durable report marker participates in the token. Keeping
+    the stable finding identity separate preserves cross-path deduplication
+    with ordinary unresolved-thread routing.
+    """
+    provenance_match = re.search(r"<!-- auto-coder-change-provenance-evidence:v1:[a-f0-9]+ -->", validation_report)
+    lifecycle_token = f"{head_sha}\n{provenance_match.group(0) if provenance_match else ''}"
+    generation = hashlib.sha256(lifecycle_token.encode("utf-8")).hexdigest()
+    return f"{feedback_identity}:remediation:{generation}"
+
+
 def _adversarial_feedback_belongs_to_report(body: str, validation_report: str) -> bool:
     """Return whether a standalone adversarial finding is represented in a report."""
     blocks = [block.strip() for block in re.split(r"\n\s*\n", body) if block.strip()]
@@ -4880,7 +4895,11 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"]
     requested_bodies = set(actionable_feedback)
     feedback_items = [
-        (thread.comments[0].body, _review_feedback_identity(prefix, thread, 0))
+        (
+            thread.comments[0].body,
+            _review_feedback_identity(prefix, thread, 0),
+            _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), head_sha, validation_report),
+        )
         for thread in review_threads
         if not thread.is_resolved
         and thread.comments
@@ -4892,16 +4911,32 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
-            delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _body, identity in feedback_items]))
-            reconciled = _reconcile_codex_review_feedback(client, provider, task_id, [identity for _body, identity in feedback_items if identity not in delivered])
+            all_identities = [identity for _body, finding_identity, generation_identity in feedback_items for identity in (finding_identity, generation_identity)]
+            delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, all_identities))
+            reconciled = _reconcile_codex_review_feedback(
+                client,
+                provider,
+                task_id,
+                [generation_identity for _body, _finding_identity, generation_identity in feedback_items if generation_identity not in delivered],
+            )
             if reconciled:
                 delivered.update(reconciled)
+                reconciled_receipts = {identity for _body, finding_identity, generation_identity in feedback_items if generation_identity in reconciled for identity in (finding_identity, generation_identity)}
+                delivered.update(reconciled_receipts)
                 _record_delivered_review_feedback(state_path, delivered)
-                _record_pr_delivered_review_feedback(github_client, repo_name, pr_number, sorted(reconciled), f"🤖 Auto-Coder: I reconciled previously submitted adversarial feedback with the existing {provider} task.")
-        pending_feedback = [(body, identity) for body, identity in feedback_items if identity not in delivered]
+                _record_pr_delivered_review_feedback(
+                    github_client,
+                    repo_name,
+                    pr_number,
+                    sorted(reconciled_receipts),
+                    f"🤖 Auto-Coder: I reconciled previously submitted adversarial feedback with the existing {provider} task.",
+                )
+        pending_feedback = [(body, finding_identity, generation_identity) for body, finding_identity, generation_identity in feedback_items if generation_identity not in delivered]
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
-        validation_report = "New actionable adversarial reviewer feedback:\n\n" + "\n\n---\n\n".join(body for body, _identity in pending_feedback)
+        failed_correction = any(finding_identity in delivered for _body, finding_identity, _generation_identity in pending_feedback)
+        report_template = "pr.adversarial_feedback_failed_correction" if failed_correction else "pr.adversarial_feedback_new"
+        validation_report = Template(get_prompt_template(report_template)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
     except (OSError, ValueError) as exc:
         return [f"Could not check prior {provider} actionable feedback for PR #{pr_number}: {exc}"]
 
@@ -4921,7 +4956,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 
     try:
         if provider == "codex-cloud":
-            accepted = client.send_followup(task_id, prompt, tuple(sorted(identity for _body, identity in pending_feedback)))
+            accepted = client.send_followup(task_id, prompt, tuple(sorted(generation_identity for _body, _finding_identity, generation_identity in pending_feedback)))
         else:
             accepted = client.send_followup(task_id, prompt)
     except Exception as e:
@@ -4935,7 +4970,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
-            delivered.update(identity for _body, identity in pending_feedback)
+            delivered.update(identity for _body, finding_identity, generation_identity in pending_feedback for identity in (finding_identity, generation_identity))
             _record_delivered_review_feedback(state_path, delivered)
             local_receipt = True
     except (OSError, ValueError) as exc:
@@ -4953,7 +4988,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         comment_body = "\n".join(
             [
                 feedback_marker,
-                _cloud_review_feedback_markers([identity for _body, identity in pending_feedback]),
+                _cloud_review_feedback_markers([identity for _body, finding_identity, generation_identity in pending_feedback for identity in (finding_identity, generation_identity)]),
                 f"🤖 Auto-Coder: I sent the adversarial validation findings to the existing {provider} task and requested a fix.",
             ]
         )

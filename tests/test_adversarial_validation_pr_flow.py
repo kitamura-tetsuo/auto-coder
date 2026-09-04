@@ -418,6 +418,54 @@ class TestAdversarialValidationCodexFeedback:
         with patch("auto_coder.cloud_manager.CloudManager.get_binding", binding):
             yield
 
+    @pytest.mark.parametrize("provider", ["codex-cloud", "jules", "claude-routine"])
+    def test_failed_corrective_generations_are_redelivered_once_across_restarts_and_providers(self, tmp_path, provider):
+        """GitHub review input traverses production routing and durable delivery."""
+        finding = "### Auto-Coder material test-oracle gap\n\nThe focused production-boundary regression still fails"
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_persisted_gap", comments=[ReviewThreadComment(database_id=1692, body=finding)])]
+        backend = MagicMock()
+        backend.send_followup.return_value = True
+        state_path = tmp_path / "review-repairs.json"
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #1693",
+            "head": {"ref": "repair-branch", "sha": "head-a"},
+            "base": {"ref": "main"},
+        }
+
+        with (
+            patch("auto_coder.cloud_manager.CloudManager.get_binding", return_value=CloudTaskBinding(provider, "implementation-task")),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+        ):
+            actions_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
+            duplicate_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
+
+            # Reloading the durable file on every call models later processing
+            # passes. Each changed validated head is one corrective generation.
+            pr_data["head"]["sha"] = "head-b"
+            actions_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
+            duplicate_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
+            # A supported implementer-provenance correction can trigger a new
+            # validation generation even if it does not change the PR head.
+            provenance_report = f"{finding}\n\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
+            actions_c = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", provenance_report, github, [finding])
+            duplicate_c = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", provenance_report, github, [finding])
+
+        assert backend.send_followup.call_count == 3
+        prompts = [call.args[1] for call in backend.send_followup.call_args_list]
+        assert "New actionable adversarial reviewer feedback" in prompts[0]
+        assert all("latest corrective attempt did not resolve" in prompt for prompt in prompts[1:])
+        assert all(finding in prompt for prompt in prompts)
+        assert "all actionable feedback was already delivered" in duplicate_a[0]
+        assert "all actionable feedback was already delivered" in duplicate_b[0]
+        assert "all actionable feedback was already delivered" in duplicate_c[0]
+        assert all("Sent adversarial NEEDS_FIX report" in actions[0] for actions in (actions_a, actions_b, actions_c))
+        persisted = json.loads(state_path.read_text(encoding="utf-8"))["delivered_feedback"]
+        assert len(persisted) == 4  # one stable finding plus three remediation generations
+
     def test_jules_binding_routes_through_provider_followup_without_codex_probe(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete Jules defect"
         github = MagicMock()
@@ -614,8 +662,7 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=cloud_client),
         ):
             first = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
-            pr_data["head"] = {"ref": "codex/issue-99", "sha": "head456"}
-            second = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head456", finding, github, [finding])
+            second = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
 
         assert "could not receive adversarial feedback" in first[0]
         assert "all actionable feedback was already delivered" in second[0]
@@ -623,7 +670,7 @@ class TestAdversarialValidationCodexFeedback:
         github.add_comment_to_pr.assert_called_once()
         assert "auto-coder-cloud-review-feedback:v1:" in github.add_comment_to_pr.call_args.args[2]
         state = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 1
+        assert len(state["delivered_feedback"]) == 2
 
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
@@ -695,7 +742,7 @@ class TestAdversarialValidationCodexFeedback:
         assert current in prompt
         assert historical not in prompt
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 1
+        assert len(state["delivered_feedback"]) == 2
 
     def test_sends_complete_report_as_custom_codex_cloud_followup(self):
         client = MagicMock()
@@ -822,7 +869,7 @@ class TestAdversarialValidationCodexFeedback:
         assert first not in second_prompt
         assert "all actionable feedback was already delivered" in actions[0]
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 2
+        assert len(state["delivered_feedback"]) == 4
 
     def test_pr_receipt_prevents_cross_path_redelivery_when_local_persistence_fails(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"

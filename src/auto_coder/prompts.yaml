@@ -928,6 +928,16 @@ pr:
     Adversarial validation report:
     $validation_report
 
+  adversarial_feedback_new: |-
+    New actionable adversarial reviewer feedback:
+
+    $actionable_feedback
+
+  adversarial_feedback_failed_correction: |-
+    The latest corrective attempt did not resolve the following actionable adversarial reviewer feedback. This finding was delivered for an earlier remediation generation, but independent validation of the current generation established that it remains open. Further correction is required:
+
+    $actionable_feedback
+
 issue:
   action: |-
     Analyze the following GitHub issue and take appropriate actions:
