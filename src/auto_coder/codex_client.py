@@ -212,6 +212,7 @@ class CodexClient(LLMClientBase):
         captured request ID, endpoint, status, or fixed reconnect count.
         """
         diagnostic_messages: list[str] = []
+        terminal_messages: list[str] = []
         saw_json_event = False
         for line in stdout.splitlines():
             try:
@@ -227,6 +228,8 @@ class CodexClient(LLMClientBase):
                 message = event.get("message") or event.get("error")
                 if message:
                     diagnostic_messages.append(str(message))
+                    if event_type == "turn.failed":
+                        terminal_messages.append(str(message))
 
         if stderr:
             diagnostic_messages.append(stderr)
@@ -234,11 +237,17 @@ class CodexClient(LLMClientBase):
             diagnostic_messages.append(stdout)
 
         diagnostic = "\n".join(diagnostic_messages).strip()
-        low = diagnostic.lower()
         if not diagnostic:
             return None
 
-        reconnect_exhausted = bool(re.search(r"reconnect(?:ing)?(?:\.\.\.)?\s*\d+\s*/\s*\d+", low) or re.search(r"reconnect(?:ion)? (?:attempts? )?(?:exhausted|failed)", low) or "failed to connect" in low)
+        # A structured terminal failure is authoritative.  Earlier reconnect
+        # notices describe intermediate recovery attempts and must not mask a
+        # later implementation/agent failure.
+        classification_text = terminal_messages[-1] if terminal_messages else diagnostic
+        low = classification_text.lower()
+        reconnect_counters = re.findall(r"reconnect(?:ing)?(?:\.\.\.)?\s*(\d+)\s*/\s*(\d+)", low)
+        counter_exhausted = any(int(current) >= int(limit) for current, limit in reconnect_counters)
+        reconnect_exhausted = counter_exhausted or bool(re.search(r"reconnect(?:ion)? (?:attempts? )?(?:exhausted|failed)", low))
         provider_transport = any(
             marker in low
             for marker in (

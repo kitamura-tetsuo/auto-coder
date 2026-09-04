@@ -51,7 +51,7 @@ class TestCodexClient:
         "provider_message",
         [
             "Reconnecting... 5/5 (unexpected status 404 Not Found, url: wss://chatgpt.com/backend-api/codex/responses)",
-            "Reconnect 3/7: websocket transport error for wss://provider.example/responses",
+            "Reconnect 7/7: websocket transport error for wss://provider.example/responses",
             "Reconnect attempts exhausted: failed to connect to backend-api/codex/responses",
         ],
     )
@@ -79,6 +79,25 @@ class TestCodexClient:
     def test_ordinary_nonzero_exit_is_not_retryable(self, mock_run_command, mock_run):
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(False, "compilation failed", "invalid agent output", 1)
+
+        with pytest.raises(RuntimeError, match="codex CLI failed with return code 1") as exc_info:
+            CodexClient()._run_llm_cli("implement issue")
+
+        assert not isinstance(exc_info.value, AutoCoderRetryableBackendError)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_intermediate_reconnect_does_not_mask_terminal_agent_failure(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-123"}',
+                '{"type":"turn.started"}',
+                '{"type":"error","message":"Reconnecting... 1/5 (websocket transport error)"}',
+                '{"type":"turn.failed","message":"Agent output was invalid"}',
+            ]
+        )
+        mock_run_command.return_value = CommandResult(False, stdout, "", 1)
 
         with pytest.raises(RuntimeError, match="codex CLI failed with return code 1") as exc_info:
             CodexClient()._run_llm_cli("implement issue")
