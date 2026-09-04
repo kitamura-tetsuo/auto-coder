@@ -2,12 +2,13 @@
 CloudManager: Manages session tracking for issues in cloud.csv files.
 
 This module provides functionality to track and manage sessions for GitHub issues
-by storing issue number and session ID mappings in CSV files.
+by storing issue number, provider, and session ID mappings in CSV files.
 """
 
 import csv
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -16,7 +17,15 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 # CSV header fields
-CSV_FIELDS = ["issue_number", "session_id"]
+CSV_FIELDS = ["issue_number", "provider", "session_id"]
+
+
+@dataclass(frozen=True)
+class CloudTaskBinding:
+    """Durable ownership information for a provider cloud task."""
+
+    provider: str = ""
+    task_id: str = ""
 
 
 class CloudManager:
@@ -54,7 +63,7 @@ class CloudManager:
         """Ensure the cloud directory exists."""
         self.cloud_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _read_sessions(self) -> Dict[str, str]:
+    def _read_bindings(self) -> Dict[str, CloudTaskBinding]:
         """
         Read all sessions from the cloud CSV file.
 
@@ -66,21 +75,26 @@ class CloudManager:
         if not self.cloud_file_path.exists():
             return {}
 
-        sessions: Dict[str, str] = {}
+        sessions: Dict[str, CloudTaskBinding] = {}
         try:
             with open(self.cloud_file_path, "r", newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     issue_number = row.get("issue_number", "")
                     session_id = row.get("session_id", "")
+                    provider = row.get("provider", "")
                     if issue_number and session_id:
-                        sessions[issue_number] = session_id
+                        sessions[issue_number] = CloudTaskBinding(provider=provider, task_id=session_id)
         except Exception as e:
             logger.error(f"Failed to read cloud sessions from {self.cloud_file_path}: {e}")
 
         return sessions
 
-    def _write_sessions(self, sessions: Dict[str, str]) -> bool:
+    def _read_sessions(self) -> Dict[str, str]:
+        """Read the historical session-id view used by lifecycle callers."""
+        return {number: binding.task_id for number, binding in self._read_bindings().items()}
+
+    def _write_bindings(self, sessions: Dict[str, CloudTaskBinding]) -> bool:
         """
         Write sessions to the cloud CSV file.
 
@@ -105,8 +119,8 @@ class CloudManager:
 
                 # Sort by issue number for consistent output
                 for issue_number in sorted(sessions.keys()):
-                    session_id = sessions[issue_number]
-                    writer.writerow({"issue_number": issue_number, "session_id": session_id})
+                    binding = sessions[issue_number]
+                    writer.writerow({"issue_number": issue_number, "provider": binding.provider, "session_id": binding.task_id})
 
             logger.debug(f"Successfully wrote {len(sessions)} sessions to {self.cloud_file_path}")
             return True
@@ -114,7 +128,13 @@ class CloudManager:
             logger.error(f"Failed to write cloud sessions to {self.cloud_file_path}: {e}")
             return False
 
-    def add_session(self, issue_number: int, session_id: str) -> bool:
+    def _write_sessions(self, sessions: Dict[str, str]) -> bool:
+        """Preserve provider values while supporting the historical private API."""
+        current = self._read_bindings()
+        bindings = {number: CloudTaskBinding(provider=current.get(number, CloudTaskBinding()).provider, task_id=task_id) for number, task_id in sessions.items()}
+        return self._write_bindings(bindings)
+
+    def add_session(self, issue_number: int, session_id: str, provider: str = "") -> bool:
         """
         Add a session for an issue number.
 
@@ -128,14 +148,14 @@ class CloudManager:
         with self._lock:
             try:
                 # Read existing sessions
-                sessions = self._read_sessions()
+                sessions = self._read_bindings()
 
                 # Add or update the session
                 issue_key = str(issue_number)
-                sessions[issue_key] = session_id
+                sessions[issue_key] = CloudTaskBinding(provider=provider, task_id=session_id)
 
                 # Write back to file
-                success = self._write_sessions(sessions)
+                success = self._write_bindings(sessions)
 
                 if success:
                     logger.info(f"Added session for issue #{issue_number}: session_id={session_id}")
@@ -144,6 +164,13 @@ class CloudManager:
             except Exception as e:
                 logger.error(f"Failed to add session for issue #{issue_number}: {e}")
                 return False
+
+    def get_binding(self, issue_number: int) -> Optional[CloudTaskBinding]:
+        """Return provider ownership, or ``None`` for unsafe legacy rows."""
+        binding = self._read_bindings().get(str(issue_number))
+        if binding and binding.provider and binding.task_id:
+            return binding
+        return None
 
     def get_session_id(self, issue_number: int) -> Optional[str]:
         """

@@ -133,7 +133,7 @@ class TestNonDifficultCloudIssueRouting:
                 label_context=label_context,
             )
 
-        mock_cloud_manager_type.return_value.add_session.assert_called_once_with(10, "task_e_123")
+        mock_cloud_manager_type.return_value.add_session.assert_called_once_with(10, "task_e_123", provider="codex-cloud")
         github_client.add_comment_to_issue.assert_called_once_with(
             "owner/repo",
             10,

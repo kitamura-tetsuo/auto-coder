@@ -1859,7 +1859,7 @@ def _process_pr_jules_mode(
         session_id = jules_client.start_session(action_prompt, repo_name, pr_branch, title=session_title)
 
         # 2. Save session
-        CloudManager(repo_name).add_session(pr_number, session_id)
+        CloudManager(repo_name).add_session(pr_number, session_id, provider="jules")
         actions.append(f"Started Jules session {session_id}")
 
         get_trace_logger().log("Jules Mode", f"Started Jules session for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
@@ -2429,7 +2429,7 @@ def _handle_pr_merge(
                                         processing_status.outcome = PRProcessingOutcome.FAILED
                                 elif published_report:
                                     actions.extend(
-                                        _send_adversarial_validation_feedback_to_codex_cloud(
+                                        _send_adversarial_validation_feedback_to_cloud_task(
                                             repo_name,
                                             pr_data,
                                             head_sha,
@@ -2570,7 +2570,7 @@ def _handle_pr_merge(
                         actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
                         logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
                         actions.extend(
-                            _send_adversarial_validation_feedback_to_codex_cloud(
+                            _send_adversarial_validation_feedback_to_cloud_task(
                                 repo_name,
                                 pr_data,
                                 head_sha,
@@ -2579,14 +2579,14 @@ def _handle_pr_merge(
                                 [format_adversarial_finding_comment(finding) for finding in val_result.findings] + [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
                             )
                         )
-                        actions.append(f"Awaiting PR author or Codex Cloud changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
+                        actions.append(f"Awaiting PR author or originating cloud-provider changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
                         return actions
 
                     elif val_result.needs_tests:
                         actions.append(f"Adversarial validation requested focused regression protection for PR #{pr_number}: {len(val_result.open_test_oracle_gaps)} material test-oracle gap(s)")
                         logger.warning(f"PR #{pr_number} has material test-oracle gaps: {val_result.summary}")
                         actions.extend(
-                            _send_adversarial_validation_feedback_to_codex_cloud(
+                            _send_adversarial_validation_feedback_to_cloud_task(
                                 repo_name,
                                 pr_data,
                                 head_sha,
@@ -4208,7 +4208,7 @@ def _delegate_codex_cloud_review_thread_repair(
         return [f"Cannot request Codex Cloud review repair for PR #{pr_number}: PR head/base branch metadata is unavailable"]
 
     state_path = _cloud_review_repair_state_path(repo_name)
-    prefix = f"{repo_name}#{pr_number}:{task_id}:"
+    prefix = f"{repo_name}#{pr_number}:codex-cloud:{task_id}:"
     implementer_login = (get_pr_author_login(pr_data) or "").lower()
     findings = [
         (thread, comment, _review_feedback_identity(prefix, thread, index))
@@ -4455,7 +4455,7 @@ def _send_codex_cloud_error_feedback(
     return CodexCloudFeedbackResult(delivered=True, actions=tuple(actions))
 
 
-def _send_adversarial_validation_feedback_to_codex_cloud(
+def _send_adversarial_validation_feedback_to_cloud_task(
     repo_name: str,
     pr_data: Dict[str, Any],
     head_sha: str,
@@ -4463,16 +4463,37 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     github_client: Optional[Any] = None,
     actionable_feedback: Sequence[str] = (),
 ) -> List[str]:
-    """Send a NEEDS_FIX validation report to the PR's existing Codex Cloud task."""
+    """Send actionable findings only to the owning provider task."""
     pr_number = pr_data["number"]
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
 
-    task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
-    if not task_id:
-        return [f"Cannot send adversarial feedback to Codex Cloud for PR #{pr_number}: no valid Codex task ID found"]
+    bindings = []
+    manager = CloudManager(repo_name)
+    direct_binding = manager.get_binding(pr_number)
+    if direct_binding:
+        bindings.append(direct_binding)
+    else:
+        for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client):
+            binding = manager.get_binding(issue_number)
+            if binding:
+                bindings.append(binding)
+    unique_bindings = {(binding.provider, binding.task_id) for binding in bindings}
+    if len(unique_bindings) != 1:
+        reason = "no provider-owned cloud task association was found" if not unique_bindings else "multiple conflicting cloud task associations were found"
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: {reason}"]
+    provider, task_id = unique_bindings.pop()
+
+    from .cloud_task_client_base import CloudTaskClientBase
+    from .cloud_task_engine import CloudTaskEngine
+
+    client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
+    if client is None:
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' is unavailable"]
+    if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' does not support follow-up delivery"]
 
     state_path = _cloud_review_repair_state_path(repo_name)
-    prefix = f"{repo_name}#{pr_number}:{task_id}:"
+    prefix = f"{repo_name}#{pr_number}:{provider}:{task_id}:"
     if github_client is None:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]
     try:
@@ -4497,14 +4518,14 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _body, identity in feedback_items]))
         pending_feedback = [(body, identity) for body, identity in feedback_items if identity not in delivered]
         if not pending_feedback:
-            return [f"Skipped duplicate adversarial feedback to Codex Cloud for PR #{pr_number}: all actionable feedback was already delivered"]
+            return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
         validation_report = "New actionable adversarial reviewer feedback:\n\n" + "\n\n---\n\n".join(body for body, _identity in pending_feedback)
     except (OSError, ValueError) as exc:
-        return [f"Could not check prior Codex Cloud actionable feedback for PR #{pr_number}: {exc}"]
+        return [f"Could not check prior {provider} actionable feedback for PR #{pr_number}: {exc}"]
 
     target = resolve_existing_pr_repair_target(repo_name, pr_data)
     if not target:
-        return [f"Cannot send adversarial feedback to Codex Cloud for PR #{pr_number}: PR head/base branch metadata is unavailable"]
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"]
     # The validated commit is authoritative; it may be newer than cached PR head metadata.
     target = replace(target, head_sha=head_sha)
 
@@ -4517,16 +4538,13 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
     prompt = build_existing_pr_repair_prompt(target, details)
 
     try:
-        from .codex_cloud_client import CodexCloudClient
-
-        client = CodexCloudClient(repo_name=repo_name)
-        resumed = client.continue_if_paused(task_id, prompt=prompt)
+        accepted = client.send_followup(task_id, prompt)
     except Exception as e:
-        logger.error(f"Error sending adversarial feedback to Codex Cloud for PR #{pr_number}: {e}")
-        return [f"Error sending adversarial feedback to Codex Cloud for PR #{pr_number}: {e}"]
+        logger.error(f"Error sending adversarial feedback to {provider} for PR #{pr_number}: {e}")
+        return [f"Adversarial feedback was not delivered to {provider} for PR #{pr_number}: {e}"]
 
-    if not resumed:
-        return [f"Codex Cloud task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
+    if not accepted:
+        return [f"{provider} task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
 
     local_receipt = False
     try:
@@ -4539,29 +4557,29 @@ def _send_adversarial_validation_feedback_to_codex_cloud(
         logger.error(f"Failed to persist shared Codex Cloud feedback delivery for PR #{pr_number}: {exc}")
 
     get_trace_logger().log(
-        "Codex Cloud Adversarial Feedback",
-        f"Sent NEEDS_FIX report to Codex Cloud task '{task_id}' for PR #{pr_number}",
+        "Cloud Task Adversarial Feedback",
+        f"Sent NEEDS_FIX report to {provider} task '{task_id}' for PR #{pr_number}",
         item_type="pr",
         item_number=pr_number,
-        details={"task_id": task_id, "head_sha": head_sha},
+        details={"provider": provider, "task_id": task_id, "head_sha": head_sha},
     )
-    actions = [f"Sent adversarial NEEDS_FIX report to Codex Cloud task '{task_id}' for PR #{pr_number}"]
+    actions = [f"Sent adversarial NEEDS_FIX report to {provider} task '{task_id}' for PR #{pr_number}"]
     if github_client:
         comment_body = "\n".join(
             [
                 feedback_marker,
                 _cloud_review_feedback_markers([identity for _body, identity in pending_feedback]),
-                "🤖 Auto-Coder: I sent the adversarial validation findings to the existing Codex Cloud task and requested a fix.",
+                f"🤖 Auto-Coder: I sent the adversarial validation findings to the existing {provider} task and requested a fix.",
             ]
         )
         try:
             github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
             remote_receipt = True
-            actions.append(f"Recorded Codex Cloud adversarial feedback delivery on PR #{pr_number}")
+            actions.append(f"Recorded {provider} adversarial feedback delivery on PR #{pr_number}")
         except Exception as e:
             remote_receipt = False
-            logger.error(f"Failed to record Codex Cloud adversarial feedback delivery on PR #{pr_number}: {e}")
-            actions.append(f"Failed to record Codex Cloud adversarial feedback delivery on PR #{pr_number}: {e}")
+            logger.error(f"Failed to record {provider} adversarial feedback delivery on PR #{pr_number}: {e}")
+            actions.append(f"Failed to record {provider} adversarial feedback delivery on PR #{pr_number}: {e}")
         if not local_receipt and not remote_receipt:
             logger.error(f"Confirmed adversarial feedback delivery for PR #{pr_number} has no durable receipt")
     return actions

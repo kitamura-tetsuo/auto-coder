@@ -260,7 +260,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                             logger.info(f"Started new session {new_session_id}")
                             if target_num:
                                 if error_cloud_manager:
-                                    error_cloud_manager.add_session(target_num, new_session_id)
+                                    error_cloud_manager.add_session(target_num, new_session_id, provider="jules")
                                 if repo_name:
                                     comments = github_client.get_issue_comments(repo_name, target_num)
                                     comment_updated = False

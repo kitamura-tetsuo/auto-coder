@@ -50,6 +50,27 @@ class TestCloudManager:
                 assert rows[0]["issue_number"] == "123"
                 assert rows[0]["session_id"] == "session-abc"
 
+    def test_provider_binding_survives_new_manager_instance(self, tmp_path):
+        """A production-written association retains ownership after restart."""
+        cloud_file = tmp_path / "cloud.csv"
+        assert CloudManager("owner/repo", cloud_file).add_session(1677, "11778985556824899970", provider="jules")
+
+        restarted = CloudManager("owner/repo", cloud_file)
+        binding = restarted.get_binding(1677)
+
+        assert binding is not None
+        assert binding.provider == "jules"
+        assert binding.task_id == "11778985556824899970"
+
+    def test_legacy_session_without_provider_is_not_routable(self, tmp_path):
+        cloud_file = tmp_path / "cloud.csv"
+        cloud_file.write_text("issue_number,session_id\n1677,opaque-task\n", encoding="utf-8")
+
+        manager = CloudManager("owner/repo", cloud_file)
+
+        assert manager.get_session_id(1677) == "opaque-task"
+        assert manager.get_binding(1677) is None
+
     def test_add_session_creates_directory(self):
         """Test that add_session creates the directory if it doesn't exist."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -169,7 +190,7 @@ class TestCloudManager:
             with open(cloud_file, "r") as f:
                 reader = csv.reader(f)
                 header = next(reader)
-                assert header == ["issue_number", "session_id"]
+                assert header == ["issue_number", "provider", "session_id"]
 
     def test_csv_sorted_by_issue_number(self):
         """Test that CSV entries are sorted by issue number."""
