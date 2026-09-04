@@ -13,6 +13,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .deployment_channel import repository_dispatch_authority
+from .exceptions import AutoCoderRetryableBackendError
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
@@ -1376,6 +1377,13 @@ class AutomationEngine:
                     result.outcome = pr_result.outcome
                     result.success = pr_result.outcome != PRProcessingOutcome.FAILED
 
+        except AutoCoderRetryableBackendError as e:
+            diagnostic = str(e)
+            result.actions.append(f"Deferred: {diagnostic}")
+            result.error = diagnostic
+            result.outcome = PRProcessingOutcome.DEFERRED
+            result.success = True
+            logger.warning(f"Deferred {candidate.type} #{candidate.data.get('number', 'N/A')} after retryable backend failure: {diagnostic}")
         except Exception as e:
             result.error = str(e)
             logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
