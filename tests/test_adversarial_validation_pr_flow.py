@@ -2184,6 +2184,9 @@ class TestClaimedReviewThreadValidationFlow:
         )
         config = AutomationConfig()
         config.AUTO_MERGE = True
+        # The production transition under test requires adversarial validation
+        # to be enabled; do not inherit a developer or CI environment override.
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
         config.MAX_ADVERSARIAL_VALIDATIONS = 2
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": new_sha}}
 
