@@ -20,27 +20,49 @@ from .usage_marker_utils import has_usage_marker_match
 
 logger = get_logger(__name__)
 
-_MUTATING_GIT_COMMANDS = {
-    "add",
-    "am",
-    "checkout",
-    "cherry-pick",
-    "clean",
-    "commit",
-    "fetch",
-    "merge",
-    "mv",
-    "pull",
-    "push",
-    "rebase",
-    "reset",
-    "restore",
-    "revert",
-    "rm",
-    "stash",
-    "switch",
-    "update-ref",
+_READ_ONLY_GIT_COMMANDS = {
+    "blame",
+    "cat-file",
+    "describe",
+    "diff",
+    "diff-tree",
+    "for-each-ref",
+    "grep",
+    "log",
+    "ls-files",
+    "ls-tree",
+    "merge-base",
+    "name-rev",
+    "rev-list",
+    "rev-parse",
+    "shortlog",
+    "show",
+    "show-ref",
+    "status",
 }
+
+
+def _read_only_special_git_command(name: object, argv: object) -> bool:
+    """Recognize inspection-only forms of Git commands that also mutate."""
+    if not isinstance(argv, list) or not all(isinstance(argument, str) for argument in argv):
+        return False
+    try:
+        command_index = argv.index(str(name))
+    except ValueError:
+        return False
+    arguments = argv[command_index + 1 :]
+    if name == "branch":
+        mutating_flags = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
+        if any(argument in mutating_flags for argument in arguments):
+            return False
+        if any(argument in {"--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged"} for argument in arguments):
+            return True
+        return not any(not argument.startswith("-") for argument in arguments)
+    if name == "symbolic-ref":
+        return len([argument for argument in arguments if not argument.startswith("-")]) <= 1
+    if name == "tag":
+        return not any(not argument.startswith("-") for argument in arguments)
+    return False
 
 
 @dataclass(frozen=True)
@@ -181,13 +203,18 @@ class MuseClient(LLMClientBase):
 
     @staticmethod
     def _trace_contains_git_mutation(trace_path: str) -> bool:
-        """Return whether Git Trace2 observed a lifecycle-mutating command."""
+        """Fail closed unless every traced Git command is observably read-only."""
         try:
+            starts = {}
             with open(trace_path, encoding="utf-8") as trace_file:
                 for line in trace_file:
                     event = json.loads(line)
-                    if event.get("event") == "cmd_name" and event.get("name") in _MUTATING_GIT_COMMANDS:
-                        return True
+                    if event.get("event") == "start":
+                        starts[event.get("sid")] = event.get("argv")
+                    elif event.get("event") == "cmd_name":
+                        name = event.get("name")
+                        if name not in _READ_ONLY_GIT_COMMANDS and not _read_only_special_git_command(name, starts.get(event.get("sid"))):
+                            return True
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Unable to audit Git commands executed by Muse: {exc}") from exc
         return False
