@@ -2121,7 +2121,7 @@ class TestMaxAdversarialValidationsGating:
 class TestClaimedReviewThreadValidationFlow:
     """Production-flow coverage for independently adjudicated review threads."""
 
-    def test_changed_head_revalidates_authentic_older_finding_without_implementer_reply(self):
+    def test_changed_head_revalidates_promoted_older_finding_at_review_limit(self):
         """The supported GitHub thread/review inputs reach validation even
         when durable repair deduplication would otherwise leave the thread open."""
         from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
@@ -2129,7 +2129,7 @@ class TestClaimedReviewThreadValidationFlow:
 
         old_sha = "5920bb3ec03e9e1472895429f501089dfb82af03"
         new_sha = "bcd7af5d0cb79a8097ab15b618cefe82a30b9e70"
-        reviewer_login = "auto-coder-reviewer[bot]"
+        reviewer_login = "auto-coder-reviewer"
         thread = ReviewThread(
             id="thread-old-finding",
             is_resolved=False,
@@ -2138,6 +2138,7 @@ class TestClaimedReviewThreadValidationFlow:
                     database_id=17,
                     body="### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: validate the new head",
                     author_login=reviewer_login,
+                    author_id=1,
                 )
             ],
         )
@@ -2193,7 +2194,10 @@ class TestClaimedReviewThreadValidationFlow:
         assert any("Allowing adversarial validation of new head" in action for action in actions)
         assert any("beyond the review limit because unresolved findings" in action for action in actions)
         run_validation.assert_called_once()
-        assert "thread-old-finding" in run_validation.call_args.kwargs["claimed_review_threads_section"]
+        validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
+        assert "### Older-head adversarial finding requiring revalidation: thread-old-finding" in validation_threads
+        assert "no implementation-agent reply is required for this revalidation" in validation_threads
+        assert client.get_pr_review_threads_strict.call_count >= 2
         resolve_threads.assert_called_once()
         merge_pr.assert_not_called()
         assert thread.is_resolved is False
