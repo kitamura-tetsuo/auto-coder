@@ -246,6 +246,40 @@ def test_cached_task_branch_is_rejected_when_live_head_is_work(
     ci_gate.assert_not_called()
 
 
+def test_connector_authored_work_pr_without_task_url_stops_at_lower_boundary(
+    config: AutomationConfig,
+) -> None:
+    """Authoritative connector identity alone establishes Codex Cloud origin."""
+    client = GitHubClient(token="test")
+    authoritative = codex_pr()
+    authoritative["body"] = "Closes #161"
+    client.get_pull_request_metadata_strict = MagicMock(return_value=authoritative)
+    client.close_pr = MagicMock()
+    client.get_issue = MagicMock(return_value={"state": "open"})
+
+    with (
+        patch("auto_coder.pr_processor._resolve_codex_cloud_task_id", return_value="task_e_reissue161"),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as followup,
+        patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks") as review_gate,
+        patch("auto_coder.pr_processor.run_adversarial_validation") as adversarial,
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress") as ci_gate,
+        patch("auto_coder.pr_processor._get_mergeable_state") as mergeability,
+        patch("auto_coder.pr_processor.git_checkout_branch") as checkout,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+        patch("auto_coder.pr_processor._send_codex_cloud_error_feedback") as ci_repair,
+        patch("auto_coder.pr_processor._delegate_cloud_review_thread_repair") as review_repair,
+        patch("auto_coder.pr_processor._delegate_cloud_merge_conflict_repair") as conflict_repair,
+    ):
+        actions = _handle_pr_merge(client, "owner/repo", codex_pr(branch="cached-safe"), config, {})
+
+    client.get_pull_request_metadata_strict.assert_called_once_with("owner/repo", 162)
+    client.close_pr.assert_called_once()
+    followup.assert_called_once()
+    assert actions[0] == "Closed unsafe Codex Cloud PR #162 on shared remote branch 'work'"
+    for forbidden in (review_gate, adversarial, ci_gate, mergeability, checkout, merge, ci_repair, review_repair, conflict_repair):
+        forbidden.assert_not_called()
+
+
 def test_candidate_collection_preserves_live_task_branch_when_cache_says_work(
     config: AutomationConfig,
 ) -> None:

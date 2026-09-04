@@ -3568,7 +3568,8 @@ def _update_jules_pr_body(
 def _is_codex_pr(pr_data: Dict[str, Any]) -> bool:
     """Check if a PR is created by Codex based on session/task URL in PR body."""
     pr_author = get_pr_author_login(pr_data) or ""
-    if pr_author.lower().startswith("codex"):
+    normalized_author = pr_author.casefold()
+    if normalized_author == CODEX_REVIEW_BOT_LOGIN.casefold() or normalized_author.startswith("codex"):
         return True
 
     pr_body = pr_data.get("body", "") or ""
