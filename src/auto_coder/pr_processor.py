@@ -166,6 +166,31 @@ class PRActionList(list[str]):
         self.adversarial_validation_error = adversarial_validation_error
 
 
+class CloudReviewRepairResult(list[str]):
+    """Actions plus confirmation that blocking review work has an owner."""
+
+    def __init__(self, values: Sequence[str] = (), delivered: bool = False) -> None:
+        super().__init__(values)
+        self.delivered = delivered
+
+
+@dataclass(frozen=True)
+class CloudTaskOrigin:
+    """Uniquely resolved durable cloud ownership and its transport client."""
+
+    provider: str
+    task_id: str
+    client: Any
+
+
+@dataclass(frozen=True)
+class CloudTaskOriginResolution:
+    """Result of resolving a PR's provider-aware durable association."""
+
+    origin: Optional[CloudTaskOrigin] = None
+    reason: str = ""
+
+
 @dataclass(frozen=True)
 class ReviewThreadGateState:
     """Tri-state review-thread result used by merge gates."""
@@ -2261,14 +2286,16 @@ def _handle_pr_merge(
                 if pending_provenance:
                     actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
                 if repair_threads:
-                    actions.extend(
-                        _delegate_codex_cloud_review_thread_repair(
-                            repo_name,
-                            pr_data,
-                            github_client=github_client,
-                            unresolved_threads=repair_threads,
-                        )
+                    repair_result = _delegate_cloud_review_thread_repair(
+                        repo_name,
+                        pr_data,
+                        github_client=github_client,
+                        unresolved_threads=repair_threads,
                     )
+                    actions.extend(repair_result)
+                    if not repair_result.delivered and processing_status is not None:
+                        processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
+                        processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
             claimed_review_threads = claimed_thread_state.claimed
             if claimed_review_threads:
@@ -4181,34 +4208,73 @@ def _record_pr_delivered_review_feedback(github_client: Optional[Any], repo_name
     return True
 
 
-def _delegate_codex_cloud_review_thread_repair(
+def _resolve_cloud_task_origin(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Optional[Any] = None,
+) -> CloudTaskOriginResolution:
+    """Resolve exactly one durable provider/session association for a PR."""
+    pr_number = int(pr_data["number"])
+    manager = CloudManager(repo_name)
+    bindings = []
+    direct_binding = manager.get_binding(pr_number)
+    if direct_binding:
+        bindings.append(direct_binding)
+    else:
+        for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client):
+            binding = manager.get_binding(issue_number)
+            if binding:
+                bindings.append(binding)
+    unique_bindings = {(binding.provider, binding.task_id) for binding in bindings}
+    if len(unique_bindings) != 1:
+        reason = "no provider-owned cloud task association was found" if not unique_bindings else "multiple conflicting cloud task associations were found"
+        return CloudTaskOriginResolution(reason=reason)
+    provider, task_id = unique_bindings.pop()
+
+    from .cloud_task_engine import CloudTaskEngine
+
+    try:
+        client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
+    except Exception as exc:
+        logger.error(f"Failed to initialize cloud provider '{provider}' for PR #{pr_number}: {exc}")
+        return CloudTaskOriginResolution(reason=f"cloud provider '{provider}' is unavailable: {exc}")
+    if client is None:
+        return CloudTaskOriginResolution(reason=f"cloud provider '{provider}' is unavailable")
+    return CloudTaskOriginResolution(origin=CloudTaskOrigin(provider=provider, task_id=task_id, client=client))
+
+
+def _delegate_cloud_review_thread_repair(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
     unresolved_threads: Tuple[ReviewThread, ...] = (),
-) -> List[str]:
-    """Assign unresolved review feedback to the PR's existing Codex Cloud task.
+) -> CloudReviewRepairResult:
+    """Assign unresolved review feedback to its originating cloud task.
 
     Delivery is durable and keyed to actionable root findings. Implementation
     commits and replies therefore cannot make an old finding eligible again.
-    A missing Codex task simply preserves the generic
-    review-thread merge gate for non-Codex pull requests.
+    Ownership comes only from the provider-aware durable association. No new
+    task, branch, or pull request is created by this path.
     """
     pr_number = int(pr_data["number"])
-    if not _is_codex_pr(pr_data):
-        return []
+    resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+    if resolution.origin is None:
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: {resolution.reason}"])
+    provider, task_id, client = resolution.origin.provider, resolution.origin.task_id, resolution.origin.client
+    provider_label = {"codex-cloud": "Codex Cloud", "jules": "Jules", "claude-routine": "Claude Routine"}.get(provider, provider)
 
-    task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
-    if not task_id:
-        return []
+    from .cloud_task_client_base import CloudTaskClientBase
+
+    if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: cloud provider '{provider}' does not support follow-up delivery"])
 
     target = resolve_existing_pr_repair_target(repo_name, pr_data)
     if not target:
         logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate review repair")
-        return [f"Cannot request Codex Cloud review repair for PR #{pr_number}: PR head/base branch metadata is unavailable"]
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"])
 
     state_path = _cloud_review_repair_state_path(repo_name)
-    prefix = f"{repo_name}#{pr_number}:codex-cloud:{task_id}:"
+    prefix = f"{repo_name}#{pr_number}:{provider}:{task_id}:"
     implementer_login = (get_pr_author_login(pr_data) or "").lower()
     findings = [
         (thread, comment, _review_feedback_identity(prefix, thread, index))
@@ -4223,25 +4289,23 @@ def _delegate_codex_cloud_review_thread_repair(
             delivered = _load_delivered_review_feedback(state_path)
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _thread, _comment, identity in findings]))
         except (OSError, ValueError) as exc:
-            logger.warning(f"Could not read Codex Cloud review repair state: {exc}")
-            return [f"Cannot safely determine prior Codex Cloud review repair delivery for PR #{pr_number}: {exc}"]
+            logger.warning(f"Could not read cloud review repair state: {exc}")
+            return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: prior delivery state could not be read: {exc}"])
         pending = [(thread, comment, identity) for thread, comment, identity in findings if identity not in delivered]
     if not pending:
         logger.info(f"All actionable review feedback for PR #{pr_number} was already delegated")
-        return [f"Codex Cloud review repair was already requested for PR #{pr_number} for all current actionable feedback"]
+        return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], delivered=True)
 
     feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending)
     details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
     prompt = build_existing_pr_repair_prompt(target, details)
     try:
-        from .codex_cloud_client import CodexCloudClient
-
-        accepted = CodexCloudClient(repo_name=repo_name).send_followup(task_id, prompt)
+        accepted = client.send_followup(task_id, prompt)
     except Exception as exc:
-        logger.warning(f"Codex Cloud review repair delegation failed for PR #{pr_number}: {exc}")
-        return [f"Failed to request Codex Cloud review repair for PR #{pr_number}: {exc}"]
+        logger.warning(f"Cloud review repair delegation failed for PR #{pr_number}: {exc}")
+        return CloudReviewRepairResult([f"Review repair was not delivered to {provider} for PR #{pr_number}: {exc}"])
     if not accepted:
-        return [f"Codex Cloud task '{task_id}' could not receive review repair work for PR #{pr_number}"]
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: {provider} task '{task_id}' rejected follow-up delivery"])
 
     local_receipt = False
     try:
@@ -4251,29 +4315,29 @@ def _delegate_codex_cloud_review_thread_repair(
             _record_delivered_review_feedback(state_path, delivered)
             local_receipt = True
     except OSError as exc:
-        logger.warning(f"Could not persist Codex Cloud review repair state: {exc}")
+        logger.warning(f"Could not persist cloud review repair state: {exc}")
     try:
         remote_receipt = _record_pr_delivered_review_feedback(
             github_client,
             repo_name,
             pr_number,
             [identity for _thread, _comment, identity in pending],
-            "🤖 Auto-Coder: I sent newly actionable review feedback to the existing Codex Cloud task.",
+            f"🤖 Auto-Coder: I sent newly actionable review feedback to the existing {provider} task.",
         )
     except Exception as exc:
         remote_receipt = False
         logger.warning(f"Could not persist Codex Cloud review repair receipt on PR #{pr_number}: {exc}")
     if not local_receipt and not remote_receipt:
-        logger.error(f"Confirmed Codex Cloud review repair delivery for PR #{pr_number} has no durable receipt")
+        logger.error(f"Confirmed cloud review repair delivery for PR #{pr_number} has no durable receipt")
 
     get_trace_logger().log(
-        "Codex Cloud Review Repair",
-        f"Assigned unresolved review threads to Codex Cloud task '{task_id}' for PR #{pr_number}",
+        "Cloud Review Repair",
+        f"Assigned unresolved review threads to {provider} task '{task_id}' for PR #{pr_number}",
         item_type="pr",
         item_number=pr_number,
-        details={"task_id": task_id, "head_sha": target.head_sha},
+        details={"provider": provider, "task_id": task_id, "head_sha": target.head_sha},
     )
-    return [f"Requested Codex Cloud task '{task_id}' to address unresolved review threads for PR #{pr_number}"]
+    return CloudReviewRepairResult([f"Requested {provider_label} task '{task_id}' to address unresolved review threads for PR #{pr_number}"], delivered=True)
 
 
 def _delegate_cloud_merge_conflict_repair_result(
@@ -4467,32 +4531,13 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     pr_number = pr_data["number"]
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
 
-    bindings = []
-    manager = CloudManager(repo_name)
-    direct_binding = manager.get_binding(pr_number)
-    if direct_binding:
-        bindings.append(direct_binding)
-    else:
-        for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client):
-            binding = manager.get_binding(issue_number)
-            if binding:
-                bindings.append(binding)
-    unique_bindings = {(binding.provider, binding.task_id) for binding in bindings}
-    if len(unique_bindings) != 1:
-        reason = "no provider-owned cloud task association was found" if not unique_bindings else "multiple conflicting cloud task associations were found"
-        return [f"Adversarial feedback was not delivered for PR #{pr_number}: {reason}"]
-    provider, task_id = unique_bindings.pop()
+    resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+    if resolution.origin is None:
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: {resolution.reason}"]
+    provider, task_id, client = resolution.origin.provider, resolution.origin.task_id, resolution.origin.client
 
     from .cloud_task_client_base import CloudTaskClientBase
-    from .cloud_task_engine import CloudTaskEngine
 
-    try:
-        client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
-    except Exception as exc:
-        logger.error(f"Failed to initialize cloud provider '{provider}' for adversarial feedback on PR #{pr_number}: {exc}")
-        return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' is unavailable: {exc}"]
-    if client is None:
-        return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' is unavailable"]
     if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
         return [f"Adversarial feedback was not delivered for PR #{pr_number}: cloud provider '{provider}' does not support follow-up delivery"]
 

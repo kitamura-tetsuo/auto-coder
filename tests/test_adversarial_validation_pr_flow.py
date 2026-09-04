@@ -22,7 +22,7 @@ from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
     CodexReviewState,
     PRActionList,
-    _delegate_codex_cloud_review_thread_repair,
+    _delegate_cloud_review_thread_repair,
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
     _get_adversarial_validation_eligibility,
@@ -577,7 +577,7 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", "report", client, [finding])
-            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+            actions = _delegate_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
         cloud_client.send_followup.assert_called_once()
         assert "already requested" in actions[0]
@@ -608,7 +608,7 @@ class TestAdversarialValidationCodexFeedback:
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{finding}", client)
             # The delegate reloads the file, modelling a later process instance.
-            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+            actions = _delegate_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
         cloud_client.send_followup.assert_called_once()
         assert state_path.exists()
@@ -810,7 +810,7 @@ class TestAdversarialValidationCodexFeedback:
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, client, [finding])
             durable_receipt = client.add_comment_to_pr.call_args.args[2]
             client.get_pr_comments.return_value = [{"body": durable_receipt, "user": {"login": "auto-coder-bot"}}]
-            actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
+            actions = _delegate_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
         cloud_client.send_followup.assert_called_once()
         assert "auto-coder-cloud-review-feedback:v1:" in durable_receipt
