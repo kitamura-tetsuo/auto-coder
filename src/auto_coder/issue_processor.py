@@ -6,7 +6,7 @@ import json
 import sys
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, TypedDict, cast
+from typing import Any, Dict, List, Optional, TypedDict, Union, cast
 
 from dateutil import parser
 
@@ -540,21 +540,23 @@ def _process_issue_cloud_backend(
 
     llm_config = get_llm_config(repo_name=repo_name)
     cloud_order = llm_config.backend_cloud_order
+    cloud_priority_groups = llm_config.backend_cloud_priority_groups
     cloud_config = llm_config.get_backend_cloud()
 
-    candidates: List[str] = []
-    if cloud_order:
-        candidates = list(cloud_order)
+    priority_candidates: Union[List[str], List[List[str]]]
+    if cloud_priority_groups:
+        priority_candidates = list(cloud_priority_groups)
+    elif cloud_order:
+        priority_candidates = list(cloud_order)
     elif cloud_config:
-        candidates = [cloud_config.name]
+        priority_candidates = [cloud_config.name]
     else:
         # Default to jules if backend_cloud is not explicitly configured
-        candidates = ["jules"]
+        priority_candidates = ["jules"]
 
-    if candidates:
-        from .quota_selector import rank_high_score_backends_by_quota
+    from .quota_selector import rank_high_score_backends_by_quota
 
-        candidates = rank_high_score_backends_by_quota(candidates, llm_config)
+    candidates = rank_high_score_backends_by_quota(priority_candidates, llm_config)
 
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)

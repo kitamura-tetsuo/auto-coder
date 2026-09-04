@@ -22,6 +22,7 @@ from auto_coder.llm_backend_config import (
     is_cloud_mode_enabled,
     is_jules_mode_enabled,
 )
+from auto_coder.quota_selector import BackendQuotaEvaluation
 
 
 class TestCloudBackendConfig:
@@ -32,6 +33,7 @@ class TestCloudBackendConfig:
         with patch("auto_coder.cli_helpers.get_llm_config") as mock_get_config:
             mock_get_config.return_value.get_backend_cloud.return_value = None
             mock_get_config.return_value.backend_cloud_order = []
+            mock_get_config.return_value.backend_cloud_priority_groups = []
             manager = create_cloud_backend_manager()
             assert manager is None
 
@@ -40,6 +42,7 @@ class TestCloudBackendConfig:
         with patch("auto_coder.cli_helpers.get_llm_config") as mock_get_config, patch("auto_coder.cli_helpers.build_backend_manager") as mock_build:
             mock_config = MagicMock(spec=LLMBackendConfiguration)
             mock_config.backend_cloud_order = ["codex-cloud-luna", "gemini"]
+            mock_config.backend_cloud_priority_groups = []
             mock_config.get_backend_cloud.return_value = None
             mock_config.get_model_for_backend.side_effect = lambda b: "gpt-5.6-luna" if b == "codex-cloud-luna" else "gemini-2.5-flash"
             mock_get_config.return_value = mock_config
@@ -59,6 +62,7 @@ class TestCloudBackendConfig:
         with patch("auto_coder.cli_helpers.get_llm_config") as mock_get_config, patch("auto_coder.cli_helpers.build_backend_manager") as mock_build:
             mock_config = MagicMock(spec=LLMBackendConfiguration)
             mock_config.backend_cloud_order = []
+            mock_config.backend_cloud_priority_groups = []
             mock_backend = BackendConfig(name="codex-cloud-luna", model="gpt-5.6-luna")
             mock_config.get_backend_cloud.return_value = mock_backend
             mock_get_config.return_value = mock_config
@@ -98,10 +102,84 @@ class TestCloudBackendConfig:
         assert backend.environment_id == "env_12345"
         assert backend.attempts == 1
 
+    def test_toml_priority_groups_reach_manager_with_group_boundaries(self, tmp_path):
+        """TOML groups survive loading and quota-rank only within each group."""
+        config_path = tmp_path / "llm_config.toml"
+        config_path.write_text(
+            """
+[backend_cloud]
+priority_groups = [["backend-a", "backend-b"], ["backend-c"]]
+
+[backends.backend-a]
+model = "model-a"
+[backends.backend-b]
+model = "model-b"
+[backends.backend-c]
+model = "model-c"
+""",
+            encoding="utf-8",
+        )
+        config = LLMBackendConfiguration.load_from_file(str(config_path))
+        surpluses = {"backend-a": 0.1, "backend-b": 0.5, "backend-c": 0.99}
+
+        with (
+            patch("auto_coder.cli_helpers.get_llm_config", return_value=config),
+            patch("auto_coder.cli_helpers.build_backend_manager") as build_manager,
+            patch(
+                "auto_coder.quota_selector.evaluate_backend_quota",
+                side_effect=lambda backend_name, **kwargs: BackendQuotaEvaluation(
+                    backend_name=backend_name,
+                    quota_surplus=surpluses[backend_name],
+                ),
+            ),
+        ):
+            create_cloud_backend_manager()
+
+        assert config.backend_cloud_priority_groups == [["backend-a", "backend-b"], ["backend-c"]]
+        assert build_manager.call_args.kwargs["selected_backends"] == ["backend-b", "backend-a", "backend-c"]
+        assert build_manager.call_args.kwargs["primary_backend"] == "backend-b"
+
+    @pytest.mark.parametrize(
+        ("priority_groups", "message"),
+        [
+            ([[], ["backend-a"]], "non-empty backend-name array"),
+            ([["backend-a", 7]], "backend name string"),
+            (["backend-a"], "non-empty backend-name array"),
+        ],
+    )
+    def test_invalid_priority_groups_are_rejected(self, priority_groups, message):
+        with pytest.raises(ValueError, match=message):
+            LLMBackendConfiguration.load_from_dict({"backend_cloud": {"priority_groups": priority_groups}})
+
+    def test_order_and_priority_groups_are_rejected_together(self):
+        with pytest.raises(ValueError, match=r"backend_cloud\.order and backend_cloud\.priority_groups"):
+            LLMBackendConfiguration.load_from_dict({"backend_cloud": {"order": ["backend-a"], "priority_groups": [["backend-b"]]}})
+
+    def test_repository_override_conflict_is_rejected_after_merge(self, tmp_path, monkeypatch):
+        base_path = tmp_path / "llm_config.toml"
+        base_path.write_text('[backend_cloud]\norder = ["backend-a"]\n', encoding="utf-8")
+        override_path = tmp_path / ".auto-coder" / "owner" / "repo" / "llm_config.toml"
+        override_path.parent.mkdir(parents=True)
+        override_path.write_text('[backend_cloud]\npriority_groups = [["backend-b"]]\n', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with pytest.raises(ValueError, match=r"backend_cloud\.order and backend_cloud\.priority_groups"):
+            LLMBackendConfiguration.load_from_file(str(base_path), repo_name="owner/repo")
+
+    def test_priority_groups_translate_backend_alias_and_round_trip(self, tmp_path):
+        config = LLMBackendConfiguration.load_from_dict({"backend_cloud": {"priority_groups": [["gemini", "jules"]]}})
+        assert config.backend_cloud_priority_groups == [["antigravity", "jules"]]
+
+        config_path = tmp_path / "llm_config.toml"
+        config.save_to_file(str(config_path))
+        restored = LLMBackendConfiguration.load_from_file(str(config_path))
+        assert restored.backend_cloud_priority_groups == [["antigravity", "jules"]]
+
     def test_is_jules_mode_enabled_with_backend_cloud(self):
         """Test is_jules_mode_enabled returns True when backend_cloud_order is configured."""
         mock_llm_config = MagicMock(spec=LLMBackendConfiguration)
         mock_llm_config.backend_cloud_order = ["codex-cloud-luna"]
+        mock_llm_config.backend_cloud_priority_groups = []
         mock_llm_config.backend_cloud = None
 
         with patch("auto_coder.llm_backend_config.get_llm_config", return_value=mock_llm_config):
@@ -111,6 +189,59 @@ class TestCloudBackendConfig:
 
 class TestNonDifficultCloudIssueRouting:
     """Test handling and routing of non-difficult issues to backend_cloud."""
+
+    @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
+    @patch("auto_coder.quota_selector.evaluate_backend_quota")
+    def test_toml_priority_groups_rank_within_group_during_issue_dispatch(
+        self,
+        mock_evaluate,
+        mock_codex_cloud_mode,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Repository-aware issue dispatch must retain TOML priority boundaries."""
+        config_path = tmp_path / "llm_config.toml"
+        config_path.write_text(
+            """
+[backend_cloud]
+priority_groups = [["backend-a", "backend-b"], ["backend-c"]]
+
+[backends.backend-a]
+backend_type = "codex-cloud"
+[backends.backend-b]
+backend_type = "codex-cloud"
+[backends.backend-c]
+backend_type = "codex-cloud"
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", str(config_path))
+        surpluses = {"backend-a": 0.1, "backend-b": 0.5, "backend-c": 0.99}
+        mock_evaluate.side_effect = lambda backend_name, **kwargs: BackendQuotaEvaluation(
+            backend_name=backend_name,
+            quota_surplus=surpluses[backend_name],
+        )
+        mock_codex_cloud_mode.return_value = ["backend-b dispatched"]
+        config = AutomationConfig()
+        issue_data = {"number": 10, "title": "Simple fix", "labels": []}
+        github_client = MagicMock()
+
+        actions = _process_issue_cloud_backend(
+            "owner/repo",
+            issue_data,
+            config,
+            github_client,
+        )
+
+        assert actions == ["backend-b dispatched"]
+        mock_codex_cloud_mode.assert_called_once_with(
+            "owner/repo",
+            issue_data,
+            config,
+            github_client,
+            backend_name="backend-b",
+            label_context=None,
+        )
 
     @patch("auto_coder.issue_processor.CloudManager")
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")

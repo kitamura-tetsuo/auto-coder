@@ -421,6 +421,7 @@ class LLMBackendConfiguration:
     # Cloud backend configuration (e.g., for standard/non-difficult cloud tasks)
     backend_cloud: Optional[BackendConfig] = None
     backend_cloud_order: List[str] = field(default_factory=list)
+    backend_cloud_priority_groups: List[List[str]] = field(default_factory=list)
     # Cloud backend configuration with high score (e.g., for difficult issues)
     backend_with_high_score_cloud: Optional[BackendConfig] = None
     backend_with_high_score_cloud_order: List[str] = field(default_factory=list)
@@ -579,6 +580,8 @@ class LLMBackendConfiguration:
                 "options_for_resume",
                 "options_explicitly_set",
                 "options_for_noedit_explicitly_set",
+                "order",
+                "priority_groups",
             }
 
             raw_extra_args = config_data.get("extra_args", {})
@@ -762,9 +765,25 @@ class LLMBackendConfiguration:
         backend_cloud_data = data.get("backend_cloud", {})
         backend_cloud = None
         backend_cloud_order = []
+        backend_cloud_priority_groups = []
 
         if backend_cloud_data:
-            backend_cloud_order = backend_cloud_data.get("order", [])
+            if not isinstance(backend_cloud_data, dict):
+                raise ValueError("backend_cloud must be a TOML table")
+            if "order" in backend_cloud_data and "priority_groups" in backend_cloud_data:
+                raise ValueError("backend_cloud.order and backend_cloud.priority_groups are mutually exclusive")
+
+            backend_cloud_order = _translate_backend(backend_cloud_data.get("order", []))
+            raw_priority_groups = backend_cloud_data.get("priority_groups", [])
+            if "priority_groups" in backend_cloud_data:
+                if not isinstance(raw_priority_groups, list):
+                    raise ValueError("backend_cloud.priority_groups must be an array of non-empty backend-name arrays")
+                for group in raw_priority_groups:
+                    if not isinstance(group, list) or not group:
+                        raise ValueError("each backend_cloud.priority_groups entry must be a non-empty backend-name array")
+                    if any(not isinstance(member, str) for member in group):
+                        raise ValueError("each backend_cloud.priority_groups member must be a backend name string")
+                backend_cloud_priority_groups = _translate_backend(raw_priority_groups)
             fallback_name = backend_cloud_data.get("name", "backend_cloud")
             backend_cloud = parse_backend_config(fallback_name, backend_cloud_data)
 
@@ -801,6 +820,7 @@ class LLMBackendConfiguration:
             backend_with_high_score_order=backend_with_high_score_order,
             backend_cloud=backend_cloud,
             backend_cloud_order=backend_cloud_order,
+            backend_cloud_priority_groups=backend_cloud_priority_groups,
             backend_with_high_score_cloud=backend_with_high_score_cloud,
             backend_with_high_score_cloud_order=backend_with_high_score_cloud_order,
             backend_adversarial_validation=backend_adversarial_validation,
@@ -901,7 +921,7 @@ class LLMBackendConfiguration:
             backend_with_high_score_data = {"order": self.backend_with_high_score_order}
 
         # Prepare backend_cloud data
-        backend_cloud_data = {}
+        backend_cloud_data: Dict[str, Any] = {}
         if self.backend_cloud:
             config = self.backend_cloud
             raw_config = {
@@ -940,8 +960,12 @@ class LLMBackendConfiguration:
             backend_cloud_data = {k: v for k, v in raw_config.items() if v is not None}
             if self.backend_cloud_order:
                 backend_cloud_data["order"] = self.backend_cloud_order
+            elif self.backend_cloud_priority_groups:
+                backend_cloud_data["priority_groups"] = self.backend_cloud_priority_groups
         elif self.backend_cloud_order:
             backend_cloud_data = {"order": self.backend_cloud_order}
+        elif self.backend_cloud_priority_groups:
+            backend_cloud_data = {"priority_groups": self.backend_cloud_priority_groups}
 
         # Prepare backend_with_high_score_cloud data
         backend_with_high_score_cloud_data = {}
@@ -1484,7 +1508,7 @@ def is_jules_mode_enabled(repo_name: Optional[str] = None) -> bool:
     2. The 'jules' backend is enabled in llm_config.toml and [jules].enabled is true in config.toml
     """
     llm_config = get_llm_config(repo_name=repo_name)
-    if llm_config.backend_cloud_order or llm_config.backend_cloud:
+    if llm_config.backend_cloud_order or llm_config.backend_cloud_priority_groups or llm_config.backend_cloud:
         return True
 
     # Check [backends.jules] in llm_config.toml

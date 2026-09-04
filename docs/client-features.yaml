@@ -297,6 +297,13 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
     claude_code_routine_token = "sk-ant-oat01-..."
     ```
   - Behavior:
+    - `backend_cloud.order` remains a strict backend priority list. Alternatively,
+      `backend_cloud.priority_groups` accepts an ordered array of non-empty
+      backend-name arrays. Members of one inner array have equal priority and are
+      quota-ranked, while no member of a later group can cross an earlier group.
+      The two settings are mutually exclusive, including after repository-specific
+      configuration overrides are merged; invalid group shapes fail configuration
+      loading.
     - Backend names in an `order` array retain their declared priority after
       quota eligibility checks; an ineligible entry may be skipped without
       reordering the remaining entries. Quota-surplus ranking applies only to
