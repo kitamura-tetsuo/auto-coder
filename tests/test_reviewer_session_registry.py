@@ -1,6 +1,6 @@
 """Tests for PR-scoped persistent adversarial reviewer sessions."""
 
-from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
+from auto_coder.reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 
 
 def test_sessions_are_isolated_by_pr_and_backend_and_survive_reload(tmp_path):
@@ -44,6 +44,32 @@ def test_material_test_oracle_gap_identity_and_scope_survive_reload(tmp_path):
         status="OPEN",
     )
     session = ReviewerSession("owner/repo", 123, "codex", "codex", "gpt", "s1", "sha-a", [gap])
+
+    registry.save(session)
+
+    assert ReviewerSessionRegistry(registry.path).get("owner/repo", 123, "codex", "codex", "gpt") == session
+
+
+def test_same_head_recovered_file_evidence_survives_reload(tmp_path):
+    registry = ReviewerSessionRegistry(tmp_path / "sessions.json")
+    evidence = RecoveredFileEvidence(
+        path=".github/workflows/release.yml",
+        source="repository inspection",
+        status="RECOVERED",
+        evidence="Inspected the current-head workflow",
+        requirement_ids=["REQ-001"],
+    )
+    session = ReviewerSession(
+        repository="owner/repo",
+        pr_number=123,
+        backend_name="codex",
+        backend_type="codex",
+        model_name="gpt",
+        session_id="s1",
+        last_head_sha="sha-a",
+        evidence_head_sha="sha-a",
+        recovered_file_evidence=[evidence],
+    )
 
     registry.save(session)
 

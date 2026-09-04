@@ -19,7 +19,7 @@ from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linke
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
+from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
@@ -2023,6 +2023,41 @@ def _enforce_inconclusive_recovery_contract(
     return result
 
 
+def _reconcile_same_head_recovered_evidence(
+    result: AdversarialValidationResult,
+    stored_session: Optional[ReviewerSession],
+    head_sha: str,
+) -> AdversarialValidationResult:
+    """Retain successful file recovery when revalidating an unchanged head."""
+    if stored_session is None or stored_session.evidence_head_sha != head_sha:
+        return result
+    current_resolved = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
+    for persisted in stored_session.recovered_file_evidence:
+        if persisted.path not in current_resolved:
+            result.evidence_recovery.append(
+                EvidenceRecoveryEntry(
+                    path=persisted.path,
+                    source=persisted.source,
+                    status=persisted.status,
+                    evidence=persisted.evidence,
+                    requirement_ids=list(persisted.requirement_ids),
+                )
+            )
+    return result
+
+
+def _carry_forward_current_run_recovered_evidence(
+    result: AdversarialValidationResult,
+    recovered_evidence: List[EvidenceRecoveryEntry],
+) -> AdversarialValidationResult:
+    """Preserve successful recovery when a dynamic follow-up replaces the result."""
+    resolved_paths = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
+    for entry in recovered_evidence:
+        if entry.path not in resolved_paths:
+            result.evidence_recovery.append(replace(entry, requirement_ids=list(entry.requirement_ids)))
+    return result
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -2053,6 +2088,15 @@ def _apply_coverage_and_verdict_precedence(
     gap_requirement_ids = {gap.requirement_id for gap in result.test_oracle_gaps}
     unknown_gap_requirement_ids = sorted(gap_requirement_ids - expected_requirement_ids)
     invalid_gap_anchors = sorted({gap.anchor_path for gap in result.open_test_oracle_gaps if gap.anchor_path not in context.all_changed_files})
+
+    unavailable_requirement_ids = {requirement_id for entry in result.evidence_recovery if entry.status == "UNAVAILABLE" and entry.path in remaining_unverified_files for requirement_id in entry.requirement_ids}
+    incompatible_verified_ids = sorted(requirement_id for requirement_id in unavailable_requirement_ids if requirement_id in coverage_by_id and coverage_by_id[requirement_id].status in {"VERIFIED", "IRRELEVANT"})
+    if incompatible_verified_ids:
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: unavailable evidence was declared for already-decided requirements"
+        result.diagnostic_category = "requirement_evidence_claim_mismatch"
+        result.diagnostic_reason = "Correctness-relevant changed-file evidence is unavailable while dependent requirements " f"are marked decided: {', '.join(incompatible_verified_ids)}"
+        return result
 
     if unknown_finding_requirement_ids:
         reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
@@ -2161,21 +2205,22 @@ def _apply_coverage_and_verdict_precedence(
 
     if result.result.strip().upper() == "PASS" and remaining_unverified_files:
         reason = f"Material changed-file evidence was incomplete after bounded recovery for: {', '.join(remaining_unverified_files)}"
-        result.result = "INCONCLUSIVE"
-        result.summary = f"PASS rejected because review coverage was incomplete. {reason}"
-        result.diagnostic_category = "incomplete_evidence_coverage"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: PASS conflicts with unresolved changed-file evidence"
+        result.diagnostic_category = "pass_with_unresolved_changed_file_evidence"
         result.diagnostic_reason = reason
-        return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
+        return result
 
     if result.result.strip().upper() == "PASS" and (not expected_requirement_ids or incomplete_requirement_ids):
         if not expected_requirement_ids:
             reason = "The deterministic Issue requirement manifest was empty"
         else:
             reason = f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}"
-        result.result = "INCONCLUSIVE"
-        result.summary = f"PASS rejected because Issue requirement coverage was incomplete. {reason}"
-        result.diagnostic_category = "incomplete_requirement_coverage"
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: PASS conflicts with incomplete Issue requirement coverage"
+        result.diagnostic_category = "pass_with_incomplete_requirement_coverage"
         result.diagnostic_reason = reason
+        return result
     return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
 
@@ -2302,6 +2347,18 @@ def run_adversarial_validation(
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
     if stored_session is not None:
         _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
+        if stored_session.evidence_head_sha == head_sha:
+            persisted_resolved_paths = {entry.path for entry in stored_session.recovered_file_evidence if entry.status in {"RECOVERED", "IRRELEVANT"}}
+            unresolved_paths = [path for path in context.unverified_files if path not in persisted_resolved_paths]
+            if not unresolved_paths:
+                coverage_status = "COMPLETE: every initially incomplete changed file was recovered or classified irrelevant on this exact head."
+            else:
+                coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence after same-head recovery:\n"
+                coverage_status = coverage_prefix + _bounded_path_manifest(
+                    unresolved_paths,
+                    max(0, manifest_budget - len(coverage_prefix)),
+                    "(Unverified path metadata unavailable)",
+                )
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
     if lifecycle_session is not None:
         review_policy = render_prompt(
@@ -2352,8 +2409,10 @@ def run_adversarial_validation(
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
+    result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
     result = _apply_coverage_and_verdict_precedence(result, context)
+    current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
 
     initial_thread_dispositions = result.thread_dispositions
 
@@ -2414,6 +2473,8 @@ def run_adversarial_validation(
                         raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
                 result = parse_adversarial_validation_response(followup_response)
                 _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
+                result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
+                result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
                 result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
@@ -2457,6 +2518,18 @@ def run_adversarial_validation(
                 session_id=persisted_session_id,
                 last_head_sha=persisted_head_sha,
                 test_oracle_gaps=persisted_gaps,
+                evidence_head_sha=head_sha,
+                recovered_file_evidence=[
+                    RecoveredFileEvidence(
+                        path=entry.path,
+                        source=entry.source,
+                        status=entry.status,
+                        evidence=entry.evidence,
+                        requirement_ids=list(entry.requirement_ids),
+                    )
+                    for entry in result.evidence_recovery
+                    if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files
+                ],
             )
         )
 

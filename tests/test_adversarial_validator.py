@@ -296,6 +296,32 @@ def test_recovered_changed_file_allows_independently_verified_pass() -> None:
     assert checked.result == "PASS"
 
 
+def test_unavailable_evidence_cannot_contradict_verified_dependent_requirement() -> None:
+    context = AdversarialValidationContext(
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+    )
+    result = AdversarialValidationResult(
+        result="PASS",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="Claimed complete")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(
+                path="src/state.py",
+                source="current-PR retrieval",
+                status="UNAVAILABLE",
+                evidence="Current-head file retrieval failed",
+                requirement_ids=["REQ-001"],
+            )
+        ],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "ERROR"
+    assert checked.diagnostic_category == "requirement_evidence_claim_mismatch"
+    assert checked.diagnostic_reason == ("Correctness-relevant changed-file evidence is unavailable while dependent requirements are marked decided: REQ-001")
+
+
 def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
     attempts = [{"path": f"src/{index}.py", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "not present", "requirement_ids": ["REQ-001"]} for index in range(9)]
 
@@ -1767,6 +1793,144 @@ class TestRunAdversarialValidation:
     """Test executing adversarial validation."""
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    @patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
+    def test_dynamic_followup_retains_current_run_recovered_evidence(self, mock_dynamic_check, mock_run_prompt, mock_build_ctx, tmp_path):
+        """Recovery from the initial response survives final-result replacement."""
+        missing_path = ".github/workflows/release.yml"
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=1675,
+            pr_title="Recover workflow evidence",
+            pr_diff="bounded workflow evidence",
+            all_changed_files=[missing_path],
+            unverified_files=[missing_path],
+            issue_context="Issue requires immutable artifact publication.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-005", text="Recovered coverage permits PASS")],
+        )
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "INCONCLUSIVE",
+                "summary": "Workflow recovered; confirm behavior dynamically",
+                "dynamic_check_requested": "tests/test_release.py::test_current_head",
+                "requirement_coverage": [{"requirement_id": "REQ-005", "status": "VERIFIED", "evidence": "Current-head workflow inspected"}],
+                "evidence_recovery": [
+                    {
+                        "path": missing_path,
+                        "source": "repository inspection",
+                        "status": "RECOVERED",
+                        "evidence": "Inspected the complete workflow on the current head",
+                        "requirement_ids": ["REQ-005"],
+                    }
+                ],
+                "decision_critical_evidence_gaps": [],
+                "findings": [],
+            }
+        )
+        followup_response = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Focused execution confirmed the requirement",
+                "requirement_coverage": [{"requirement_id": "REQ-005", "status": "VERIFIED", "evidence": "Focused check passed"}],
+                "evidence_recovery": [],
+                "decision_critical_evidence_gaps": [],
+                "findings": [],
+            }
+        )
+        manager = MagicMock()
+        manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = followup_response
+        mock_dynamic_check.return_value = DynamicCheckExecution(success=True, output="1 passed", executed_sha="same-head")
+        registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1675, "title": "Recover workflow evidence", "head": {"sha": "same-head"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+        assert result.result == "PASS"
+        assert [(entry.path, entry.status) for entry in result.evidence_recovery] == [(missing_path, "RECOVERED")]
+        persisted = registry.get("owner/repo", 1675, "reviewer", "codex", "strong")
+        assert persisted is not None
+        assert persisted.evidence_head_sha == "same-head"
+        assert [(entry.path, entry.status) for entry in persisted.recovered_file_evidence] == [(missing_path, "RECOVERED")]
+        mock_dynamic_check.assert_called_once()
+        assert mock_dynamic_check.call_args.args[1:] == ("tests/test_release.py::test_current_head", "same-head")
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_unchanged_head_retry_retains_recovered_file_evidence(self, mock_run_prompt, mock_build_ctx, tmp_path):
+        """Exercise parsing, persistence, retry reconciliation, and verdict precedence."""
+        workflow_paths = [".github/workflows/beta.yml", ".github/workflows/release.yml"]
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=1675,
+            pr_title="Recover bounded evidence",
+            pr_diff="bounded workflow evidence",
+            all_changed_files=workflow_paths,
+            unverified_files=workflow_paths,
+            issue_context="Issue requires immutable artifact publication.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Publish immutable artifacts")],
+        )
+        recovered = [
+            {
+                "path": path,
+                "source": "repository inspection",
+                "status": "RECOVERED",
+                "evidence": f"Inspected {path} at current-head",
+                "requirement_ids": ["REQ-001"],
+            }
+            for path in workflow_paths
+        ]
+        first_response = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "All requirements verified",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current-head workflows inspected"}],
+                "evidence_recovery": recovered,
+                "decision_critical_evidence_gaps": [],
+                "findings": [],
+            }
+        )
+        retry_response = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "All requirements remain verified",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Unchanged current head"}],
+                "evidence_recovery": [],
+                "decision_critical_evidence_gaps": [],
+                "findings": [],
+            }
+        )
+        mock_run_prompt.return_value = first_response
+        manager = MagicMock()
+        manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+        manager._last_session_id = "review-session"
+        manager.continue_session.return_value = retry_response
+        registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+        pr_data = {"number": 1675, "title": "Recover bounded evidence", "head": {"sha": "same-head"}}
+
+        first = run_adversarial_validation("owner/repo", pr_data, AutomationConfig(), backend_manager=manager, session_registry=registry)
+        retry = run_adversarial_validation("owner/repo", pr_data, AutomationConfig(), backend_manager=manager, session_registry=registry)
+
+        assert first.result == "PASS"
+        assert retry.result == "PASS"
+        assert [(entry.path, entry.status) for entry in retry.evidence_recovery] == [
+            (workflow_paths[0], "RECOVERED"),
+            (workflow_paths[1], "RECOVERED"),
+        ]
+        persisted = registry.get("owner/repo", 1675, "reviewer", "codex", "strong")
+        assert persisted is not None
+        assert persisted.evidence_head_sha == "same-head"
+        assert [entry.path for entry in persisted.recovered_file_evidence] == workflow_paths
+        retry_prompt = manager.continue_session.call_args.args[1]
+        assert "COMPLETE: every initially incomplete changed file was recovered or classified irrelevant on this exact head." in retry_prompt
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     def test_rereview_prompt_composition_excludes_initial_broad_policy(self, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
@@ -2128,7 +2292,7 @@ class TestRunAdversarialValidation:
 
         assert result.result == "ERROR"
         assert result.is_blocked
-        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+        assert result.diagnostic_category == "pass_with_unresolved_changed_file_evidence"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -2155,7 +2319,7 @@ class TestRunAdversarialValidation:
         )
 
         assert result.result == "ERROR"
-        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+        assert result.diagnostic_category == "pass_with_incomplete_requirement_coverage"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
@@ -2190,7 +2354,7 @@ class TestRunAdversarialValidation:
         )
 
         assert result.result == "ERROR"
-        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
+        assert result.diagnostic_category == "pass_with_incomplete_requirement_coverage"
 
     @pytest.mark.parametrize("top_level_result", ["PASS", "INCONCLUSIVE"])
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
@@ -2346,8 +2510,8 @@ class TestRunAdversarialValidation:
         )
 
         assert result.result == "ERROR"
-        assert result.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
-        assert result.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
+        assert result.diagnostic_category == "pass_with_incomplete_requirement_coverage"
+        assert result.diagnostic_reason == "Material Issue requirement IDs remain unverified: REQ-002-r2"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
