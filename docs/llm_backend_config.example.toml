@@ -19,6 +19,17 @@ order = ["qwen-openrouter", "qwen", "gemini"]
 
 [backends]
 
+# Muse Code (Meta PAYG local CLI)
+# Install and authenticate Muse Code first, or export MUSE_API_KEY. Muse runs as
+# `muse exec`: it may edit/test the working tree, while Auto-Coder exclusively
+# owns branch changes, staging, commits, pushes, and pull-request operations.
+[muse]
+backend_type = "muse"
+model = "muse-spark-1.3"
+options = ["--model", "[model_name]"]
+options_for_noedit = ["--model", "[model_name]", "--no-edit"]
+# api_key = "..." # Prefer MUSE_API_KEY in the environment.
+
 # Backend Configuration
 # =====================
 # Note: enabled = true is the default behavior for all backends.

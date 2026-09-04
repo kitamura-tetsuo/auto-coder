@@ -1,0 +1,415 @@
+"""Non-interactive Muse Code CLI client with Git lifecycle enforcement."""
+
+from __future__ import annotations
+
+import ctypes
+import json
+import os
+import shlex
+import stat
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .llm_backend_config import get_llm_config
+from .llm_client_base import LLMClientBase
+from .logger_config import get_logger
+from .prompt_loader import render_prompt
+from .usage_marker_utils import has_usage_marker_match
+
+logger = get_logger(__name__)
+
+_READ_ONLY_GIT_COMMANDS = {
+    "blame",
+    "cat-file",
+    "describe",
+    "diff",
+    "diff-tree",
+    "for-each-ref",
+    "grep",
+    "log",
+    "ls-files",
+    "ls-tree",
+    "merge-base",
+    "name-rev",
+    "rev-list",
+    "rev-parse",
+    "shortlog",
+    "show",
+    "show-ref",
+    "status",
+}
+
+
+def _read_only_special_git_command(name: object, argv: object) -> bool:
+    """Recognize inspection-only forms of Git commands that also mutate."""
+    if not isinstance(argv, list) or not all(isinstance(argument, str) for argument in argv):
+        return False
+    try:
+        command_index = argv.index(str(name))
+    except ValueError:
+        return False
+    arguments = argv[command_index + 1 :]
+    if name == "branch":
+        mutating_flags = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "--edit-description", "--set-upstream-to", "--unset-upstream"}
+        if any(argument in mutating_flags for argument in arguments):
+            return False
+        if any(argument in {"--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged"} for argument in arguments):
+            return True
+        return not any(not argument.startswith("-") for argument in arguments)
+    if name == "symbolic-ref":
+        return len([argument for argument in arguments if not argument.startswith("-")]) <= 1
+    if name == "tag":
+        return not any(not argument.startswith("-") for argument in arguments)
+    return False
+
+
+class _GitMetadataWatch:
+    """Watch repository metadata using inotify or a portable stat journal."""
+
+    _WRITE_EVENTS = 0x00000FCE
+
+    def __init__(self) -> None:
+        self._fd = -1
+        git_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir"], capture_output=True, text=True)
+        common_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True, text=True)
+        if git_dir_result.returncode != 0 or common_dir_result.returncode != 0:
+            self.close()
+            raise RuntimeError("Unable to locate Git metadata for Muse lifecycle enforcement")
+        git_dir = Path(git_dir_result.stdout.strip())
+        common_dir = Path(common_dir_result.stdout.strip())
+        # Include the common directory itself so endpoint-neutral creation and
+        # removal of metadata namespaces (for example ``worktrees``) still
+        # changes the parent directory journal and is observable after Muse
+        # exits.  Watching only currently existing children cannot detect a
+        # namespace that is both created and removed during one execution.
+        self._files = (git_dir / "HEAD", git_dir / "index", common_dir)
+        self._roots = tuple({common_dir / "refs", common_dir / "logs", common_dir / "worktrees"})
+        self._baseline = self._metadata_snapshot()
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            inotify_init1 = libc.inotify_init1
+            inotify_add_watch = libc.inotify_add_watch
+        except AttributeError:
+            return
+        self._fd = inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if self._fd < 0:
+            return
+        paths = list(self._files)
+        for root in self._roots:
+            if root.exists():
+                paths.extend(path for path in (root, *root.rglob("*")) if path.is_dir())
+        for path in paths:
+            if path.exists() and inotify_add_watch(self._fd, os.fsencode(path), self._WRITE_EVENTS) < 0:
+                self.close()
+                return
+
+    def _metadata_snapshot(self) -> tuple[tuple[str, int, int, int, int], ...]:
+        paths = [path for path in self._files if path.exists()]
+        for root in self._roots:
+            if root.exists():
+                paths.extend((root, *root.rglob("*")))
+        snapshot = []
+        for path in paths:
+            stat = path.lstat()
+            snapshot.append((str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        return tuple(sorted(snapshot))
+
+    def mutation_observed(self) -> bool:
+        if self._fd >= 0:
+            try:
+                if os.read(self._fd, 1024 * 1024):
+                    return True
+            except BlockingIOError:
+                pass
+        return self._metadata_snapshot() != self._baseline
+
+    def close(self) -> None:
+        if getattr(self, "_fd", -1) >= 0:
+            os.close(self._fd)
+            self._fd = -1
+
+
+@dataclass(frozen=True)
+class _WorkspaceFile:
+    path: str
+    contents: bytes
+    is_symlink: bool
+    mode: int
+
+
+@dataclass(frozen=True)
+class _WorkspaceMode:
+    path: str
+    mode: int
+
+
+@dataclass(frozen=True)
+class _GitState:
+    branch: Optional[str]
+    head: str
+    status: bytes
+    staged_patch: bytes
+    unstaged_patch: bytes
+    untracked_files: tuple[_WorkspaceFile, ...]
+    ignored_files: tuple[_WorkspaceFile, ...]
+    tracked_modes: tuple[_WorkspaceMode, ...]
+    directory_modes: tuple[_WorkspaceMode, ...]
+    refs: tuple[tuple[str, str], ...]
+
+
+class MuseClient(LLMClientBase):
+    """Run Muse Code while retaining Auto-Coder's ownership of Git state."""
+
+    def __init__(self, backend_name: Optional[str] = None) -> None:
+        super().__init__()
+        config = get_llm_config()
+        self.config_backend = config.get_backend_config(backend_name or "muse")
+        self.model_name = (self.config_backend and self.config_backend.model) or "muse-spark-1.3"
+        self.options = (self.config_backend and self.config_backend.options) or []
+        self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
+        self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
+        self.timeout = (self.config_backend and self.config_backend.timeout) or 7200
+
+        override = os.environ.get("AUTOCODER_MUSE_CLI")
+        command = shlex.split(override) if override else ["muse"]
+        try:
+            result = subprocess.run(command + ["--version"], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Muse Code CLI is unavailable: {exc}") from exc
+        if result.returncode != 0:
+            raise RuntimeError("Muse Code CLI is installed but unusable; run 'muse --version' and verify your installation")
+
+    @staticmethod
+    def _git(*args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(["git", *args], cwd=Path.cwd(), capture_output=True, check=False)
+
+    def _snapshot(self) -> _GitState:
+        head = self._git("rev-parse", "HEAD")
+        if head.returncode != 0:
+            raise RuntimeError("Muse backend requires a Git repository with an existing HEAD")
+        branch_result = self._git("symbolic-ref", "--quiet", "--short", "HEAD")
+        status = self._git("status", "--porcelain=v2", "--untracked-files=all")
+        if status.returncode != 0:
+            raise RuntimeError("Unable to snapshot repository state before Muse execution")
+        untracked_files = self._snapshot_files(self._git("ls-files", "--others", "--exclude-standard", "-z").stdout)
+        ignored_files = self._snapshot_files(self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z").stdout)
+        tracked_modes = self._snapshot_modes(self._git("ls-files", "-z").stdout)
+        directory_modes = self._snapshot_directory_modes()
+        refs = self._snapshot_refs()
+        return _GitState(
+            branch=branch_result.stdout.decode().strip() if branch_result.returncode == 0 else None,
+            head=head.stdout.decode().strip(),
+            status=status.stdout,
+            staged_patch=self._git("diff", "--cached", "--binary").stdout,
+            unstaged_patch=self._git("diff", "--binary").stdout,
+            untracked_files=untracked_files,
+            ignored_files=ignored_files,
+            tracked_modes=tracked_modes,
+            directory_modes=directory_modes,
+            refs=refs,
+        )
+
+    @staticmethod
+    def _snapshot_files(raw_paths: bytes) -> tuple[_WorkspaceFile, ...]:
+        files = []
+        for raw_path in filter(None, raw_paths.split(b"\0")):
+            relative_path = os.fsdecode(raw_path)
+            path = Path.cwd() / relative_path
+            if path.is_symlink():
+                files.append(_WorkspaceFile(relative_path, os.fsencode(os.readlink(path)), True, stat.S_IMODE(path.lstat().st_mode)))
+            elif path.is_file():
+                files.append(_WorkspaceFile(relative_path, path.read_bytes(), False, stat.S_IMODE(path.stat().st_mode)))
+        return tuple(files)
+
+    @staticmethod
+    def _snapshot_modes(raw_paths: bytes) -> tuple[_WorkspaceMode, ...]:
+        modes = []
+        for raw_path in filter(None, raw_paths.split(b"\0")):
+            relative_path = os.fsdecode(raw_path)
+            path = Path.cwd() / relative_path
+            if path.exists() and not path.is_symlink():
+                modes.append(_WorkspaceMode(relative_path, stat.S_IMODE(path.stat().st_mode)))
+        return tuple(modes)
+
+    @staticmethod
+    def _snapshot_directory_modes() -> tuple[_WorkspaceMode, ...]:
+        root = Path.cwd()
+        modes = [_WorkspaceMode(".", stat.S_IMODE(root.stat().st_mode))]
+        for current_root, directories, _files in os.walk(root, followlinks=False):
+            directories[:] = sorted(directory for directory in directories if not (Path(current_root) == root and directory == ".git"))
+            for directory in directories:
+                path = Path(current_root) / directory
+                if not path.is_symlink():
+                    modes.append(_WorkspaceMode(str(path.relative_to(root)), stat.S_IMODE(path.stat().st_mode)))
+        return tuple(modes)
+
+    def _snapshot_refs(self) -> tuple[tuple[str, str], ...]:
+        result = self._git("for-each-ref", "--format=%(refname) %(objectname)")
+        if result.returncode != 0:
+            raise RuntimeError("Unable to snapshot Git refs for Muse execution")
+        refs = []
+        for line in result.stdout.splitlines():
+            ref_name, object_name = os.fsdecode(line).split(" ", 1)
+            refs.append((ref_name, object_name))
+        return tuple(refs)
+
+    def _restore_refs(self, state: _GitState) -> None:
+        expected = dict(state.refs)
+        current = dict(self._snapshot_refs())
+        for ref_name in current.keys() - expected.keys():
+            if self._git("update-ref", "-d", ref_name).returncode != 0:
+                raise RuntimeError(f"Auto-Coder could not remove Muse-created ref {ref_name}")
+        for ref_name, object_name in expected.items():
+            if current.get(ref_name) != object_name and self._git("update-ref", ref_name, object_name).returncode != 0:
+                raise RuntimeError(f"Auto-Coder could not restore Muse-modified ref {ref_name}")
+
+    def _restore_lifecycle(self, state: _GitState) -> None:
+        if state.branch:
+            restored = self._git("checkout", "-f", state.branch)
+            if restored.returncode != 0:
+                restored = self._git("checkout", "-B", state.branch, state.head)
+        else:
+            restored = self._git("checkout", "--detach", "-f", state.head)
+        reset = self._git("reset", "--mixed", state.head)
+        if restored.returncode != 0 or reset.returncode != 0:
+            raise RuntimeError("Muse changed Git lifecycle state and Auto-Coder could not restore it")
+        self._restore_refs(state)
+
+    def _restore_index(self, state: _GitState) -> None:
+        if self._git("reset", "--mixed", state.head).returncode != 0:
+            raise RuntimeError("Auto-Coder could not unstage Muse changes")
+        if state.staged_patch:
+            result = subprocess.run(["git", "apply", "--binary", "--cached"], cwd=Path.cwd(), input=state.staged_patch, capture_output=True)
+            if result.returncode != 0:
+                raise RuntimeError("Auto-Coder could not restore the pre-Muse index")
+
+    def _restore_repository(self, state: _GitState) -> None:
+        """Restore the exact tracked/index/untracked state captured for no-edit."""
+        self._restore_lifecycle(state)
+        if self._git("reset", "--hard", state.head).returncode != 0 or self._git("clean", "-fdx").returncode != 0:
+            raise RuntimeError("Muse changed repository state and Auto-Coder could not restore it")
+        for patch, cached in ((state.staged_patch, True), (state.unstaged_patch, False)):
+            if not patch:
+                continue
+            args = ["git", "apply", "--binary"]
+            if cached:
+                args.append("--cached")
+            result = subprocess.run(args, cwd=Path.cwd(), input=patch, capture_output=True)
+            if result.returncode != 0:
+                raise RuntimeError("Muse changed repository state and Auto-Coder could not restore its pre-run patch")
+            if cached and self._git("checkout-index", "-a", "-f").returncode != 0:
+                raise RuntimeError("Muse changed repository state and Auto-Coder could not restore its working tree")
+        for workspace_file in state.untracked_files + state.ignored_files:
+            path = Path.cwd() / workspace_file.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if workspace_file.is_symlink:
+                path.symlink_to(os.fsdecode(workspace_file.contents))
+            else:
+                path.write_bytes(workspace_file.contents)
+                path.chmod(workspace_file.mode)
+        for workspace_mode in state.tracked_modes:
+            path = Path.cwd() / workspace_mode.path
+            if path.exists() and not path.is_symlink():
+                path.chmod(workspace_mode.mode)
+        for directory_mode in state.directory_modes:
+            path = Path.cwd() / directory_mode.path
+            if not path.exists():
+                path.mkdir(parents=True)
+        for directory_mode in reversed(state.directory_modes):
+            path = Path.cwd() / directory_mode.path
+            if not path.is_symlink():
+                path.chmod(directory_mode.mode)
+
+    @staticmethod
+    def _trace_contains_git_mutation(trace_path: str) -> bool:
+        """Fail closed unless every traced Git command is observably read-only."""
+        try:
+            starts = {}
+            with open(trace_path, encoding="utf-8") as trace_file:
+                for line in trace_file:
+                    event = json.loads(line)
+                    if event.get("event") == "start":
+                        starts[event.get("sid")] = event.get("argv")
+                    elif event.get("event") == "cmd_name":
+                        name = event.get("name")
+                        if name not in _READ_ONLY_GIT_COMMANDS and not _read_only_special_git_command(name, starts.get(event.get("sid"))):
+                            return True
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Unable to audit Git commands executed by Muse: {exc}") from exc
+        return False
+
+    def _assert_invariants(self, before: _GitState, is_noedit: bool, mutation_observed: bool = False) -> None:
+        after = self._snapshot()
+        lifecycle_changed = (after.branch, after.head) != (before.branch, before.head)
+        refs_changed = after.refs != before.refs
+        index_changed = after.staged_patch != before.staged_patch
+        noedit_changed = is_noedit and (
+            after.status != before.status or after.unstaged_patch != before.unstaged_patch or after.untracked_files != before.untracked_files or after.ignored_files != before.ignored_files or after.tracked_modes != before.tracked_modes or after.directory_modes != before.directory_modes
+        )
+        if is_noedit and (lifecycle_changed or noedit_changed):
+            self._restore_repository(before)
+        elif lifecycle_changed or refs_changed:
+            self._restore_lifecycle(before)
+            self._restore_index(before)
+        elif index_changed:
+            self._restore_index(before)
+        if lifecycle_changed or refs_changed or index_changed or noedit_changed or mutation_observed:
+            detail = "Git lifecycle or index" if lifecycle_changed or refs_changed or index_changed else "working tree"
+            if mutation_observed:
+                detail = "Git lifecycle command"
+            raise RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
+
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        before = self._snapshot()
+        metadata_watch = _GitMetadataWatch()
+        processed = self.config_backend.replace_placeholders(model_name=self.model_name) if self.config_backend else {}
+        options = processed.get("options_for_noedit" if is_noedit and self.options_for_noedit else "options", self.options_for_noedit if is_noedit and self.options_for_noedit else self.options)
+        command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse"))
+        command.extend(["exec", *options])
+        command.extend(self.consume_extra_args())
+        command.append(render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if is_noedit else "edit"))
+        env = os.environ.copy()
+        if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
+            env["MUSE_API_KEY"] = self.config_backend.api_key
+
+        trace_file = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
+        trace_path = trace_file.name
+        trace_file.close()
+        env["GIT_TRACE2_EVENT"] = trace_path
+
+        logger.warning("LLM invocation: Muse Code CLI is being called. Keep LLM calls minimized.")
+        logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if is_noedit else "edit")
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, env=env)
+        except subprocess.TimeoutExpired as exc:
+            mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+            metadata_watch.close()
+            os.unlink(trace_path)
+            self._assert_invariants(before, is_noedit, mutation_observed)
+            raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
+        except OSError as exc:
+            metadata_watch.close()
+            os.unlink(trace_path)
+            raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
+
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+        metadata_watch.close()
+        os.unlink(trace_path)
+        self._assert_invariants(before, is_noedit, mutation_observed)
+        markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
+        if has_usage_marker_match(output, markers):
+            raise AutoCoderUsageLimitError(output or "Muse Code usage limit reached")
+        if result.returncode != 0:
+            raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{output}")
+        return output
+
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        return False
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        return False

@@ -4,6 +4,17 @@ header: |
 jules_header: |
   Read AGENTS.md before proceeding if you haven't read it yet.
 
+muse:
+  execution: |-
+    Operate in $mode mode and complete this task in one execution:
+    $task_prompt
+
+    You may inspect the repository and run read-only Git commands. In edit mode,
+    edit the working tree and run tests as needed. In no-edit mode, do not alter
+    files or the index. Never change branches or HEAD, stage files, commit, push,
+    merge, rebase, create or update pull requests, or perform any other Git or
+    GitHub lifecycle mutation. Auto-Coder owns that lifecycle after you return.
+
 
 pr:
   action: |-

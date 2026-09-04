@@ -24,6 +24,7 @@ REQUIRED_OPTIONS_BY_BACKEND = {
     "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
     "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],
+    "muse": [],
     "qwen": ["-y"],
     "jules": [],  # Session-based, no required flags
     "codex-mcp": [],  # MCP-based, options flexible

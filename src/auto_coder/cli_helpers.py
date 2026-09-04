@@ -71,6 +71,11 @@ def check_auggie_cli_or_fail() -> None:
     check_cli_tool(tool_name="auggie", install_url="npm install -g @augmentcode/auggie", version_flag="--version")
 
 
+def check_muse_cli_or_fail() -> None:
+    """Check if Meta's Muse Code CLI is available and working."""
+    check_cli_tool(tool_name="muse", install_url="https://www.meta.com/muse-code/", version_flag="--version")
+
+
 def check_claude_cli_or_fail() -> None:
     """Check if claude CLI is available and working."""
     check_cli_tool(tool_name="claude", install_url="https://claude.ai/download\nOr use: npm install -g @anthropic-ai/claude-code", version_flag="--version")
@@ -222,6 +227,7 @@ def build_models_map() -> Dict[str, str]:
     models["qwen"] = config.get_model_for_backend("qwen") or "qwen3-coder-plus"
     # auggie
     models["auggie"] = config.get_model_for_backend("auggie") or "GPT-5"
+    models["muse"] = config.get_model_for_backend("muse") or "muse-spark-1.3"
     # claude
     models["claude"] = config.get_model_for_backend("claude") or "sonnet"
     # aider
@@ -271,6 +277,8 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_qwen_cli_or_fail()
         elif backend_name == "auggie":
             check_auggie_cli_or_fail()
+        elif backend_name == "muse":
+            check_muse_cli_or_fail()
         elif backend_name == "claude":
             check_claude_cli_or_fail()
         elif backend_name == "aider":
@@ -367,6 +375,12 @@ def build_backend_manager(
 
         return AuggieClient(backend_name=backend_name)
 
+    def _create_muse_client(backend_name: str):
+        """Create a MuseClient lazily."""
+        from .muse_client import MuseClient
+
+        return MuseClient(backend_name=backend_name)
+
     def _create_codex_client(backend_name: str):
         """Create a CodexClient with optional configuration for aliases."""
         from .codex_client import CodexClient
@@ -450,6 +464,7 @@ def build_backend_manager(
         "antigravity": _create_gemini_client,
         "claude": _create_claude_client,
         "auggie": _create_auggie_client,
+        "muse": _create_muse_client,
         "codex": _create_codex_client,
         "codex-mcp": _create_codex_mcp_client,
         "aider": _create_aider_client,
@@ -461,7 +476,7 @@ def build_backend_manager(
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "claude", "aider", "claude-routine", "codex-cloud"]:
+        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "claude-routine", "codex-cloud"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
@@ -473,6 +488,8 @@ def build_backend_manager(
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_qwen_client, backend_name))
             elif backend_name == "auggie":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_auggie_client, backend_name))
+            elif backend_name == "muse":
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_muse_client, backend_name))
             elif backend_name == "claude":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_client, backend_name))
             elif backend_name == "aider":
