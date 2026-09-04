@@ -146,6 +146,8 @@ class UnsafeCodexCloudPRResult:
 
     closed: bool = False
     reissue_delivered: bool = False
+    metadata_error: Optional[str] = None
+    authoritative_pr_data: Optional[Dict[str, Any]] = None
     actions: List[str] = field(default_factory=list)
 
 
@@ -596,15 +598,14 @@ def process_pull_request(
         # Resolve the execution origin before any diff, CI, merge, or checkout
         # behavior. ``work`` is Codex Cloud's shared/transient branch identity,
         # not a safe identity for an independently managed task.
-        safety_pr_data, safety_error = _resolve_pr_safety_metadata(github_client, repo_name, pr_data)
-        if safety_error:
-            processed_pr.actions_taken = [f"Skipping PR #{pr_number}: authoritative branch safety could not be established ({safety_error})"]
+        unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, pr_data, config)
+        if unsafe_branch_result.metadata_error:
+            processed_pr.actions_taken = list(unsafe_branch_result.actions)
             processed_pr.priority = "defer"
             processed_pr.outcome = PRProcessingOutcome.DEFERRED
             return processed_pr
-        pr_data = safety_pr_data
+        pr_data = unsafe_branch_result.authoritative_pr_data or pr_data
         processed_pr.pr_data = pr_data
-        unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, pr_data, config)
         if unsafe_branch_result.closed:
             processed_pr.actions_taken = unsafe_branch_result.actions
             processed_pr.priority = "close"
@@ -1071,6 +1072,13 @@ def _reject_unsafe_codex_cloud_pr(
     existing retry path.
     """
     result = UnsafeCodexCloudPRResult()
+    authoritative_pr_data, metadata_error = _resolve_pr_safety_metadata(github_client, repo_name, pr_data)
+    result.authoritative_pr_data = authoritative_pr_data
+    if metadata_error:
+        result.metadata_error = metadata_error
+        result.actions.append(f"Skipping PR #{pr_data['number']}: authoritative branch safety could not be established ({metadata_error})")
+        return result
+    pr_data = authoritative_pr_data
     if not _is_unsafe_codex_cloud_branch(pr_data):
         return result
 
@@ -1572,6 +1580,18 @@ def _process_pr_for_merge(
     )
     github_client = GitHubClient.get_instance()
 
+    unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, pr_data, config)
+    if unsafe_branch_result.metadata_error:
+        processed_pr.actions_taken = list(unsafe_branch_result.actions)
+        processed_pr.outcome = PRProcessingOutcome.DEFERRED
+        return processed_pr
+    pr_data = unsafe_branch_result.authoritative_pr_data or pr_data
+    processed_pr.pr_data = pr_data
+    if unsafe_branch_result.closed:
+        processed_pr.actions_taken = list(unsafe_branch_result.actions)
+        processed_pr.priority = "close"
+        return processed_pr
+
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(
         github_client,
@@ -1607,6 +1627,18 @@ def _process_pr_for_fixes(
         priority="fix",
         analysis=None,
     )
+
+    unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, pr_data, config)
+    if unsafe_branch_result.metadata_error:
+        processed_pr.actions_taken = list(unsafe_branch_result.actions)
+        processed_pr.outcome = PRProcessingOutcome.DEFERRED
+        return processed_pr
+    pr_data = unsafe_branch_result.authoritative_pr_data or pr_data
+    processed_pr.pr_data = pr_data
+    if unsafe_branch_result.closed:
+        processed_pr.actions_taken = list(unsafe_branch_result.actions)
+        processed_pr.priority = "close"
+        return processed_pr
 
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config, check_labels=config.CHECK_LABELS) as should_process:
@@ -2194,13 +2226,13 @@ def _handle_pr_merge(
         # This is the lowest shared boundary for CI, review, adversarial,
         # conflict, checkout, and merge work.  Do not trust reduced caller data:
         # refresh it before deciding that a ``work`` head is not Codex Cloud.
-        safety_pr_data, safety_error = _resolve_pr_safety_metadata(github_client, repo_name, pr_data)
-        if safety_error:
-            actions.append(f"Skipping PR #{pr_number}: authoritative branch safety could not be established ({safety_error})")
+        unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, pr_data, config)
+        if unsafe_branch_result.metadata_error:
+            actions.extend(unsafe_branch_result.actions)
             if processing_status is not None:
                 processing_status.outcome = PRProcessingOutcome.DEFERRED
             return actions
-        unsafe_branch_result = _reject_unsafe_codex_cloud_pr(github_client, repo_name, safety_pr_data, config)
+        pr_data = unsafe_branch_result.authoritative_pr_data or pr_data
         if unsafe_branch_result.closed:
             actions.extend(unsafe_branch_result.actions)
             return actions
@@ -3566,10 +3598,33 @@ def _resolve_pr_safety_metadata(
 ) -> Tuple[Dict[str, Any], Optional[str]]:
     """Return metadata sufficient for the Codex Cloud branch safety decision.
 
-    Full REST PR objects already carry the authoritative head, body, author, and
-    state fields.  Alternate/reduced shapes are refreshed through an uncached
-    endpoint; absence or malformed data fails this processing pass closed.
+    Production clients always refresh through an uncached endpoint, even when
+    caller data looks complete, because list responses can be stale. Absence or
+    malformed data fails this processing pass closed. The local validation path
+    exists only for lightweight clients that do not implement strict retrieval.
     """
+    client = github_client or GitHubClient.get_instance()
+    getter = getattr(type(client), "get_pull_request_metadata_strict", None)
+    if callable(getter):
+        try:
+            refreshed = client.get_pull_request_metadata_strict(repo_name, int(pr_data["number"]))
+        except Exception as exc:
+            return pr_data, str(exc)
+        if not isinstance(refreshed, dict):
+            return pr_data, "GitHub returned malformed PR metadata"
+        refreshed_head = refreshed.get("head")
+        refreshed_author = refreshed.get("author", refreshed.get("user"))
+        if (
+            not isinstance(refreshed_head, dict)
+            or not isinstance(refreshed_head.get("ref"), str)
+            or "body" not in refreshed
+            or not (refreshed.get("body") is None or isinstance(refreshed.get("body"), str))
+            or not (isinstance(refreshed_author, str) or (isinstance(refreshed_author, dict) and isinstance(refreshed_author.get("login"), str)))
+            or not isinstance(refreshed.get("state"), str)
+        ):
+            return pr_data, "GitHub returned incomplete PR safety metadata"
+        return refreshed, None
+
     head = pr_data.get("head")
     head_ref = head.get("ref") if isinstance(head, dict) else None
     has_head = isinstance(head_ref, str) and bool(head_ref)
@@ -3582,28 +3637,7 @@ def _resolve_pr_safety_metadata(
     if has_head and (head_ref != "work" or ("body" in pr_data and has_author)):
         return pr_data, None
 
-    client = github_client or GitHubClient.get_instance()
-    getter = getattr(type(client), "get_pull_request_metadata_strict", None)
-    if not callable(getter):
-        return pr_data, "GitHub client does not support strict PR metadata lookup"
-    try:
-        refreshed = client.get_pull_request_metadata_strict(repo_name, int(pr_data["number"]))
-    except Exception as exc:
-        return pr_data, str(exc)
-    if not isinstance(refreshed, dict):
-        return pr_data, "GitHub returned malformed PR metadata"
-    refreshed_head = refreshed.get("head")
-    refreshed_author = refreshed.get("author", refreshed.get("user"))
-    if (
-        not isinstance(refreshed_head, dict)
-        or not isinstance(refreshed_head.get("ref"), str)
-        or "body" not in refreshed
-        or not (refreshed.get("body") is None or isinstance(refreshed.get("body"), str))
-        or not (isinstance(refreshed_author, str) or (isinstance(refreshed_author, dict) and isinstance(refreshed_author.get("login"), str)))
-        or not isinstance(refreshed.get("state"), str)
-    ):
-        return pr_data, "GitHub returned incomplete PR safety metadata"
-    return refreshed, None
+    return pr_data, "GitHub client does not support strict PR metadata lookup"
 
 
 def _is_claude_pr(pr_data: Dict[str, Any]) -> bool:

@@ -150,7 +150,10 @@ class TestAutomationEngine:
 
         with (
             patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False),
-            patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr", return_value=MagicMock(closed=False)),
+            patch(
+                "auto_coder.pr_processor._reject_unsafe_codex_cloud_pr",
+                return_value=MagicMock(closed=False, metadata_error=None, authoritative_pr_data=None),
+            ),
             patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False)),
             patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=MagicMock(closed=False)),
             patch("auto_coder.automation_engine.process_pull_request", side_effect=process_pr),
@@ -643,7 +646,7 @@ class TestAutomationEngine:
     def test_process_single_propagates_remote_head_verification_failure(self, mock_github_client):
         """A nested caught merge-stage exception must reach top-level errors."""
         engine = AutomationEngine(mock_github_client, config=AutomationConfig())
-        candidate = Candidate(type="pr", data={"number": 5266, "title": "PR"}, priority=1)
+        candidate = Candidate(type="pr", data={"number": 5266, "title": "PR", "head": {"ref": "feature-5266"}}, priority=1)
         diagnostic = "Failed to verify remote head SHA for PR #5266: GitHub API rate limited; merge aborted."
         engine._check_and_handle_closed_branch = Mock(return_value=True)
         engine._create_candidate_from_single = Mock(return_value=candidate)
@@ -792,6 +795,8 @@ class TestAutomationEngine:
         config.AUTO_MERGE = True
         engine = AutomationEngine(github_client, config=config)
         pr_data = {"number": 80, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
+        pr_data.update({"user": {"login": "developer"}, "state": "open"})
+        github_client.get_pull_request_metadata_strict = MagicMock(return_value=pr_data)
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()

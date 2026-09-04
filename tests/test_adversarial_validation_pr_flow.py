@@ -2189,6 +2189,7 @@ class TestClaimedReviewThreadValidationFlow:
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         config.MAX_ADVERSARIAL_VALIDATIONS = 2
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": new_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
 
         with (
             patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),

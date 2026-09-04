@@ -6,7 +6,8 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.pr_processor import _handle_pr_merge, process_pull_request
+from auto_coder.pr_processor import _handle_pr_merge, _process_pr_for_fixes, _process_pr_for_merge, process_pull_request
+from auto_coder.util.gh_cache import GitHubClient
 
 
 @pytest.fixture
@@ -218,3 +219,85 @@ def test_reduced_metadata_lookup_failure_fails_closed(
     assert result.actions_taken == ["Skipping PR #162: authoritative branch safety could not be established (metadata unavailable)"]
     empty_check.assert_not_called()
     adversarial.assert_not_called()
+
+
+def test_cached_task_branch_is_rejected_when_live_head_is_work(
+    config: AutomationConfig,
+) -> None:
+    client = GitHubClient(token="test")
+    cached = codex_pr(branch="issue-161-stale")
+    client.get_pull_request_metadata_strict = MagicMock(return_value=codex_pr(branch="work"))
+    client.close_pr = MagicMock()
+    client.get_issue = MagicMock(return_value={"state": "open"})
+
+    with (
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True),
+        patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks") as review_gate,
+        patch("auto_coder.pr_processor.run_adversarial_validation") as adversarial,
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress") as ci_gate,
+    ):
+        actions = _handle_pr_merge(client, "owner/repo", cached, config, {})
+
+    client.get_pull_request_metadata_strict.assert_called_once_with("owner/repo", 162)
+    client.close_pr.assert_called_once()
+    assert actions[0] == "Closed unsafe Codex Cloud PR #162 on shared remote branch 'work'"
+    review_gate.assert_not_called()
+    adversarial.assert_not_called()
+    ci_gate.assert_not_called()
+
+
+def test_candidate_collection_preserves_live_task_branch_when_cache_says_work(
+    config: AutomationConfig,
+) -> None:
+    client = GitHubClient(token="test")
+    cached = codex_pr(branch="work")
+    cached.update({"created_at": "2026-01-01T00:00:00Z", "labels": [], "mergeable": True})
+    live = {**cached, "head": {**cached["head"], "ref": "issue-161-fixed"}}
+    client.get_open_prs_json = MagicMock(return_value=[cached])
+    client.get_open_issues_json = MagicMock(return_value=[])
+    client.get_pull_request_metadata_strict = MagicMock(return_value=live)
+    client.close_pr = MagicMock()
+    engine = AutomationEngine(client, config=config)
+
+    with (
+        patch("auto_coder.util.github_action.preload_github_actions_status") as preload,
+        patch("auto_coder.util.github_action._check_github_actions_status", return_value=MagicMock(success=False)),
+        patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False)),
+    ):
+        candidates = engine._get_candidates("owner/repo")
+
+    client.get_pull_request_metadata_strict.assert_called_once_with("owner/repo", 162)
+    assert not client.close_pr.called
+    preload.assert_called_once()
+    assert preload.call_args.args[1][0]["head"]["ref"] == "issue-161-fixed"
+
+
+@pytest.mark.parametrize("wrapper", ["merge", "fix"])
+def test_production_wrappers_reject_before_label_or_progress(
+    config: AutomationConfig,
+    wrapper: str,
+) -> None:
+    client = GitHubClient(token="test")
+    client.get_pull_request_metadata_strict = MagicMock(return_value=codex_pr())
+    client.close_pr = MagicMock()
+    client.get_issue = MagicMock(return_value={"state": "open"})
+
+    with (
+        patch("auto_coder.pr_processor.GitHubClient.get_instance", return_value=client),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True),
+        patch("auto_coder.pr_processor.LabelManager") as label_manager,
+        patch("auto_coder.pr_processor.ProgressStage") as progress_stage,
+        patch("auto_coder.pr_processor._handle_pr_merge") as merge_handler,
+        patch("auto_coder.pr_processor._take_pr_actions") as fix_handler,
+    ):
+        if wrapper == "merge":
+            result = _process_pr_for_merge("owner/repo", codex_pr(branch="cached-branch"), config)
+        else:
+            result = _process_pr_for_fixes(client, "owner/repo", codex_pr(branch="cached-branch"), config)
+
+    assert result.priority == "close"
+    client.close_pr.assert_called_once()
+    label_manager.assert_not_called()
+    progress_stage.assert_not_called()
+    merge_handler.assert_not_called()
+    fix_handler.assert_not_called()
