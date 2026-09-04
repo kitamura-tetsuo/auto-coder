@@ -190,6 +190,59 @@ model = "model-c"
 class TestNonDifficultCloudIssueRouting:
     """Test handling and routing of non-difficult issues to backend_cloud."""
 
+    @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
+    @patch("auto_coder.quota_selector.evaluate_backend_quota")
+    def test_toml_priority_groups_rank_within_group_during_issue_dispatch(
+        self,
+        mock_evaluate,
+        mock_codex_cloud_mode,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Repository-aware issue dispatch must retain TOML priority boundaries."""
+        config_path = tmp_path / "llm_config.toml"
+        config_path.write_text(
+            """
+[backend_cloud]
+priority_groups = [["backend-a", "backend-b"], ["backend-c"]]
+
+[backends.backend-a]
+backend_type = "codex-cloud"
+[backends.backend-b]
+backend_type = "codex-cloud"
+[backends.backend-c]
+backend_type = "codex-cloud"
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", str(config_path))
+        surpluses = {"backend-a": 0.1, "backend-b": 0.5, "backend-c": 0.99}
+        mock_evaluate.side_effect = lambda backend_name, **kwargs: BackendQuotaEvaluation(
+            backend_name=backend_name,
+            quota_surplus=surpluses[backend_name],
+        )
+        mock_codex_cloud_mode.return_value = ["backend-b dispatched"]
+        config = AutomationConfig()
+        issue_data = {"number": 10, "title": "Simple fix", "labels": []}
+        github_client = MagicMock()
+
+        actions = _process_issue_cloud_backend(
+            "owner/repo",
+            issue_data,
+            config,
+            github_client,
+        )
+
+        assert actions == ["backend-b dispatched"]
+        mock_codex_cloud_mode.assert_called_once_with(
+            "owner/repo",
+            issue_data,
+            config,
+            github_client,
+            backend_name="backend-b",
+            label_context=None,
+        )
+
     @patch("auto_coder.issue_processor.CloudManager")
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")
     def test_codex_cloud_dispatch_persists_and_comments_task_url(self, mock_client_type, mock_cloud_manager_type, tmp_path, monkeypatch):
