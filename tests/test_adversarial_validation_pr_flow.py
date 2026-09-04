@@ -15,6 +15,7 @@ from auto_coder.adversarial_validator import (
     format_adversarial_validation_comment,
 )
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
+from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
@@ -28,7 +29,7 @@ from auto_coder.pr_processor import (
     _get_codex_review_state,
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
-    _send_adversarial_validation_feedback_to_codex_cloud,
+    _send_adversarial_validation_feedback_to_cloud_task,
     _take_pr_actions,
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
@@ -400,13 +401,140 @@ class TestAdversarialValidationPRComment:
 
 
 class TestAdversarialValidationCodexFeedback:
+    @pytest.fixture(autouse=True)
+    def persisted_codex_binding(self):
+        """Model the provider binding created by the production dispatch path."""
+
+        def binding(_manager, item_number):
+            if item_number == 99:
+                return CloudTaskBinding(provider="codex-cloud", task_id="task_e_real123")
+            if item_number == 100:
+                return CloudTaskBinding(provider="codex-cloud", task_id="task_e_abc123")
+            return None
+
+        with patch("auto_coder.cloud_manager.CloudManager.get_binding", binding):
+            yield
+
+    def test_jules_binding_routes_through_provider_followup_without_codex_probe(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nConcrete Jules defect"
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_jules", comments=[ReviewThreadComment(database_id=1677, body=finding)])]
+        jules = MagicMock()
+        jules.send_followup.return_value = True
+        pr_data = {"number": 1676, "body": "Fixes #1677", "head": {"ref": "jules-fix", "sha": "head"}, "base": {"ref": "main"}}
+
+        with (
+            patch("auto_coder.cloud_manager.CloudManager.get_binding", return_value=CloudTaskBinding("jules", "11778985556824899970")),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=jules) as resolver,
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "delivery.json"),
+            patch("auto_coder.codex_cloud_client.CodexCloudClient") as codex,
+        ):
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", finding, github, [finding])
+
+        resolver.assert_called_once_with("jules", "owner/repo")
+        jules.send_followup.assert_called_once()
+        assert jules.send_followup.call_args.args[0] == "11778985556824899970"
+        codex.assert_not_called()
+        assert "Sent adversarial NEEDS_FIX report to jules" in actions[0]
+
+    def test_providerless_legacy_binding_fails_closed_without_client_probe(self):
+        github = MagicMock()
+        with (
+            patch("auto_coder.cloud_manager.CloudManager.get_binding", return_value=None),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider") as resolver,
+        ):
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", {"number": 1676, "body": "Fixes #1677"}, "head", "report", github)
+
+        resolver.assert_not_called()
+        assert actions == ["Adversarial feedback was not delivered for PR #1676: no provider-owned cloud task association was found"]
+
+    def test_provider_initialization_failure_reports_non_delivery_without_fallback(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(1677, "jules-session", provider="jules")
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        resolver_error = RuntimeError("Jules configuration unavailable")
+        pr_data = {"number": 1676, "body": "Fixes #1677"}
+
+        with (
+            patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+            patch(
+                "auto_coder.cloud_manager.CloudManager.get_binding",
+                lambda self, number: self._read_bindings().get(str(number)),
+            ),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", side_effect=resolver_error) as resolver,
+        ):
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", "report", MagicMock())
+
+        resolver.assert_called_once_with("jules", "owner/repo")
+        assert actions == ["Adversarial feedback was not delivered for PR #1676: cloud provider 'jules' is unavailable: Jules configuration unavailable"]
+
+    def test_conflicting_linked_issue_bindings_fail_closed_before_provider_resolution(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(1677, "jules-session", provider="jules")
+        assert manager.add_session(1678, "codex-task", provider="codex-cloud")
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        pr_data = {"number": 1676, "body": "Fixes #1677\nFixes #1678"}
+
+        with (
+            patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+            patch(
+                "auto_coder.cloud_manager.CloudManager.get_binding",
+                lambda self, number: self._read_bindings().get(str(number)),
+            ),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider") as resolver,
+        ):
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", "report", MagicMock())
+
+        resolver.assert_not_called()
+        assert actions == ["Adversarial feedback was not delivered for PR #1676: multiple conflicting cloud task associations were found"]
+
+    def test_receipt_is_scoped_by_provider_when_raw_task_id_is_reused(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(99, "shared-id", provider="codex-cloud")
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        finding = "### Auto-Coder adversarial finding\n\nShared finding"
+        thread = ReviewThread(id="PRRT_shared", comments=[ReviewThreadComment(database_id=301, body=finding)])
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [thread]
+        codex = MagicMock()
+        codex.send_followup.return_value = True
+        jules = MagicMock()
+        jules.send_followup.return_value = True
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #99",
+            "head": {"ref": "provider-fix", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+
+        with (
+            patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+            patch(
+                "auto_coder.cloud_manager.CloudManager.get_binding",
+                lambda self, number: self._read_bindings().get(str(number)),
+            ),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "delivery.json"),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", side_effect=lambda provider, _repo: {"codex-cloud": codex, "jules": jules}[provider]) as resolver,
+        ):
+            first_actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+            assert manager.add_session(99, "shared-id", provider="jules")
+            second_actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+
+        assert resolver.call_count == 2
+        codex.send_followup.assert_called_once()
+        jules.send_followup.assert_called_once()
+        assert "codex-cloud task 'shared-id'" in first_actions[0]
+        assert "jules task 'shared-id'" in second_actions[0]
+
     def test_invalid_metadata_falls_back_to_pr_body_task_for_delivery(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
         github_client = MagicMock()
         github_client.get_pr_comments.return_value = []
         github_client.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_current", comments=[ReviewThreadComment(database_id=301, body=finding)])]
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 1670,
             "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_real123",
@@ -419,16 +547,16 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "delivery.json"),
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
-            actions = _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, github_client, [finding])
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github_client, [finding])
 
-        assert cloud_client.continue_if_paused.call_args.args == ("task_e_real123",)
+        assert cloud_client.send_followup.call_args.args[0] == "task_e_real123"
         assert all("task_fake" not in action for action in actions)
 
     def test_successful_adversarial_delivery_deduplicates_review_thread_path(self, tmp_path):
         client = MagicMock()
         client.get_pr_comments.return_value = []
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 100,
             "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
@@ -448,11 +576,10 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
-            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", "report", client, [finding])
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", "report", client, [finding])
             actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
-        cloud_client.continue_if_paused.assert_called_once()
-        cloud_client.send_followup.assert_not_called()
+        cloud_client.send_followup.assert_called_once()
         assert "already requested" in actions[0]
 
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
@@ -465,7 +592,7 @@ class TestAdversarialValidationCodexFeedback:
         client.get_pr_comments.return_value = []
         client.get_pr_review_threads_strict.return_value = [thread]
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 100,
             "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
@@ -479,12 +606,11 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
-            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{finding}", client)
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{finding}", client)
             # The delegate reloads the file, modelling a later process instance.
             actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
-        cloud_client.continue_if_paused.assert_called_once()
-        cloud_client.send_followup.assert_not_called()
+        cloud_client.send_followup.assert_called_once()
         assert state_path.exists()
         assert "already requested" in actions[0]
 
@@ -507,7 +633,7 @@ class TestAdversarialValidationCodexFeedback:
         client.get_pr_comments.return_value = []
         client.get_pr_review_threads_strict.return_value = threads
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 100,
             "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
@@ -520,9 +646,9 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
-            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{current}", client)
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", f"saved NEEDS_FIX report\n\n{current}", client)
 
-        prompt = cloud_client.continue_if_paused.call_args.kwargs["prompt"]
+        prompt = cloud_client.send_followup.call_args.args[1]
         assert current in prompt
         assert historical not in prompt
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -532,7 +658,7 @@ class TestAdversarialValidationCodexFeedback:
         client = MagicMock()
         client.get_pr_comments.return_value = []
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 100,
             "body": "Fixes #99\n\nhttps://chatgpt.com/codex/tasks/task_e_abc123",
@@ -544,7 +670,7 @@ class TestAdversarialValidationCodexFeedback:
         client.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_current", comments=[ReviewThreadComment(database_id=301, body=finding)])]
 
         with patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client):
-            actions = _send_adversarial_validation_feedback_to_codex_cloud(
+            actions = _send_adversarial_validation_feedback_to_cloud_task(
                 "owner/repo",
                 pr_data,
                 "head123",
@@ -553,9 +679,8 @@ class TestAdversarialValidationCodexFeedback:
                 [finding],
             )
 
-        cloud_client.continue_if_paused.assert_called_once()
-        (task_id,) = cloud_client.continue_if_paused.call_args.args
-        prompt = cloud_client.continue_if_paused.call_args.kwargs["prompt"]
+        cloud_client.send_followup.assert_called_once()
+        task_id, prompt = cloud_client.send_followup.call_args.args
         assert task_id == "task_e_abc123"
         assert "PR #100" in prompt
         assert "head123" in prompt
@@ -581,7 +706,7 @@ class TestAdversarialValidationCodexFeedback:
         }
 
         with patch("auto_coder.codex_cloud_client.CodexCloudClient") as cloud_client_type:
-            actions = _send_adversarial_validation_feedback_to_codex_cloud(
+            actions = _send_adversarial_validation_feedback_to_cloud_task(
                 "owner/repo",
                 pr_data,
                 "head123",
@@ -590,7 +715,6 @@ class TestAdversarialValidationCodexFeedback:
                 [finding],
             )
 
-        cloud_client_type.assert_not_called()
         assert any("PR head/base branch metadata is unavailable" in action for action in actions)
 
     def test_delivery_marker_does_not_replace_actionable_feedback_identity(self):
@@ -603,7 +727,7 @@ class TestAdversarialValidationCodexFeedback:
         }
 
         with patch("auto_coder.codex_cloud_client.CodexCloudClient") as cloud_client_type:
-            actions = _send_adversarial_validation_feedback_to_codex_cloud(
+            actions = _send_adversarial_validation_feedback_to_cloud_task(
                 "owner/repo",
                 pr_data,
                 "head123",
@@ -611,7 +735,6 @@ class TestAdversarialValidationCodexFeedback:
                 client,
             )
 
-        cloud_client_type.assert_not_called()
         client.add_comment_to_pr.assert_not_called()
         client.get_pr_comments.assert_not_called()
         assert actions == ["Cannot identify actionable adversarial feedback for PR #100; delivery was not attempted"]
@@ -631,7 +754,7 @@ class TestAdversarialValidationCodexFeedback:
         client.get_pr_comments.return_value = []
         client.get_pr_review_threads_strict.return_value = [first_thread]
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 100,
             "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
@@ -644,14 +767,14 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
-            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", first, client, [first])
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", first, client, [first])
             client.get_pr_comments.return_value = [{"body": adversarial_validation_codex_feedback_marker("head123") + "\nDelivered"}]
             client.get_pr_review_threads_strict.return_value = [first_thread, second_thread]
-            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", second, client, [second])
-            actions = _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", second, client, [second])
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", second, client, [second])
+            actions = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", second, client, [second])
 
-        assert cloud_client.continue_if_paused.call_count == 2
-        second_prompt = cloud_client.continue_if_paused.call_args_list[1].kwargs["prompt"]
+        assert cloud_client.send_followup.call_count == 2
+        second_prompt = cloud_client.send_followup.call_args_list[1].args[1]
         assert second in second_prompt
         assert first not in second_prompt
         assert "all actionable feedback was already delivered" in actions[0]
@@ -669,7 +792,7 @@ class TestAdversarialValidationCodexFeedback:
         client.get_authenticated_user_login.return_value = "auto-coder-bot"
         client.get_pr_review_threads_strict.return_value = [thread]
         cloud_client = MagicMock()
-        cloud_client.continue_if_paused.return_value = True
+        cloud_client.send_followup.return_value = True
         pr_data = {
             "number": 100,
             "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
@@ -684,13 +807,12 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.pr_processor._record_delivered_review_feedback", side_effect=OSError("disk full")),
             patch("auto_coder.codex_cloud_client.CodexCloudClient", return_value=cloud_client),
         ):
-            _send_adversarial_validation_feedback_to_codex_cloud("owner/repo", pr_data, "head123", finding, client, [finding])
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, client, [finding])
             durable_receipt = client.add_comment_to_pr.call_args.args[2]
             client.get_pr_comments.return_value = [{"body": durable_receipt, "user": {"login": "auto-coder-bot"}}]
             actions = _delegate_codex_cloud_review_thread_repair("owner/repo", pr_data, client, (thread,))
 
-        cloud_client.continue_if_paused.assert_called_once()
-        cloud_client.send_followup.assert_not_called()
+        cloud_client.send_followup.assert_called_once()
         assert "auto-coder-cloud-review-feedback:v1:" in durable_receipt
         assert "already requested" in actions[0]
 
@@ -909,7 +1031,7 @@ class TestAdversarialValidationPRFlow:
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
         with patch(
-            "auto_coder.pr_processor._send_adversarial_validation_feedback_to_codex_cloud",
+            "auto_coder.pr_processor._send_adversarial_validation_feedback_to_cloud_task",
             return_value=["Sent saved report"],
         ) as mock_feedback:
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})

@@ -91,6 +91,26 @@ class CloudTaskEngine:
 
         return discovered
 
+    def get_client_for_provider(self, provider: str, repo_name: Optional[str] = None) -> Optional[CloudTaskClientBase]:
+        """Resolve a configured transport by its durable provider identifier."""
+        if self.clients:
+            provider_types = {"jules": "JulesClient", "claude-routine": "ClaudeRoutineClient", "codex-cloud": "CodexCloudClient"}
+            expected_type = provider_types.get(provider)
+            return next((client for client in self.clients if type(client).__name__ == expected_type), None)
+        if provider == "jules":
+            from .jules_client import JulesClient
+
+            return JulesClient()
+        if provider == "claude-routine":
+            from .claude_routine_client import ClaudeRoutineClient
+
+            return ClaudeRoutineClient(repo_name=repo_name)
+        if provider == "codex-cloud":
+            from .codex_cloud_client import CodexCloudClient
+
+            return CodexCloudClient(repo_name=repo_name)
+        return None
+
     def check_and_resume_tasks(self, repo_name: Optional[str] = None) -> List[str]:
         """Check all cloud tasks across registered providers and resume paused tasks.
 

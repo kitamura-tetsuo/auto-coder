@@ -107,7 +107,7 @@ class TestDifficultIssueHandling:
         )
 
         mock_routine_client.fire_routine.assert_called_once()
-        mock_cloud_mgr.add_session.assert_called_once_with(42, "session_999")
+        mock_cloud_mgr.add_session.assert_called_once_with(42, "session_999", provider="claude-routine")
         mock_github.add_comment_to_issue.assert_called_once()
         comment_text = mock_github.add_comment_to_issue.call_args[0][2]
         assert "Session ID: session_999" in comment_text

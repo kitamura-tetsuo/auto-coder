@@ -766,3 +766,14 @@ class JulesClient(CloudTaskClientBase):
         except Exception as e:
             logger.warning(f"Failed to stop Jules task {task_id}: {e}")
             return False
+
+    def send_followup(self, task_id: str, message: str) -> bool:
+        """Assign follow-up work to an existing Jules implementation session."""
+        if not task_id or not message:
+            return False
+        try:
+            self.send_message(task_id, message)
+            return True
+        except Exception as exc:
+            logger.warning(f"Failed to send follow-up to Jules session {task_id}: {exc}")
+            return False

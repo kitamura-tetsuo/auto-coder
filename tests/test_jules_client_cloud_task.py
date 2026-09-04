@@ -14,6 +14,21 @@ from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 class TestJulesClientCloudTask:
     """Test suite for JulesClient cloud-task methods."""
 
+    def test_send_followup_assigns_message_without_paused_state_recovery(self, mock_backend_config):
+        client = JulesClient("jules")
+
+        with (
+            patch.object(client, "send_message", return_value={"name": "sessions/existing"}) as send_message,
+            patch.object(client, "continue_if_paused") as continue_if_paused,
+            patch.object(client, "get_task") as get_task,
+        ):
+            accepted = client.send_followup("existing", "Address the published findings")
+
+        assert accepted is True
+        send_message.assert_called_once_with("existing", "Address the published findings")
+        continue_if_paused.assert_not_called()
+        get_task.assert_not_called()
+
     @pytest.fixture
     def mock_backend_config(self):
         """Create mock configuration for jules."""

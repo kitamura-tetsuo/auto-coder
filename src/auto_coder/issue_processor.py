@@ -184,7 +184,7 @@ def _process_issue_jules_mode(
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)
-        success = cloud_manager.add_session(issue_number, session_id)
+        success = cloud_manager.add_session(issue_number, session_id, provider="jules")
 
         if not success:
             logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
@@ -289,7 +289,7 @@ def _process_issue_claude_routine_mode(
         session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
 
         cloud_manager = CloudManager(repo_name)
-        success = cloud_manager.add_session(issue_number, session_id)
+        success = cloud_manager.add_session(issue_number, session_id, provider="claude-routine")
 
         if not success:
             logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
@@ -401,7 +401,7 @@ def _process_issue_codex_cloud_mode(
             task_id=task_id,
         )
     )
-    CloudManager(repo_name).add_session(issue_number, task_id)
+    CloudManager(repo_name).add_session(issue_number, task_id, provider="codex-cloud")
 
     task_url = client.task_urls.get(task_id)
     comment = f"I started a Codex Cloud task to work on this issue. Task ID: {task_id}"
