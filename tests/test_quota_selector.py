@@ -531,6 +531,38 @@ class TestHighScoreBackendManagerIntegration:
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_exhausted_singleton_burst_backend_is_not_installed(self, mock_build, mock_get_config):
+        """Parsed provider exhaustion must survive ranking and manager creation."""
+        now = datetime.now(timezone.utc)
+        config = LLMBackendConfiguration.load_from_dict(
+            {
+                "quota_selection": {"strategy": "burst"},
+                "backend_with_high_score": {"order": ["codex-cloud"]},
+                "backends": {"codex-cloud": {"type": "codex-cloud"}},
+            }
+        )
+        usage = parse_codex_weekly_usage(
+            {
+                "rate_limit": {
+                    "secondary_window": {
+                        "used_percent": 100,
+                        "limit_window_seconds": 604_800,
+                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                    }
+                }
+            },
+            now=now,
+        )
+        mock_get_config.return_value = config
+        with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage):
+            manager = create_high_score_backend_manager()
+
+        assert usage.remaining_percent == 0
+        assert manager is None
+        mock_build.assert_not_called()
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
     @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
     def test_create_high_score_cloud_backend_manager_preserves_order(self, mock_rank, mock_build, mock_get_config):
         """An ordered high-score cloud configuration keeps its declared priority."""
