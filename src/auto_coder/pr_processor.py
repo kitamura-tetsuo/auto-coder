@@ -4171,12 +4171,33 @@ def _load_delivered_review_feedback(state_path: Path) -> set[str]:
     return set(values)
 
 
-def _record_delivered_review_feedback(state_path: Path, feedback: set[str]) -> None:
-    """Atomically persist confirmed feedback deliveries."""
+def _load_pending_review_feedback(state_path: Path) -> set[str]:
+    if not state_path.exists():
+        return set()
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("delivery state is not a JSON object")
+    values = loaded.get("pending_feedback", [])
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("pending_feedback is not a string list")
+    return set(values)
+
+
+def _record_review_feedback_state(state_path: Path, delivered: set[str], pending: set[str]) -> None:
+    """Atomically persist confirmed and indeterminate feedback deliveries."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps({"delivered_feedback": sorted(feedback)}, indent=2), encoding="utf-8")
+    temporary.write_text(
+        json.dumps({"delivered_feedback": sorted(delivered), "pending_feedback": sorted(pending)}, indent=2),
+        encoding="utf-8",
+    )
     os.replace(temporary, state_path)
+
+
+def _record_delivered_review_feedback(state_path: Path, feedback: set[str]) -> None:
+    """Atomically persist confirmed feedback deliveries."""
+    pending = _load_pending_review_feedback(state_path) - feedback
+    _record_review_feedback_state(state_path, feedback, pending)
 
 
 def _cloud_review_feedback_markers(feedback: Sequence[str]) -> str:
@@ -4268,11 +4289,6 @@ def _delegate_cloud_review_thread_repair(
     if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: cloud provider '{provider}' does not support follow-up delivery"])
 
-    target = resolve_existing_pr_repair_target(repo_name, pr_data)
-    if not target:
-        logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate review repair")
-        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"])
-
     state_path = _cloud_review_repair_state_path(repo_name)
     prefix = f"{repo_name}#{pr_number}:{provider}:{task_id}:"
     implementer_login = (get_pr_author_login(pr_data) or "").lower()
@@ -4288,6 +4304,7 @@ def _delegate_cloud_review_thread_repair(
         try:
             delivered = _load_delivered_review_feedback(state_path)
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _thread, _comment, identity in findings]))
+            indeterminate = _load_pending_review_feedback(state_path) - delivered
         except (OSError, ValueError) as exc:
             logger.warning(f"Could not read cloud review repair state: {exc}")
             return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: prior delivery state could not be read: {exc}"])
@@ -4296,6 +4313,40 @@ def _delegate_cloud_review_thread_repair(
         logger.info(f"All actionable review feedback for PR #{pr_number} was already delegated")
         return CloudReviewRepairResult([f"{provider_label} review repair was already requested for PR #{pr_number} for all current actionable feedback"], delivered=True)
 
+    blocked = [(thread, comment, identity) for thread, comment, identity in pending if identity in indeterminate]
+    pending = [(thread, comment, identity) for thread, comment, identity in pending if identity not in indeterminate]
+    if not pending:
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: a prior follow-up has unconfirmed durable receipt status; duplicate delivery was suppressed"])
+
+    pending_identities = {identity for _thread, _comment, identity in pending}
+    with _cloud_review_delivery_lock:
+        try:
+            _record_review_feedback_state(state_path, delivered, indeterminate | pending_identities)
+        except OSError as exc:
+            return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: a durable delivery reservation could not be recorded: {exc}"])
+
+    if github_client is None:
+        with _cloud_review_delivery_lock:
+            _record_review_feedback_state(state_path, delivered, indeterminate)
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: an authoritative current PR lookup is unavailable"])
+    try:
+        live_metadata = github_client.get_pull_request_repair_metadata_strict(repo_name, pr_number)
+    except Exception as exc:
+        with _cloud_review_delivery_lock:
+            try:
+                _record_review_feedback_state(state_path, delivered, indeterminate)
+            except OSError:
+                pass
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: current PR head/branch could not be verified: {exc}"])
+    live_pr_data = dict(pr_data)
+    live_pr_data["head"] = {"ref": live_metadata.head_ref, "sha": live_metadata.head_sha}
+    live_pr_data["base"] = {"ref": live_metadata.base_ref}
+    target = resolve_existing_pr_repair_target(repo_name, live_pr_data)
+    if not target:
+        with _cloud_review_delivery_lock:
+            _record_review_feedback_state(state_path, delivered, indeterminate)
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: current PR head/base branch metadata is unavailable"])
+
     feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending)
     details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
     prompt = build_existing_pr_repair_prompt(target, details)
@@ -4303,8 +4354,18 @@ def _delegate_cloud_review_thread_repair(
         accepted = client.send_followup(task_id, prompt)
     except Exception as exc:
         logger.warning(f"Cloud review repair delegation failed for PR #{pr_number}: {exc}")
+        with _cloud_review_delivery_lock:
+            try:
+                _record_review_feedback_state(state_path, delivered, indeterminate)
+            except OSError:
+                pass
         return CloudReviewRepairResult([f"Review repair was not delivered to {provider} for PR #{pr_number}: {exc}"])
     if not accepted:
+        with _cloud_review_delivery_lock:
+            try:
+                _record_review_feedback_state(state_path, delivered, indeterminate)
+            except OSError:
+                pass
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: {provider} task '{task_id}' rejected follow-up delivery"])
 
     local_receipt = False
@@ -4326,9 +4387,12 @@ def _delegate_cloud_review_thread_repair(
         )
     except Exception as exc:
         remote_receipt = False
-        logger.warning(f"Could not persist Codex Cloud review repair receipt on PR #{pr_number}: {exc}")
+        logger.warning(f"Could not persist cloud review repair receipt on PR #{pr_number}: {exc}")
     if not local_receipt and not remote_receipt:
         logger.error(f"Confirmed cloud review repair delivery for PR #{pr_number} has no durable receipt")
+        return CloudReviewRepairResult(
+            [f"Review repair follow-up was accepted for PR #{pr_number}, but durable delivery confirmation failed; duplicate delivery is suppressed"],
+        )
 
     get_trace_logger().log(
         "Cloud Review Repair",
@@ -4337,7 +4401,10 @@ def _delegate_cloud_review_thread_repair(
         item_number=pr_number,
         details={"provider": provider, "task_id": task_id, "head_sha": target.head_sha},
     )
-    return CloudReviewRepairResult([f"Requested {provider_label} task '{task_id}' to address unresolved review threads for PR #{pr_number}"], delivered=True)
+    actions = [f"Requested {provider_label} task '{task_id}' to address unresolved review threads for PR #{pr_number}"]
+    if blocked:
+        actions.insert(0, f"Suppressed duplicate delivery of {len(blocked)} finding(s) with unconfirmed durable receipt status for PR #{pr_number}")
+    return CloudReviewRepairResult(actions, delivered=True)
 
 
 def _delegate_cloud_merge_conflict_repair_result(

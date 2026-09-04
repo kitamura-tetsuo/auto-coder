@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.util.gh_cache import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient, PullRequestRepairMetadata
 
 
 class AttrDict(dict):
@@ -85,6 +85,45 @@ class TestGitHubClient:
 
         with pytest.raises(RuntimeError, match="current head SHA"):
             client.get_pull_request_head_sha_strict("owner/repo", 42)
+
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_repair_metadata_strict_returns_live_branches(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {
+            "head": {"ref": "live-repair-branch", "sha": "live-head-sha"},
+            "base": {"ref": "main"},
+        }
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        metadata = client.get_pull_request_repair_metadata_strict("owner/repo", 42)
+
+        assert metadata == PullRequestRepairMetadata(
+            head_ref="live-repair-branch",
+            head_sha="live-head-sha",
+            base_ref="main",
+        )
+        mock_get.assert_called_once_with(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": f"Bearer {mock_github_token}",
+            },
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status.assert_called_once_with()
+
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_repair_metadata_strict_rejects_partial_payload(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {"head": {"ref": "branch", "sha": "sha"}, "base": {}}
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        with pytest.raises(RuntimeError, match="complete current repair metadata"):
+            client.get_pull_request_repair_metadata_strict("owner/repo", 42)
 
     def test_resolve_review_thread_rejects_wrong_returned_thread_id(self, mock_github_token):
         client = GitHubClient.get_instance(mock_github_token)
