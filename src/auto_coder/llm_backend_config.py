@@ -25,6 +25,7 @@ REQUIRED_OPTIONS_BY_BACKEND = {
     "antigravity": ["--dangerously-skip-permissions"],
     "auggie": ["--print"],
     "qwen": ["-y"],
+    "muse": [],
     "jules": [],  # Session-based, no required flags
     "codex-mcp": [],  # MCP-based, options flexible
     "aider": [],  # Aider-based, options flexible
@@ -436,7 +437,7 @@ class LLMBackendConfiguration:
         """Initialize default backends if none are configured."""
         if not self.backends:
             # Add default configurations for known backends
-            default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
+            default_backends = ["codex", "antigravity", "qwen", "muse", "auggie", "claude", "jules", "codex-mcp", "aider"]
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
 
@@ -703,7 +704,7 @@ class LLMBackendConfiguration:
 
         # Add default backends if they are not already in the configuration
         # This ensures that backends like 'jules' are available even if not explicitly defined in the file
-        default_backends = ["codex", "antigravity", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
+        default_backends = ["codex", "antigravity", "qwen", "muse", "auggie", "claude", "jules", "codex-mcp", "aider"]
         for backend_name in default_backends:
             if backend_name not in backends:
                 backends[backend_name] = BackendConfig(name=backend_name)
@@ -1224,7 +1225,7 @@ class LLMBackendConfiguration:
             return config.model
 
         # Default models for known backends
-        default_models = {"antigravity": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp", "aider": "aider"}
+        default_models = {"antigravity": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "muse": "muse-spark-1.3-contributor", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp", "aider": "aider"}
         return default_models.get(backend_name)
 
     def apply_env_overrides(self) -> None:

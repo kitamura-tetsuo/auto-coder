@@ -507,3 +507,26 @@ options_for_noedit = []
 #    - api_key
 #    - base_url
 #    - backend_type matching the provider name
+
+# Muse Code Configuration
+# -----------------------
+# Install and authenticate Meta Muse Code first. Muse reads META_API_KEY from
+# the environment; api_key below is also passed only through that environment
+# variable and is never placed in the prompt or command line.
+[muse]
+model = "muse-spark-1.3-contributor"
+backend_type = "muse"
+api_key = "your-meta-api-key" # Prefer exporting META_API_KEY instead.
+# Editable runs commonly use --yolo for unattended execution. Auto-Coder still
+# verifies that Muse did not change the branch or HEAD.
+options = ["--yolo"]
+# Auto-Coder adds --trust-workspace, --disable-approval, and --disable-write to
+# no-edit runs. Additional backend-specific flags may be supplied here.
+options_for_noedit = []
+usage_markers = ["rate limit", "usage limit", "quota", "429"]
+
+# Named aliases use the same lazy local client and execution safeguards:
+[muse-payg]
+model = "muse-spark-1.3-contributor"
+backend_type = "muse"
+options = ["--yolo"]

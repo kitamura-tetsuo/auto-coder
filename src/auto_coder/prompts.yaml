@@ -1,6 +1,19 @@
 header: |
   Read AGENTS.md before proceeding if you haven't read it yet.
 
+
+muse:
+  execution: |-
+    $task_prompt
+
+    Muse Code execution boundary ($mode mode):
+    - Work only in the current repository and follow its applicable instructions.
+    - You may inspect the repository and run implementation or test commands.
+    - Read-only Git commands such as git status, diff, log, and show are allowed.
+    - Do not change branches or HEAD. Do not stage, commit, push, merge, rebase, create or update pull requests, or perform any other Git/GitHub lifecycle mutation.
+    - Auto-Coder exclusively owns branch management, staging, commit, push, retry, and PR lifecycle operations after this execution.
+    - In no-edit mode, do not modify the index, working tree, branch, or HEAD.
+
 jules_header: |
   Read AGENTS.md before proceeding if you haven't read it yet.
 
@@ -1591,22 +1604,22 @@ tests:
        * If it's a formatting issue, run the appropriate formatter (e.g., `npx dprint fmt`, `npm run format`)
        * If it's a merge conflict, resolve the conflicts
        * If it's a hook failure, fix the underlying issue that the hook detected
-       * Stage any additional changes with `git add`
+       * Leave any additional changes unstaged; Auto-Coder will stage them centrally
 
-    4. After resolving the issue, commit and push the changes:
-       * Use `git commit -m "$commit_message"` with the original commit message if exist
-       * Use `git push` to push the changes
+    4. After resolving the issue, return control to Auto-Coder:
+       * Do not run `git add`, `git commit`, or `git push`
+       * Auto-Coder will retry the commit and push through its centralized helpers
 
     5. Verify the operation succeeded:
-       * Check `git status` to ensure there are no uncommitted changes
-       * Confirm the push was successful
+       * Check `git diff` to verify the intended working-tree fix
+       * Report that the changes are ready for Auto-Coder to stage
 
     **Important:**
     * Do NOT modify the commit message if exist
     * Create a new commit message if commit message does not exist
     * Do NOT skip or bypass pre-commit hooks
     * Do NOT force push unless explicitly required
-    * Ensure all changes are properly staged before committing
+    * Leave Git lifecycle operations to Auto-Coder
     * If the issue cannot be resolved automatically, provide a clear error message
 
     After completing the operation, output a single line starting with "COMMIT_PUSH_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
@@ -1640,14 +1653,14 @@ tests:
        * Fix configuration file syntax or settings
        * Resolve file permission issues
        * Manually format files if necessary
-       * Stage any changes with `git add`
+       * Leave changes unstaged for Auto-Coder to stage centrally
 
     4. After resolving the dprint issues, retry the formatting:
        * Run `npx dprint fmt` to format files
-       * Stage the formatted changes
+       * Leave the formatted changes unstaged for Auto-Coder
 
     5. Verify the operation succeeded:
-       * Check `git status` to ensure formatted files are properly staged
+       * Check `git diff` to ensure formatted files contain the intended changes
        * Confirm no formatting errors remain
 
     **Important:**

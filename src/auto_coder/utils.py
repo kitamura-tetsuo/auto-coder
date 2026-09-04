@@ -283,6 +283,7 @@ class CommandExecutor:
         "codex": 7200,
         "antigravity": 7200,
         "qwen": 7200,
+        "muse": 7200,
         "aider": 7200,
         "default": 60,
     }

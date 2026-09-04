@@ -1227,3 +1227,22 @@ Recent configuration schema changes that require migration:
       - "Every resolution-time head comparison and stale-marker head comparison uses a strict direct REST lookup that bypasses the shared GitHub GET cache. A stale-marker scan that performs a head comparison repeats that authoritative lookup after scanning all threads and requires the same head SHA, so a push from H1 to H2 during the scan fails closed without mutation. A missing, malformed, failed, or changed authoritative lookup cannot validate a resolution or dismiss an H1 blocker."
       - "Before attempting a stale-resolution rollback, Auto-Coder durably records a fail-closed rollback-transition state. A later run reconciles that transition only when the strict GitHub lookup returns the exact thread once with an explicit boolean resolved state: an unresolved thread advances to marker cleanup without another unresolve, while a still-resolved thread retries rollback under the existing durable guard; missing, duplicate, malformed, or failed lookup evidence remains blocking. After confirmed rollback, a failed CLEARED-marker reply becomes marker-cleanup-only state, and if both that reply and cleanup-state persistence fail, the pre-mutation transition remains available for this reconciliation. Resolve and unresolve mutations are accepted only when GitHub returns the exact requested thread ID and the expected literal resolved state."
       - "`_merge_pr`'s existing pre-merge safeguard re-fetches the authoritative GitHub review-thread state after any resolution and before merging, so automatic merge proceeds only when no unresolved thread remains (claimed-but-unresolved threads included) and every other merge gate also passes."
+
+## Meta Muse Code local backend
+
+Muse Code is available as the local `muse` backend and through named aliases
+whose `backend_type` is `muse`. The client is imported lazily only when selected
+and performs one headless `muse exec` invocation. Configure the Muse model,
+editable `options`, read-only `options_for_noedit`, timeout, and usage markers in
+`~/.auto-coder/llm_config.toml`. Install and authenticate Muse Code before use;
+credentials come from `META_API_KEY` or the backend `api_key` setting and are
+passed only in the subprocess environment, never in prompts or command lines.
+
+Muse may inspect the repository, edit the working tree, and run tests. It may use
+read-only Git commands, but Auto-Coder exclusively owns branches, staging,
+commits, pushes, retries, pull requests, merges, and rebases. Auto-Coder snapshots
+branch and `HEAD` around every Muse execution and rejects/restores a run that
+changes either. No-edit runs additionally use Muse's write-disable flags and
+verify the index and working tree byte-for-byte, restoring and rejecting any
+mutation. Successful editable runs return their working-tree changes to the
+existing centralized Auto-Coder commit/push and PR lifecycle.
