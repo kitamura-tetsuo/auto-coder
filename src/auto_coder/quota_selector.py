@@ -365,8 +365,17 @@ def _rank_backends(
 
     eligible_evals = [e for e in evaluations if e.is_eligible]
     if not eligible_evals:
-        logger.warning("No candidate high-score backends were eligible under quota checks; falling back to configured order")
-        return backend_names
+        if strategy == "burst":
+            # For burst mode, never fall back to an explicitly exhausted backend
+            non_exhausted = [e.backend_name for e in evaluations if not ("exhausted" in (e.reason or "").lower())]
+            if non_exhausted:
+                logger.warning("No candidate high-score backends were eligible; falling back to non-exhausted configured order")
+                return non_exhausted
+            logger.warning("All candidate high-score backends are exhausted; returning empty list")
+            return []
+        else:
+            logger.warning("No candidate high-score backends were eligible under quota checks; falling back to configured order")
+            return backend_names
 
     # Sort key:
     # 1. Backends with quota_surplus (and not usage_retrieval_failed) come first (tier: 0),

@@ -604,3 +604,20 @@ def test_codex_cloud_surplus_strategy_rejects_below_reserve():
         evaluation = evaluate_backend_quota("codex-cloud", config=config, now=fixed_now)
     assert evaluation.is_eligible is False
     assert "quota insufficient" in evaluation.reason
+
+
+def test_codex_cloud_burst_strategy_ranker_excludes_exhausted():
+    """Test AC-004 fallback behavior: Burst mode excludes exhausted backend."""
+    fixed_now = datetime.now(timezone.utc)
+    config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud")})
+    config.quota_selection_strategy = "burst"
+
+    codex_usage = CodexWeeklyUsage(
+        remaining_percent=0.0,
+        reset_at=fixed_now + timedelta(days=2),
+        days_until_reset=2,
+        minimum_remaining_percent=15.0,
+    )
+    with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage):
+        ranked = rank_high_score_backends_by_quota(["codex-cloud"], config=config, now=fixed_now)
+    assert "codex-cloud" not in ranked
