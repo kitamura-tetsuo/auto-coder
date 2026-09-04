@@ -454,10 +454,10 @@ def _process_issue_high_score_cloud(
     elif high_score_cloud_config:
         candidates = [high_score_cloud_config.name]
 
-    if len(candidates) > 1:
+    if candidates:
         from .quota_selector import rank_high_score_backends_by_quota
 
-        candidates = rank_high_score_backends_by_quota(candidates, llm_config) or candidates
+        candidates = rank_high_score_backends_by_quota(candidates, llm_config)
 
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
@@ -549,10 +549,10 @@ def _process_issue_cloud_backend(
         # Default to jules if backend_cloud is not explicitly configured
         candidates = ["jules"]
 
-    if len(candidates) > 1:
+    if candidates:
         from .quota_selector import rank_high_score_backends_by_quota
 
-        candidates = rank_high_score_backends_by_quota(candidates, llm_config) or candidates
+        candidates = rank_high_score_backends_by_quota(candidates, llm_config)
 
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
