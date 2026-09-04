@@ -41,7 +41,11 @@ class CodexWeeklyUsage:
     reset_credits: CodexResetCredits = field(default_factory=CodexResetCredits)
 
     @property
-    def can_start_task(self) -> bool:
+    def has_remaining_quota(self) -> bool:
+        return self.remaining_percent > 0.0
+
+    @property
+    def meets_reserve_threshold(self) -> bool:
         return self.remaining_percent >= self.minimum_remaining_percent
 
 
@@ -169,12 +173,14 @@ def get_codex_weekly_usage(now: Optional[datetime] = None) -> Optional[CodexWeek
         return None
 
 
-def codex_cloud_quota_allows_task() -> bool:
+def codex_cloud_quota_allows_task(strategy: str = "surplus") -> bool:
     usage = get_codex_weekly_usage()
     if usage is None:
         return False
-    decision = "start" if usage.can_start_task else "skip"
+
+    can_start = usage.has_remaining_quota if strategy == "burst" else usage.meets_reserve_threshold
+    decision = "start" if can_start else "skip"
     credits = usage.reset_credits.available_count
     credits_display = str(credits) if credits is not None else f"unavailable ({usage.reset_credits.status})"
-    logger.info(f"Codex weekly quota: remaining={usage.remaining_percent:.1f}%, " f"reset_at={usage.reset_at.isoformat()}, days_until_reset={usage.days_until_reset}, " f"required={usage.minimum_remaining_percent:.1f}%, reset_credits={credits_display}, decision={decision}")
-    return usage.can_start_task
+    logger.info(f"Codex weekly quota (strategy={strategy}): remaining={usage.remaining_percent:.1f}%, " f"reset_at={usage.reset_at.isoformat()}, days_until_reset={usage.days_until_reset}, " f"required={usage.minimum_remaining_percent:.1f}%, reset_credits={credits_display}, decision={decision}")
+    return can_start

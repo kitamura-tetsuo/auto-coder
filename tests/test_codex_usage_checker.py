@@ -51,8 +51,10 @@ def test_threshold_uses_whole_days_until_reset(reset_delta, expected_days, expec
 def test_quota_boundary_is_inclusive():
     allowed = parse_codex_weekly_usage(_payload(20, timedelta(days=3)), now=NOW)
     denied = parse_codex_weekly_usage(_payload(19.9, timedelta(days=3)), now=NOW)
-    assert allowed.can_start_task is True
-    assert denied.can_start_task is False
+    assert allowed.meets_reserve_threshold is True
+    assert allowed.has_remaining_quota is True
+    assert denied.meets_reserve_threshold is False
+    assert denied.has_remaining_quota is True
 
 
 def test_primary_window_is_used_when_it_is_weekly():

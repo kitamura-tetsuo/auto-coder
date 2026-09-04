@@ -179,14 +179,14 @@ def _get_codex_usage_report() -> CodexUsageReport:
             message="Failed to retrieve Codex weekly quota from ChatGPT API.",
         )
 
-    status_str = "ok" if usage.can_start_task else "quota_insufficient"
-    msg = "Quota is sufficient to start tasks." if usage.can_start_task else f"Remaining quota ({usage.remaining_percent:.1f}%) is below minimum required threshold ({usage.minimum_remaining_percent:.1f}%)."
+    status_str = "ok" if usage.meets_reserve_threshold else "quota_insufficient"
+    msg = "Quota is sufficient to start tasks." if usage.meets_reserve_threshold else f"Remaining quota ({usage.remaining_percent:.1f}%) is below minimum required threshold ({usage.minimum_remaining_percent:.1f}%)."
 
     return CodexUsageReport(
         available=True,
         status=status_str,
         message=msg,
-        can_start_task=usage.can_start_task,
+        can_start_task=usage.meets_reserve_threshold,
         remaining_percent=usage.remaining_percent,
         used_percent=100.0 - usage.remaining_percent,
         reset_at=usage.reset_at.isoformat(),

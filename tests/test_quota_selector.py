@@ -317,7 +317,7 @@ class TestQuotaSurplusSelection:
             days_until_reset=2,
             minimum_remaining_percent=15.0,
         )
-        assert codex_usage.can_start_task is False
+        assert codex_usage.meets_reserve_threshold is False
 
         claude_reset = fixed_now + timedelta(days=4)
         claude_quota = ClaudeUsageQuota(
@@ -547,3 +547,60 @@ class TestHighScoreBackendManagerIntegration:
             "jules",
         ]
         assert call_args["primary_backend"] == "codex-cloud-spark"
+
+
+def test_codex_cloud_burst_strategy_bypasses_reserve_threshold():
+    fixed_now = datetime.now(timezone.utc)
+    """Test AC-001: Burst mode bypasses the minimum reserve threshold."""
+    config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud")})
+    config.quota_selection_strategy = "burst"
+    # Remaining 12%, Minimum 15%. This fails surplus but should pass burst.
+    codex_reset = fixed_now + timedelta(days=2)
+    codex_usage = CodexWeeklyUsage(
+        remaining_percent=12.0,
+        reset_at=codex_reset,
+        days_until_reset=2,
+        minimum_remaining_percent=15.0,
+    )
+    with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage):
+        evaluation = evaluate_backend_quota("codex-cloud", config=config, now=fixed_now)
+    assert evaluation.is_eligible is True
+    assert evaluation.quota_surplus is not None
+
+
+def test_codex_cloud_burst_strategy_rejects_zero_quota():
+    fixed_now = datetime.now(timezone.utc)
+    """Test AC-004: Burst mode still rejects actually exhausted quota."""
+    config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud")})
+    config.quota_selection_strategy = "burst"
+    # Remaining 0%. This fails burst.
+    codex_reset = fixed_now + timedelta(days=2)
+    codex_usage = CodexWeeklyUsage(
+        remaining_percent=0.0,
+        reset_at=codex_reset,
+        days_until_reset=2,
+        minimum_remaining_percent=15.0,
+    )
+    with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage):
+        evaluation = evaluate_backend_quota("codex-cloud", config=config, now=fixed_now)
+    assert evaluation.is_eligible is False
+    assert "quota exhausted (0.0%)" in evaluation.reason
+
+
+def test_codex_cloud_surplus_strategy_rejects_below_reserve():
+    fixed_now = datetime.now(timezone.utc)
+    """Test AC-002: Surplus mode respects reserve threshold."""
+    config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud")})
+    config.quota_selection_strategy = "surplus"
+    # Remaining 12%, Minimum 15%. Fails surplus.
+    codex_reset = fixed_now + timedelta(days=2)
+    codex_usage = CodexWeeklyUsage(
+        remaining_percent=12.0,
+        reset_at=codex_reset,
+        days_until_reset=2,
+        minimum_remaining_percent=15.0,
+    )
+    with patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=codex_usage):
+        evaluation = evaluate_backend_quota("codex-cloud", config=config, now=fixed_now)
+    assert evaluation.is_eligible is False
+    assert "quota insufficient" in evaluation.reason

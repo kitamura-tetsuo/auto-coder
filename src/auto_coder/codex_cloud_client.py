@@ -125,8 +125,11 @@ class CodexCloudClient(CloudTaskClientBase):
         logger.info(f"Starting Codex Cloud task (title={title or 'N/A'}, branch={base_branch or 'N/A'})")
 
         effective_repo = repo_name or self.repo_name
+        strategy = "surplus"
         if effective_repo:
             config = get_llm_config(repo_name=effective_repo)
+            strategy = getattr(config, "quota_selection_strategy", None) if config is not None else None
+            strategy = strategy if isinstance(strategy, str) else "surplus"
             backend_cfg = config.get_backend_config(self.backend_name)
             if backend_cfg:
                 env_id = backend_cfg.environment_id or getattr(backend_cfg, "environment", None)
@@ -142,8 +145,12 @@ class CodexCloudClient(CloudTaskClientBase):
                     self.base_url = backend_cfg.base_url
                 if backend_cfg.attempts:
                     self.attempts = backend_cfg.attempts
+        else:
+            config = get_llm_config(repo_name=None)
+            strategy = getattr(config, "quota_selection_strategy", None) if config is not None else None
+            strategy = strategy if isinstance(strategy, str) else "surplus"
 
-        if not codex_cloud_quota_allows_task():
+        if not codex_cloud_quota_allows_task(strategy=strategy):
             raise AutoCoderUsageLimitError("Codex weekly quota is unavailable or below the required threshold")
 
         cmd = ["codex", "cloud", "exec"]
