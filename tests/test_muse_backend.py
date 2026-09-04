@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 import subprocess
 from pathlib import Path
@@ -187,6 +188,25 @@ def test_portable_watch_rejects_trace_bypass_without_inotify(tmp_path: Path, mon
         _manager(config)._run_llm_cli("implement")
 
     assert _git(repo, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
+
+
+def test_muse_cannot_hide_transient_linked_worktree_by_disabling_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    linked_worktree = tmp_path / "muse-linked-worktree"
+    worktrees_before = _git(repo, "worktree", "list", "--porcelain")
+    action = f"env -u GIT_TRACE2_EVENT git worktree add --detach " f"{shlex.quote(str(linked_worktree))} HEAD; " f"env -u GIT_TRACE2_EVENT git worktree remove -f " f"{shlex.quote(str(linked_worktree))}"
+    script = _muse_script(tmp_path, action)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    # Exercise the portable parent-owned metadata journal as well as the
+    # production manager path; the child has disabled cooperative tracing.
+    with patch("src.auto_coder.muse_client.ctypes.CDLL", return_value=object()), pytest.raises(RuntimeError, match="Git lifecycle command"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert _git(repo, "worktree", "list", "--porcelain") == worktrees_before
+    assert not linked_worktree.exists()
 
 
 def test_noedit_mutation_is_rejected_and_repository_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:

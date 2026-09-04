@@ -81,8 +81,13 @@ class _GitMetadataWatch:
             raise RuntimeError("Unable to locate Git metadata for Muse lifecycle enforcement")
         git_dir = Path(git_dir_result.stdout.strip())
         common_dir = Path(common_dir_result.stdout.strip())
-        self._files = (git_dir / "HEAD", git_dir / "index")
-        self._roots = tuple({common_dir / "refs", common_dir / "logs"})
+        # Include the common directory itself so endpoint-neutral creation and
+        # removal of metadata namespaces (for example ``worktrees``) still
+        # changes the parent directory journal and is observable after Muse
+        # exits.  Watching only currently existing children cannot detect a
+        # namespace that is both created and removed during one execution.
+        self._files = (git_dir / "HEAD", git_dir / "index", common_dir)
+        self._roots = tuple({common_dir / "refs", common_dir / "logs", common_dir / "worktrees"})
         self._baseline = self._metadata_snapshot()
         try:
             libc = ctypes.CDLL(None, use_errno=True)
