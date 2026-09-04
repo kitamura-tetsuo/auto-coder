@@ -504,7 +504,7 @@ def retry_pending_stale_review_thread_rollbacks(
 
 @dataclass(frozen=True)
 class ClaimedReviewThread:
-    """One unresolved review thread with an explicit implementation-agent claim."""
+    """One unresolved review thread eligible for independent adjudication."""
 
     thread_id: str = ""
     root_comment_database_id: Optional[int] = None
@@ -513,6 +513,7 @@ class ClaimedReviewThread:
     discussion: str = ""
     is_change_provenance: bool = False
     claim_evidence: str = ""
+    revalidation_after_head_change: bool = False
 
 
 @dataclass(frozen=True)
@@ -600,14 +601,23 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
 
     blocks = []
     for thread in claimed:
+        if thread.is_change_provenance:
+            heading = "Change-provenance clarification"
+            discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"
+        elif thread.revalidation_after_head_change:
+            heading = "Older-head adversarial finding requiring revalidation"
+            discussion_label = "Full thread discussion (chronological; no implementation-agent reply is required for this revalidation):"
+        else:
+            heading = "Claimed-addressed review thread"
+            discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"
         blocks.append(
             "\n".join(
                 [
-                    f"### {'Change-provenance clarification' if thread.is_change_provenance else 'Claimed-addressed review thread'}: {thread.thread_id}",
+                    f"### {heading}: {thread.thread_id}",
                     f"Original review finding (thread root, author: {thread.root_author_login or 'unknown'}):",
                     thread.original_finding or "(empty)",
                     "",
-                    "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):",
+                    discussion_label,
                     thread.discussion or "(empty)",
                 ]
             )
@@ -628,7 +638,7 @@ def _format_resolver_explanation(disposition: ReviewThreadDisposition) -> str:
             RESOLVER_EXPLANATION_MARKER,
             "### Auto-Coder independent validator verification",
             "",
-            'The implementation-agent "addressed" claim on this thread was independently verified against the current PR head.',
+            "This finding was independently verified as addressed against the current PR head.",
             "",
             "**Rationale**",
             "",

@@ -312,6 +312,52 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
     )
 
 
+_ADVERSARIAL_THREAD_HEADINGS = (
+    "### Auto-Coder adversarial finding",
+    "### Auto-Coder material test-oracle gap",
+)
+
+
+def _allow_older_head_adversarial_threads(
+    state: ClaimedReviewThreadGateState,
+    reviewer_login: str,
+) -> ClaimedReviewThreadGateState:
+    """Make older-head validator findings eligible for independent rereview.
+
+    This does not resolve or otherwise acknowledge a finding.  It only moves
+    authentic Auto-Coder reviewer threads from the pre-validation merge gate
+    into the validator's disposition input after the caller has established
+    that the current head has no applicable verdict.
+    """
+    promoted: List[ClaimedReviewThread] = []
+    remaining: List[ReviewThread] = []
+    for thread in state.blocking_unresolved:
+        comments = thread.comments or []
+        root = comments[0] if comments else None
+        if root is None or thread.comments_truncated or root.author_login != reviewer_login or not any(root.body.startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
+            remaining.append(thread)
+            continue
+        promoted.append(
+            ClaimedReviewThread(
+                thread_id=thread.id,
+                root_comment_database_id=root.database_id,
+                root_author_login=root.author_login,
+                original_finding=root.body,
+                discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments),
+                revalidation_after_head_change=True,
+            )
+        )
+    if not promoted:
+        return state
+    return ClaimedReviewThreadGateState(
+        claimed=tuple(state.claimed) + tuple(promoted),
+        unresolved=state.unresolved,
+        blocking_unresolved=tuple(remaining),
+        has_blocking_unresolved=bool(remaining),
+        lookup_error=state.lookup_error,
+    )
+
+
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
     """Read a field from either a REST dictionary or a GhApi object."""
     return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
@@ -2279,6 +2325,26 @@ def _handle_pr_merge(
                     processing_status.error = claimed_thread_state.lookup_error
                     processing_status.outcome = PRProcessingOutcome.FAILED
                 return actions
+            revalidating_older_head_threads = False
+            reviewer_login = ""
+            if claimed_thread_state.has_blocking_unresolved and config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
+                # An authentic validator finding remains a merge blocker, but it
+                # must not prevent validation of a newer head.  Same-head
+                # non-PASS results still take the ordinary blocking/dedup path.
+                head_sha_for_gate = pr_data.get("head", {}).get("sha", "")
+                gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
+                if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
+                    current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
+                    if not current_status_error and current_status is None:
+                        try:
+                            reviewer_login = resolve_reviewer_app_identity(repo_name).login
+                        except Exception as exc:
+                            logger.error(f"Could not authenticate older-head adversarial threads for PR #{pr_number}: {exc}")
+                        else:
+                            claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login)
+                            revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
+                            if revalidating_older_head_threads:
+                                actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
             if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
@@ -2388,6 +2454,8 @@ def _handle_pr_merge(
                                 processing_status.error = post_codex_thread_state.lookup_error
                                 processing_status.outcome = PRProcessingOutcome.FAILED
                             return actions
+                        if revalidating_older_head_threads:
+                            post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, reviewer_login)
                         if post_codex_thread_state.has_blocking_unresolved:
                             actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
                             return actions

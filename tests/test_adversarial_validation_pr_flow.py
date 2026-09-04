@@ -2119,9 +2119,78 @@ class TestMaxAdversarialValidationsGating:
 
 
 class TestClaimedReviewThreadValidationFlow:
-    """End-to-end coverage for issue #1619: a claimed-addressed review thread
-    does not block merge outright; it is carried into a fresh adversarial
-    validation run and resolved only on a valid ADDRESSED disposition."""
+    """Production-flow coverage for independently adjudicated review threads."""
+
+    def test_changed_head_revalidates_authentic_older_finding_without_implementer_reply(self):
+        """The supported GitHub thread/review inputs reach validation even
+        when durable repair deduplication would otherwise leave the thread open."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        old_sha = "5920bb3ec03e9e1472895429f501089dfb82af03"
+        new_sha = "bcd7af5d0cb79a8097ab15b618cefe82a30b9e70"
+        reviewer_login = "auto-coder-reviewer[bot]"
+        thread = ReviewThread(
+            id="thread-old-finding",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body="### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: validate the new head",
+                    author_login=reviewer_login,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[thread])
+        client.get_pr_reviews_strict = MagicMock(
+            return_value=[
+                {
+                    "body": f"{adversarial_validation_comment_marker(old_sha)}\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX",
+                    "user": {"login": reviewer_login},
+                }
+            ]
+        )
+        client.get_pr_comments = MagicMock(return_value=[])
+        client.get_pr_comments_strict = MagicMock(return_value=[])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": new_sha}})
+
+        validation = AdversarialValidationResult(
+            result="INCONCLUSIVE",
+            summary="The old finding is still not addressed",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="thread-old-finding",
+                    status="STILL_VALID",
+                    rationale="The same lifecycle gate remains",
+                    evidence="The production path still returns before validation",
+                )
+            ],
+        )
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": new_sha}}
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=reviewer_login, app_id=1)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=[]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr") as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert any("Allowing adversarial validation of new head" in action for action in actions)
+        run_validation.assert_called_once()
+        assert "thread-old-finding" in run_validation.call_args.kwargs["claimed_review_threads_section"]
+        resolve_threads.assert_called_once()
+        merge_pr.assert_not_called()
+        assert thread.is_resolved is False
 
     @pytest.mark.parametrize(
         ("rationale", "evidence"),
