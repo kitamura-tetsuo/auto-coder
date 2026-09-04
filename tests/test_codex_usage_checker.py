@@ -64,6 +64,31 @@ def test_primary_window_is_used_when_it_is_weekly():
     assert usage.remaining_percent == 80
 
 
+@pytest.mark.parametrize("count", [3, 0])
+def test_reset_credit_count_is_parsed_without_an_extra_request(count):
+    payload = _payload(80, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = {"available_count": count}
+    usage = parse_codex_weekly_usage(payload, now=NOW)
+    assert usage.reset_credits.available_count == count
+    assert usage.reset_credits.status == "available"
+
+
+def test_missing_reset_credit_data_is_unavailable_not_zero():
+    usage = parse_codex_weekly_usage(_payload(80, timedelta(days=2)), now=NOW)
+    assert usage.reset_credits.available_count is None
+    assert usage.reset_credits.status == "missing"
+
+
+@pytest.mark.parametrize("credits", [{"available_count": "1"}, {"available_count": -1}, "bad"])
+def test_malformed_reset_credit_data_does_not_destroy_valid_quota(credits):
+    payload = _payload(80, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = credits
+    usage = parse_codex_weekly_usage(payload, now=NOW)
+    assert usage.remaining_percent == 80
+    assert usage.reset_credits.available_count is None
+    assert usage.reset_credits.status == "malformed"
+
+
 def test_missing_weekly_window_is_rejected():
     with pytest.raises(ValueError, match="weekly"):
         parse_codex_weekly_usage({"rate_limit": {"primary_window": {"used_percent": 10, "limit_window_seconds": 18_000, "reset_at": 1}}}, now=NOW)
@@ -121,6 +146,24 @@ def test_fetch_failure_fails_closed():
         load_credentials.return_value.access_token = "oauth-token"
         load_credentials.return_value.account_id = "account-id"
         assert get_codex_weekly_usage(now=NOW) is None
+
+
+def test_successful_usage_retrieval_preserves_reset_credits_in_one_request():
+    response = MagicMock(status_code=200)
+    payload = _payload(75, timedelta(days=2))
+    payload["rate_limit_reset_credits"] = {"available_count": 2}
+    response.json.return_value = payload
+    with (
+        patch("auto_coder.codex_usage_checker.load_codex_oauth_credentials") as load_credentials,
+        patch("auto_coder.codex_usage_checker.httpx.get", return_value=response) as get,
+    ):
+        load_credentials.return_value.access_token = "oauth-token"
+        load_credentials.return_value.account_id = "account-id"
+        usage = get_codex_weekly_usage(now=NOW)
+
+    assert usage is not None
+    assert usage.reset_credits.available_count == 2
+    get.assert_called_once()
 
 
 def test_malformed_response_fails_closed():

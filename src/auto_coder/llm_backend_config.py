@@ -408,6 +408,7 @@ class LLMBackendConfiguration:
     # General backend settings
     backend_order: List[str] = field(default_factory=list)
     default_backend: str = "codex"
+    quota_selection_strategy: str = "surplus"
     # Individual backend configurations
     backends: Dict[str, BackendConfig] = field(default_factory=dict)
     # Backend configuration for non-editing operations (message generation, etc.)
@@ -513,11 +514,14 @@ class LLMBackendConfiguration:
             if isinstance(val, str) and val == "gemini":
                 return "antigravity"
             if isinstance(val, list):
-                return ["antigravity" if v == "gemini" else v for v in val]
+                return [_translate_backend(v) for v in val]
             return val
 
         # Parse general backend settings
         backend_order = _translate_backend(data.get("backend", {}).get("order", []))
+        quota_selection_strategy = data.get("quota_selection", {}).get("strategy", "surplus")
+        if quota_selection_strategy not in ("surplus", "burst"):
+            raise ValueError("quota_selection.strategy must be 'surplus' or 'burst'")
 
         # Determine default backend - prioritize explicit "default" field, then order[0], then fallback to "codex"
         default_backend = _translate_backend(data.get("backend", {}).get("default"))
@@ -788,6 +792,7 @@ class LLMBackendConfiguration:
         config = cls(
             backend_order=backend_order,
             default_backend=default_backend,
+            quota_selection_strategy=quota_selection_strategy,
             backends=backends,
             backend_for_noedit_order=backend_for_noedit_order,
             backend_for_noedit_default=backend_for_noedit_default,
@@ -889,6 +894,10 @@ class LLMBackendConfiguration:
                 "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
             }
             backend_with_high_score_data = {k: v for k, v in raw_config.items() if v is not None}
+            if self.backend_with_high_score_order:
+                backend_with_high_score_data["order"] = self.backend_with_high_score_order
+        elif self.backend_with_high_score_order:
+            backend_with_high_score_data = {"order": self.backend_with_high_score_order}
 
         # Prepare backend_cloud data
         backend_cloud_data = {}
@@ -928,6 +937,8 @@ class LLMBackendConfiguration:
                 "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
             }
             backend_cloud_data = {k: v for k, v in raw_config.items() if v is not None}
+            if self.backend_cloud_order:
+                backend_cloud_data["order"] = self.backend_cloud_order
         elif self.backend_cloud_order:
             backend_cloud_data = {"order": self.backend_cloud_order}
 
@@ -969,6 +980,8 @@ class LLMBackendConfiguration:
                 "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
             }
             backend_with_high_score_cloud_data = {k: v for k, v in raw_config.items() if v is not None}
+            if self.backend_with_high_score_cloud_order:
+                backend_with_high_score_cloud_data["order"] = self.backend_with_high_score_cloud_order
         elif self.backend_with_high_score_cloud_order:
             backend_with_high_score_cloud_data = {"order": self.backend_with_high_score_cloud_order}
 
@@ -1015,7 +1028,12 @@ class LLMBackendConfiguration:
             if self.backend_adversarial_validation_default:
                 backend_adversarial_validation_data["default"] = self.backend_adversarial_validation_default
 
-        data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend}, "backends": backend_data}
+        data = {
+            "backend": {"order": self.backend_order, "default": self.default_backend},
+            "quota_selection": {"strategy": self.quota_selection_strategy},
+            "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend},
+            "backends": backend_data,
+        }
 
         # Add backend_with_high_score section if configured
         if backend_with_high_score_data:

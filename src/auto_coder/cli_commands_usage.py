@@ -56,6 +56,8 @@ class CodexUsageReport:
     reset_at: Optional[str] = None
     days_until_reset: Optional[int] = None
     minimum_remaining_percent: Optional[float] = None
+    reset_credit_count: Optional[int] = None
+    reset_credit_status: str = "unavailable"
 
 
 @dataclass
@@ -190,6 +192,8 @@ def _get_codex_usage_report() -> CodexUsageReport:
         reset_at=usage.reset_at.isoformat(),
         days_until_reset=usage.days_until_reset,
         minimum_remaining_percent=usage.minimum_remaining_percent,
+        reset_credit_count=usage.reset_credits.available_count,
+        reset_credit_status=usage.reset_credits.status,
     )
 
 
@@ -292,6 +296,8 @@ def _print_codex_report(report: CodexUsageReport, no_color: bool) -> None:
     min_req_str = f"{report.minimum_remaining_percent:.1f}%" if report.minimum_remaining_percent is not None else "N/A"
     allow_str = "Yes" if report.can_start_task else "No"
     click.echo(f"    • Reset Countdown: {days_str} until reset (required minimum: {min_req_str})")
+    credits_str = str(report.reset_credit_count) if report.reset_credit_count is not None else f"Unavailable ({report.reset_credit_status})"
+    click.echo(f"    • Reset Credits: {credits_str}")
     click.echo(f"    • Task Start Allowed: {allow_str}")
 
 

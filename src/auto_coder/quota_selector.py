@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 WEEK_SECONDS: float = 7.0 * 24.0 * 3600.0  # 604,800 seconds
 
-BackendPriorityGroup = AbstractSet[str]
+BackendPriorityGroup = Union[AbstractSet[str], Sequence[str]]
 BackendPriorityCandidate = Union[str, BackendPriorityGroup]
 
 
@@ -32,6 +32,8 @@ class BackendQuotaEvaluation:
     quota_surplus: Optional[float] = None
     reset_at: Optional[datetime] = None
     usage_retrieval_failed: bool = False
+    reset_credit_count: Optional[int] = None
+    reset_credit_available: Optional[bool] = None
     reason: str = ""
 
 
@@ -117,11 +119,14 @@ def evaluate_backend_quota(
                 reason="Codex Cloud credentials or usage data unavailable",
             )
         if not usage.can_start_task:
+            credit_count = usage.reset_credits.available_count
             return BackendQuotaEvaluation(
                 backend_name=backend_name,
                 is_eligible=False,
                 actual_remaining_ratio=usage.remaining_percent / 100.0,
                 reset_at=usage.reset_at,
+                reset_credit_count=credit_count,
+                reset_credit_available=None if credit_count is None else credit_count > 0,
                 reason=f"Codex Cloud quota insufficient ({usage.remaining_percent:.1f}% < {usage.minimum_remaining_percent:.1f}%)",
             )
 
@@ -151,11 +156,14 @@ def evaluate_backend_quota(
             usage = get_codex_weekly_usage(now=current_time)
             if usage is not None:
                 if not usage.can_start_task:
+                    credit_count = usage.reset_credits.available_count
                     return BackendQuotaEvaluation(
                         backend_name=backend_name,
                         is_eligible=False,
                         actual_remaining_ratio=usage.remaining_percent / 100.0,
                         reset_at=usage.reset_at,
+                        reset_credit_count=credit_count,
+                        reset_credit_available=None if credit_count is None else credit_count > 0,
                         reason=f"Codex quota insufficient ({usage.remaining_percent:.1f}% < {usage.minimum_remaining_percent:.1f}%)",
                     )
                 actual_ratio = usage.remaining_percent / 100.0
@@ -277,7 +285,7 @@ def rank_high_score_backends_by_quota(
     consumption_curve: Optional[Callable[[float, float], float]] = None,
     quota_period_seconds: float = WEEK_SECONDS,
 ) -> List[str]:
-    """Filter and rank high-score backends without crossing priority boundaries.
+    """Filter and rank backends using the configured quota selection strategy.
 
     Evaluates each candidate's weekly quota surplus:
         planned_remaining_ratio = time_until_reset / quota_period
@@ -301,6 +309,22 @@ def rank_high_score_backends_by_quota(
     Returns:
         List of ranked eligible backend names.
     """
+    configured_strategy = getattr(config, "quota_selection_strategy", None) if config is not None else None
+    strategy = configured_strategy if isinstance(configured_strategy, str) else "surplus"
+    if strategy not in ("surplus", "burst"):
+        raise ValueError(f"Unsupported quota selection strategy: {strategy}")
+    return _rank_backends(candidate_backends, config, now, consumption_curve, quota_period_seconds, strategy)
+
+
+def _rank_backends(
+    candidate_backends: Union[Sequence[BackendPriorityCandidate], BackendPriorityGroup],
+    config: Optional[object],
+    now: Optional[datetime],
+    consumption_curve: Optional[Callable[[float, float], float]],
+    quota_period_seconds: float,
+    strategy: str,
+) -> List[str]:
+    """Rank equal-priority groups while retaining ordered boundaries."""
     if not candidate_backends:
         return []
 
@@ -310,7 +334,7 @@ def rank_high_score_backends_by_quota(
     else:
         priority_groups = []
         for candidate in candidate_backends:
-            if isinstance(candidate, (set, frozenset)):
+            if isinstance(candidate, (set, frozenset, list, tuple)):
                 priority_groups.append(candidate)
             else:
                 assert isinstance(candidate, str)
@@ -338,19 +362,29 @@ def rank_high_score_backends_by_quota(
     #    sorted by quota_surplus descending (-surplus)
     # 2. Healthy unmetered backends come next (tier: 1), maintaining stable original order
     # 3. Backends whose usage could not be retrieved come last (tier: 2), maintaining stable original order
-    def _sort_key(eval_item: BackendQuotaEvaluation) -> tuple:
+    def _surplus_sort_key(eval_item: BackendQuotaEvaluation) -> tuple:
         if eval_item.usage_retrieval_failed:
             return (2, 0.0)
         if eval_item.quota_surplus is not None:
             return (0, -eval_item.quota_surplus)
         return (1, 0.0)
 
+    def _burst_sort_key(eval_item: BackendQuotaEvaluation) -> tuple:
+        if eval_item.usage_retrieval_failed:
+            return (2, float("inf"), eval_item.backend_name)
+        if eval_item.actual_remaining_ratio is not None:
+            reset_seconds = eval_item.time_until_reset_seconds
+            return (0, reset_seconds if reset_seconds is not None else float("inf"), eval_item.backend_name)
+        return (1, float("inf"), eval_item.backend_name)
+
+    sort_key = _burst_sort_key if strategy == "burst" else _surplus_sort_key
+
     evaluations_by_name = {evaluation.backend_name: evaluation for evaluation in eligible_evals}
     ranked_evals = []
     for group in priority_groups:
         group_evaluations = [evaluations_by_name[name] for name in group if name in evaluations_by_name]
-        if isinstance(group, (set, frozenset)):
-            group_evaluations.sort(key=_sort_key)
+        if isinstance(group, (set, frozenset, list)):
+            group_evaluations.sort(key=sort_key)
         ranked_evals.extend(group_evaluations)
     ranked_names = [e.backend_name for e in ranked_evals]
 
@@ -363,6 +397,12 @@ def rank_high_score_backends_by_quota(
         else:
             log_summaries.append(f"{e.backend_name} (unmetered)")
 
-    logger.info(f"High-score backend quota ranking: {', '.join(log_summaries)} -> Primary: '{ranked_names[0]}'")
+    ineligible_credit_summaries = []
+    for evaluation in evaluations:
+        if not evaluation.is_eligible and evaluation.reset_credit_available is not None:
+            credit_state = "available" if evaluation.reset_credit_available else "none"
+            ineligible_credit_summaries.append(f"{evaluation.backend_name} (exhausted, reset credit {credit_state})")
+    details = log_summaries + ineligible_credit_summaries
+    logger.info(f"High-score backend quota ranking ({strategy}): {', '.join(details)} -> Primary: '{ranked_names[0]}'")
 
     return ranked_names

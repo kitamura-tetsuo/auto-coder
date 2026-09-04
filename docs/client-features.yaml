@@ -1081,10 +1081,10 @@ Recent configuration schema changes that require migration:
         - "Does not wait for Jules on CI failure (`_should_skip_waiting_for_jules` returns False)."
         - "Proceeds directly to branch checkout and local/backend automated fixing."
 
-## Quota Surplus-Based High-Score Backend Selection
+## Configurable Quota-Based High-Score Backend Selection
 
   quota_surplus_high_score_selection:
-    description: "Selects candidate backends for backend_with_high_score and backend_with_high_score_cloud based on weekly quota surplus rather than nearest reset time."
+    description: "Selects candidates using the configured surplus (default) or burst quota strategy."
     implementation: |
       evaluate_backend_quota, rank_high_score_backends_by_quota, linear_planned_remaining_ratio,
       calculate_quota_surplus in src/auto_coder/quota_selector.py,
@@ -1097,6 +1097,8 @@ Recent configuration schema changes that require migration:
       - "Preserves existing capability and availability checks; ineligible backends (e.g. usage limit reached, insufficient minimum remaining percentage) are filtered out."
       - "Unmetered backends or backends without weekly quota metrics retain stable fallback ordering."
       - "Backends whose usage metrics cannot be retrieved (e.g. rate-limited token refresh or API errors) have their priority lowered below measured and unmetered backends."
+      - "Configure `[quota_selection] strategy = \"burst\"` to rank usable subscription backends in an explicitly equal-priority group by earliest reset; ordered priority boundaries are never crossed. Nested order arrays declare an equal-priority group, for example `order = [[\"codex-cloud\", \"claude-routine\"], \"muse\"]`."
+      - "Codex usage parsing and `usage-amount` expose the reset-credit count from the existing usage response. Missing, malformed, or failed usage remains unavailable rather than being reported as zero, and credits are never consumed automatically."
 
 ## Early Loop Resume on PR Merge/Close & Jules Enumeration Skip
 
