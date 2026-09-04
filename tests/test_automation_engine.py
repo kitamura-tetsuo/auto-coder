@@ -220,6 +220,34 @@ class TestAutomationEngine:
         assert slots.active_owners() == ()
         assert slots.reserve(ImplementationOwner("issue", 200)) is True
 
+    def test_urgent_label_reaches_durable_emergency_admission_boundary(self, tmp_path):
+        """Fetched Issue labels must preserve urgency through engine admission."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, _repo_name, _number):
+                return "issue"
+
+            def get_issue(self, _repo_name, number):
+                return {"number": number, "state": "open"}
+
+            def get_issue_details(self, issue):
+                return issue
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        assert slots.start_execution(ImplementationOwner("issue", 1)) is not None
+        engine.implementation_slots = slots
+        candidate = Candidate(type="issue", data={"number": 2, "title": "Emergency", "labels": ["urgent"]}, priority=3)
+        engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=2, title="Emergency", success=True))
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        engine._process_single_candidate_reserved.assert_called_once()
+        state = json.loads((tmp_path / "slots.json").read_text(encoding="utf-8"))
+        assert state["issue:2"]["emergency"] is True
+        assert slots.start_execution(ImplementationOwner("issue", 3), allow_urgent_emergency=True) is None
+
     def test_first_branch_linked_pr_discovery_protects_existing_owner_before_reconciliation(self, tmp_path):
         """A newly discovered PR must record membership before its Issue can be released."""
 

@@ -134,6 +134,23 @@ class ImplementationSlotRepository:
             os.fsync(state_file.fileno())
         os.replace(temporary, self.storage_path)
 
+    @staticmethod
+    def _capacity_usage(owners: Dict[str, Dict[str, object]]) -> tuple[int, bool]:
+        """Return normal slot usage and whether the durable emergency lane is held."""
+        normal = 0
+        emergency_in_use = False
+        for record in owners.values():
+            emergency = record.get("emergency", False)
+            if not isinstance(emergency, bool):
+                raise ImplementationSlotUnavailable("Cannot safely parse implementation slot capacity class")
+            if emergency:
+                if emergency_in_use:
+                    raise ImplementationSlotUnavailable("Implementation slot state contains multiple emergency owners")
+                emergency_in_use = True
+            else:
+                normal += 1
+        return normal, emergency_in_use
+
     def reserve(self, owner: ImplementationOwner, implementation_pr: Optional[int] = None) -> bool:
         """Reserve *owner* and durably record a PR known to belong to it."""
         if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
@@ -150,7 +167,8 @@ class ImplementationSlotRepository:
                         known_prs.append(implementation_pr)
                         self._write(owners)
                 return True
-            if len(owners) >= self.max_implementations:
+            normal_usage, _ = self._capacity_usage(owners)
+            if normal_usage >= self.max_implementations:
                 return False
             owners[owner.key] = {
                 "kind": owner.kind,
@@ -165,7 +183,8 @@ class ImplementationSlotRepository:
         """Atomically reserve *owner* only when it is not already active."""
         with self._state_lock():
             owners = self._read()
-            if owner.key in owners or len(owners) >= self.max_implementations:
+            normal_usage, _ = self._capacity_usage(owners)
+            if owner.key in owners or normal_usage >= self.max_implementations:
                 return False
             owners[owner.key] = {
                 "kind": owner.kind,
@@ -183,6 +202,7 @@ class ImplementationSlotRepository:
         implementation_pr: Optional[int] = None,
         bypass_capacity: bool = False,
         bypass_active_execution: bool = False,
+        allow_urgent_emergency: bool = False,
     ) -> Optional[str]:
         """Atomically admit and durably identify one mutating execution.
 
@@ -197,14 +217,19 @@ class ImplementationSlotRepository:
             owners = self._read()
             record = owners.get(owner.key)
             if record is None:
-                if len(owners) >= self.max_implementations and not bypass_capacity:
-                    return None
+                normal_usage, emergency_in_use = self._capacity_usage(owners)
+                use_emergency = False
+                if normal_usage >= self.max_implementations and not bypass_capacity:
+                    if not allow_urgent_emergency or emergency_in_use:
+                        return None
+                    use_emergency = True
                 record = {
                     "kind": owner.kind,
                     "number": owner.number,
                     "implementation_prs": [],
                     "provider_sessions": [],
                     "executions": [],
+                    "emergency": use_emergency,
                 }
                 owners[owner.key] = record
             executions = record.setdefault("executions", [])

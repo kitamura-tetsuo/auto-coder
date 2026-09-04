@@ -1134,6 +1134,8 @@ class AutomationEngine:
             return result
 
         implementation_pr = item_number if candidate.type == "pr" and owner.kind != "pr" else None
+        labels = candidate.data.get("labels", [])
+        urgent_issue = candidate.type == "issue" and isinstance(labels, list) and "urgent" in labels
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
@@ -1147,10 +1149,15 @@ class AutomationEngine:
                     implementation_pr=implementation_pr,
                     bypass_capacity=explicit_only,
                     bypass_active_execution=explicit_only and force,
+                    allow_urgent_emergency=urgent_issue,
                 )
             if execution_id is None and not explicit_only:
                 slots.reconcile(self.github)
-                execution_id = slots.start_execution(owner, implementation_pr=implementation_pr)
+                execution_id = slots.start_execution(
+                    owner,
+                    implementation_pr=implementation_pr,
+                    allow_urgent_emergency=urgent_issue,
+                )
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
             result.actions = [f"Deferred - {reason} ({owner.key})"]

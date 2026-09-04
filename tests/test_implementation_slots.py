@@ -394,6 +394,45 @@ def test_forced_execution_has_distinct_identity_and_scoped_cleanup(tmp_path):
     assert repository(tmp_path).active_execution_ids(owner) == (execution_a,)
 
 
+def test_urgent_emergency_is_atomic_durable_and_does_not_consume_normal_capacity(tmp_path):
+    slots = repository(tmp_path, limit=3)
+    normal_owners = [ImplementationOwner("issue", number) for number in (1, 2, 3)]
+    for owner in normal_owners:
+        assert slots.start_execution(owner) is not None
+
+    urgent_owners = [ImplementationOwner("issue", 10), ImplementationOwner("issue", 11)]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda owner: repository(tmp_path, limit=3).start_execution(owner, allow_urgent_emergency=True), urgent_owners))
+
+    assert sum(result is not None for result in results) == 1
+    restarted = repository(tmp_path, limit=3)
+    assert len(restarted.active_owners()) == 4
+    assert restarted.start_execution(ImplementationOwner("issue", 12), allow_urgent_emergency=True) is None
+    assert restarted.start_execution(ImplementationOwner("issue", 13)) is None
+
+
+def test_emergency_owner_leaves_normal_capacity_available_and_allowance_is_reusable(tmp_path):
+    slots = repository(tmp_path, limit=3)
+    normal_owners = [ImplementationOwner("issue", number) for number in (1, 2, 3)]
+    for owner in normal_owners:
+        assert slots.start_execution(owner) is not None
+    emergency = ImplementationOwner("issue", 10)
+    assert slots.start_execution(emergency, allow_urgent_emergency=True) is not None
+    slots.release(normal_owners[2])
+    assert slots.start_execution(ImplementationOwner("issue", 4)) is not None
+    assert slots.start_execution(ImplementationOwner("issue", 5)) is None
+
+    slots.release(emergency)
+    assert slots.start_execution(ImplementationOwner("issue", 12), allow_urgent_emergency=True) is not None
+
+
+def test_urgent_emergency_does_not_bypass_duplicate_execution_guard(tmp_path):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 1)
+    assert slots.start_execution(owner) is not None
+    assert slots.start_execution(owner, allow_urgent_emergency=True) is None
+
+
 def test_reconcile_does_not_release_owner_with_an_active_execution(tmp_path):
     slots = repository(tmp_path)
     owner = ImplementationOwner("issue", 100)
