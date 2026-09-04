@@ -294,6 +294,25 @@ def test_noedit_directory_mode_change_is_rejected_and_restored(tmp_path: Path, m
     assert _git(repo, "status", "--porcelain") == ""
 
 
+def test_noedit_deleted_empty_directory_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    scratch = repo / "scratch"
+    scratch.mkdir(mode=0o755)
+    script = _muse_script(tmp_path, "rmdir scratch")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    manager = _manager(config)
+    manager._is_noedit = True
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        manager._run_llm_cli("review")
+
+    assert scratch.is_dir()
+    assert list(scratch.iterdir()) == []
+    assert stat.S_IMODE(scratch.stat().st_mode) == 0o755
+
+
 def test_noedit_ignored_file_mutation_is_rejected_and_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     (repo / ".gitignore").write_text("secrets.cache\n")

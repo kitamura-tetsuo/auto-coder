@@ -310,9 +310,13 @@ class MuseClient(LLMClientBase):
             path = Path.cwd() / workspace_mode.path
             if path.exists() and not path.is_symlink():
                 path.chmod(workspace_mode.mode)
+        for directory_mode in state.directory_modes:
+            path = Path.cwd() / directory_mode.path
+            if not path.exists():
+                path.mkdir(parents=True)
         for directory_mode in reversed(state.directory_modes):
             path = Path.cwd() / directory_mode.path
-            if path.is_dir() and not path.is_symlink():
+            if not path.is_symlink():
                 path.chmod(directory_mode.mode)
 
     @staticmethod
