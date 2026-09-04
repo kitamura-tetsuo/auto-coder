@@ -4451,6 +4451,15 @@ def _record_pr_delivered_review_feedback(github_client: Optional[Any], repo_name
     return True
 
 
+def _reconcile_codex_review_feedback(client: Any, provider: str, task_id: str, feedback: Sequence[str]) -> set[str]:
+    """Return stable feedback identities confirmed by Codex reconciliation."""
+    if provider != "codex-cloud" or not hasattr(client, "get_followup_delivery"):
+        return set()
+    from .codex_wham_client import FollowUpDeliveryOutcome
+
+    return {identity for identity in feedback if client.get_followup_delivery(task_id, identity) is FollowUpDeliveryOutcome.DELIVERED}
+
+
 def _resolve_cloud_task_origin(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -4526,6 +4535,11 @@ def _delegate_cloud_review_thread_repair(
         try:
             delivered = _load_delivered_review_feedback(state_path)
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _thread, _comment, identity in findings]))
+            reconciled = _reconcile_codex_review_feedback(client, provider, task_id, [identity for _thread, _comment, identity in findings if identity not in delivered])
+            if reconciled:
+                delivered.update(reconciled)
+                _record_delivered_review_feedback(state_path, delivered)
+                _record_pr_delivered_review_feedback(github_client, repo_name, pr_number, sorted(reconciled), f"🤖 Auto-Coder: I reconciled previously submitted review feedback with the existing {provider} task.")
             indeterminate = _load_pending_review_feedback(state_path) - delivered
         except (OSError, ValueError) as exc:
             logger.warning(f"Could not read cloud review repair state: {exc}")
@@ -4573,7 +4587,10 @@ def _delegate_cloud_review_thread_repair(
     details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
     prompt = build_existing_pr_repair_prompt(target, details)
     try:
-        accepted = client.send_followup(task_id, prompt)
+        if provider == "codex-cloud":
+            accepted = client.send_followup(task_id, prompt, tuple(sorted(pending_identities)))
+        else:
+            accepted = client.send_followup(task_id, prompt)
     except Exception as exc:
         logger.warning(f"Cloud review repair delegation failed for PR #{pr_number}: {exc}")
         with _cloud_review_delivery_lock:
@@ -4876,6 +4893,11 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, [identity for _body, identity in feedback_items]))
+            reconciled = _reconcile_codex_review_feedback(client, provider, task_id, [identity for _body, identity in feedback_items if identity not in delivered])
+            if reconciled:
+                delivered.update(reconciled)
+                _record_delivered_review_feedback(state_path, delivered)
+                _record_pr_delivered_review_feedback(github_client, repo_name, pr_number, sorted(reconciled), f"🤖 Auto-Coder: I reconciled previously submitted adversarial feedback with the existing {provider} task.")
         pending_feedback = [(body, identity) for body, identity in feedback_items if identity not in delivered]
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
@@ -4898,7 +4920,10 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     prompt = build_existing_pr_repair_prompt(target, details)
 
     try:
-        accepted = client.send_followup(task_id, prompt)
+        if provider == "codex-cloud":
+            accepted = client.send_followup(task_id, prompt, tuple(sorted(identity for _body, identity in pending_feedback)))
+        else:
+            accepted = client.send_followup(task_id, prompt)
     except Exception as e:
         logger.error(f"Error sending adversarial feedback to {provider} for PR #{pr_number}: {e}")
         return [f"Adversarial feedback was not delivered to {provider} for PR #{pr_number}: {e}"]

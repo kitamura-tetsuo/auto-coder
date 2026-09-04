@@ -16,6 +16,8 @@ from auto_coder.adversarial_validator import (
 )
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
+from auto_coder.codex_cloud_client import CodexCloudClient
+from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
@@ -583,6 +585,46 @@ class TestAdversarialValidationCodexFeedback:
         cloud_client.send_followup.assert_called_once()
         assert "already requested" in actions[0]
 
+    def test_ambiguous_wham_delivery_is_reconciled_into_normal_pr_receipt(self, tmp_path):
+        """The production adversarial path must not replay a 429-ambiguous POST."""
+        finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
+        thread = ReviewThread(id="PRRT_adversarial", comments=[ReviewThreadComment(database_id=301, body=finding)])
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [thread]
+        pr_data = {
+            "number": 100,
+            "body": "https://chatgpt.com/codex/tasks/task_e_abc123",
+            "head": {"ref": "codex/issue-99", "sha": "head123"},
+            "base": {"ref": "main"},
+        }
+        config = MagicMock(quota_selection_strategy="surplus")
+        config.get_backend_config.return_value = None
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
+            cloud_client = CodexCloudClient(repo_name="owner/repo")
+        wham = MagicMock()
+        wham.resolve_latest_assistant_turn.return_value = "task_e_abc123~assttrn_1"
+        wham.reconcile_follow_up.return_value = True
+        wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, 429)
+        cloud_client.wham_client = wham
+
+        with (
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "review.json"),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=cloud_client),
+        ):
+            first = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+            pr_data["head"] = {"ref": "codex/issue-99", "sha": "head456"}
+            second = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head456", finding, github, [finding])
+
+        assert "could not receive adversarial feedback" in first[0]
+        assert "all actionable feedback was already delivered" in second[0]
+        wham.send_follow_up.assert_called_once()
+        github.add_comment_to_pr.assert_called_once()
+        assert "auto-coder-cloud-review-feedback:v1:" in github.add_comment_to_pr.call_args.args[2]
+        state = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
+        assert len(state["delivered_feedback"]) == 1
+
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
         thread = ReviewThread(
@@ -681,7 +723,7 @@ class TestAdversarialValidationCodexFeedback:
             )
 
         cloud_client.send_followup.assert_called_once()
-        task_id, prompt = cloud_client.send_followup.call_args.args
+        task_id, prompt = cloud_client.send_followup.call_args.args[:2]
         assert task_id == "task_e_abc123"
         assert "PR #100" in prompt
         assert "head123" in prompt

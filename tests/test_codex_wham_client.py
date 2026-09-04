@@ -2,6 +2,7 @@
 Unit tests for CodexWhamClient and internal WHAM backend API integration.
 """
 
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -10,6 +11,7 @@ import pytest
 from auto_coder.codex_usage_checker import CodexOAuthCredentials
 from auto_coder.codex_wham_client import (
     CodexWhamClient,
+    FollowUpDeliveryOutcome,
     WhamFollowUpPayload,
     WhamTask,
     WhamTurn,
@@ -223,6 +225,25 @@ class TestCodexWhamClient:
             turn_id = client.resolve_latest_assistant_turn("task_e_900")
             assert turn_id == "task_e_900~assttrn_99"
 
+    def test_reconcile_follow_up_matches_exposed_user_message(self, client):
+        prompt = "Fix stable feedback identity 123"
+        turns = [
+            WhamTurn(id="task_e_900~assttrn_1", role="assistant"),
+            WhamTurn(id="task_e_900~usrtrn_2", role="user", raw_data={"content": [{"text": prompt}]}),
+            WhamTurn(id="task_e_900~assttrn_2", role="assistant"),
+        ]
+        with patch.object(client, "get_task_turns", return_value=turns):
+            assert client.reconcile_follow_up("task_e_900", turns[0].id, hashlib.sha256(prompt.encode("utf-8")).hexdigest()) is True
+
+    def test_reconcile_follow_up_does_not_accept_unrelated_user_advancement(self, client):
+        turns = [
+            WhamTurn(id="task_e_900~assttrn_1", role="assistant"),
+            WhamTurn(id="task_e_900~usrtrn_2", role="user", raw_data={"content": [{"text": "different work"}]}),
+            WhamTurn(id="task_e_900~assttrn_2", role="assistant"),
+        ]
+        with patch.object(client, "get_task_turns", return_value=turns):
+            assert client.reconcile_follow_up("task_e_900", turns[0].id, hashlib.sha256(b"expected work").hexdigest()) is None
+
     def test_send_follow_up_success(self, client):
         """Verify send_follow_up posts payload and returns True on HTTP 200/201."""
         mock_response = MagicMock(status_code=200)
@@ -234,7 +255,7 @@ class TestCodexWhamClient:
                 prompt="Continue working on PR",
                 run_environment_in_qa_mode=False,
             )
-            assert success is True
+            assert success.outcome is FollowUpDeliveryOutcome.DELIVERED
             mock_post.assert_called_once()
             call_url = mock_post.call_args[0][0]
             call_json = mock_post.call_args[1]["json"]
@@ -249,17 +270,32 @@ class TestCodexWhamClient:
             mock_response = MagicMock(status_code=code)
             with patch("httpx.post", return_value=mock_response):
                 success = client.send_follow_up("task_e_abc", "turn_1", "continue")
-                assert success is False
+                assert success.outcome is FollowUpDeliveryOutcome.NOT_DELIVERED
 
     def test_send_follow_up_server_error(self, client):
-        """Verify send_follow_up returns False on HTTP 500."""
+        """Verify HTTP 500 has an indeterminate delivery result."""
         mock_response = MagicMock(status_code=500)
         with patch("httpx.post", return_value=mock_response):
             success = client.send_follow_up("task_e_abc", "turn_1", "continue")
-            assert success is False
+            assert success.outcome is FollowUpDeliveryOutcome.INDETERMINATE
+
+    def test_send_follow_up_rate_limit_is_indeterminate(self, client):
+        """A 429 response does not prove that WHAM rejected the POST."""
+        with patch("httpx.post", return_value=MagicMock(status_code=429)):
+            result = client.send_follow_up("task_e_abc", "turn_1", "continue")
+
+        assert result.outcome is FollowUpDeliveryOutcome.INDETERMINATE
+        assert result.status_code == 429
+
+    def test_send_follow_up_timeout_is_indeterminate(self, client):
+        """A timeout may happen after WHAM accepted the request."""
+        with patch("httpx.post", side_effect=httpx.ReadTimeout("late response")):
+            result = client.send_follow_up("task_e_abc", "turn_1", "continue")
+
+        assert result.outcome is FollowUpDeliveryOutcome.INDETERMINATE
 
     def test_send_follow_up_network_error(self, client):
         """Verify send_follow_up handles network/HTTP exceptions safely."""
         with patch("httpx.post", side_effect=httpx.ConnectTimeout("Timeout")):
             success = client.send_follow_up("task_e_abc", "turn_1", "continue")
-            assert success is False
+            assert success.outcome is FollowUpDeliveryOutcome.INDETERMINATE
