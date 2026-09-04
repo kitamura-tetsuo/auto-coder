@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, TypedDict, Union, cast
 
 from dateutil import parser
 
-from auto_coder.util.gh_cache import get_ghapi_client, resolve_authoritative_item_type
+from auto_coder.util.gh_cache import get_ghapi_client, is_implementation_ready, resolve_authoritative_item_type
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
@@ -743,6 +743,15 @@ def handle_stale_jules_issue_sessions(
                 continue
             if authoritative_type != "issue":
                 logger.warning(f"Skipping stale Jules session {session_id}: GitHub identifies #{issue_number} as {authoritative_type}, not an issue")
+                continue
+
+            try:
+                current_issue = github_client.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            except Exception as e:
+                logger.warning(f"Skipping stale Jules session {session_id}: could not read authoritative readiness for issue #{issue_number}: {e}")
+                continue
+            if not isinstance(current_issue, dict) or current_issue.get("number") != issue_number or "pull_request" in current_issue or not is_implementation_ready(current_issue):
+                logger.info(f"Skipping stale Jules session {session_id}: issue #{issue_number} is not implementation-ready")
                 continue
 
             issue = github_client.get_issue(repo_name, issue_number)

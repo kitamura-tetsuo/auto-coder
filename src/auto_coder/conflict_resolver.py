@@ -626,7 +626,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
                                     from .automation_engine import AutomationEngine
 
                                     engine = AutomationEngine(github_client, config=config)
-                                    actions = engine._process_unlocked_issue(repo_name, issue_number, config, jules_mode=True)
+                                    actions = engine._process_unlocked_issue(repo_name, issue_number, config, jules_mode=True, advance_attempt=True)
                                     for action in actions:
                                         logger.info(f"Issue #{issue_number}: {action}")
                                 else:

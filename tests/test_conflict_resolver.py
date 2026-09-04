@@ -175,7 +175,9 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as mock_check_mergeability,
         patch("src.auto_coder.conflict_resolver._extract_session_id_from_pr_body") as mock_extract_session_id,
         patch("src.auto_coder.cloud_manager.CloudManager") as mock_cloud_manager_class,
-        patch("src.auto_coder.automation_engine.AutomationEngine._process_unlocked_issue", return_value=["dispatched"]) as mock_process_issue,
+        patch("src.auto_coder.automation_engine.LabelManager") as mock_label_manager,
+        patch("src.auto_coder.attempt_manager.increment_attempt") as mock_increment_attempt,
+        patch("src.auto_coder.issue_processor._process_issue_cloud_backend", return_value=["dispatched"]) as mock_process_issue,
     ):
         mock_check_mergeability.return_value = False
         mock_extract_session_id.return_value = "session_xyz"
@@ -200,7 +202,22 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
             "number": 123,
             "title": "Test Title",
             "body": "Test Body",
+            "state": "open",
+            "labels": ["implementation-ready", "@auto-coder"],
         }
+        mock_client.get_item_type_strict.return_value = "issue"
+        mock_client.get_issue_dispatch_snapshot_strict.return_value = {
+            "number": 123,
+            "body": "Test Body",
+            "state": "open",
+            "labels": [{"name": "implementation-ready"}, {"name": "@auto-coder"}],
+        }
+        mock_client.get_all_sub_issues.return_value = []
+        mock_label_manager.return_value.__enter__.return_value = MagicMock()
+
+        dispatch_order = []
+        mock_increment_attempt.side_effect = lambda *_args: dispatch_order.append("increment") or 2
+        mock_process_issue.side_effect = lambda *_args, **_kwargs: dispatch_order.append("dispatch") or ["dispatched"]
 
         # Sequence: reset, clean, abort, fetch pr, checkout, fetch base, rev-parse, merge (fails)
         mock_cmd.run_command.side_effect = [
@@ -229,7 +246,9 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         assert ok is False
         mock_close.assert_called_once_with("test/repo", 1253)
         mock_archive.assert_called_once_with("test/repo", 1253, "Session ID: session_xyz")
-        mock_process_issue.assert_called_once_with("test/repo", 123, config, jules_mode=True)
+        mock_increment_attempt.assert_called_once_with("test/repo", 123)
+        mock_process_issue.assert_called_once()
+        assert dispatch_order == ["increment", "dispatch"]
 
 
 def test_perform_base_merge_skips_conflict_resolution_for_dependabot_pr():

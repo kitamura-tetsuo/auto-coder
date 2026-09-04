@@ -20,6 +20,7 @@ from hishel.httpx import SyncCacheClient
 from ..logger_config import get_logger
 
 logger = get_logger(__name__)
+IMPLEMENTATION_READY_LABEL = "implementation-ready"
 
 
 @dataclass
@@ -310,6 +311,14 @@ def resolve_authoritative_item_type(github_client: Any, repo_name: str, item_num
     if item_type not in ("issue", "pr"):
         raise ValueError(f"GitHub item type lookup was ambiguous for {repo_name}#{item_number}")
     return item_type
+
+
+def is_implementation_ready(issue_snapshot: Dict[str, Any]) -> bool:
+    """Return whether an authoritative Issue snapshot carries the readiness label."""
+    labels = issue_snapshot.get("labels", [])
+    if not isinstance(labels, list):
+        return False
+    return any(str(label.get("name", "") if isinstance(label, dict) else label).strip().lower() == IMPLEMENTATION_READY_LABEL for label in labels if isinstance(label, (dict, str)))
 
 
 class GitHubClient:

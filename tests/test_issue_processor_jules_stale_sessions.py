@@ -35,6 +35,11 @@ def _session(session_id: str, age_hours: float, outputs=None) -> dict:
 def _github_client(issue_number: int = 42, state: str = "open", has_linked_pr: bool = False) -> MagicMock:
     client = MagicMock()
     client.get_item_type_strict.return_value = "issue"
+    client.get_issue_dispatch_snapshot_strict.return_value = {
+        "number": issue_number,
+        "state": state,
+        "labels": [{"name": "implementation-ready"}, {"name": "@auto-coder"}],
+    }
     client.get_issue.return_value = {"number": issue_number, "title": "Broken thing", "state": state}
     client.get_issue_details.return_value = {
         "number": issue_number,
@@ -149,6 +154,31 @@ class TestHandleStaleJulesIssueSessions:
         comment = github_client.add_comment_to_issue.call_args.args[2]
         assert "12 hours" in comment
         assert "sess-1" in comment
+
+    def test_unready_stale_session_retains_existing_implementation_without_handoff(self, config):
+        """Timeout handling must not mutate ownership or dispatch replacement work."""
+        github_client = _github_client()
+        github_client.get_issue_dispatch_snapshot_strict.return_value = {
+            "number": 42,
+            "state": "open",
+            "labels": [{"name": "@auto-coder"}],
+        }
+
+        result, jules_client, take_actions, mark_stopped, increment = self._run(
+            [_session("sess-1", age_hours=13)],
+            github_client,
+            config,
+        )
+
+        github_client.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 42)
+        jules_client.send_message.assert_not_called()
+        mark_stopped.assert_not_called()
+        increment.assert_not_called()
+        take_actions.assert_not_called()
+        github_client.add_comment_to_issue.assert_not_called()
+        github_client.remove_labels.assert_not_called()
+        assert result.issue_numbers == []
+        assert result.actions == []
 
     def test_session_within_timeout_is_left_alone(self, config):
         """A session that is still within the timeout keeps working on the issue."""
