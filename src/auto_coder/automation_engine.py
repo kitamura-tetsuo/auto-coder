@@ -865,10 +865,15 @@ class AutomationEngine:
             max_pr_priority = max([candidate.priority for candidate in candidates]) if candidates else 0
             should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < threshold and max_pr_priority < 2)
 
-            if should_collect_issues:
+            # Urgent Issues use a narrow REST label query when the ordinary scan is
+            # suppressed. This keeps emergency work discoverable without paying for
+            # (or queueing) a complete ordinary-Issue scan on every PR-heavy cycle.
+            issue_labels = None if should_collect_issues else ["urgent"]
+            if should_collect_issues or issue_labels:
                 # Collect issue candidates
-                # Use optimized GraphQL query to fetch all issue details in one go, avoiding N+1 API calls
-                all_issues = self.github.get_open_issues_json(repo_name)
+                # Use the REST-backed collector so ordinary and narrow scans share
+                # identical normalization and eligibility safeguards.
+                all_issues = self.github.get_open_issues_json(repo_name, labels=issue_labels) if issue_labels else self.github.get_open_issues_json(repo_name)
 
                 # Update snapshot
                 self.open_issues_snapshot = all_issues
@@ -1073,6 +1078,7 @@ class AutomationEngine:
         jules_mode: bool = False,
         explicit_only: bool = False,
         force: bool = False,
+        continue_execution: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1085,6 +1091,8 @@ class AutomationEngine:
             candidate: Target candidate to process
             config: AutomationConfig instance
             jules_mode: Whether to use Jules mode for processing (default: False)
+            continue_execution: Whether this is an internal lifecycle transition that
+                must continue the caller's execution for the same logical owner.
 
         Returns:
             Processing result
@@ -1141,7 +1149,7 @@ class AutomationEngine:
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
         with repository_dispatch_authority(repo_name):
-            execution_id = slots.current_execution_id(owner)
+            execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             if not inherited_execution:
                 execution_id = slots.start_execution(
@@ -1417,7 +1425,13 @@ class AutomationEngine:
             return [f"Failed to start a new attempt for issue #{issue_number}"]
 
         logger.info(f"Starting a new attempt for issue #{issue_number}")
-        issue_result = self._process_single_candidate_unified(repo_name, issue_candidate, config, jules_mode=jules_mode)
+        issue_result = self._process_single_candidate_unified(
+            repo_name,
+            issue_candidate,
+            config,
+            jules_mode=jules_mode,
+            continue_execution=True,
+        )
         actions = [f"Started a new attempt for issue #{issue_number}"] + list(issue_result.actions)
         if issue_result.error:
             actions.append(f"Error processing issue #{issue_number}: {issue_result.error}")

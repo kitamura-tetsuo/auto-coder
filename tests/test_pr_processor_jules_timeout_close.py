@@ -414,9 +414,10 @@ class TestUnlockAndRetryLinkedIssue:
 
     @patch("src.auto_coder.pr_processor.increment_attempt")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
-    def test_single_candidate_starts_new_attempt_on_issue(self, mock_check_status, mock_increment):
+    def test_single_candidate_starts_new_attempt_on_issue(self, mock_check_status, mock_increment, tmp_path):
         from src.auto_coder.automation_config import Candidate
         from src.auto_coder.automation_engine import AutomationEngine
+        from src.auto_coder.implementation_slots import ImplementationSlotRepository
 
         github_client = Mock()
         github_client.get_pr_review_threads_strict.return_value = []
@@ -433,6 +434,7 @@ class TestUnlockAndRetryLinkedIssue:
         mock_increment.return_value = 4
 
         engine = AutomationEngine(github_client, config=config)
+        engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         candidate = Candidate(type="pr", data=pr_data, priority=1)
 
         with patch.object(AutomationEngine, "_take_issue_actions", return_value=["Created branch issue-4636/attempt-4"]) as mock_take_issue:

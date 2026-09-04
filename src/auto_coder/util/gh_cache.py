@@ -680,17 +680,21 @@ class GitHubClient:
                         return
 
     @retry_with_backoff()
-    def get_open_issues_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get open issues from repository using REST API (cached).
+    def get_open_issues_json(self, repo_name: str, limit: int = 100, labels: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Get open issues from repository using REST API.
 
         Matches the output format expected by automation engine.
+        Complete results are cached. Label-filtered results bypass that cache and are
+        not cached as though they represented every open Issue.
         Uses N+1 calls if necessary, but tries to stay efficient.
         Note: Sub-issues and Linked PRs via timeline are expensive to fetch via REST for all issues.
         We return empty lists for those fields in this implementation to respect the REST/caching requirement.
         """
-        # Check memory cache
+        # Filtered requests always reach the REST label query. The ordinary cache is
+        # bounded by its requested page size and therefore cannot prove that it contains
+        # every matching Issue in a repository with a larger open backlog.
         with self._open_issues_cache_lock:
-            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
+            if not labels and self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
                 logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
                 return list(self._open_issues_cache)
 
@@ -700,7 +704,24 @@ class GitHubClient:
 
             # List Issues (state=open)
             # per_page=limit. Note: GitHub treats PRs as Issues, so we must filter them out.
-            issues_summary = api.issues.list_for_repo(owner, repo, state="open", per_page=limit)
+            if labels:
+                issues_summary = []
+                page = 1
+                while True:
+                    page_items = api.issues.list_for_repo(
+                        owner,
+                        repo,
+                        state="open",
+                        per_page=limit,
+                        labels=",".join(labels),
+                        page=page,
+                    )
+                    issues_summary.extend(page_items)
+                    if len(page_items) < limit:
+                        break
+                    page += 1
+            else:
+                issues_summary = api.issues.list_for_repo(owner, repo, state="open", per_page=limit)
 
             # Filter out Pull Requests (which are returned in issues list by REST API)
             raw_open_issues = [issue for issue in issues_summary if "pull_request" not in issue]
@@ -796,7 +817,7 @@ class GitHubClient:
 
                 all_issues.append(issue_data)
 
-                if len(all_issues) >= limit:
+                if not labels and len(all_issues) >= limit:
                     break
 
             # Synchronize parent <-> sub-issue relationships for all open issues
@@ -814,11 +835,12 @@ class GitHubClient:
 
             logger.info(f"Retrieved {len(all_issues)} open issues from {repo_name} via REST (cached) with extended details")
 
-            # Update cache
-            with self._open_issues_cache_lock:
-                self._open_issues_cache = all_issues
-                self._open_issues_cache_repo = repo_name
-                self._open_issues_cache_time = datetime.now()
+            # Only a complete response is suitable for the shared open-Issue cache.
+            if not labels:
+                with self._open_issues_cache_lock:
+                    self._open_issues_cache = all_issues
+                    self._open_issues_cache_repo = repo_name
+                    self._open_issues_cache_time = datetime.now()
 
             return all_issues
 

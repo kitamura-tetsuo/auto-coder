@@ -248,6 +248,33 @@ class TestAutomationEngine:
         assert state["issue:2"]["emergency"] is True
         assert slots.start_execution(ImplementationOwner("issue", 3), allow_urgent_emergency=True) is None
 
+    def test_existing_urgent_issue_execution_is_rejected_at_engine_boundary(self, tmp_path):
+        """A previously collected urgent candidate cannot inherit an active execution."""
+
+        class GitHubStub:
+            def get_item_type_strict(self, _repo_name, _number):
+                return "issue"
+
+        engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        owner = ImplementationOwner("issue", 1680)
+        execution_id = slots.start_execution(owner, allow_urgent_emergency=True)
+        assert execution_id is not None
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+        candidate = Candidate(
+            type="issue",
+            data={"number": 1680, "title": "Emergency", "labels": ["urgent"]},
+            priority=3,
+        )
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is False
+        assert result.actions == ["Deferred - active execution already exists (issue:1680)"]
+        engine._process_single_candidate_reserved.assert_not_called()
+        assert slots.active_execution_ids(owner) == (execution_id,)
+
     def test_first_branch_linked_pr_discovery_protects_existing_owner_before_reconciliation(self, tmp_path):
         """A newly discovered PR must record membership before its Issue can be released."""
 
