@@ -1078,6 +1078,7 @@ class AutomationEngine:
         jules_mode: bool = False,
         explicit_only: bool = False,
         force: bool = False,
+        continue_execution: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1090,6 +1091,8 @@ class AutomationEngine:
             candidate: Target candidate to process
             config: AutomationConfig instance
             jules_mode: Whether to use Jules mode for processing (default: False)
+            continue_execution: Whether this is an internal lifecycle transition that
+                must continue the caller's execution for the same logical owner.
 
         Returns:
             Processing result
@@ -1146,7 +1149,7 @@ class AutomationEngine:
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
         with repository_dispatch_authority(repo_name):
-            execution_id = slots.current_execution_id(owner)
+            execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             if not inherited_execution:
                 execution_id = slots.start_execution(
@@ -1422,7 +1425,13 @@ class AutomationEngine:
             return [f"Failed to start a new attempt for issue #{issue_number}"]
 
         logger.info(f"Starting a new attempt for issue #{issue_number}")
-        issue_result = self._process_single_candidate_unified(repo_name, issue_candidate, config, jules_mode=jules_mode)
+        issue_result = self._process_single_candidate_unified(
+            repo_name,
+            issue_candidate,
+            config,
+            jules_mode=jules_mode,
+            continue_execution=True,
+        )
         actions = [f"Started a new attempt for issue #{issue_number}"] + list(issue_result.actions)
         if issue_result.error:
             actions.append(f"Error processing issue #{issue_number}: {issue_result.error}")

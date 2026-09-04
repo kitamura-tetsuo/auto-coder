@@ -2,7 +2,10 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.gh_cache import GitHubClient
+from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 class TestGitHubClientREST:
@@ -164,9 +167,67 @@ class TestGitHubClientREST:
         with patch.object(client, "get_linked_prs", return_value=[]):
             result = client.get_open_issues_json("owner/repo", labels=["urgent"])
 
-        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100, labels="urgent")
+        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100, labels="urgent", page=1)
         assert [(issue["number"], issue["labels"]) for issue in result] == [(1680, ["urgent"])]
         assert client._open_issues_cache is None
+
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_get_open_issues_json_paginates_filtered_results(self, mock_get_ghapi_client, mock_github_token):
+        """Filtered discovery must continue after a full REST page."""
+        mock_api = MagicMock()
+        mock_get_ghapi_client.return_value = mock_api
+
+        def issue(number):
+            return {
+                "number": number,
+                "title": f"Urgent {number}",
+                "body": "",
+                "state": "open",
+                "labels": [{"name": "urgent"}],
+                "assignees": [],
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "html_url": f"https://github.com/owner/repo/issues/{number}",
+                "user": {"login": "maintainer", "id": 7},
+                "comments": 0,
+                "sub_issues_summary": {"total": 0},
+            }
+
+        mock_api.issues.list_for_repo.side_effect = [
+            [issue(number) for number in range(1, 101)],
+            [issue(101)],
+        ]
+        client = GitHubClient.get_instance(mock_github_token)
+        client._open_issues_cache = None
+
+        github = MagicMock()
+        github.get_open_prs_json.return_value = [
+            {
+                "number": 200,
+                "title": "Ready PR",
+                "body": "",
+                "head": {"ref": "ready-pr"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-01T00:00:00Z",
+            }
+        ]
+        github.get_open_issues_json.side_effect = client.get_open_issues_json
+        engine = AutomationEngine(github, config=AutomationConfig(env_override=False))
+
+        with (
+            patch.object(client, "get_linked_prs", return_value=[]),
+            patch(
+                "src.auto_coder.util.github_action._check_github_actions_status",
+                return_value=GitHubActionsStatusResult(success=True, ids=[]),
+            ),
+            patch("src.auto_coder.issue_context.extract_linked_issues_from_pr_body", return_value=[]),
+        ):
+            candidates = engine._get_candidates("owner/repo")
+
+        assert [candidate.data["number"] for candidate in candidates] == list(range(1, 102)) + [200]
+        github.get_open_issues_json.assert_called_once_with("owner/repo", labels=["urgent"])
+        assert [call.kwargs["page"] for call in mock_api.issues.list_for_repo.call_args_list] == [1, 2]
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):

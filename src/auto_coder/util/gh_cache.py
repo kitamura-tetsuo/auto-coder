@@ -705,13 +705,21 @@ class GitHubClient:
             # List Issues (state=open)
             # per_page=limit. Note: GitHub treats PRs as Issues, so we must filter them out.
             if labels:
-                issues_summary = api.issues.list_for_repo(
-                    owner,
-                    repo,
-                    state="open",
-                    per_page=limit,
-                    labels=",".join(labels),
-                )
+                issues_summary = []
+                page = 1
+                while True:
+                    page_items = api.issues.list_for_repo(
+                        owner,
+                        repo,
+                        state="open",
+                        per_page=limit,
+                        labels=",".join(labels),
+                        page=page,
+                    )
+                    issues_summary.extend(page_items)
+                    if len(page_items) < limit:
+                        break
+                    page += 1
             else:
                 issues_summary = api.issues.list_for_repo(owner, repo, state="open", per_page=limit)
 
@@ -809,7 +817,7 @@ class GitHubClient:
 
                 all_issues.append(issue_data)
 
-                if len(all_issues) >= limit:
+                if not labels and len(all_issues) >= limit:
                     break
 
             # Synchronize parent <-> sub-issue relationships for all open issues
