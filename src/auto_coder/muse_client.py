@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -17,6 +19,28 @@ from .prompt_loader import render_prompt
 from .usage_marker_utils import has_usage_marker_match
 
 logger = get_logger(__name__)
+
+_MUTATING_GIT_COMMANDS = {
+    "add",
+    "am",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "fetch",
+    "merge",
+    "mv",
+    "pull",
+    "push",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "switch",
+    "update-ref",
+}
 
 
 @dataclass(frozen=True)
@@ -155,7 +179,20 @@ class MuseClient(LLMClientBase):
             else:
                 path.write_bytes(contents)
 
-    def _assert_invariants(self, before: _GitState, is_noedit: bool) -> None:
+    @staticmethod
+    def _trace_contains_git_mutation(trace_path: str) -> bool:
+        """Return whether Git Trace2 observed a lifecycle-mutating command."""
+        try:
+            with open(trace_path, encoding="utf-8") as trace_file:
+                for line in trace_file:
+                    event = json.loads(line)
+                    if event.get("event") == "cmd_name" and event.get("name") in _MUTATING_GIT_COMMANDS:
+                        return True
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Unable to audit Git commands executed by Muse: {exc}") from exc
+        return False
+
+    def _assert_invariants(self, before: _GitState, is_noedit: bool, mutation_observed: bool = False) -> None:
         after = self._snapshot()
         lifecycle_changed = (after.branch, after.head) != (before.branch, before.head)
         refs_changed = after.refs != before.refs
@@ -168,8 +205,10 @@ class MuseClient(LLMClientBase):
             self._restore_index(before)
         elif index_changed:
             self._restore_index(before)
-        if lifecycle_changed or refs_changed or index_changed or noedit_changed:
+        if lifecycle_changed or refs_changed or index_changed or noedit_changed or mutation_observed:
             detail = "Git lifecycle or index" if lifecycle_changed or refs_changed or index_changed else "working tree"
+            if mutation_observed:
+                detail = "Git lifecycle command"
             raise RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
@@ -184,18 +223,28 @@ class MuseClient(LLMClientBase):
         if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
             env["MUSE_API_KEY"] = self.config_backend.api_key
 
+        trace_file = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
+        trace_path = trace_file.name
+        trace_file.close()
+        env["GIT_TRACE2_EVENT"] = trace_path
+
         logger.warning("LLM invocation: Muse Code CLI is being called. Keep LLM calls minimized.")
         logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if is_noedit else "edit")
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, env=env)
         except subprocess.TimeoutExpired as exc:
-            self._assert_invariants(before, is_noedit)
+            mutation_observed = self._trace_contains_git_mutation(trace_path)
+            os.unlink(trace_path)
+            self._assert_invariants(before, is_noedit, mutation_observed)
             raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
         except OSError as exc:
+            os.unlink(trace_path)
             raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
 
         output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        self._assert_invariants(before, is_noedit)
+        mutation_observed = self._trace_contains_git_mutation(trace_path)
+        os.unlink(trace_path)
+        self._assert_invariants(before, is_noedit, mutation_observed)
         markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
         if has_usage_marker_match(output, markers):
             raise AutoCoderUsageLimitError(output or "Muse Code usage limit reached")

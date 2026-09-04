@@ -113,6 +113,22 @@ def test_muse_created_branch_is_rejected_and_removed(tmp_path: Path, monkeypatch
     assert _git(repo, "branch", "--show-current") == original_branch
 
 
+def test_muse_temporary_switch_to_existing_branch_is_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    original_branch = _git(repo, "branch", "--show-current")
+    _git(repo, "branch", "other")
+    script = _muse_script(tmp_path, f"git switch other; git switch {original_branch}")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with pytest.raises(RuntimeError, match="Git lifecycle command"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert _git(repo, "branch", "--show-current") == original_branch
+    assert _git(repo, "rev-parse", "other") == _git(repo, "rev-parse", "HEAD")
+
+
 def test_noedit_mutation_is_rejected_and_repository_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _muse_script(tmp_path, "printf 'bad\\n' > tracked.txt; printf 'new\\n' > untracked.txt")
