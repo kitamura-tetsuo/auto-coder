@@ -10,6 +10,7 @@ import pytest
 from auto_coder.cloud_task_client_base import CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.codex_usage_checker import codex_cloud_quota_allows_task, parse_codex_weekly_usage
+from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
@@ -128,6 +129,65 @@ class TestCodexCloudClient:
             assert client.send_followup("task_fake", "Fix the PR") is False
 
         client.wham_client.resolve_latest_assistant_turn.assert_not_called()
+
+    @pytest.mark.parametrize("ambiguous_outcome", [429, None])
+    def test_ambiguous_followup_with_remote_advancement_is_reconciled_without_second_post(self, mock_backend_config, tmp_path, ambiguous_outcome):
+        """A later process observes advancement and reports delivery without replaying work."""
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
+        ):
+            client = CodexCloudClient("codex-cloud", repo_name="owner/repo")
+            wham = MagicMock()
+            wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            wham.reconcile_follow_up.return_value = True
+            wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, ambiguous_outcome)
+            client.wham_client = wham
+
+            assert client.send_followup("task_e_123", "same logical work") is False
+            assert client.send_followup("task_e_123", "same logical work") is True
+
+        wham.send_follow_up.assert_called_once()
+        assert not (tmp_path / "followups.json").read_text(encoding="utf-8").strip() == ""
+
+    def test_ambiguous_followup_without_advancement_remains_deferred(self, mock_backend_config, tmp_path):
+        """Unchanged remote state cannot authorize another non-idempotent POST."""
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
+        ):
+            client = CodexCloudClient("codex-cloud", repo_name="owner/repo")
+            wham = MagicMock()
+            wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            wham.reconcile_follow_up.return_value = None
+            wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, 429)
+            client.wham_client = wham
+
+            assert client.send_followup("task_e_123", "same logical work") is False
+            assert client.send_followup("task_e_123", "same logical work") is False
+            assert client.send_followup("task_e_123", "same logical work") is False
+
+        wham.send_follow_up.assert_called_once()
+
+    def test_confirmed_rejection_remains_retryable_and_success_clears_reservation(self, mock_backend_config, tmp_path):
+        """A proven rejection removes the reservation, while 2xx preserves normal success."""
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
+        ):
+            client = CodexCloudClient("codex-cloud", repo_name="owner/repo")
+            wham = MagicMock()
+            wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            wham.send_follow_up.side_effect = [
+                FollowUpDeliveryResult(FollowUpDeliveryOutcome.NOT_DELIVERED, 400),
+                FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200),
+            ]
+            client.wham_client = wham
+
+            assert client.send_followup("task_e_123", "same logical work") is False
+            assert client.send_followup("task_e_123", "same logical work") is True
+
+        assert wham.send_follow_up.call_count == 2
 
     def test_start_task_skips_cli_when_weekly_quota_disallows_it(self, mock_backend_config):
         with (
@@ -251,7 +311,7 @@ class TestCodexCloudClient:
             client = CodexCloudClient("codex-cloud")
             mock_wham = MagicMock()
             mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
-            mock_wham.send_follow_up.return_value = True
+            mock_wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200)
             client.wham_client = mock_wham
 
             success = client.continue_if_paused("task_e_123")
@@ -269,7 +329,7 @@ class TestCodexCloudClient:
             client = CodexCloudClient("codex-cloud")
             mock_wham = MagicMock()
             mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
-            mock_wham.send_follow_up.return_value = True
+            mock_wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200)
             client.wham_client = mock_wham
 
             success = client.continue_if_paused("task_e_123", prompt="Custom fix request")
@@ -294,7 +354,7 @@ class TestCodexCloudClient:
             client = CodexCloudClient("codex-cloud")
             mock_wham = MagicMock()
             mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
-            mock_wham.send_follow_up.return_value = False
+            mock_wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.NOT_DELIVERED, 400)
             client.wham_client = mock_wham
 
             assert client.continue_if_paused("task_e_123") is False
@@ -305,7 +365,7 @@ class TestCodexCloudClient:
             client = CodexCloudClient("codex-cloud")
             mock_wham = MagicMock()
             mock_wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
-            mock_wham.send_follow_up.return_value = True
+            mock_wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200)
             client.wham_client = mock_wham
 
             # First continuation succeeds

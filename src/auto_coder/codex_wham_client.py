@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Callable, Mapping, Optional
 
 import httpx
@@ -41,6 +42,26 @@ class WhamTask:
     title: Optional[str] = None
     turns: list[WhamTurn] = field(default_factory=list)
     raw_data: Optional[object] = None
+
+
+class FollowUpDeliveryOutcome(str, Enum):
+    """Semantic result of a non-idempotent WHAM follow-up request."""
+
+    DELIVERED = "delivered"
+    NOT_DELIVERED = "not_delivered"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True)
+class FollowUpDeliveryResult:
+    """Delivery outcome with the HTTP status when one was received."""
+
+    outcome: FollowUpDeliveryOutcome = FollowUpDeliveryOutcome.INDETERMINATE
+    status_code: Optional[int] = None
+
+    @property
+    def delivered(self) -> bool:
+        return self.outcome is FollowUpDeliveryOutcome.DELIVERED
 
 
 @dataclass(frozen=True)
@@ -354,13 +375,53 @@ class CodexWhamClient:
         logger.info(f"Resolved latest assistant turn for Codex Cloud task '{task_id}': '{turn_id}'")
         return turn_id
 
+    def reconcile_follow_up(self, task_id: str, pre_send_turn_id: str, prompt: str) -> Optional[bool]:
+        """Reconcile an ambiguous POST against current remote turn state.
+
+        ``True`` means the task advanced consistently with the submitted
+        message. ``None`` means the available state cannot prove either
+        acceptance or rejection; callers must defer rather than resend.
+        """
+        turns = self.get_task_turns(task_id)
+        if not turns:
+            task = self.get_task(task_id)
+            turns = task.turns if task else []
+        if not turns:
+            return None
+
+        normalized_pre = pre_send_turn_id.split("~", 1)[-1]
+        pre_index = next((index for index, turn in enumerate(turns) if turn.id == pre_send_turn_id or turn.id.split("~", 1)[-1] == normalized_pre), None)
+        if pre_index is None:
+            return None
+        later_turns = turns[pre_index + 1 :]
+        if not later_turns:
+            return None
+
+        def _strings(value: object) -> list[str]:
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, list):
+                return [text for item in value for text in _strings(item)]
+            if isinstance(value, dict):
+                return [text for item in value.values() for text in _strings(item)]
+            return []
+
+        user_turns = [turn for turn in later_turns if turn.role.lower() in ("user", "human") or "usrtrn_" in turn.id]
+        if user_turns:
+            # When WHAM exposes submitted content, require the stable logical
+            # message itself rather than mistaking unrelated advancement for it.
+            return True if any(prompt in _strings(turn.raw_data) for turn in user_turns) else None
+        if any(turn.id != pre_send_turn_id and ("assttrn_" in turn.id or turn.role.lower() in ("assistant", "agent", "bot", "asst")) for turn in later_turns):
+            return True
+        return None
+
     def send_follow_up(
         self,
         task_id: str,
         turn_id: str,
         prompt: str,
         run_environment_in_qa_mode: bool = False,
-    ) -> bool:
+    ) -> FollowUpDeliveryResult:
         """Send a follow-up continuation message to an existing Codex Cloud task.
 
         Executes:
@@ -373,16 +434,17 @@ class CodexWhamClient:
             run_environment_in_qa_mode: QA mode flag (default False).
 
         Returns:
-            True if accepted (HTTP 2xx), False otherwise.
+            A semantic delivery result. Ambiguous transport and server failures
+            are not flattened into a definite rejection.
         """
         if not task_id or not turn_id or not prompt:
             logger.warning(f"Invalid follow-up parameters: task_id='{task_id}', turn_id='{turn_id}', prompt_len={len(prompt) if prompt else 0}")
-            return False
+            return FollowUpDeliveryResult(FollowUpDeliveryOutcome.NOT_DELIVERED)
 
         headers = self._get_headers()
         if headers is None:
             logger.warning(f"Cannot send follow-up for task '{task_id}': credentials unavailable or expired")
-            return False
+            return FollowUpDeliveryResult(FollowUpDeliveryOutcome.NOT_DELIVERED)
 
         payload = WhamFollowUpPayload(
             task_id=task_id,
@@ -400,22 +462,28 @@ class CodexWhamClient:
 
             if status in (200, 201, 202, 204):
                 logger.info(f"WHAM follow-up accepted for task '{task_id}' (HTTP {status})")
-                return True
+                return FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, status)
 
             if status in (401, 403):
                 logger.warning(f"WHAM follow-up rejected with HTTP {status} (Authentication/Authorization failure) for task '{task_id}'")
-                return False
+                return FollowUpDeliveryResult(FollowUpDeliveryOutcome.NOT_DELIVERED, status)
+
+            # These responses can be generated after the non-idempotent request
+            # reached WHAM, so server-side acceptance cannot be excluded.
+            if status in (408, 409, 425, 429) or 500 <= status < 600:
+                logger.warning(f"WHAM follow-up delivery is indeterminate after HTTP {status} for task '{task_id}'")
+                return FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, status)
 
             if 400 <= status < 500:
                 logger.warning(f"WHAM follow-up rejected with HTTP {status} (Client Error) for task '{task_id}'")
-                return False
+                return FollowUpDeliveryResult(FollowUpDeliveryOutcome.NOT_DELIVERED, status)
 
             logger.warning(f"WHAM follow-up failed with HTTP {status} (Server Error) for task '{task_id}'")
-            return False
+            return FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, status)
 
         except httpx.HTTPError as e:
             logger.warning(f"WHAM follow-up request failed for task '{task_id}': {type(e).__name__}")
-            return False
+            return FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE)
         except Exception as e:
             logger.error(f"Unexpected error sending WHAM follow-up for task '{task_id}': {e}")
-            return False
+            return FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE)

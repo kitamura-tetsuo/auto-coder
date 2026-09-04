@@ -5,16 +5,20 @@ Manages asynchronous Codex Cloud task execution and lifecycle management via the
 Reference: https://github.com/openai/codex
 """
 
+import hashlib
 import json
 import os
 import re
+import threading
 import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_usage_checker import codex_cloud_quota_allows_task
-from .codex_wham_client import CodexWhamClient
+from .codex_wham_client import CodexWhamClient, FollowUpDeliveryOutcome
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
@@ -22,6 +26,38 @@ from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
+
+_followup_state_lock = threading.Lock()
+
+
+@dataclass
+class PendingCodexFollowUp:
+    """Durable evidence needed to reconcile an ambiguous WHAM POST."""
+
+    task_id: str = ""
+    message_fingerprint: str = ""
+    pre_send_turn_id: str = ""
+
+
+def _codex_followup_state_path(repo_name: Optional[str]) -> Path:
+    repository = repo_name or "default"
+    return Path.home() / ".auto-coder" / repository / "codex_followups.json"
+
+
+def _load_pending_followups(path: Path) -> dict[str, PendingCodexFollowUp]:
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Codex follow-up state is not an object")
+    return {key: PendingCodexFollowUp(**value) for key, value in data.items() if isinstance(key, str) and isinstance(value, dict)}
+
+
+def _save_pending_followups(path: Path, records: dict[str, PendingCodexFollowUp]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({key: asdict(value) for key, value in records.items()}, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 class CodexCloudClient(CloudTaskClientBase):
@@ -434,44 +470,78 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.info(f"Codex Cloud task '{task_id}' was continued {int(now - last_time)}s ago; skipping to avoid tight loops")
             return False
 
-        wham = self.wham_client or CodexWhamClient()
-        turn_id = wham.resolve_latest_assistant_turn(task_id)
-        if not turn_id:
-            logger.warning(f"Codex Cloud task '{task_id}' cannot be resumed: no usable latest assistant turn found")
-            return False
-
         if not prompt:
             continuation_prompt = render_prompt("codex_cloud.continuation")
         else:
             continuation_prompt = prompt
 
-        success = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=continuation_prompt)
-        if success:
+        if self.send_followup(task_id, continuation_prompt):
             self.last_continued_at[task_id] = now
-            self.active_tasks[task_id] = continuation_prompt
-            logger.info(f"Successfully sent continuation follow-up to Codex Cloud task '{task_id}' (turn_id='{turn_id}')")
+            logger.info(f"Successfully sent continuation follow-up to Codex Cloud task '{task_id}'")
             return True
 
         logger.warning(f"Failed to send continuation follow-up to Codex Cloud task '{task_id}'")
         return False
 
     def send_followup(self, task_id: str, message: str) -> bool:
-        """Send new work to an existing Codex Cloud task via WHAM."""
+        """Send work once, reconciling any prior ambiguous POST before retrying."""
         if not is_valid_codex_cloud_task_id(task_id) or not message:
             logger.warning("Codex Cloud follow-up requires a task ID and message")
             return False
 
         wham = self.wham_client or CodexWhamClient()
+        fingerprint = hashlib.sha256(f"{task_id}\0{message}".encode("utf-8")).hexdigest()
+        state_path = _codex_followup_state_path(self.repo_name)
+        with _followup_state_lock:
+            try:
+                pending = _load_pending_followups(state_path)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning(f"Cannot read Codex follow-up delivery state; failing closed: {exc}")
+                return False
+            previous = pending.get(fingerprint)
+
+        if previous is not None:
+            if wham.reconcile_follow_up(task_id, previous.pre_send_turn_id, message) is not True:
+                logger.warning(f"Codex follow-up '{fingerprint[:12]}' remains indeterminate; duplicate POST deferred")
+                return False
+            # Reconciliation matches exposed user content when available and
+            # otherwise requires observable assistant advancement.
+            with _followup_state_lock:
+                pending = _load_pending_followups(state_path)
+                pending.pop(fingerprint, None)
+                _save_pending_followups(state_path, pending)
+            self.active_tasks[task_id] = message
+            logger.info(f"Reconciled previously ambiguous Codex follow-up for task '{task_id}' as delivered")
+            return True
+
         turn_id = wham.resolve_latest_assistant_turn(task_id)
         if not turn_id:
             logger.warning(f"Codex Cloud task '{task_id}' has no usable assistant turn for follow-up")
             return False
 
-        success = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
-        if success:
+        record = PendingCodexFollowUp(task_id=task_id, message_fingerprint=fingerprint, pre_send_turn_id=turn_id)
+        with _followup_state_lock:
+            try:
+                pending = _load_pending_followups(state_path)
+                pending[fingerprint] = record
+                _save_pending_followups(state_path, pending)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning(f"Cannot durably reserve Codex follow-up; request was not sent: {exc}")
+                return False
+
+        result = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
+        if result.outcome is not FollowUpDeliveryOutcome.INDETERMINATE:
+            with _followup_state_lock:
+                pending = _load_pending_followups(state_path)
+                pending.pop(fingerprint, None)
+                _save_pending_followups(state_path, pending)
+        if result.delivered:
             self.active_tasks[task_id] = message
             logger.info(f"Assigned follow-up work to Codex Cloud task '{task_id}'")
-        return success
+            return True
+        if result.outcome is FollowUpDeliveryOutcome.INDETERMINATE:
+            logger.warning(f"Codex follow-up delivery for task '{task_id}' is indeterminate; automatic retry is deferred")
+        return False
 
     def stop_task(self, task_id: str) -> bool:
         """Stop or clean up a Codex Cloud task tracking."""
