@@ -325,7 +325,7 @@ class TestKeepLabelOnPRMerge:
         from src.auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
         from src.auto_coder.pr_processor import _handle_pr_merge
 
-        pr_data = {"number": 5266}
+        pr_data = {"number": 5266, "head": {"ref": "feature-5266"}}
         status = ProcessedPRResult(pr_data=pr_data)
 
         with patch(

@@ -1467,7 +1467,7 @@ class TestAdversarialValidationPRFlow:
         """A status API failure is internal, unlike an expected pending-check gate."""
         mock_checks.return_value = GitHubActionsStatusResult(error="GitHub API unavailable")
         config = AutomationConfig()
-        pr_data = {"number": 77, "head": {"sha": "abc123"}, "labels": []}
+        pr_data = {"number": 77, "head": {"ref": "feature-77", "sha": "abc123"}, "labels": []}
         status = ProcessedPRResult(pr_data=pr_data)
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -1493,7 +1493,7 @@ class TestAdversarialValidationPRFlow:
         mock_claimed_state.return_value = ClaimedReviewThreadGateState(lookup_error="GraphQL Network Error")
         config = AutomationConfig()
         config.AUTO_MERGE = True
-        pr_data = {"number": 78, "head": {"sha": "abc123"}, "labels": []}
+        pr_data = {"number": 78, "head": {"ref": "feature-78", "sha": "abc123"}, "labels": []}
         status = ProcessedPRResult(pr_data=pr_data)
 
         actions = _handle_pr_merge(MagicMock(), "owner/repo", pr_data, config, {}, status)

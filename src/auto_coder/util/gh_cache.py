@@ -568,6 +568,31 @@ class GitHubClient:
             return None
 
     @retry_with_backoff()
+    def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> Any:
+        """Fetch complete live PR metadata directly, bypassing every cache.
+
+        Processing safety decisions need both the remote head and origin fields
+        (notably ``body`` and ``user``).  A reduced issue-like representation is
+        therefore not an acceptable substitute for this endpoint response.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        response = httpx.get(
+            f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+            headers=headers,
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"GitHub did not return PR metadata for PR #{pr_number} in {repo_name}")
+        return payload
+
+    @retry_with_backoff()
     def get_pull_request_head_sha_strict(self, repo_name: str, pr_number: int) -> str:
         """Fetch the current PR head SHA directly, bypassing every cache.
 

@@ -666,7 +666,7 @@ class TestAutomationEngine:
         """The real PR-processing chain must classify a status API error as failed."""
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 77, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 77, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -700,7 +700,7 @@ class TestAutomationEngine:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 78, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 78, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -744,7 +744,7 @@ class TestAutomationEngine:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 79, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 79, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -791,7 +791,7 @@ class TestAutomationEngine:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         engine = AutomationEngine(github_client, config=config)
-        pr_data = {"number": 80, "title": "PR", "body": "", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 80, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -833,7 +833,7 @@ class TestAutomationEngine:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 90, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 90, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -876,7 +876,7 @@ class TestAutomationEngine:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 91, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 91, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -927,7 +927,7 @@ class TestAutomationEngine:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 92, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 92, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -972,7 +972,7 @@ class TestAutomationEngine:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 93, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "work", "sha": "abc123456789"}, "mergeable": True}
+        pr_data = {"number": 93, "title": "PR", "body": "Fixes #99", "labels": [], "head": {"ref": "feature-test", "sha": "abc123456789"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()

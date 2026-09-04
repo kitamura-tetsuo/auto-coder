@@ -17,6 +17,14 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Structured PR processing outcomes
 
+Codex Cloud pull requests whose authoritative remote head is the shared
+``work`` branch are rejected at the common merge/review boundary before CI,
+adversarial validation, repair delivery, checkout, or merge work. Reduced PR
+objects are refreshed from GitHub without cache before safety is assumed; a
+failed or incomplete refresh fails the processing pass closed. The existing
+task is asked to republish from a task-specific branch, retaining linked-Issue
+ownership only when that request succeeds.
+
 PR processing propagates a machine-readable `success`, `deferred`, or `failed`
 outcome through the automation engine. Internal exceptions remain visible in the
 human-readable action diagnostics and are also added to the top-level errors, so

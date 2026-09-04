@@ -6,7 +6,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.pr_processor import process_pull_request
+from auto_coder.pr_processor import _handle_pr_merge, process_pull_request
 
 
 @pytest.fixture
@@ -134,3 +134,87 @@ def test_automation_engine_rejects_work_pr_before_label_and_in_progress_ci_gates
     ci_gate.assert_not_called()
     increment.assert_not_called()
     release_label.assert_not_called()
+
+
+def test_lower_merge_boundary_rejects_unsafe_work_before_all_processing_side_effects(
+    config: AutomationConfig,
+    github_client: MagicMock,
+) -> None:
+    """The production merge/review choke point must enforce the invariant itself."""
+    pr_data = codex_pr()
+
+    with (
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as followup,
+        patch("auto_coder.pr_processor.run_adversarial_validation") as adversarial,
+        patch("auto_coder.pr_processor.retry_pending_stale_review_thread_rollbacks") as review_gate,
+        patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress") as ci_gate,
+        patch("auto_coder.pr_processor._get_mergeable_state") as mergeability,
+        patch("auto_coder.pr_processor._merge_pr") as merge,
+        patch("auto_coder.pr_processor.git_checkout_branch") as checkout,
+        patch("auto_coder.pr_processor._send_codex_cloud_error_feedback") as ci_repair,
+        patch("auto_coder.pr_processor._delegate_cloud_merge_conflict_repair") as conflict_repair,
+    ):
+        actions = _handle_pr_merge(github_client, "owner/repo", pr_data, config, {})
+
+    assert actions == [
+        "Closed unsafe Codex Cloud PR #162 on shared remote branch 'work'",
+        "Requested Codex Cloud task 'task_e_reissue161' to publish a replacement PR from a task-specific branch",
+        "Preserved issue #161 in the in-flight Codex Cloud reissue flow",
+    ]
+    github_client.close_pr.assert_called_once()
+    followup.assert_called_once()
+    for forbidden in (adversarial, review_gate, ci_gate, mergeability, merge, checkout, ci_repair, conflict_repair):
+        forbidden.assert_not_called()
+
+
+def test_reduced_metadata_is_strictly_refreshed_before_processing(
+    config: AutomationConfig,
+) -> None:
+    """A production-origin reduced PR object cannot hide Codex origin or head."""
+
+    class ReducedMetadataClient:
+        def __init__(self) -> None:
+            self.close_pr = MagicMock()
+            self.get_issue = MagicMock(return_value={"state": "open"})
+            self.strict_calls = 0
+
+        def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> dict:
+            assert (repo_name, pr_number) == ("owner/repo", 162)
+            self.strict_calls += 1
+            return codex_pr()
+
+    client = ReducedMetadataClient()
+    reduced_pr = {"number": 162, "title": "issue-like cached representation"}
+
+    with (
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as followup,
+        patch("auto_coder.pr_processor._close_empty_pr") as empty_check,
+        patch("auto_coder.pr_processor.run_adversarial_validation") as adversarial,
+    ):
+        result = process_pull_request(client, config, "owner/repo", reduced_pr)
+
+    assert client.strict_calls == 1
+    client.close_pr.assert_called_once()
+    followup.assert_called_once()
+    empty_check.assert_not_called()
+    adversarial.assert_not_called()
+    assert result.priority == "close"
+
+
+def test_reduced_metadata_lookup_failure_fails_closed(
+    config: AutomationConfig,
+) -> None:
+    class FailingMetadataClient:
+        def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> dict:
+            raise RuntimeError("metadata unavailable")
+
+    with (
+        patch("auto_coder.pr_processor._close_empty_pr") as empty_check,
+        patch("auto_coder.pr_processor.run_adversarial_validation") as adversarial,
+    ):
+        result = process_pull_request(FailingMetadataClient(), config, "owner/repo", {"number": 162})
+
+    assert result.outcome.value == "deferred"
+    assert result.actions_taken == ["Skipping PR #162: authoritative branch safety could not be established (metadata unavailable)"]
+    empty_check.assert_not_called()
+    adversarial.assert_not_called()
