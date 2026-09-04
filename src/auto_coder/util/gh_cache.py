@@ -41,6 +41,15 @@ class ReviewThread:
     comments_truncated: bool = False
 
 
+@dataclass(frozen=True)
+class PullRequestRepairMetadata:
+    """Authoritative live branch metadata needed to repair an existing PR."""
+
+    head_ref: str
+    head_sha: str
+    base_ref: str
+
+
 # Safety bound for paginated comment listings (100 comments per page).
 COMMENTS_MAX_PAGES = 50
 
@@ -581,6 +590,35 @@ class GitHubClient:
         if not isinstance(head_sha, str) or not head_sha:
             raise RuntimeError(f"GitHub did not return a current head SHA for PR #{pr_number} in {repo_name}")
         return head_sha
+
+    @retry_with_backoff()
+    def get_pull_request_repair_metadata_strict(self, repo_name: str, pr_number: int) -> PullRequestRepairMetadata:
+        """Fetch current repair branches and head directly, bypassing every cache."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        response = httpx.get(
+            f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+            headers=headers,
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        head = payload.get("head") if isinstance(payload, dict) else None
+        base = payload.get("base") if isinstance(payload, dict) else None
+        head_ref = head.get("ref") if isinstance(head, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        base_ref = base.get("ref") if isinstance(base, dict) else None
+        if not all(isinstance(value, str) and value for value in (head_ref, head_sha, base_ref)):
+            raise RuntimeError(f"GitHub did not return complete current repair metadata for PR #{pr_number} in {repo_name}")
+        return PullRequestRepairMetadata(
+            head_ref=cast(str, head_ref),
+            head_sha=cast(str, head_sha),
+            base_ref=cast(str, base_ref),
+        )
 
     @retry_with_backoff()
     def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:

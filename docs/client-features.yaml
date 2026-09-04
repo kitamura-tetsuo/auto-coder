@@ -1227,3 +1227,19 @@ Recent configuration schema changes that require migration:
       - "Every resolution-time head comparison and stale-marker head comparison uses a strict direct REST lookup that bypasses the shared GitHub GET cache. A stale-marker scan that performs a head comparison repeats that authoritative lookup after scanning all threads and requires the same head SHA, so a push from H1 to H2 during the scan fails closed without mutation. A missing, malformed, failed, or changed authoritative lookup cannot validate a resolution or dismiss an H1 blocker."
       - "Before attempting a stale-resolution rollback, Auto-Coder durably records a fail-closed rollback-transition state. A later run reconciles that transition only when the strict GitHub lookup returns the exact thread once with an explicit boolean resolved state: an unresolved thread advances to marker cleanup without another unresolve, while a still-resolved thread retries rollback under the existing durable guard; missing, duplicate, malformed, or failed lookup evidence remains blocking. After confirmed rollback, a failed CLEARED-marker reply becomes marker-cleanup-only state, and if both that reply and cleanup-state persistence fail, the pre-mutation transition remains available for this reconciliation. Resolve and unresolve mutations are accepted only when GitHub returns the exact requested thread ID and the expected literal resolved state."
       - "`_merge_pr`'s existing pre-merge safeguard re-fetches the authoritative GitHub review-thread state after any resolution and before merging, so automatic merge proceeds only when no unresolved thread remains (claimed-but-unresolved threads included) and every other merge gate also passes."
+
+## Provider-aware unresolved review repair
+
+Actionable unresolved review threads keep merge blocked and are routed through the
+provider-aware durable `cloud.csv` association to the existing originating cloud
+session. Jules and Codex Cloud therefore receive repair feedback through the same
+`CloudTaskClientBase.send_followup` contract, targeting the existing PR and its
+current head branch, fetched from a cache-bypassing authoritative GitHub lookup
+immediately before transport. Per-finding local and PR-side receipts prevent
+redelivery, while new findings remain eligible. A durable pending reservation is
+written before transport; if an accepted request cannot be confirmed in either
+receipt store, later runs suppress speculative duplicate delivery and report the
+indeterminate state explicitly. Provenance-clarification threads remain excluded.
+Missing or ambiguous ownership, unsupported providers, rejected requests, and
+transport failures produce an explicit failed processing outcome rather than a
+successful defer.
