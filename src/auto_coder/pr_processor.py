@@ -2403,7 +2403,7 @@ def _handle_pr_merge(
                         return actions
 
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation:
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
                         current_head_sha = pr_data.get("head", {}).get("sha", "")
@@ -2429,6 +2429,8 @@ def _handle_pr_merge(
                     else:
                         if adv_review_count >= max_adv_reviews and force_adversarial_validation:
                             actions.append(f"Forcing adversarial validation for PR #{pr_number} beyond the normal review limit")
+                        elif adv_review_count >= max_adv_reviews and revalidating_older_head_threads:
+                            actions.append(f"Revalidating PR #{pr_number} beyond the review limit because unresolved findings have not been adjudicated on the current head")
                         elif adv_review_count >= max_adv_reviews:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True

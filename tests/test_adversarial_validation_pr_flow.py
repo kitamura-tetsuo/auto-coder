@@ -2148,7 +2148,11 @@ class TestClaimedReviewThreadValidationFlow:
                 {
                     "body": f"{adversarial_validation_comment_marker(old_sha)}\n## ❌ Auto-Coder adversarial validation: NEEDS_FIX",
                     "user": {"login": reviewer_login},
-                }
+                },
+                {
+                    "body": f"{adversarial_validation_comment_marker('another-old-head')}\n## ⚠️ Auto-Coder adversarial validation: INCONCLUSIVE",
+                    "user": {"login": reviewer_login},
+                },
             ]
         )
         client.get_pr_comments = MagicMock(return_value=[])
@@ -2169,6 +2173,7 @@ class TestClaimedReviewThreadValidationFlow:
         )
         config = AutomationConfig()
         config.AUTO_MERGE = True
+        config.MAX_ADVERSARIAL_VALIDATIONS = 2
         pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-123", "sha": new_sha}}
 
         with (
@@ -2186,6 +2191,7 @@ class TestClaimedReviewThreadValidationFlow:
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         assert any("Allowing adversarial validation of new head" in action for action in actions)
+        assert any("beyond the review limit because unresolved findings" in action for action in actions)
         run_validation.assert_called_once()
         assert "thread-old-finding" in run_validation.call_args.kwargs["claimed_review_threads_section"]
         resolve_threads.assert_called_once()
