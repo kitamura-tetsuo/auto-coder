@@ -1264,7 +1264,7 @@ class TestLabelManagerProcessorIntegration:
             "number": 123,
             "title": "Test PR",
             "state": "open",
-            "head": {"sha": "abc123"},
+            "head": {"ref": "feature-123", "sha": "abc123"},
         }
 
         with patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=mock_github_client):
@@ -1299,7 +1299,7 @@ class TestLabelManagerProcessorIntegration:
             "number": 123,
             "title": "Test PR",
             "state": "open",
-            "head": {"sha": "abc123"},
+            "head": {"ref": "feature-123", "sha": "abc123"},
         }
 
         with patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=mock_github_client):
@@ -1365,7 +1365,7 @@ class TestLabelManagerProcessorIntegration:
             "number": 789,
             "title": "Test PR with failing actions",
             "state": "open",
-            "head": {"sha": "ghi789"},
+            "head": {"ref": "feature-789", "sha": "ghi789"},
         }
 
         # Mock _take_pr_actions to return actions without successful merge

@@ -29,7 +29,7 @@ def test_non_mergeable_detection_is_reported(mock_check_progress):
     """Ensure non-mergeable PRs surface a detection action."""
     mock_check_progress.return_value = False
     config = AutomationConfig()
-    pr_data = {"number": 42, "mergeable": False}
+    pr_data = {"number": 42, "head": {"ref": "feature-42"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -56,7 +56,7 @@ def test_mergeability_remediation_flow_invoked(mock_github_client, mock_get_ghap
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 99, "mergeable": False}
+    pr_data = {"number": 99, "head": {"ref": "feature-99"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -111,7 +111,7 @@ def test_production_remediation_preserves_cloud_pr_metadata_and_defers_after_del
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(cloud_client, "task_e_existing")),
         patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
     ):
-        actions = _handle_pr_merge(_client(), "owner/repo", {"number": 1660, "mergeable": False}, config, {})
+        actions = _handle_pr_merge(_client(), "owner/repo", {**api_pr, "mergeable": False}, config, {})
 
     assert len(cloud_client.messages) == 1
     assert "release/beta" in cloud_client.messages[0][1]
@@ -141,7 +141,7 @@ def test_mergeability_remediation_success_path(mock_github_client, mock_get_ghap
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 100, "mergeable": False}
+    pr_data = {"number": 100, "head": {"ref": "feature-100"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -169,7 +169,7 @@ def test_mergeability_remediation_checkout_fails(mock_github_client, mock_get_gh
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 101, "mergeable": False}
+    pr_data = {"number": 101, "head": {"ref": "feature-101"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 
@@ -200,7 +200,7 @@ def test_mergeability_remediation_update_fails(mock_github_client, mock_get_ghap
 
     config = AutomationConfig()
     config.ENABLE_MERGEABILITY_REMEDIATION = True
-    pr_data = {"number": 102, "mergeable": False}
+    pr_data = {"number": 102, "head": {"ref": "feature-102"}, "mergeable": False}
 
     actions = _handle_pr_merge(_client(), "owner/repo", pr_data, config, {})
 

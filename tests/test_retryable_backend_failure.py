@@ -27,7 +27,7 @@ def test_pr_fix_transport_outage_is_deferred_without_attempt_transition():
         patch("auto_coder.pr_processor.increment_attempt") as increment,
         patch("auto_coder.pr_processor._trigger_fallback_for_pr_failure") as fallback,
     ):
-        result = _process_pr_for_fixes(github, "owner/repo", {"number": 1670, "body": "Closes #1673"}, AutomationConfig())
+        result = _process_pr_for_fixes(github, "owner/repo", {"number": 1670, "body": "Closes #1673", "head": {"ref": "feature-1670"}}, AutomationConfig())
 
     assert result.outcome == PRProcessingOutcome.DEFERRED
     assert result.error == diagnostic

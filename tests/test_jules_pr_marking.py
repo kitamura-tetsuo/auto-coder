@@ -73,7 +73,7 @@ class TestJulesPRMarking:
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
-        pr_data = {"number": 456, "title": "Jules PR", "body": "I started a Jules session...", "draft": True, "node_id": "EXISTING_NODE_ID", "labels": [], "created_at": "2023-01-01T00:00:00Z"}
+        pr_data = {"number": 456, "title": "Jules PR", "body": "I started a Jules session...", "draft": True, "node_id": "EXISTING_NODE_ID", "head": {"ref": "jules/456"}, "labels": [], "created_at": "2023-01-01T00:00:00Z"}
 
         mock_github_client.get_open_prs_json.return_value = [pr_data]
 

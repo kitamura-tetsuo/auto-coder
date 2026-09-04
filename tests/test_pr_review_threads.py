@@ -240,7 +240,7 @@ def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, moc
     config = AutomationConfig()
     config.AUTO_MERGE = True
     config.CHECK_LABELS = True
-    pr_data = {"number": 123, "labels": []}
+    pr_data = {"number": 123, "head": {"ref": "feature-123"}, "labels": []}
 
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
@@ -261,7 +261,7 @@ def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_labe
     config = AutomationConfig()
     config.AUTO_MERGE = True
     config.CHECK_LABELS = True
-    pr_data = {"number": 123, "labels": []}
+    pr_data = {"number": 123, "head": {"ref": "feature-123"}, "labels": []}
 
     result = _process_pr_for_merge("owner/repo", pr_data, config)
 
@@ -281,7 +281,7 @@ def test_handle_pr_merge_blocks_on_unresolved_threads(mock_merge_pr, mock_has_un
 
     config = AutomationConfig()
     config.AUTO_MERGE = True
-    pr_data = {"number": 123, "labels": []}
+    pr_data = {"number": 123, "head": {"ref": "feature-123"}, "labels": []}
 
     client = MagicMock()
     client.get_pr_review_threads_strict.return_value = []
@@ -303,6 +303,7 @@ def test_handle_pr_merge_fails_closed_when_real_review_thread_lookup_fails(mock_
     config = AutomationConfig()
     config.AUTO_MERGE = True
     pr_data = {"number": 123, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-99", "sha": "current-head"}}
+    mock_github_client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
 
     actions = _handle_pr_merge(mock_github_client, "owner/repo", pr_data, config, {})
 

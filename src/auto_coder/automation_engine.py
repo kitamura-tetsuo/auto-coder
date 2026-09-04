@@ -584,11 +584,11 @@ class AutomationEngine:
                 # even preloading CI, or author/label/CI gates can defer them
                 # indefinitely.
                 unsafe_branch_result = _reject_unsafe_codex_cloud_pr(self.github, repo_name, pr_data, self.config)
-                if unsafe_branch_result.closed:
+                if unsafe_branch_result.closed or unsafe_branch_result.metadata_error:
                     for action in unsafe_branch_result.actions:
                         logger.info(f"PR #{pr_number}: {action}")
                     continue
-                safe_pr_data_list.append(pr_data)
+                safe_pr_data_list.append(unsafe_branch_result.authoritative_pr_data or pr_data)
 
             pr_data_list = safe_pr_data_list
             preload_github_actions_status(repo_name, pr_data_list)
@@ -1256,6 +1256,11 @@ class AutomationEngine:
                     result.actions = list(unsafe_branch_result.actions)
                     result.success = True
                     return result
+                if unsafe_branch_result.metadata_error:
+                    result.actions = list(unsafe_branch_result.actions)
+                    result.error = unsafe_branch_result.metadata_error
+                    return result
+                candidate.data = unsafe_branch_result.authoritative_pr_data or candidate.data
 
             # Check author allowlists before any processing or API actions
             if item_type == "pr" and not self._is_pr_author_allowed(candidate.data):

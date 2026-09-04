@@ -325,7 +325,7 @@ class TestKeepLabelOnPRMerge:
         from src.auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
         from src.auto_coder.pr_processor import _handle_pr_merge
 
-        pr_data = {"number": 5266}
+        pr_data = {"number": 5266, "head": {"ref": "feature-5266"}}
         status = ProcessedPRResult(pr_data=pr_data)
 
         with patch(
@@ -347,7 +347,7 @@ class TestKeepLabelOnPRMerge:
         from src.auto_coder.pr_processor import _process_pr_for_merge
 
         repo_name = "owner/repo"
-        pr_data = {"number": 123, "title": "Test PR", "body": "Test body"}
+        pr_data = {"number": 123, "title": "Test PR", "body": "Test body", "head": {"ref": "feature-123"}}
         config = AutomationConfig()
 
         # Track if keep_label was called
@@ -390,7 +390,7 @@ class TestKeepLabelOnPRMerge:
         from src.auto_coder.pr_processor import _process_pr_for_merge
 
         repo_name = "owner/repo"
-        pr_data = {"number": 456, "title": "Test PR", "body": "Test body"}
+        pr_data = {"number": 456, "title": "Test PR", "body": "Test body", "head": {"ref": "feature-456"}}
         config = AutomationConfig()
 
         # Track if keep_label was called
@@ -433,7 +433,7 @@ class TestKeepLabelOnPRMerge:
         from src.auto_coder.pr_processor import _process_pr_for_fixes
 
         repo_name = "owner/repo"
-        pr_data = {"number": 789, "title": "Test PR", "body": "Test body"}
+        pr_data = {"number": 789, "title": "Test PR", "body": "Test body", "head": {"ref": "feature-789"}}
         config = AutomationConfig()
         mock_github_client = Mock()
 
