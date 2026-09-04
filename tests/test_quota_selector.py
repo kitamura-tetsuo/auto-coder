@@ -641,6 +641,7 @@ class TestHighScoreBackendManagerIntegration:
         """backend_cloud.order wins even when its second item has more quota."""
         mock_config = MagicMock(spec=LLMBackendConfiguration)
         mock_config.backend_cloud_order = ["codex-cloud-spark", "codex-cloud-luna", "jules"]
+        mock_config.backend_cloud_priority_groups = []
         mock_config.get_backend_cloud.return_value = None
         mock_config.get_model_for_backend.side_effect = lambda name: f"model-{name}"
         mock_get_config.return_value = mock_config

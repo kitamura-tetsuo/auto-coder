@@ -885,16 +885,18 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
 
     # Check for order first
     cloud_order = config.backend_cloud_order
+    cloud_priority_groups = config.backend_cloud_priority_groups
     cloud_config = config.get_backend_cloud()
 
-    if not cloud_order and not cloud_config:
+    if not cloud_order and not cloud_priority_groups and not cloud_config:
         return None
 
     # Preserve configured priority while filtering ineligible candidates
-    if cloud_order:
+    if cloud_order or cloud_priority_groups:
         from .quota_selector import rank_high_score_backends_by_quota
 
-        selected_backends = rank_high_score_backends_by_quota(cloud_order, config)
+        candidates = cloud_priority_groups or cloud_order
+        selected_backends = rank_high_score_backends_by_quota(candidates, config)
         if not selected_backends:
             return None
         primary_backend = selected_backends[0]
