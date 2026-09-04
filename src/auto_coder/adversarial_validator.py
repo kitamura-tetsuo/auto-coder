@@ -2046,6 +2046,18 @@ def _reconcile_same_head_recovered_evidence(
     return result
 
 
+def _carry_forward_current_run_recovered_evidence(
+    result: AdversarialValidationResult,
+    recovered_evidence: List[EvidenceRecoveryEntry],
+) -> AdversarialValidationResult:
+    """Preserve successful recovery when a dynamic follow-up replaces the result."""
+    resolved_paths = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
+    for entry in recovered_evidence:
+        if entry.path not in resolved_paths:
+            result.evidence_recovery.append(replace(entry, requirement_ids=list(entry.requirement_ids)))
+    return result
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -2400,6 +2412,7 @@ def run_adversarial_validation(
     result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
     result = _apply_coverage_and_verdict_precedence(result, context)
+    current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
 
     initial_thread_dispositions = result.thread_dispositions
 
@@ -2461,6 +2474,7 @@ def run_adversarial_validation(
                 result = parse_adversarial_validation_response(followup_response)
                 _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                 result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
+                result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
                 result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
