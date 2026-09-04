@@ -3,6 +3,7 @@ Main automation engine for Auto-Coder.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -32,6 +33,7 @@ from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, parse_requirement_contract
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -44,6 +46,7 @@ from .utils import CommandExecutor, get_target_container, log_action
 logger = get_logger(__name__)
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
+INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
 
 
 class AutomationEngine:
@@ -1124,12 +1127,44 @@ class AutomationEngine:
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
             try:
-                authoritative_type = self._get_authoritative_item_type(repo_name, item_number)
+                current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
                 result.error = str(exc)
                 return result
-            if authoritative_type != "issue":
-                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as {authoritative_type}"
+            if not isinstance(current_issue, dict) or current_issue.get("number") != item_number:
+                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub returned an ambiguous item snapshot"
+                return result
+            if "pull_request" in current_issue:
+                result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as pr"
+                return result
+
+            current_body = str(current_issue.get("body") or "")
+            contract = parse_requirement_contract(item_number, current_body)
+            if contract.error:
+                fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{current_body}\0{contract.error}".encode("utf-8")).hexdigest()
+                marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
+                try:
+                    comments = self.github.get_issue_comments_strict(repo_name, item_number)
+                except Exception as exc:
+                    # An unavailable comment listing is not authoritative evidence
+                    # that the diagnostic is absent. Fail closed so a transient read
+                    # failure can never turn into a duplicate write.
+                    result.error = f"Cannot safely check requirement contract diagnostics: {exc}"
+                    logger.warning(f"Deferred invalid Issue #{item_number} because diagnostic lookup failed: {exc}")
+                    return result
+                already_reported = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
+                if not already_reported:
+                    diagnostic = (
+                        f"{marker}\n"
+                        "## Auto-Coder requirement contract validation\n\n"
+                        f"Implementation has not started because the Issue requirement contract is invalid: **{contract.error}**.\n\n"
+                        "Edit the `## Requirements` section so every non-empty entry uses a unique `REQ-NNN:` identifier "
+                        "(for example, `- REQ-001: Describe the required observable behavior.`). Auto-Coder will re-evaluate the edited Issue on a later scan."
+                    )
+                    self.github.add_comment_to_issue(repo_name, item_number, diagnostic)
+                logger.warning(f"Rejected Issue #{item_number} before implementation dispatch: {contract.error}")
+                result.actions = [f"Rejected - invalid requirement contract: {contract.error}"]
+                result.error = contract.error
                 return result
 
         slots = self._get_implementation_slots(repo_name)

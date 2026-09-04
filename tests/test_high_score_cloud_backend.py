@@ -236,6 +236,7 @@ class TestDifficultIssueHandling:
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": ""}
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -277,6 +278,7 @@ class TestDifficultIssueHandling:
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": ""}
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -317,6 +319,7 @@ class TestDifficultIssueHandling:
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": ""}
         mock_github.get_all_sub_issues.return_value = [201, 202]
 
         config = AutomationConfig()
