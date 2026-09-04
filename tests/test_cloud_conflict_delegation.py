@@ -66,6 +66,37 @@ def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:
     assert "Do not replace or close the existing pull request." in message
 
 
+def test_production_conflict_path_reports_confirmed_followup_in_actions_and_pr(tmp_path) -> None:
+    """The supported merge path preserves provider acceptance through both outputs."""
+    client = FollowupClient()
+    github = Mock()
+    github.get_pr_comments.return_value = []
+    commands = [
+        CommandResult(True, "", "", 0),
+        CommandResult(True, "3\n", "", 0),
+        CommandResult(False, "CONFLICT", "", 1),
+        CommandResult(True, "", "", 0),
+    ]
+
+    with (
+        patch("src.auto_coder.pr_processor.cmd") as command_executor,
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_e_accepted")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+        patch("src.auto_coder.pr_processor._is_local_llm_pr", return_value=False),
+    ):
+        command_executor.run_command.side_effect = commands
+        actions = _update_with_base_branch("owner/repo", pr_data(), AutomationConfig(), github)
+
+    assert "Codex Cloud task 'task_e_accepted' accepted merge-conflict-repair follow-up for PR #1589 at head H1" in actions
+    assert "Delegated merge-conflict repair for PR #1589 to its existing cloud session" in actions
+    assert "ACTION_FLAG:SKIP_ANALYSIS" in actions
+    comment = github.add_comment_to_pr.call_args.args[2]
+    assert "task_e_accepted" in comment
+    assert "PR #1589" in comment
+    assert "head `H1`" in comment
+    assert "merge-conflict-repair" in comment
+
+
 def test_delegation_rejects_invalid_metadata_and_uses_provider_task_from_pr_body(tmp_path) -> None:
     """Exercise conflict delegation through its real task-resolution boundary."""
     client = FollowupClient()
@@ -101,6 +132,48 @@ def test_unchanged_state_is_deduplicated_but_changed_states_can_delegate(tmp_pat
         assert _delegate_cloud_merge_conflict_repair("owner/repo", pr_data(head_sha="H2", base_sha="B2"))
 
     assert [task_id for task_id, _ in client.messages] == ["task_existing"] * 3
+
+
+def test_comment_receipt_is_deduplicated_per_head_and_purpose(tmp_path) -> None:
+    client = FollowupClient()
+    github = Mock()
+    comments: list[dict] = []
+    github.get_pr_comments.side_effect = lambda *_args: list(comments)
+    github.add_comment_to_pr.side_effect = lambda _repo, _number, body: comments.append({"body": body})
+
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+    ):
+        first = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data(), github)
+        repeated = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data(), github)
+        advanced = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data(head_sha="H2"), github)
+
+    assert first.accepted_action
+    assert repeated.accepted_action
+    assert advanced.accepted_action.endswith("at head H2")
+    assert len(client.messages) == 2
+    assert github.add_comment_to_pr.call_count == 2
+    assert "head `H1`" in comments[0]["body"]
+    assert "head `H2`" in comments[1]["body"]
+
+
+def test_comment_failure_retries_publication_without_resending_followup(tmp_path) -> None:
+    client = FollowupClient()
+    github = Mock()
+    github.get_pr_comments.return_value = []
+    github.add_comment_to_pr.side_effect = [RuntimeError("GitHub unavailable"), None]
+
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+    ):
+        first = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data(), github)
+        second = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data(), github)
+
+    assert first.accepted_action == second.accepted_action
+    assert len(client.messages) == 1
+    assert github.add_comment_to_pr.call_count == 2
 
 
 def test_failed_delivery_and_unsupported_provider_preserve_fallback(tmp_path) -> None:
