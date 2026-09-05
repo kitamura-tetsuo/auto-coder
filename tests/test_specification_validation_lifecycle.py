@@ -192,7 +192,7 @@ def test_concurrent_force_and_ordinary_paths_cannot_both_dispatch(tmp_path):
         release.wait()
         assert first.result(timeout=5).success is True
     assert len(dispatches) == 1
-    assert second_result.actions == ["Deferred - active execution already exists (issue:1728)"]
+    assert second_result.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
 
 
 def test_changed_generation_revalidation_defers_until_live_implementation_finishes(tmp_path):
@@ -227,7 +227,7 @@ def test_changed_generation_revalidation_defers_until_live_implementation_finish
         assert entered.wait(5)
         state[1728] = snapshot(body=BODY + " B")
         deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-        assert deferred.actions == ["Deferred - active execution already exists (issue:1728)"]
+        assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
         assert not validation_b_started.is_set()
         owner = ImplementationOwner("issue", 1728)
         assert engine.implementation_slots.active_execution_ids(owner)
@@ -316,3 +316,76 @@ def test_supported_alias_provider_change_invalidates_production_policy(monkeypat
     assert codex_identity != claude_identity
     assert '"provider":"codex"' in codex_identity
     assert '"provider":"claude"' in claude_identity
+
+
+def test_async_logical_owner_defers_changed_generation_validation(tmp_path):
+    """A remote implementation owner remains authoritative after launch execution returns."""
+    state = {"body": BODY + " A"}
+    analyzed = []
+
+    class AsyncGitHub(GitHubFlow):
+        def get_issue_dispatch_snapshot_strict(self, _repo, number):
+            return snapshot(body=state["body"])
+
+        def get_issue(self, _repo, number):
+            return {"number": number, "state": "open"}
+
+        def get_issue_details(self, issue):
+            return issue
+
+    def analyze(_manifest, body):
+        analyzed.append(body)
+        return SpecificationAnalysisResult("READY")
+
+    github = AsyncGitHub([snapshot(body=state["body"])])
+    engine, candidate = engine_with_gate(
+        tmp_path,
+        github,
+        SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "async.json", analyze),
+    )
+    owner = ImplementationOwner("issue", 1728)
+
+    def launch_async(*_args, **_kwargs):
+        assert engine.implementation_slots.record_provider_session(owner, "remote-session-a") is True
+        return CandidateProcessingResult("issue", 1728, "Title", True, ["launched"])
+
+    engine._process_single_candidate_reserved.side_effect = launch_async
+    launched = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert launched.success is True
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+    assert owner in engine.implementation_slots.active_owners()
+
+    state["body"] = BODY + " B"
+    deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
+    assert analyzed == [BODY + " A"]
+    assert owner in engine.implementation_slots.active_owners()
+
+
+def test_reconciliation_edit_is_rechecked_before_retry_ownership(tmp_path):
+    """Capacity retry cannot carry READY across authoritative reconciliation I/O."""
+    current = {"body": BODY + " A"}
+
+    class ReconcileGitHub(GitHubFlow):
+        def get_issue_dispatch_snapshot_strict(self, _repo, number):
+            return snapshot(body=current["body"])
+
+        def get_issue(self, _repo, number):
+            assert number == 99
+            current["body"] = BODY + " B"
+            return {"number": 99, "state": "closed"}
+
+        def get_issue_details(self, issue):
+            return issue
+
+        def get_linked_prs(self, _repo, _number, strict=False):
+            assert strict is True
+            return []
+
+    github = ReconcileGitHub([snapshot(body=current["body"])])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    assert engine.implementation_slots.reserve(ImplementationOwner("issue", 99)) is True
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Skipped - validated Issue generation changed during capacity reconciliation"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()

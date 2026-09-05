@@ -634,7 +634,7 @@ class TestAutomationEngine:
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        assert result.actions == ["Deferred - active execution already exists (issue:1680)"]
+        assert result.actions == ["Deferred - implementation ownership already exists (issue:1680)"]
         engine._process_single_candidate_reserved.assert_not_called()
         assert slots.active_execution_ids(owner) == (execution_id,)
 

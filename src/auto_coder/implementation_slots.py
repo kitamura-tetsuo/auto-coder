@@ -442,7 +442,18 @@ class ImplementationSlotRepository:
             if session_id not in provider_sessions:
                 provider_sessions.append(session_id)
                 self._write(owners)
-            return True
+        return True
+
+    def has_provider_sessions(self, owner: ImplementationOwner) -> bool:
+        """Return whether logical ownership includes asynchronous provider work."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return False
+        sessions = record.get("provider_sessions", [])
+        if not isinstance(sessions, list) or any(not isinstance(value, str) for value in sessions):
+            raise ImplementationSlotUnavailable("Cannot safely parse provider implementation membership")
+        return bool(sessions)
 
     def active_owners(self) -> tuple[ImplementationOwner, ...]:
         with self._state_lock():

@@ -1226,8 +1226,9 @@ class AutomationEngine:
                 # never deletes or overlaps its capacity ownership.
                 owner = ImplementationOwner("issue", item_number)
                 slots = self._get_implementation_slots(repo_name)
-                if slots.active_execution_ids(owner) and not continue_execution:
-                    result.actions = [f"Deferred - active execution already exists ({owner.key})"]
+                retained_async_owner = slots.has_provider_sessions(owner)
+                if (slots.active_execution_ids(owner) or retained_async_owner) and not continue_execution:
+                    result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                     return result
                 with slots.serialize(owner):
                     return self._process_single_candidate_unified(
@@ -1351,11 +1352,21 @@ class AutomationEngine:
         implementation_pr = item_number if candidate.type == "pr" and owner.kind != "pr" else None
         labels = candidate.data.get("labels", [])
         urgent_issue = candidate.type == "issue" and isinstance(labels, list) and any(label == "urgent" or (isinstance(label, dict) and label.get("name") == "urgent") for label in labels)
+
+        def issue_generation_is_current() -> bool:
+            if candidate.type != "issue":
+                return True
+            latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            return isinstance(latest, dict) and is_implementation_ready(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
+
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
         with repository_dispatch_authority(repo_name):
+            if not issue_generation_is_current():
+                result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
+                return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             if not inherited_execution:
@@ -1368,6 +1379,9 @@ class AutomationEngine:
                 )
             if execution_id is None and not explicit_only:
                 slots.reconcile(self.github)
+                if not issue_generation_is_current():
+                    result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
+                    return result
                 execution_id = slots.start_execution(
                     owner,
                     implementation_pr=implementation_pr,
