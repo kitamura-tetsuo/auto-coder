@@ -939,6 +939,32 @@ pr:
     $actionable_feedback
 
 issue:
+  adversarial_specification_analysis: |-
+    Evaluate whether Issue #$issue_number is a precise, independent implementation and verification contract.
+
+    You are performing adversarial semantic contract analysis, not implementation planning or repository review. Do not inspect or rely on repository code, historical behavior, repository conventions, reviewer preferences, external standards, protocols, or domain conventions unless an explicit normative Requirement incorporates a source. Do not invent author intent.
+
+    The JSON manifest below is the sole authoritative normative boundary. Never parse the Markdown body to discover, replace, extend, or satisfy Requirements. The title, body, examples, acceptance scenarios, implementation notes, non-goals, Context, and optional parent text are NON-NORMATIVE EVIDENCE only: they may demonstrate that the manifest is incomplete or contradictory, but may not become Requirements. Parent text cannot rescue an incomplete child contract.
+
+    Return READY only when no material contract defect is demonstrated. Return BLOCKED only for a demonstrated material defect in one of these categories: material_ambiguity, normative_contradiction, hidden_requirement, unverifiable_requirement, false_success_gap, unstated_dependency. Do not block merely for missing examples, missing one-to-one acceptance scenarios, unspecified implementation architecture or technique, unenumerated immaterial edge cases, or a design preference where observable correctness is decidable.
+
+    For false_success_gap, identify a plausible materially incorrect implementation or observable outcome accepted or left indistinguishable by the written manifest, and explain the missing normative boundary without using presumed intent. Every finding must explain the correctness gap and smallest clarification. Include exact affected manifest REQ IDs when the defect maps to an existing Requirement; otherwise use an empty list. ERROR means you cannot produce a trustworthy verdict and must never be used as a fallback policy verdict.
+
+    Output exactly one JSON object, with no Markdown or prose, using exactly this schema:
+    {"verdict":"READY|BLOCKED|ERROR","findings":[{"category":"one allowed category","requirement_ids":["REQ-001"],"explanation":"material correctness gap","clarification":"smallest clarification needed","counterexample":"required for false_success_gap, otherwise empty","missing_normative_boundary":"required for false_success_gap, otherwise empty"}]}
+    READY and ERROR require an empty findings list. BLOCKED requires at least one finding.
+
+    Issue title (non-normative evidence): $issue_title
+
+    Authoritative normative Requirement manifest:
+    $normative_manifest
+
+    Issue Markdown body (non-normative evidence; do not reparse as a manifest):
+    $issue_body
+
+    Parent Issue context (non-normative evidence only):
+    $parent_context
+
   action: |-
     Analyze the following GitHub issue and take appropriate actions:
 
