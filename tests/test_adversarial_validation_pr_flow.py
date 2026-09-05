@@ -494,7 +494,13 @@ class TestAdversarialValidationCodexFeedback:
             backend = CodexCloudClient(repo_name="owner/repo")
         backend.send_followup = MagicMock(return_value=True)
         backend.wham_client = MagicMock()
-        backend.wham_client.resolve_latest_assistant_turn.side_effect = ["task_e_abc123~assttrn_1", "task_e_abc123~assttrn_1", "task_e_abc123~assttrn_2", "task_e_abc123~assttrn_2"]
+        backend.wham_client.resolve_latest_assistant_turn.side_effect = [
+            "task_e_abc123~assttrn_1",
+            None,
+            "task_e_abc123~assttrn_1",
+            "task_e_abc123~assttrn_2",
+            "task_e_abc123~assttrn_2",
+        ]
         status = MagicMock(returncode=0, stdout="COMPLETED", stderr="")
         state_path = tmp_path / "review-repairs.json"
         pr_data = {
@@ -511,11 +517,13 @@ class TestAdversarialValidationCodexFeedback:
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
             pr_data["head"]["sha"] = "unrelated-head-b"
+            unavailable = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             unrelated = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
 
         assert backend.send_followup.call_count == 2
+        assert "all actionable feedback was already delivered" in unavailable[0]
         assert "all actionable feedback was already delivered" in unrelated[0]
         assert "latest corrective attempt did not resolve" in backend.send_followup.call_args.args[1]
         assert "Sent adversarial NEEDS_FIX report" in failed_correction[0]

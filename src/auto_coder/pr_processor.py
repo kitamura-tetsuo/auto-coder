@@ -4411,6 +4411,11 @@ def _adversarial_feedback_generation_identity(feedback_identity: str, remediatio
     return f"{feedback_identity}:remediation:{generation}"
 
 
+def _has_adversarial_remediation_evidence(remediation_token: str, validation_report: str) -> bool:
+    """Return whether this observation proves that remediation advanced."""
+    return bool(remediation_token) or bool(re.search(r"<!-- auto-coder-change-provenance-evidence:v1:[a-f0-9]+ -->", validation_report))
+
+
 def _adversarial_feedback_belongs_to_report(body: str, validation_report: str) -> bool:
     """Return whether a standalone adversarial finding is represented in a report."""
     blocks = [block.strip() for block in re.split(r"\n\s*\n", body) if block.strip()]
@@ -4917,6 +4922,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         logger.error(f"Failed to identify actionable adversarial feedback for PR #{pr_number}: {exc}")
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"]
     requested_bodies = set(actionable_feedback)
+    has_remediation_evidence = _has_adversarial_remediation_evidence(remediation_token, validation_report)
     feedback_items = [
         (
             thread.comments[0].body,
@@ -4940,7 +4946,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                 client,
                 provider,
                 task_id,
-                [generation_identity for _body, _finding_identity, generation_identity in feedback_items if generation_identity not in delivered],
+                [generation_identity for _body, finding_identity, generation_identity in feedback_items if generation_identity not in delivered and (finding_identity not in delivered or has_remediation_evidence)],
             )
             if reconciled:
                 delivered.update(reconciled)
@@ -4954,7 +4960,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                     sorted(reconciled_receipts),
                     f"🤖 Auto-Coder: I reconciled previously submitted adversarial feedback with the existing {provider} task.",
                 )
-        pending_feedback = [(body, finding_identity, generation_identity) for body, finding_identity, generation_identity in feedback_items if generation_identity not in delivered]
+        pending_feedback = [(body, finding_identity, generation_identity) for body, finding_identity, generation_identity in feedback_items if generation_identity not in delivered and (finding_identity not in delivered or has_remediation_evidence)]
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
         failed_correction = any(finding_identity in delivered for _body, finding_identity, _generation_identity in pending_feedback)
