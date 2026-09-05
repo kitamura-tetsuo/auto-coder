@@ -1470,7 +1470,7 @@ class AutomationEngine:
             candidate.data.update(dispatch_snapshot)
             dispatch_labels = candidate.data.get("labels", []) or []
             dispatch_label_names = {label if isinstance(label, str) else label.get("name") for label in dispatch_labels if isinstance(label, (str, dict))}
-            if config.CHECK_LABELS and "@auto-coder" in dispatch_label_names:
+            if config.CHECK_LABELS and not force and not advance_issue_attempt and "@auto-coder" in dispatch_label_names:
                 result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                 return result
 
