@@ -779,50 +779,73 @@ def handle_stale_jules_issue_sessions(
                 continue
 
             owner = ImplementationOwner("issue", issue_number)
-            serialization = implementation_slots.serialize(owner) if implementation_slots is not None else nullcontext()
+            if implementation_slots is None:
+                logger.warning(f"Skipping stale Jules session {session_id}: implementation capacity admission is unavailable")
+                continue
+            serialization = implementation_slots.serialize(owner)
             with serialization:
+                # Authorization must be the last external state check before
+                # ownership transition. Earlier Issue/PR lookups and lock waits
+                # cannot carry READY forward across an edit or label withdrawal.
+                authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
+                if authorized_issue is None:
+                    continue
+                issue_data["title"] = str(authorized_issue.get("title") or "")
+                issue_data["body"] = str(authorized_issue.get("body") or "")
                 if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
                     continue
 
-                result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
-                get_trace_logger().log(
-                    "Jules Timeout",
-                    f"Stopped Jules session for issue #{issue_number}",
-                    item_type="issue",
-                    item_number=issue_number,
-                    details={"session_id": session_id, "timeout_hours": timeout_hours},
-                )
+                # The stopped remote execution relinquishes its identities before
+                # the replacement performs normal, atomic capacity admission.
+                for old_execution_id in implementation_slots.active_execution_ids(owner):
+                    implementation_slots.finish_execution(owner, old_execution_id)
+                replacement_execution_id = implementation_slots.start_execution(owner)
+                if replacement_execution_id is None:
+                    logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: implementation capacity is occupied")
+                    continue
 
-                # The abandoned Jules run counts as a failed attempt, so the fallback starts
-                # from a fresh attempt branch instead of the one Jules left behind.
                 try:
-                    new_attempt = increment_attempt(repo_name, issue_number)
-                    result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
-                except Exception as e:
-                    logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
-                    result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
-
-                from .cli_helpers import create_high_score_backend_manager
-
-                backend_manager = create_high_score_backend_manager()
-                if backend_manager is None:
-                    logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
-
-                # The @auto-coder label the Jules run left on the issue is kept so no other
-                # instance picks the issue up while the fallback is working on it. Passing
-                # check_labels=False makes the label gate let this run through instead of
-                # skipping the issue it already owns.
-                result.actions.extend(
-                    _take_issue_actions(
-                        repo_name,
-                        issue_data,
-                        config,
-                        github_client,
-                        backend_manager=backend_manager,
-                        check_labels=False,
+                    result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
+                    get_trace_logger().log(
+                        "Jules Timeout",
+                        f"Stopped Jules session for issue #{issue_number}",
+                        item_type="issue",
+                        item_number=issue_number,
+                        details={"session_id": session_id, "timeout_hours": timeout_hours},
                     )
-                )
-                result.issue_numbers.append(issue_number)
+
+                    # The abandoned Jules run counts as a failed attempt, so the fallback starts
+                    # from a fresh attempt branch instead of the one Jules left behind.
+                    try:
+                        new_attempt = increment_attempt(repo_name, issue_number)
+                        result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+                    except Exception as e:
+                        logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                        result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+
+                    from .cli_helpers import create_high_score_backend_manager
+
+                    backend_manager = create_high_score_backend_manager()
+                    if backend_manager is None:
+                        logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
+
+                    # The @auto-coder label the Jules run left on the issue is kept so no other
+                    # instance picks the issue up while the fallback is working on it. Passing
+                    # check_labels=False makes the label gate let this run through instead of
+                    # skipping the issue it already owns.
+                    result.actions.extend(
+                        _take_issue_actions(
+                            repo_name,
+                            issue_data,
+                            config,
+                            github_client,
+                            backend_manager=backend_manager,
+                            check_labels=False,
+                        )
+                    )
+                    result.issue_numbers.append(issue_number)
+                finally:
+                    implementation_slots.finish_execution(owner, replacement_execution_id)
 
         except Exception as e:
             logger.error(f"Failed to handle stale Jules session {session_id}: {e}")

@@ -1,7 +1,7 @@
 """Generation-bound Issue specification validation lifecycle regressions."""
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from unittest.mock import Mock
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
@@ -195,14 +195,43 @@ def test_concurrent_force_and_ordinary_paths_cannot_both_dispatch(tmp_path):
     assert second_result.actions == ["Deferred - active execution already exists (issue:1728)"]
 
 
-def test_blocked_new_generation_releases_existing_implementation_capacity(tmp_path):
-    github = GitHubFlow([snapshot()] * 3)
-    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "BLOCKED"))
-    owner = ImplementationOwner("issue", 1728)
-    assert engine.implementation_slots.start_execution(owner) is not None
-    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert result.actions == ["Rejected - blocked specification"]
-    assert engine.implementation_slots.active_execution_ids(owner) == ()
+def test_blocked_revalidation_cannot_untrack_live_execution_or_bypass_capacity(tmp_path):
+    state = {1728: snapshot(body=BODY + " A"), 1729: {**snapshot(title="Other", body=BODY), "number": 1729}}
+
+    class MutableGitHub(GitHubFlow):
+        def get_issue_dispatch_snapshot_strict(self, _repo, number):
+            return dict(state[number])
+
+    github = MutableGitHub([state[1728]])
+
+    def analyze(_manifest, body):
+        return SpecificationAnalysisResult("BLOCKED", (FINDING,)) if body.endswith(" B") else SpecificationAnalysisResult("READY")
+
+    gate = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "live.json", analyze)
+    engine, candidate = engine_with_gate(tmp_path, github, gate)
+    entered = Event()
+    release = Event()
+
+    def live_dispatch(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return CandidateProcessingResult("issue", 1728, "Title", True, ["dispatched"])
+
+    engine._process_single_candidate_reserved.side_effect = live_dispatch
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        running = pool.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config)
+        assert entered.wait(5)
+        state[1728] = snapshot(body=BODY + " B")
+        blocked = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        assert blocked.actions == ["Rejected - blocked specification"]
+        owner = ImplementationOwner("issue", 1728)
+        assert engine.implementation_slots.active_execution_ids(owner)
+
+        other = Candidate(type="issue", data={"number": 1729, "title": "Other", "body": BODY}, priority=0)
+        deferred = engine._process_single_candidate_unified("owner/repo", other, engine.config)
+        assert deferred.actions == ["Deferred - logical implementation limit is occupied (issue:1729)"]
+        release.set()
+        assert running.result(timeout=5).success is True
 
 
 def test_resubmitted_unchanged_blocked_generation_removes_label_again_after_restart(tmp_path):
@@ -258,3 +287,24 @@ def test_concurrent_different_issue_records_both_survive_restart(tmp_path):
     restarted = SpecificationValidationLifecycle("owner/repo", "provider/model", path, Mock(side_effect=AssertionError("must reuse")))
     assert [restarted.decide(manifest, manifest.title, BODY).verdict for manifest in manifests] == ["READY", "READY"]
     assert sorted(calls) == [1, 2]
+
+
+def test_supported_alias_provider_change_invalidates_production_policy(monkeypatch):
+    from auto_coder.llm_backend_config import LLMBackendConfiguration
+    from auto_coder.specification_validation_lifecycle import configured_provider_identity
+
+    def config(backend_type):
+        return LLMBackendConfiguration.load_from_dict(
+            {
+                "backend_adversarial_validation": {"order": ["reviewer"]},
+                "backends": {"reviewer": {"backend_type": backend_type, "model": "shared-model"}},
+            }
+        )
+
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda: config("codex"))
+    codex_identity = configured_provider_identity()
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda: config("claude"))
+    claude_identity = configured_provider_identity()
+    assert codex_identity != claude_identity
+    assert '"provider":"codex"' in codex_identity
+    assert '"provider":"claude"' in claude_identity

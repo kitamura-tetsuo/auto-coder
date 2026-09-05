@@ -7,6 +7,7 @@ implemented by the backend_with_high_score backend instead.
 """
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from threading import Event
 from unittest.mock import MagicMock, patch
@@ -64,6 +65,11 @@ class TestHandleStaleJulesIssueSessions:
     """Test cases for handle_stale_jules_issue_sessions."""
 
     def _run(self, sessions, github_client, config, issue_number=42, stopped=False, backend_manager=None, implementation_slots=None):
+        if implementation_slots is None:
+            implementation_slots = MagicMock()
+            implementation_slots.serialize.return_value = nullcontext()
+            implementation_slots.active_execution_ids.return_value = ()
+            implementation_slots.start_execution.return_value = "replacement-execution"
         jules_client = MagicMock()
         jules_client.list_sessions.return_value = sessions
 
@@ -526,3 +532,81 @@ def test_daemon_stale_session_replacement_waits_for_current_generation_ready(con
     increment.assert_not_called()
     dispatch.assert_not_called()
     assert engine.implementation_slots.active_owners() == ()
+
+
+def test_ready_stale_replacement_reenters_normal_capacity_after_validation(config, tmp_path):
+    """A READY daemon handoff cannot dispatch when another Issue takes released capacity."""
+    from src.auto_coder.automation_engine import AutomationEngine
+    from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
+    from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+
+    github = _github_client()
+    body = "## Requirements\n- REQ-001: Implement replacement."
+    current = {"number": 42, "title": "Replacement", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: dict(current)
+    engine = AutomationEngine(github, config=config)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    analysis_started = Event()
+    analysis_release = Event()
+
+    def analyze(_manifest, _body):
+        analysis_started.set()
+        assert analysis_release.wait(5)
+        return SpecificationAnalysisResult("READY")
+
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "validations.json", analyze)
+    jules = MagicMock()
+    jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
+    cloud = MagicMock()
+    cloud.get_issue_by_session.return_value = 42
+    with (
+        patch("src.auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("src.auto_coder.issue_processor.CloudManager", return_value=cloud),
+        patch("src.auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("src.auto_coder.issue_processor.increment_attempt") as increment,
+        patch("src.auto_coder.issue_processor._take_issue_actions") as dispatch,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        run = pool.submit(engine.handle_stale_jules_issue_sessions, "owner/repo")
+        assert analysis_started.wait(5)
+        assert slots.start_execution(ImplementationOwner("issue", 99)) is not None
+        analysis_release.set()
+        run.result(timeout=5)
+    increment.assert_not_called()
+    dispatch.assert_not_called()
+    assert slots.active_owners() == (ImplementationOwner("issue", 99),)
+
+
+def test_stale_replacement_rechecks_after_link_lookup_before_ownership(config, tmp_path):
+    """Withdrawal during post-validation I/O invalidates READY before replacement mutation."""
+    from src.auto_coder.automation_engine import AutomationEngine
+
+    github = _github_client()
+    body = "## Requirements\n- REQ-001: Implement replacement."
+    current = {"number": 42, "title": "Replacement", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: dict(current)
+
+    def withdraw(*_args):
+        current["body"] = body + "\nEdited"
+        current["labels"] = []
+        return False
+
+    github.has_linked_pr.side_effect = withdraw
+    engine = AutomationEngine(github, config=config)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    jules = MagicMock()
+    jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
+    cloud = MagicMock()
+    cloud.get_issue_by_session.return_value = 42
+    with (
+        patch("src.auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("src.auto_coder.issue_processor.CloudManager", return_value=cloud),
+        patch("src.auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("src.auto_coder.issue_processor.increment_attempt") as increment,
+        patch("src.auto_coder.issue_processor._take_issue_actions") as dispatch,
+    ):
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+    jules.send_message.assert_not_called()
+    increment.assert_not_called()
+    dispatch.assert_not_called()

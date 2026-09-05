@@ -42,7 +42,16 @@ def configured_provider_identity() -> str:
     if not order:
         getter = getattr(config, "get_high_score_backend_order", None)
         order = getter() if callable(getter) else list(getattr(config, "backend_with_high_score_order", []) or [])
-    route = [{"provider": name, "model": config.get_model_for_backend(name)} for name in order]
+    route = []
+    for name in order:
+        backend = config.get_backend_config(name)
+        route.append(
+            {
+                "alias": name,
+                "provider": (backend.backend_type or backend.name) if backend is not None else name,
+                "model": config.get_model_for_backend(name),
+            }
+        )
     return json.dumps(route, sort_keys=True, separators=(",", ":"))
 
 

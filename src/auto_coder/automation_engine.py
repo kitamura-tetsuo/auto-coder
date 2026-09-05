@@ -24,7 +24,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
-from .implementation_slots import ImplementationOwner, ImplementationOwnerResolutionError, ImplementationSlotRepository
+from .implementation_slots import ImplementationOwnerResolutionError, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -191,10 +191,6 @@ class AutomationEngine:
         if manifest.error:
             return None
         validator = self._get_specification_validator(repo_name)
-        identity = validator.identity(issue_number, title, body)
-        durable = validator.store.get(identity)
-        if durable is None or durable.verdict != "READY":
-            self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", issue_number))
         decision = validator.decide(manifest, title, body)
         if decision.verdict == "BLOCKED":
             validator.apply_blocked(self.github, decision)
@@ -1279,16 +1275,8 @@ class AutomationEngine:
             # body, repository, Issue and validator policy. It deliberately runs
             # before implementation ownership/capacity is consulted.
             validator = self._get_specification_validator(repo_name)
-            validation_identity = validator.identity(item_number, current_title, current_body)
-            durable_decision = validator.store.get(validation_identity)
-            if durable_decision is None or durable_decision.verdict != "READY":
-                # Existing ownership belongs to an older/unauthorized generation.
-                # Release it before semantic validation so validation itself never
-                # retains implementation capacity.
-                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
             decision = validator.decide(contract, current_title, current_body)
             if decision.verdict == "ERROR":
-                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                 result.actions = ["Deferred - specification validation error"]
                 return result
@@ -1298,12 +1286,10 @@ class AutomationEngine:
                 except Exception as exc:
                     side_effect_error = str(exc)
                 if side_effect_error:
-                    self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                     logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
                     result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
                     result.actions = ["Rejected - blocked specification (side effects incomplete)"]
                     return result
-                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                 result.error = "Specification validation found material defects"
                 result.actions = ["Rejected - blocked specification"]
                 return result
@@ -1322,7 +1308,6 @@ class AutomationEngine:
                 str(dispatch_snapshot.get("body") or ""),
             )
             if not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
-                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 

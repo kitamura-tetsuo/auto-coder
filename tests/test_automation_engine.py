@@ -612,8 +612,8 @@ class TestAutomationEngine:
         assert state["issue:2"]["emergency"] is True
         assert slots.start_execution(ImplementationOwner("issue", 3), allow_urgent_emergency=True) is None
 
-    def test_unvalidated_existing_issue_execution_is_replaced_after_ready(self, tmp_path):
-        """An execution without current READY cannot retain ownership during validation."""
+    def test_existing_issue_execution_remains_tracked_until_it_finishes(self, tmp_path):
+        """Revalidation cannot delete the capacity record of live implementation."""
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
@@ -634,8 +634,9 @@ class TestAutomationEngine:
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        engine._process_single_candidate_reserved.assert_called_once()
-        assert slots.active_execution_ids(owner) == ()
+        assert result.actions == ["Deferred - active execution already exists (issue:1680)"]
+        engine._process_single_candidate_reserved.assert_not_called()
+        assert slots.active_execution_ids(owner) == (execution_id,)
 
     def test_first_branch_linked_pr_discovery_protects_existing_owner_before_reconciliation(self, tmp_path):
         """A newly discovered PR must record membership before its Issue can be released."""
