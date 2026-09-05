@@ -450,7 +450,7 @@ class AutomationEngine:
         refill_pending = False
         while True:
             available_count, identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
-            if available_count > 0 and previous_count == 0:
+            if available_count > 0 and (previous_count == 0 or identity != previous_identity):
                 refill_pending = True
                 logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
             previous_count, previous_identity = available_count, identity
@@ -1266,7 +1266,7 @@ class AutomationEngine:
             if issue_data.get("has_open_sub_issues"):
                 return True
             sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
-            if sub_issues:
+            if isinstance(sub_issues, list) and sub_issues:
                 return True
             if self.open_issues_snapshot:
                 fallback_children = [other["number"] for other in self.open_issues_snapshot if isinstance(other.get("number"), int) and other.get("parent_issue_number") == issue_number and other.get("number") != issue_number]
@@ -1465,6 +1465,13 @@ class AutomationEngine:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
+            # Refill and direct dispatch share this last authoritative hierarchy
+            # gate. Candidate collection metadata is not sufficient because a
+            # child can open after enumeration and before slot admission.
+            if self._has_open_sub_issues(repo_name, candidate):
+                result.actions = ["Skipped - open sub-issues must be completed first"]
+                return result
+
             # The backend must receive exactly the authoritative generation that
             # READY authorized, never the older candidate collection payload.
             candidate.data.update(dispatch_snapshot)
@@ -1499,7 +1506,13 @@ class AutomationEngine:
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
         with repository_dispatch_authority(repo_name):
-            if not issue_generation_is_current():
+            try:
+                generation_is_current = issue_generation_is_current()
+            except Exception as exc:
+                result.error = f"Cannot confirm Issue generation before ownership admission: {exc}"
+                result.refill_retry_required = True
+                return result
+            if not generation_is_current:
                 result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
                 return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
@@ -1515,7 +1528,13 @@ class AutomationEngine:
                 )
             if execution_id is None and not explicit_only:
                 slots.reconcile(self.github)
-                if not issue_generation_is_current():
+                try:
+                    generation_is_current = issue_generation_is_current()
+                except Exception as exc:
+                    result.error = f"Cannot confirm Issue generation during capacity reconciliation: {exc}"
+                    result.refill_retry_required = True
+                    return result
+                if not generation_is_current:
                     result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
                     return result
                 execution_id = slots.start_execution(

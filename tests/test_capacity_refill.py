@@ -1,6 +1,6 @@
 import asyncio
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
@@ -154,6 +154,32 @@ def test_release_during_refill_causes_second_fresh_enumeration(monkeypatch, tmp_
     asyncio.run(scenario())
     assert github.get_open_entities_strict.call_count == 2
     assert ImplementationOwner("issue", 30) in engine.implementation_slots.active_owners()
+
+
+def test_fill_and_release_between_ordinary_samples_triggers_refill(monkeypatch, tmp_path):
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    path = tmp_path / "slots.json"
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, path)
+    refill = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, "_refill_normal_implementation_slots", refill)
+    monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.05)
+
+    async def scenario():
+        task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
+        await asyncio.sleep(0.01)
+        external = ImplementationSlotRepository("owner/repo", 1, path)
+        transient = ImplementationOwner("issue", 40)
+        assert external.reserve_new(transient)
+        external.release(transient)
+        for _ in range(100):
+            if refill.await_count:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    refill.assert_awaited_once_with("owner/repo")
 
 
 def test_available_normal_slots_excludes_emergency_capacity(tmp_path):
