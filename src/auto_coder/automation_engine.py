@@ -38,7 +38,7 @@ from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import GitHubClient, get_ghapi_client, resolve_authoritative_item_type
+from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
@@ -1083,6 +1083,7 @@ class AutomationEngine:
         explicit_only: bool = False,
         force: bool = False,
         continue_execution: bool = False,
+        advance_issue_attempt: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1136,6 +1137,17 @@ class AutomationEngine:
                 return result
             if "pull_request" in current_issue:
                 result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as pr"
+                return result
+
+            # Readiness is intentionally decided from the same cache-bypassing
+            # snapshot as the dispatch type and requirement contract. Candidate
+            # data may have been collected earlier, so trusting its labels would
+            # allow a subsequently removed readiness label to start work. Keep
+            # this before slot resolution and every implementation ownership side
+            # effect; explicit/forced processing therefore cannot bypass it.
+            if not is_implementation_ready(current_issue):
+                logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
+                result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
 
             current_body = str(current_issue.get("body") or "")
@@ -1211,10 +1223,23 @@ class AutomationEngine:
             # Forced recovery intentionally does not take the per-owner mutation
             # lock; its separate durable execution identity protects sibling state.
             if explicit_only and force:
-                result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
+                if advance_issue_attempt:
+                    result = self._process_single_candidate_reserved(
+                        repo_name,
+                        candidate,
+                        config,
+                        jules_mode,
+                        force_adversarial_validation=True,
+                        advance_issue_attempt=True,
+                    )
+                else:
+                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
             else:
                 with slots.serialize(owner):
-                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+                    if advance_issue_attempt:
+                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
+                    else:
+                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
         finally:
             if not inherited_execution:
                 slots.finish_execution(owner, execution_id)
@@ -1228,6 +1253,7 @@ class AutomationEngine:
         config: AutomationConfig,
         jules_mode: bool = False,
         force_adversarial_validation: bool = False,
+        advance_issue_attempt: bool = False,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -1280,6 +1306,10 @@ class AutomationEngine:
                 authoritative_type = self._get_authoritative_item_type(repo_name, item_number)
                 if authoritative_type != "issue":
                     raise ValueError(f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as {authoritative_type}")
+                if advance_issue_attempt:
+                    from .attempt_manager import increment_attempt
+
+                    increment_attempt(repo_name, item_number)
 
             # Close empty PRs or stale Jules PRs before the label gate below.
             if item_type == "pr":
@@ -1314,7 +1344,10 @@ class AutomationEngine:
                 item_number,
                 item_type=item_type,
                 config=config,
-                check_labels=config.CHECK_LABELS and not force_adversarial_validation,
+                # A replacement attempt continues the Issue's existing logical
+                # ownership. Its retained @auto-coder label belongs to this
+                # lifecycle, not another worker, so it must not reject the handoff.
+                check_labels=config.CHECK_LABELS and not force_adversarial_validation and not advance_issue_attempt,
                 known_labels=candidate.data.get("labels") if candidate.data else None,
             ) as should_process:
                 if not should_process:
@@ -1455,6 +1488,7 @@ class AutomationEngine:
         issue_number: int,
         config: AutomationConfig,
         jules_mode: bool,
+        advance_attempt: bool = False,
     ) -> List[str]:
         """Process an issue whose Jules attempt was just abandoned.
 
@@ -1479,6 +1513,7 @@ class AutomationEngine:
             config,
             jules_mode=jules_mode,
             continue_execution=True,
+            advance_issue_attempt=advance_attempt,
         )
         actions = [f"Started a new attempt for issue #{issue_number}"] + list(issue_result.actions)
         if issue_result.error:

@@ -15,6 +15,15 @@ implementation-slot state is active or unreadable.
 
 This file documents the client-facing features and tools provided by auto-coder.
 
+## Implementation-ready Issue dispatch gate
+
+An Issue can enter implementation only while its current authoritative GitHub
+snapshot contains the `implementation-ready` label. Auto-Coder checks this
+cache-bypassing snapshot at the shared pre-dispatch boundary before reserving an
+implementation slot, adding ownership, creating a branch, or starting any local
+or cloud backend. The rule also applies to explicit `--only` and forced runs;
+removing the label before dispatch makes the Issue ineligible again.
+
 ## Issue requirement-contract intake gate
 
 Before any implementation slot, label, branch, local backend, or cloud task is
