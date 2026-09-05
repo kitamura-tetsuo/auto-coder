@@ -187,3 +187,31 @@ def test_commonmark_indented_code_is_shared_by_all_manifest_consumers() -> None:
     assert [(item.requirement_id, item.text) for item in shared.requirements] == expected
     assert intake.entries == expected
     assert [(item.requirement_id, item.text) for item in adversarial.requirements] == expected
+
+
+def test_rendered_indented_continuation_fails_closed_across_consumers() -> None:
+    body = "## Requirements\n- REQ-001: First line.\n    Continued normative text.\n"
+
+    shared = parse_issue_specification("Continuation", body)
+    intake = parse_requirement_contract(1726, body)
+    adversarial = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Continuation", body=body),)))
+
+    assert [(item.requirement_id, item.text) for item in shared.requirements] == [("REQ-001", "First line.")]
+    assert [(item.code, item.line) for item in shared.diagnostics] == [("malformed-requirement", 3)]
+    assert intake.entries == []
+    assert "malformed entries" in (intake.error or "")
+    assert adversarial.requirements == []
+    assert "malformed entries" in (adversarial.error or "")
+
+
+def test_indented_html_comment_closer_exposes_following_contract_to_all_consumers() -> None:
+    body = "<!--\n    -->\n## Requirements\nREQ-001: Visible contract.\n"
+
+    shared = parse_issue_specification("Comment closer", body)
+    intake = parse_requirement_contract(1726, body)
+    adversarial = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Comment closer", body=body),)))
+
+    expected = [("REQ-001", "Visible contract.")]
+    assert [(item.requirement_id, item.text) for item in shared.requirements] == expected
+    assert intake.entries == expected
+    assert [(item.requirement_id, item.text) for item in adversarial.requirements] == expected

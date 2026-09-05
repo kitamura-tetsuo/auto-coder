@@ -81,7 +81,19 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
     in_comment = False
     fence_character = ""
     fence_length = 0
+    paragraph_open = False
     for line_number, raw_line in enumerate(body.splitlines(), 1):
+        if in_comment:
+            closing = raw_line.find("-->")
+            if closing < 0:
+                visible.append((line_number, ""))
+                paragraph_open = False
+                continue
+            # HTML closing delimiters are recognized regardless of indentation.
+            # Only the rendered suffix participates in Markdown block parsing.
+            raw_line = raw_line[closing + 3 :]
+            in_comment = False
+
         fence = _FENCE.match(raw_line)
         if not in_comment and fence:
             marker = fence.group(1)
@@ -98,6 +110,7 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
                 pass
             else:
                 fence_character, fence_length = marker[0], len(marker)
+                paragraph_open = False
                 continue
         if fence_character:
             continue
@@ -113,19 +126,12 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
                 indentation += 4 - (indentation % 4)
             else:
                 break
-        if raw_line.strip() and indentation >= 4:
+        if raw_line.strip() and indentation >= 4 and not paragraph_open:
             continue
 
         line = raw_line
         rendered_parts: list[str] = []
         while line:
-            if in_comment:
-                closing = line.find("-->")
-                if closing < 0:
-                    line = ""
-                    continue
-                line = line[closing + 3 :]
-                in_comment = False
             opening = line.find("<!--")
             if opening < 0:
                 rendered_parts.append(line)
@@ -133,7 +139,13 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
             rendered_parts.append(line[:opening])
             line = line[opening + 4 :]
             in_comment = True
-        visible.append((line_number, "".join(rendered_parts)))
+        rendered = "".join(rendered_parts)
+        visible.append((line_number, rendered))
+        stripped = rendered.strip()
+        if not stripped or _MARKDOWN_HEADING.match(rendered):
+            paragraph_open = False
+        else:
+            paragraph_open = True
     return visible
 
 
