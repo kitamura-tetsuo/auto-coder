@@ -86,14 +86,17 @@ def _auth_path() -> Path:
 
 def _read_valid_auth(path: Path) -> str:
     try:
-        content = path.read_text(encoding="utf-8")
+        # Decode bytes explicitly instead of using TextIO's universal-newline
+        # handling: the remote value must be byte-for-byte equivalent to the
+        # authoritative UTF-8 file, including CRLF line endings.
+        content = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError("local Codex auth is missing or unreadable") from exc
     if not content.strip():
         raise ValueError("local Codex auth is empty")
     try:
         parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("local Codex auth is malformed") from exc
     if not isinstance(parsed, dict):
         raise ValueError("local Codex auth is not a JSON object")
