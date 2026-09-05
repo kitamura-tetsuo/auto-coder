@@ -32,6 +32,17 @@ implementation slot, adding ownership, creating a branch, or starting any local
 or cloud backend. The rule also applies to explicit `--only` and forced runs;
 removing the label before dispatch makes the Issue ineligible again.
 
+## Adversarial implementation-readiness analysis
+
+Auto-Coder exposes a provider-independent semantic analysis operation for an
+Issue's authoritative normative manifest. It treats title, body, examples, and
+optional parent context only as non-normative evidence, never reparses Markdown
+to redefine Requirements, and does not inspect repository code. The operation
+returns a strictly validated `READY`, `BLOCKED`, or fail-closed `ERROR` result.
+Blocked findings use stable material-defect categories, exact affected
+Requirement IDs, and (for false-success gaps) a concrete incorrect outcome and
+the missing normative boundary.
+
 ## Issue requirement-contract intake gate
 
 The shared requirement contract also exposes a provider-independent normative
