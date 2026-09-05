@@ -631,7 +631,6 @@ class AutomationEngine:
         )
 
         candidates: List[Candidate] = []
-        candidates_count = 0
         # Issues queued from the stale-Jules-PR path, to avoid queueing them twice
         requeued_issue_numbers: set[int] = set()
 
@@ -741,7 +740,6 @@ class AutomationEngine:
                             issue_candidate.priority = 3
                             candidates.append(issue_candidate)
                             requeued_issue_numbers.add(issue_number)
-                            candidates_count += 1
                             logger.info(f"Queued issue #{issue_number} for a new attempt after closing empty PR #{pr_number}")
                     continue
 
@@ -761,7 +759,6 @@ class AutomationEngine:
                             issue_candidate.priority = 3
                             candidates.append(issue_candidate)
                             requeued_issue_numbers.add(issue_number)
-                            candidates_count += 1
                             logger.info(f"Queued issue #{issue_number} for a new attempt after closing stale Jules PR #{pr_number}")
                     continue
 
@@ -894,9 +891,6 @@ class AutomationEngine:
                     except Exception as e:
                         logger.warning(f"Failed to check Jules PR status for #{pr_number}: {e}")
 
-                # Count only PRs that we will actually consider as candidates
-                candidates_count += 1
-
                 # Calculate priority
                 # Enhanced priority logic to distinguish unmergeable PRs
                 if any(
@@ -941,154 +935,138 @@ class AutomationEngine:
                     )
                 )
 
-            # Collect issues if:
-            # - max_items is set and we haven't reached it yet (respect the requested limit), OR
-            # - we have no PR candidates, OR
-            # - we have few PR candidates and they're low priority (optimization to avoid usage limits)
-            raw_threshold = getattr(self.config, "MAX_OPEN_PRS_FOR_ISSUES", None)
-            if raw_threshold is None:
-                raw_threshold = getattr(self.config, "max_open_prs_for_issues", None)
-            threshold: int = 3 if raw_threshold is None else int(raw_threshold)
-            max_pr_priority = max([candidate.priority for candidate in candidates]) if candidates else 0
-            should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < threshold and max_pr_priority < 2)
+            # Discovery is independent of implementation concurrency and result
+            # limits. Always scan ordinary Issues here; priority sorting and max_items
+            # are applied afterward, while durable slots authorize implementation.
+            all_issues = self.github.get_open_issues_json(repo_name)
 
-            # Urgent Issues use a narrow REST label query when the ordinary scan is
-            # suppressed. This keeps emergency work discoverable without paying for
-            # (or queueing) a complete ordinary-Issue scan on every PR-heavy cycle.
-            issue_labels = None if should_collect_issues else ["urgent"]
-            if should_collect_issues or issue_labels:
-                # Collect issue candidates
-                # Use the REST-backed collector so ordinary and narrow scans share
-                # identical normalization and eligibility safeguards.
-                all_issues = self.github.get_open_issues_json(repo_name, labels=issue_labels) if issue_labels else self.github.get_open_issues_json(repo_name)
+            # Update snapshot
+            self.open_issues_snapshot = all_issues
 
-                # Update snapshot
-                self.open_issues_snapshot = all_issues
+            # Build map for fast lookup of open issues
+            issue_map = {i["number"]: i for i in all_issues}
 
-                # Build map for fast lookup of open issues
-                issue_map = {i["number"]: i for i in all_issues}
+            # Numbers of the PRs that are currently open, used to tell a live PR apart
+            # from a closed one still listed in an issue timeline
+            open_pr_numbers = {pr.get("number") for pr in pr_data_list if isinstance(pr.get("number"), int)}
 
-                # Numbers of the PRs that are currently open, used to tell a live PR apart
-                # from a closed one still listed in an issue timeline
-                open_pr_numbers = {pr.get("number") for pr in pr_data_list if isinstance(pr.get("number"), int)}
+            for issue_data in all_issues:
+                number = issue_data.get("number")
+                if not isinstance(number, int):
+                    logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                    continue
 
-                for issue_data in all_issues:
-                    number = issue_data.get("number")
-                    if not isinstance(number, int):
-                        logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                # Check Issue author allowlist before any processing
+                if not self._is_issue_author_allowed(issue_data):
+                    logger.debug(f"Skipping Issue #{number} - author not in Issue allowlist")
+                    continue
+
+                labels = issue_data.get("labels", []) or []
+
+                # Filter out issues created within the last 10 minutes
+                created_at_str = issue_data.get("created_at")
+                if created_at_str:
+                    # Parse the timestamp string
+                    # Example: "2024-07-15T12:34:56Z"
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+
+                    # Ensure it's timezone-aware (UTC)
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+
+                    # Get current time in UTC
+                    now_utc = datetime.now(timezone.utc)
+
+                    # If created within the last 5 minutes, skip
+                    if now_utc - created_at < timedelta(minutes=5):
+                        logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 5 minutes ago")
                         continue
 
-                    # Check Issue author allowlist before any processing
-                    if not self._is_issue_author_allowed(issue_data):
-                        logger.debug(f"Skipping Issue #{number} - author not in Issue allowlist")
+                # Skip if has sub-issues or linked PR
+                # Already queued by the stale-Jules-PR path above
+                if number in requeued_issue_numbers:
+                    continue
+
+                # Skip if another instance is processing (@auto-coder label present) using LabelManager check
+                with LabelManager(
+                    self.github,
+                    repo_name,
+                    number,
+                    item_type="issue",
+                    skip_label_add=True,
+                    check_labels=self.config.CHECK_LABELS,
+                    known_labels=labels,
+                ) as should_process:
+                    if not should_process:
                         continue
 
-                    labels = issue_data.get("labels", []) or []
+                # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
+                # Use pre-fetched data
+                if issue_data.get("has_open_sub_issues"):
+                    continue
 
-                    # Filter out issues created within the last 10 minutes
-                    created_at_str = issue_data.get("created_at")
-                    if created_at_str:
-                        # Parse the timestamp string
-                        # Example: "2024-07-15T12:34:56Z"
-                        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                # Check for elder sibling dependency: if this issue is a sub-issue,
+                # ensure no elder sibling (sub-issue with lower number) is still open
+                # Use pre-fetched data
+                parent_issue_number = issue_data.get("parent_issue_number")
+                if parent_issue_number is not None:
+                    # Try to find parent in pre-fetched map
+                    parent_issue_data = issue_map.get(parent_issue_number)
 
-                        # Ensure it's timezone-aware (UTC)
-                        if created_at.tzinfo is None:
-                            created_at = created_at.replace(tzinfo=timezone.utc)
+                    open_sub_issues: List[int] = []
+                    if parent_issue_data:
+                        open_sub_issues = parent_issue_data.get("open_sub_issue_numbers", [])
+                    else:
+                        # Parent not in map (e.g. closed), fallback to API call if strictly needed
+                        try:
+                            open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
+                        except Exception as e:
+                            logger.warning(f"Failed to check parent sub-issues for #{number}: {e}")
+                            open_sub_issues = []
 
-                        # Get current time in UTC
-                        now_utc = datetime.now(timezone.utc)
-
-                        # If created within the last 5 minutes, skip
-                        if now_utc - created_at < timedelta(minutes=5):
-                            logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 5 minutes ago")
-                            continue
-
-                    # Skip if has sub-issues or linked PR
-                    # Already queued by the stale-Jules-PR path above
-                    if number in requeued_issue_numbers:
+                    # Filter to only sibling sub-issues (exclude current issue and parent issue)
+                    elder_siblings = [s for s in open_sub_issues if s < number and s != parent_issue_number and s != number]
+                    if elder_siblings:
+                        logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
                         continue
 
-                    # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-                    with LabelManager(
-                        self.github,
-                        repo_name,
-                        number,
-                        item_type="issue",
-                        skip_label_add=True,
-                        check_labels=self.config.CHECK_LABELS,
-                        known_labels=labels,
-                    ) as should_process:
-                        if not should_process:
-                            continue
+                # Skip only while an *open* PR covers the issue; the work happens on that
+                # PR. Closed or merged PRs stay in the issue timeline forever, so counting
+                # them here would permanently hide any issue that once had a PR - including
+                # issues whose stale Jules PR was just closed for a new attempt.
+                linked_pr_numbers = set(issue_data.get("linked_pr_numbers") or [])
+                open_linked_prs = linked_pr_numbers & open_pr_numbers
+                if open_linked_prs:
+                    logger.debug(f"Skipping issue #{number} - open PR(s) {sorted(open_linked_prs)} already cover it")
+                    continue
 
-                    # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
-                    # Use pre-fetched data
-                    if issue_data.get("has_open_sub_issues"):
-                        continue
+                # Calculate priority
+                # Priority levels:
+                # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
+                # - 3: Urgent
+                # - 0: Regular issues
+                issue_priority = 0
+                # Check for breaking-change related labels (highest priority)
+                breaking_change_labels = [
+                    "breaking-change",
+                    "breaking",
+                    "api-change",
+                    "deprecation",
+                    "version-major",
+                ]
+                if any(label in labels for label in breaking_change_labels):
+                    issue_priority = 7
+                elif "urgent" in labels:
+                    issue_priority = 3
 
-                    # Check for elder sibling dependency: if this issue is a sub-issue,
-                    # ensure no elder sibling (sub-issue with lower number) is still open
-                    # Use pre-fetched data
-                    parent_issue_number = issue_data.get("parent_issue_number")
-                    if parent_issue_number is not None:
-                        # Try to find parent in pre-fetched map
-                        parent_issue_data = issue_map.get(parent_issue_number)
-
-                        open_sub_issues: List[int] = []
-                        if parent_issue_data:
-                            open_sub_issues = parent_issue_data.get("open_sub_issue_numbers", [])
-                        else:
-                            # Parent not in map (e.g. closed), fallback to API call if strictly needed
-                            try:
-                                open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
-                            except Exception as e:
-                                logger.warning(f"Failed to check parent sub-issues for #{number}: {e}")
-                                open_sub_issues = []
-
-                        # Filter to only sibling sub-issues (exclude current issue and parent issue)
-                        elder_siblings = [s for s in open_sub_issues if s < number and s != parent_issue_number and s != number]
-                        if elder_siblings:
-                            logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
-                            continue
-
-                    # Skip only while an *open* PR covers the issue; the work happens on that
-                    # PR. Closed or merged PRs stay in the issue timeline forever, so counting
-                    # them here would permanently hide any issue that once had a PR - including
-                    # issues whose stale Jules PR was just closed for a new attempt.
-                    linked_pr_numbers = set(issue_data.get("linked_pr_numbers") or [])
-                    open_linked_prs = linked_pr_numbers & open_pr_numbers
-                    if open_linked_prs:
-                        logger.debug(f"Skipping issue #{number} - open PR(s) {sorted(open_linked_prs)} already cover it")
-                        continue
-
-                    # Calculate priority
-                    # Priority levels:
-                    # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
-                    # - 3: Urgent
-                    # - 0: Regular issues
-                    issue_priority = 0
-                    # Check for breaking-change related labels (highest priority)
-                    breaking_change_labels = [
-                        "breaking-change",
-                        "breaking",
-                        "api-change",
-                        "deprecation",
-                        "version-major",
-                    ]
-                    if any(label in labels for label in breaking_change_labels):
-                        issue_priority = 7
-                    elif "urgent" in labels:
-                        issue_priority = 3
-
-                    candidates.append(
-                        Candidate(
-                            type="issue",
-                            data=issue_data,
-                            priority=issue_priority,
-                            issue_number=number,
-                        )
+                candidates.append(
+                    Candidate(
+                        type="issue",
+                        data=issue_data,
+                        priority=issue_priority,
+                        issue_number=number,
                     )
+                )
 
             # Sort by priority descending, type (issue first), creation time ascending
             def _type_order(t: str) -> int:

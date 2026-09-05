@@ -64,14 +64,6 @@ logger = get_logger(__name__)
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
 )
 @click.option(
-    "--max-open-prs-for-issues",
-    "--max-open-prs",
-    "max_open_prs_for_issues",
-    default=None,
-    type=int,
-    help="Maximum number of open PR candidates allowed when collecting new issues (default: 3)",
-)
-@click.option(
     "--only",
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
@@ -99,7 +91,6 @@ def process_issues(
     auto_merge: bool,
     auto_merge_dependabot_prs: bool,
     force_clean_before_checkout: bool,
-    max_open_prs_for_issues: Optional[int],
     only_target: Optional[str],
     log_level: str,
     log_file: Optional[str],
@@ -170,10 +161,8 @@ def process_issues(
     logger.info(f"Force clean before checkout: {force_clean_before_checkout}")
 
     # Configure engine behavior flags
-    engine_config = AutomationConfig(max_open_prs_for_issues=max_open_prs_for_issues)
+    engine_config = AutomationConfig()
     engine_config.repo_name = repo_name
-
-    logger.info(f"Max open PRs for issues: {engine_config.MAX_OPEN_PRS_FOR_ISSUES}")
 
     # Explicitly show base branch update policy for PR checks failure
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
@@ -194,7 +183,6 @@ def process_issues(
             "Auto-merge": auto_merge,
             "Auto-merge Dependabot PRs": auto_merge_dependabot_prs,
             "Force clean before checkout": force_clean_before_checkout,
-            "Max open PRs for issues": engine_config.MAX_OPEN_PRS_FOR_ISSUES,
             "Verbose logging": verbose,
         }
     )
