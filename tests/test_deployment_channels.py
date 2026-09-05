@@ -123,13 +123,17 @@ def test_external_artifact_disables_internal_update(monkeypatch, tmp_path):
     assert result.reason == "disabled"
 
 
-def test_artifact_workflow_rejects_stale_main_and_untested_digest():
+def test_artifact_workflow_validation_gates_fail_closed():
     script = Path(__file__).parents[1] / "scripts/deployment_artifacts.py"
 
     newest = subprocess.run([sys.executable, str(script), "require-latest-successful-run", "202", "202"], capture_output=True, text=True)
     stale = subprocess.run([sys.executable, str(script), "require-latest-successful-run", "101", "202"], capture_output=True, text=True)
     tested = subprocess.run([sys.executable, str(script), "require-tested-beta", "sha256:tested", "sha256:tested"], capture_output=True, text=True)
     unrelated = subprocess.run([sys.executable, str(script), "require-tested-beta", "sha256:manual", "sha256:tested"], capture_output=True, text=True)
+    valid_sha = subprocess.run([sys.executable, str(script), "require-release-sha", "a" * 40], capture_output=True, text=True)
+    abbreviated_sha = subprocess.run([sys.executable, str(script), "require-release-sha", "a" * 12], capture_output=True, text=True)
+    changed_history = subprocess.run([sys.executable, str(script), "require-release-history", "sha256:candidate", "sha256:existing"], capture_output=True, text=True)
+    failed_postcondition = subprocess.run([sys.executable, str(script), "require-release-postcondition", "sha256:expected", "sha256:actual"], capture_output=True, text=True)
 
     assert newest.returncode == 0
     assert stale.returncode != 0
@@ -137,6 +141,13 @@ def test_artifact_workflow_rejects_stale_main_and_untested_digest():
     assert tested.returncode == 0
     assert unrelated.returncode != 0
     assert "tested beta digest mismatch" in unrelated.stderr
+    assert valid_sha.returncode == 0
+    assert abbreviated_sha.returncode != 0
+    assert "invalid release commit SHA" in abbreviated_sha.stderr
+    assert changed_history.returncode != 0
+    assert "immutable release history digest mismatch" in changed_history.stderr
+    assert failed_postcondition.returncode != 0
+    assert "release tag digest mismatch" in failed_postcondition.stderr
 
 
 def test_workflows_route_only_latest_successful_build_through_tested_provenance():
@@ -144,6 +155,7 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     publish = (workflow_root / "publish-beta.yml").read_text(encoding="utf-8")
     advance = (workflow_root / "advance-beta.yml").read_text(encoding="utf-8")
     promote = (workflow_root / "promote-release.yml").read_text(encoding="utf-8")
+    rollback = (workflow_root / "rollback-release.yml").read_text(encoding="utf-8")
 
     assert "bash scripts/test.sh" in publish
     assert ":sha-${{ github.sha }}" in publish
@@ -153,10 +165,31 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert 'require-latest-successful-run "$RUN_ID" "$LATEST_SUCCESSFUL_RUN"' in advance
     assert 'tested-beta-$SOURCE_SHA" "$IMAGE@$DIGEST' in advance
     assert 'tag "$IMAGE:beta" "$IMAGE@$DIGEST' in advance
-    assert 'TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$BETA_SHA"' in promote
+    assert "inputs:" not in promote
+    assert 'DIGEST=$(docker buildx imagetools inspect "$IMAGE:beta"' in promote
+    assert 'SOURCE_SHA=$(docker buildx imagetools inspect "$IMAGE:beta"' in promote
+    assert "org.opencontainers.image.revision" in promote
+    assert 'TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$SOURCE_SHA"' in promote
     assert 'require-tested-beta "$DIGEST" "$TESTED_DIGEST"' in promote
+    assert promote.index('require-tested-beta "$DIGEST" "$TESTED_DIGEST"') < promote.index('tag "$IMAGE:release-$SOURCE_SHA"')
+    assert 'require-release-history "$DIGEST" "$HISTORY_DIGEST"' in promote
+    assert promote.index('require-release-history "$DIGEST" "$HISTORY_DIGEST"') < promote.index('tag "$IMAGE:release"')
+    assert 'require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"' in promote
+    assert promote.count("docker buildx imagetools create --prefer-index=false") == 2
     assert "docker/build-push-action" not in promote
     assert "context:" not in promote
+
+    assert rollback.count("release_sha:") == 1
+    assert "digest:" not in rollback
+    assert "tested-beta-" not in rollback
+    assert 'inspect "$IMAGE:release-$RELEASE_SHA"' in rollback
+    assert 'create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"' in rollback
+    assert 'tag "$IMAGE:release-$RELEASE_SHA"' not in rollback
+    assert 'require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"' in rollback
+    assert "docker/build-push-action" not in rollback
+    assert "context:" not in rollback
+    assert "group: release-channel" in promote
+    assert "group: release-channel" in rollback
 
 
 def test_compose_channels_use_disjoint_private_storage_and_artifacts():

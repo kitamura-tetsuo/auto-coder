@@ -2,36 +2,45 @@ name: Promote Release
 
 on:
   workflow_dispatch:
-    inputs:
-      digest:
-        description: Existing tested beta manifest digest (sha256:...); use an older digest to roll back
-        required: true
-      beta_sha:
-        description: Main commit SHA whose successful beta publication produced the digest
-        required: true
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: release-channel
+  cancel-in-progress: false
+
 jobs:
-  promote-existing-manifest:
+  promote-current-beta:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Validate and promote without rebuilding
+      - uses: docker/setup-buildx-action@v4
+      - name: Validate and promote current beta without rebuilding
         env:
           IMAGE: ghcr.io/${{ github.repository }}
-          DIGEST: ${{ inputs.digest }}
-          BETA_SHA: ${{ inputs.beta_sha }}
         run: |
-          case "$DIGEST" in sha256:[0-9a-f][0-9a-f]*) ;; *) echo "Invalid digest" >&2; exit 2;; esac
-          docker buildx imagetools inspect "$IMAGE@$DIGEST"
-          TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$BETA_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:beta" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          SOURCE_SHA=$(docker buildx imagetools inspect "$IMAGE:beta" --format '{{json .Image}}' | jq -er '.config.Labels["org.opencontainers.image.revision"]')
+          python scripts/deployment_artifacts.py require-release-sha "$SOURCE_SHA"
+
+          TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$SOURCE_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
           python scripts/deployment_artifacts.py require-tested-beta "$DIGEST" "$TESTED_DIGEST"
-          docker buildx imagetools create --tag "$IMAGE:release" "$IMAGE@$DIGEST"
-          test "$(docker buildx imagetools inspect "$IMAGE:release" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$DIGEST"
+
+          if HISTORY_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release-$SOURCE_SHA" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'); then
+            python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
+          else
+            docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release-$SOURCE_SHA" "$IMAGE@$DIGEST"
+            HISTORY_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release-$SOURCE_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
+          fi
+
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
+          RELEASE_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          python scripts/deployment_artifacts.py require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"

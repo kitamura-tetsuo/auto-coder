@@ -1,0 +1,39 @@
+name: Rollback Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Commit SHA of a previously promoted release
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-channel
+  cancel-in-progress: false
+
+jobs:
+  rollback-to-release-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Roll back to immutable release history without rebuilding
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          python scripts/deployment_artifacts.py require-release-sha "$RELEASE_SHA"
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:release-$RELEASE_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
+          RELEASE_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          python scripts/deployment_artifacts.py require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"
