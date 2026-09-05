@@ -721,26 +721,30 @@ class TestAdversarialValidationCodexFeedback:
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
             cloud_client = CodexCloudClient(repo_name="owner/repo")
         wham = MagicMock()
-        wham.resolve_latest_assistant_turn.return_value = "task_e_abc123~assttrn_1"
+        wham.resolve_latest_assistant_turn.side_effect = [None, "task_e_abc123~assttrn_1", "task_e_abc123~assttrn_1", "task_e_abc123~assttrn_1"]
         wham.reconcile_follow_up.return_value = True
         wham.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, 429)
         cloud_client.wham_client = wham
+        status = MagicMock(returncode=0, stdout="COMPLETED", stderr="")
 
         with (
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "review.json"),
             patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=cloud_client),
+            patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=status),
         ):
             first = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
             second = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
+            third = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head123", finding, github, [finding])
 
         assert "could not receive adversarial feedback" in first[0]
         assert "all actionable feedback was already delivered" in second[0]
+        assert "all actionable feedback was already delivered" in third[0]
         wham.send_follow_up.assert_called_once()
         github.add_comment_to_pr.assert_called_once()
         assert "auto-coder-cloud-review-feedback:v1:" in github.add_comment_to_pr.call_args.args[2]
         state = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 2
+        assert len(state["delivered_feedback"]) == 3
 
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"

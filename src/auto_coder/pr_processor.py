@@ -4951,15 +4951,35 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                 )
             ]
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, all_identities))
+            reconciliation_candidates = {
+                identity
+                for _body, finding_identity, generation_identity in feedback_items
+                if finding_identity not in delivered or has_remediation_evidence
+                for identity in (
+                    generation_identity,
+                    _adversarial_feedback_generation_identity(finding_identity, "", source_validation_report),
+                )
+                if identity not in delivered
+            }
             reconciled = _reconcile_codex_review_feedback(
                 client,
                 provider,
                 task_id,
-                [generation_identity for _body, finding_identity, generation_identity in feedback_items if generation_identity not in delivered and (finding_identity not in delivered or has_remediation_evidence)],
+                sorted(reconciliation_candidates),
             )
             if reconciled:
                 delivered.update(reconciled)
-                reconciled_receipts = {identity for _body, finding_identity, generation_identity in feedback_items if generation_identity in reconciled for identity in (finding_identity, generation_identity)}
+                reconciled_receipts = set(reconciled)
+                for _body, finding_identity, generation_identity in feedback_items:
+                    unknown_generation = _adversarial_feedback_generation_identity(finding_identity, "", source_validation_report)
+                    if generation_identity in reconciled or unknown_generation in reconciled:
+                        reconciled_receipts.add(finding_identity)
+                    if unknown_generation in reconciled and remediation_token and hasattr(client, "get_followup_remediation_baseline"):
+                        baseline_activity = client.get_followup_remediation_baseline(task_id, (unknown_generation,))
+                        if isinstance(baseline_activity, str) and baseline_activity:
+                            baseline_token = hashlib.sha256(f"{task_id}\n{baseline_activity}".encode("utf-8")).hexdigest()
+                            if baseline_token == remediation_token:
+                                reconciled_receipts.add(generation_identity)
                 delivered.update(reconciled_receipts)
                 _record_delivered_review_feedback(state_path, delivered)
                 _record_pr_delivered_review_feedback(
