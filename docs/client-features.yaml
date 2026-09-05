@@ -1316,6 +1316,20 @@ Recent configuration schema changes that require migration:
       - "Before attempting a stale-resolution rollback, Auto-Coder durably records a fail-closed rollback-transition state. A later run reconciles that transition only when the strict GitHub lookup returns the exact thread once with an explicit boolean resolved state: an unresolved thread advances to marker cleanup without another unresolve, while a still-resolved thread retries rollback under the existing durable guard; missing, duplicate, malformed, or failed lookup evidence remains blocking. After confirmed rollback, a failed CLEARED-marker reply becomes marker-cleanup-only state, and if both that reply and cleanup-state persistence fail, the pre-mutation transition remains available for this reconciliation. Resolve and unresolve mutations are accepted only when GitHub returns the exact requested thread ID and the expected literal resolved state."
       - "`_merge_pr`'s existing pre-merge safeguard re-fetches the authoritative GitHub review-thread state after any resolution and before merging, so automatic merge proceeds only when no unresolved thread remains (claimed-but-unresolved threads included) and every other merge gate also passes."
 
+## Selective Promptfoo prompt-regression CI
+
+  selective_prompt_regression:
+    description: "Runs CI-only prompt behavioral evaluations for affected registered targets."
+    implementation: |
+      prompt-evals/registry.json, prompt-evals/run_prompt_evals.py,
+      .github/workflows/prompt-regression.yml
+    behavior:
+      - "The versioned registry associates stable target IDs with dot-addressable production prompt dependencies, target-local Promptfoo configuration, and corpus globs."
+      - "CI compares dependency values between the pull request base and head, so independent prompt changes select only their targets while a declared shared dependency selects all and only its dependents."
+      - "Target config and corpus changes select their owner; selector, registry, and workflow changes select every target and malformed selection metadata fails closed."
+      - "No selected target, or a selected target with an empty corpus, succeeds before Promptfoo is invoked and requires no provider credentials. Targets containing cases run Promptfoo 0.118.8 individually and propagate its failure status."
+      - "Promptfoo and its Node tooling remain isolated in CI and are not Auto-Coder application dependencies."
+
 ## Provider-aware unresolved review repair
 
 Actionable unresolved review threads keep merge blocked and are routed through the

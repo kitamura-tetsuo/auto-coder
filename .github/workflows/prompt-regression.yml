@@ -1,0 +1,32 @@
+name: Prompt Regression
+
+'on':
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selective-prompt-evals:
+    name: Selective Promptfoo Evaluations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Select and run affected targets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA="${HEAD_SHA}^"
+          fi
+          python -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+          python prompt-evals/run_prompt_evals.py --base "$BASE_SHA" --head "$HEAD_SHA"
