@@ -11,7 +11,7 @@ from auto_coder.cloud_task_client_base import CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.codex_usage_checker import codex_cloud_quota_allows_task, parse_codex_weekly_usage
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
-from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration, reset_llm_config
 
 
 class TestCodexCloudClient:
@@ -42,16 +42,19 @@ class TestCodexCloudClient:
         config.backends["codex-cloud"] = cloud_config
         return config
 
-    def test_init_loads_config(self, mock_backend_config):
+    def test_init_loads_config_and_warns_for_ignored_model(self, mock_backend_config):
         """Test initialization loads configuration."""
-        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client.logger.warning") as warning,
+        ):
             client = CodexCloudClient("codex-cloud")
             assert client.backend_name == "codex-cloud"
-            assert client.model_name == "gpt-5.6-terra"
             assert client.api_key == "test-codex-key"
             assert client.environment_id == "env_12345"
             assert client.attempts == 2
             assert client.options == ["--dangerously-bypass-approvals-and-sandbox"]
+            warning.assert_called_once_with("Codex Cloud does not support user-selected models; configured model " "'gpt-5.6-terra' for backend 'codex-cloud' is being ignored.")
 
     def test_start_task(self, mock_backend_config):
         """Test starting a Codex Cloud task with codex cloud exec."""
@@ -83,8 +86,6 @@ class TestCodexCloudClient:
                     "exec",
                     "--env",
                     "env_12345",
-                    "--config",
-                    'model="gpt-5.6-terra"',
                     "--attempts",
                     "2",
                     "--branch",
@@ -92,6 +93,46 @@ class TestCodexCloudClient:
                     "--dangerously-bypass-approvals-and-sandbox",
                     "Implement GitHub issue #123",
                 ]
+
+    def test_configured_model_from_toml_is_ignored_at_cloud_cli_boundary(self, tmp_path, monkeypatch):
+        """A supported TOML configuration reaches dispatch without a model override."""
+        config_path = tmp_path / "llm_config.toml"
+        config_path.write_text(
+            """
+[backends.codex-cloud]
+backend_type = "codex-cloud"
+model = "gpt-5.6-terra"
+environment_id = "env_from_toml"
+""".strip(),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", str(config_path))
+        reset_llm_config()
+        result = MagicMock(
+            returncode=0,
+            stdout="https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
+            stderr="",
+        )
+
+        try:
+            with (
+                patch("auto_coder.codex_cloud_client.logger.warning") as warning,
+                patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result) as run,
+            ):
+                task_id = CodexCloudClient("codex-cloud").start_task("Implement issue #1716")
+
+            assert task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+            assert run.call_args.args[0] == [
+                "codex",
+                "cloud",
+                "exec",
+                "--env",
+                "env_from_toml",
+                "Implement issue #1716",
+            ]
+            warning.assert_called_once_with("Codex Cloud does not support user-selected models; configured model " "'gpt-5.6-terra' for backend 'codex-cloud' is being ignored.")
+        finally:
+            reset_llm_config()
 
     def test_start_task_requires_environment_id(self, mock_backend_config):
         """Codex Cloud submissions must identify their configured environment."""
