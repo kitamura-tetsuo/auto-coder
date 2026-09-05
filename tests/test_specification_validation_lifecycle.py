@@ -412,11 +412,18 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
     slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
     engine.implementation_slots = slots
     analyzed = []
+
+    def analyze(_manifest, body):
+        analyzed.append((body, slots.active_owners()))
+        if body.endswith(" B"):
+            return SpecificationAnalysisResult("BLOCKED", (FINDING,))
+        return SpecificationAnalysisResult("READY")
+
     engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
         "owner/repo",
         "validator",
         tmp_path / "validations.json",
-        lambda _manifest, body: analyzed.append(body) or SpecificationAnalysisResult("READY"),
+        analyze,
     )
     jules = Mock()
     jules.start_session.return_value = "real-session-a"
@@ -439,7 +446,35 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
     current["body"] = BODY + " B"
     deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
     assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
-    assert analyzed == [BODY + " A"]
+    assert analyzed == [(BODY + " A", ())]
+
+    # The actual stale-session daemon stops remote A and retires its production
+    # membership before it semantically validates submitted generation B.
+    github.get_issue.return_value = {"number": 1728, "state": "open"}
+    github.get_issue_details.return_value = {"number": 1728, "state": "open"}
+    github.has_linked_pr.return_value = False
+    github.get_issue_comments_strict.return_value = []
+    stale_jules = Mock()
+    stale_jules.list_sessions.return_value = [
+        {
+            "name": "sessions/real-session-a",
+            "state": "IN_PROGRESS",
+            "createTime": "2000-01-01T00:00:00Z",
+            "outputs": {},
+        }
+    ]
+    with (
+        patch("auto_coder.issue_processor.JulesClient", return_value=stale_jules),
+        patch("auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("auto_coder.issue_processor.increment_attempt") as increment,
+        patch("auto_coder.issue_processor._take_issue_actions") as replacement,
+    ):
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+    stale_jules.send_message.assert_called_once_with("real-session-a", "stop")
+    assert analyzed[-1] == (BODY + " B", ())
+    assert owner not in slots.active_owners()
+    increment.assert_not_called()
+    replacement.assert_not_called()
 
 
 def test_blocked_edit_during_comment_lookup_prevents_stale_publication(tmp_path):

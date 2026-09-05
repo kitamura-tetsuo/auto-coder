@@ -491,8 +491,8 @@ class TestLabelGateOverride:
         assert self._run_with_label_manager(check_labels=None)["check_labels"] == AutomationConfig().CHECK_LABELS
 
 
-def test_daemon_stale_session_replacement_waits_for_current_generation_ready(config, tmp_path):
-    """The production daemon handoff cannot stop Jules or start replacement work on ERROR."""
+def test_daemon_stale_session_stops_old_generation_but_starts_no_replacement_on_error(config, tmp_path):
+    """The daemon retires remote ownership before ERROR and starts no replacement."""
     from src.auto_coder.automation_engine import AutomationEngine
     from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
     from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -528,7 +528,7 @@ def test_daemon_stale_session_replacement_waits_for_current_generation_ready(con
     ):
         assert engine.handle_stale_jules_issue_sessions("owner/repo") == []
 
-    jules.send_message.assert_not_called()
+    jules.send_message.assert_called_once_with("sess-1", "stop")
     increment.assert_not_called()
     dispatch.assert_not_called()
     assert engine.implementation_slots.active_owners() == ()
@@ -607,7 +607,7 @@ def test_stale_replacement_rechecks_after_link_lookup_before_ownership(config, t
         patch("src.auto_coder.issue_processor._take_issue_actions") as dispatch,
     ):
         engine.handle_stale_jules_issue_sessions("owner/repo")
-    jules.send_message.assert_not_called()
+    jules.send_message.assert_called_once_with("sess-1", "stop")
     increment.assert_not_called()
     dispatch.assert_not_called()
 

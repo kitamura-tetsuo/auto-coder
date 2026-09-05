@@ -778,30 +778,28 @@ def handle_stale_jules_issue_sessions(
                 if authorize_dispatch is None:
                     logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
                     continue
-                # Authorization must be the last external state check before
-                # ownership transition. Earlier Issue/PR lookups and lock waits
-                # cannot carry READY forward across an edit or label withdrawal.
+                if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
+                    continue
+
+                # The remote generation is now stopped. Remove its durable task
+                # membership before validating the replacement generation, so
+                # semantic validation never retains implementation capacity.
+                for old_execution_id in implementation_slots.active_execution_ids(owner):
+                    implementation_slots.finish_execution(owner, old_execution_id)
+                if not implementation_slots.finish_provider_session(owner, session_id):
+                    # Legacy launches may predate provider-session membership.
+                    # The remote task is confirmed stopped and has no PR, so its
+                    # old logical ownership can now be safely retired.
+                    implementation_slots.release(owner)
+
+                # Stopping Jules is external I/O. Fetch and validate afterward so
+                # edits during that request are part of the replacement identity.
                 authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
                 if authorized_issue is None:
                     continue
                 issue_data["title"] = str(authorized_issue.get("title") or "")
                 issue_data["body"] = str(authorized_issue.get("body") or "")
-                if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
-                    continue
 
-                # Stopping Jules is external I/O. Re-check afterward so an edit or
-                # withdrawal during that request cannot authorize replacement
-                # ownership, attempt mutation, or backend dispatch.
-                authorized_issue = authorize_dispatch(repo_name, issue_number, authorized_issue)
-                if authorized_issue is None:
-                    continue
-                issue_data["title"] = str(authorized_issue.get("title") or "")
-                issue_data["body"] = str(authorized_issue.get("body") or "")
-
-                # The stopped remote execution relinquishes its identities before
-                # the replacement performs normal, atomic capacity admission.
-                for old_execution_id in implementation_slots.active_execution_ids(owner):
-                    implementation_slots.finish_execution(owner, old_execution_id)
                 replacement_execution_id = implementation_slots.start_execution(owner)
                 if replacement_execution_id is None:
                     logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: implementation capacity is occupied")
