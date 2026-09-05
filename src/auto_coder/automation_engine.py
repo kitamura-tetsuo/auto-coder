@@ -347,8 +347,13 @@ class AutomationEngine:
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
                     heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
 
-                    # Check if the item is already closed before processing
-                    if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
+                    # An invalidation candidate was fetched strictly above. Do
+                    # not overwrite that authority with the cached closed-state
+                    # helper: a reopened entity may still have a cached closed
+                    # representation. Direct/operator candidates retain their
+                    # existing explicit closed-state check.
+                    is_closed = candidate.data.get("state") == "closed" if invalidation_claim is not None else is_item_closed_on_github(repo_name, candidate.type, item_number, self.github)
+                    if is_closed:
                         logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
                         if candidate.type == "pr":
                             self.notify_pr_merged_or_closed()
