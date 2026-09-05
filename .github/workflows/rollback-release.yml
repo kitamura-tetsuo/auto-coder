@@ -31,9 +31,10 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
           RELEASE_SHA: ${{ inputs.release_sha }}
         run: |
+          set -Eeuo pipefail
           python scripts/deployment_artifacts.py require-release-sha "$RELEASE_SHA"
-          DIGEST=$(docker buildx imagetools inspect "$IMAGE:release-$RELEASE_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$RELEASE_SHA")
 
           docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
-          RELEASE_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          RELEASE_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release")
           python scripts/deployment_artifacts.py require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"
