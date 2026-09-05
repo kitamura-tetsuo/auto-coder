@@ -50,6 +50,9 @@ The provider-independent Issue specification manifest preserves each stable
 `REQ-NNN` identifier and its exact requirement text. It explicitly distinguishes
 a missing Requirements section from an empty or malformed one and reports
 deterministic diagnostics for duplicate IDs, empty text, and malformed entries.
+HTML comments and fenced examples are excluded before section recognition, and
+only the first visible Requirements section is normative to preserve the
+adversarial validator's established section boundary.
 Acceptance Scenarios are retained separately as non-normative verification
 metadata; their `Covers:` references are validated against the manifest but can
 never create normative requirements. Intake and adversarial PR validation both

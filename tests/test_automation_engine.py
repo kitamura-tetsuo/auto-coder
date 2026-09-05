@@ -582,6 +582,26 @@ class TestAutomationEngine:
         engine._process_single_candidate_reserved.assert_called_once()
         github.get_issue_comments_strict.assert_not_called()
 
+    def test_commented_requirement_example_cannot_activate_intake_contract(self, tmp_path):
+        body = "## Context\n<!--\n## Requirements\nREQ-001: Hidden example.\n-->"
+        github = MagicMock()
+        github.get_issue_dispatch_snapshot_strict.return_value = {
+            "number": 1726,
+            "body": body,
+            "labels": [{"name": "implementation-ready"}],
+        }
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1726, title="Hidden example", success=True, actions=["dispatched"]))
+        candidate = Candidate(type="issue", data={"number": 1726, "title": "Hidden example", "body": body, "labels": []}, priority=0)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.success is True
+        engine._process_single_candidate_reserved.assert_called_once()
+        github.get_issue_comments_strict.assert_not_called()
+        github.add_comment_to_issue.assert_not_called()
+
     def test_urgent_label_reaches_durable_emergency_admission_boundary(self, tmp_path):
         """Fetched Issue labels must preserve urgency through engine admission."""
 

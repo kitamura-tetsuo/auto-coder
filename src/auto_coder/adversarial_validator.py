@@ -17,7 +17,7 @@ from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
 from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
 from .issue_specification import NormativeRequirement as IssueRequirement
-from .issue_specification import format_requirement_contract_error, parse_issue_specification
+from .issue_specification import format_requirement_contract_error, parse_issue_specification, visible_markdown_lines
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
@@ -775,7 +775,7 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
     requirements: List[IssueRequirement] = []
     seen: set[str] = set()
     ignored_labels = {"issue description:", "parent issue description:"}
-    for raw_line in issue_context.splitlines():
+    for _, raw_line in visible_markdown_lines(issue_context):
         text = raw_line.strip()
         if not text or text.lower() in ignored_labels:
             continue
