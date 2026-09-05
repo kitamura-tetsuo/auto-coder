@@ -437,7 +437,7 @@ class TestAdversarialValidationCodexFeedback:
                 updated_at=datetime(2026, 9, 4, hour, tzinfo=timezone.utc),
             )
 
-        backend.get_task.side_effect = [task_at(1), task_at(1), task_at(1), task_at(2), task_at(2), task_at(2), task_at(2)]
+        backend.get_task.side_effect = [task_at(1), task_at(1), task_at(1), task_at(2), task_at(2), task_at(2), task_at(2), task_at(2)]
         state_path = tmp_path / "review-repairs.json"
         pr_data = {
             "number": 100,
@@ -445,27 +445,33 @@ class TestAdversarialValidationCodexFeedback:
             "head": {"ref": "repair-branch", "sha": "head-a"},
             "base": {"ref": "main"},
         }
+        report_a = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:1:aaaa -->"
+        report_b = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:2:bbbb -->"
 
         with (
             patch("auto_coder.cloud_manager.CloudManager.get_binding", return_value=CloudTaskBinding(provider, "implementation-task")),
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
         ):
-            actions_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
-            duplicate_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
+            actions_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", report_a, github, [finding])
+            duplicate_a = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", report_a, github, [finding])
 
             # An unrelated changed head is production-reachable but is not
             # evidence that the owning implementation task attempted repair.
             pr_data["head"]["sha"] = "head-b"
-            unrelated_head = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
+            unrelated_head = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", report_a, github, [finding])
 
-            # A later terminal activity token from the provider is durable,
-            # backend-neutral evidence that its corrective lifecycle advanced.
-            actions_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
-            duplicate_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", finding, github, [finding])
+            # Later provider activity cannot turn the previously published
+            # validation into evidence that the correction failed.
+            stale_validation = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", report_a, github, [finding])
+
+            # A later terminal activity token plus a later independently
+            # published validation result establishes a failed correction.
+            actions_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", report_b, github, [finding])
+            duplicate_b = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", report_b, github, [finding])
             # A supported implementer-provenance correction can trigger a new
             # validation generation even if it does not change the PR head.
-            provenance_report = f"{finding}\n\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
+            provenance_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:3:cccc -->\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
             actions_c = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", provenance_report, github, [finding])
             duplicate_c = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-b", provenance_report, github, [finding])
 
@@ -476,11 +482,12 @@ class TestAdversarialValidationCodexFeedback:
         assert all(finding in prompt for prompt in prompts)
         assert "all actionable feedback was already delivered" in duplicate_a[0]
         assert "all actionable feedback was already delivered" in unrelated_head[0]
+        assert "all actionable feedback was already delivered" in stale_validation[0]
         assert "all actionable feedback was already delivered" in duplicate_b[0]
         assert "all actionable feedback was already delivered" in duplicate_c[0]
         assert all("Sent adversarial NEEDS_FIX report" in actions[0] for actions in (actions_a, actions_b, actions_c))
         persisted = json.loads(state_path.read_text(encoding="utf-8"))["delivered_feedback"]
-        assert len(persisted) == 4  # one stable finding plus three remediation generations
+        assert len(persisted) == 7  # one stable finding plus three remediation and validation generations
 
     def test_plain_text_codex_status_preserves_corrective_activity_for_delivery(self, tmp_path):
         """The real plain-text parser carries task activity through routing."""
@@ -513,7 +520,9 @@ class TestAdversarialValidationCodexFeedback:
             "head": {"ref": "repair-branch", "sha": "head-a"},
             "base": {"ref": "main"},
         }
-        provenance_report = f"{finding}\n\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
+        initial_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:1:aaaa -->"
+        provenance_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:2:bbbb -->\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
+        corrected_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:3:cccc -->\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
 
         with (
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
@@ -521,13 +530,13 @@ class TestAdversarialValidationCodexFeedback:
             patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
             patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=status),
         ):
-            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", initial_report, github, [finding])
             pr_data["head"]["sha"] = "unrelated-head-b"
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
             recovered_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
             unchanged_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
-            failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
-            duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
+            failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", corrected_report, github, [finding])
+            duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", corrected_report, github, [finding])
 
         assert backend.wham_client.send_follow_up.call_count == 3
         assert "all actionable feedback was already delivered" in recovered_baseline[0]
@@ -744,7 +753,7 @@ class TestAdversarialValidationCodexFeedback:
         github.add_comment_to_pr.assert_called_once()
         assert "auto-coder-cloud-review-feedback:v1:" in github.add_comment_to_pr.call_args.args[2]
         state = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 3
+        assert len(state["delivered_feedback"]) == 4
 
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
@@ -816,7 +825,7 @@ class TestAdversarialValidationCodexFeedback:
         assert current in prompt
         assert historical not in prompt
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 2
+        assert len(state["delivered_feedback"]) == 3
 
     def test_sends_complete_report_as_custom_codex_cloud_followup(self):
         client = MagicMock()
@@ -943,7 +952,7 @@ class TestAdversarialValidationCodexFeedback:
         assert first not in second_prompt
         assert "all actionable feedback was already delivered" in actions[0]
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        assert len(state["delivered_feedback"]) == 4
+        assert len(state["delivered_feedback"]) == 6
 
     def test_pr_receipt_prevents_cross_path_redelivery_when_local_persistence_fails(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
@@ -1177,18 +1186,14 @@ class TestAdversarialValidationPRFlow:
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [
-            {
-                "body": format_adversarial_validation_comment(
-                    AdversarialValidationResult(
-                        result="NEEDS_FIX",
-                        summary="Previously rejected",
-                        findings=[AdversarialValidationFinding(violated_requirement="Requirement")],
-                    ),
-                    head_sha,
-                )
-            }
-        ]
+        saved_result = AdversarialValidationResult(
+            result="NEEDS_FIX",
+            summary="Previously rejected",
+            findings=[AdversarialValidationFinding(violated_requirement="Requirement")],
+        )
+        saved_result.attempt_id = "0123456789abcdef"
+        saved_result.attempt_sequence = 7
+        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(saved_result, head_sha)}]
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
@@ -1205,6 +1210,7 @@ class TestAdversarialValidationPRFlow:
         mock_merge_pr.assert_not_called()
         mock_feedback.assert_called_once()
         assert "Previously rejected" in mock_feedback.call_args.args[3]
+        assert "<!-- auto-coder-adversarial-validation-attempt:v1:7:0123456789abcdef -->" in mock_feedback.call_args.args[3]
         assert any("already validated as NEEDS_FIX" in action for action in actions)
         assert any("remains non-pass" in action for action in actions)
         assert "Sent saved report" in actions
