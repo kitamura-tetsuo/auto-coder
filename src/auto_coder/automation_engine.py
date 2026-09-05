@@ -234,6 +234,9 @@ class AutomationEngine:
             try:
                 iteration += 1
                 heartbeat("producer:check-updates", f"iteration {iteration}")
+                # Retry durable work released by a transient fetch or processing
+                # failure on the normal producer cadence, rather than hot-looping.
+                await self._enqueue_pending_invalidations(repo_name)
 
                 # Check updates
                 await asyncio.to_thread(check_for_updates_and_restart)
@@ -329,8 +332,22 @@ class AutomationEngine:
                 candidate = await self.queue.get()
                 item_number = candidate.data.get("number", "N/A")
                 decision_completed = False
+                invalidation_claim: Optional[ClaimedInvalidation] = None
 
                 try:
+                    if candidate.invalidation_generation is not None:
+                        invalidation_claim = ClaimedInvalidation(EntityIdentity(repo_name, candidate.type, int(item_number)), candidate.invalidation_generation)
+                        if not await asyncio.to_thread(self.invalidations.begin_processing, invalidation_claim):
+                            continue
+                        authoritative_candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, candidate.type, int(item_number), True)
+                        if authoritative_candidate is None:
+                            # A successful authoritative read can decide that an
+                            # absent or ineligible entity needs no processing.
+                            decision_completed = True
+                            continue
+                        authoritative_candidate.invalidation_generation = candidate.invalidation_generation
+                        candidate = authoritative_candidate
+
                     self.active_workers[worker_id] = candidate
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
                     heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
@@ -368,15 +385,15 @@ class AutomationEngine:
                     logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                     get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
                 finally:
-                    if candidate.invalidation_generation is not None:
-                        claim = ClaimedInvalidation(EntityIdentity(repo_name, candidate.type, int(item_number)), candidate.invalidation_generation)
+                    if invalidation_claim is not None:
                         if decision_completed:
-                            self.invalidations.complete(claim)
+                            self.invalidations.complete(invalidation_claim)
                         else:
-                            self.invalidations.release(claim)
+                            self.invalidations.release(invalidation_claim)
                     self.active_workers[worker_id] = None
                     self.queue.task_done()
-                    await self._enqueue_pending_invalidations(repo_name)
+                    if decision_completed:
+                        await self._enqueue_pending_invalidations(repo_name)
 
     async def invalidate_entity(self, repo_name: str, entity_type: str, number: int, delivery_id: Optional[str] = None) -> bool:
         """Durably mark an entity dirty and arrange an authoritative reevaluation."""
@@ -389,12 +406,16 @@ class AutomationEngine:
         """Claim durable identities, fetch authoritative state, and queue decisions."""
         async with self._invalidation_drain_lock:
             while claim := await asyncio.to_thread(self.invalidations.claim, repo_name):
-                candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, claim.identity.entity_type, claim.identity.number)
-                if candidate is None:
-                    # The authoritative fetch and its ineligibility decision completed.
-                    self.invalidations.complete(claim)
-                    continue
-                candidate.invalidation_generation = claim.generation
+                # Only stable identity crosses the durable-to-memory boundary.
+                # Authoritative state is fetched after a worker marks this claim
+                # processing, so notifications received before that point coalesce.
+                candidate = Candidate(
+                    type=claim.identity.entity_type,
+                    data={"number": claim.identity.number},
+                    priority=0,
+                    issue_number=claim.identity.number if claim.identity.entity_type == "issue" else None,
+                    invalidation_generation=claim.generation,
+                )
                 await self.queue.put(candidate)
 
     def get_status(self) -> Dict[str, Any]:
@@ -2477,7 +2498,7 @@ class AutomationEngine:
             logger.error(f"Error parsing commit history: {e}")
             return []
 
-    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int) -> Optional[Candidate]:
+    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int, propagate_errors: bool = False) -> Optional[Candidate]:
         """Create a Candidate from a single issue or PR.
 
         Args:
@@ -2555,6 +2576,8 @@ class AutomationEngine:
                 )
         except Exception as e:
             logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
+            if propagate_errors:
+                raise
             return None
 
         return None

@@ -42,7 +42,7 @@ class DurableInvalidationQueue:
                 entity_number INTEGER NOT NULL,
                 generation INTEGER NOT NULL,
                 claimed_generation INTEGER,
-                state TEXT NOT NULL CHECK(state IN ('dirty', 'processing')),
+                state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
                 PRIMARY KEY(repository, entity_type, entity_number)
             );
             CREATE TABLE IF NOT EXISTS github_deliveries (
@@ -52,13 +52,33 @@ class DurableInvalidationQueue:
             );
             """
         )
+        schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entity_invalidations'").fetchone()[0]
+        if "'queued'" not in schema:
+            # Migrate databases created by the first durable-queue release.
+            self._connection.executescript(
+                """
+                ALTER TABLE entity_invalidations RENAME TO entity_invalidations_v1;
+                CREATE TABLE entity_invalidations (
+                    repository TEXT NOT NULL,
+                    entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr')),
+                    entity_number INTEGER NOT NULL,
+                    generation INTEGER NOT NULL,
+                    claimed_generation INTEGER,
+                    state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
+                    PRIMARY KEY(repository, entity_type, entity_number)
+                );
+                INSERT INTO entity_invalidations
+                    SELECT * FROM entity_invalidations_v1;
+                DROP TABLE entity_invalidations_v1;
+                """
+            )
 
     def recover(self, repository: str) -> None:
         """Make work interrupted by process termination claimable again."""
         with self._lock, self._connection:
             self._connection.execute(
                 """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
-                   WHERE repository = ? AND state = 'processing'""",
+                   WHERE repository = ? AND state IN ('queued', 'processing')""",
                 (repository,),
             )
 
@@ -77,18 +97,21 @@ class DurableInvalidationQueue:
                 INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state)
                 VALUES (?, ?, ?, 1, 'dirty')
                 ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
-                    generation = generation + 1
+                    generation = CASE
+                        WHEN state = 'processing' THEN generation + 1
+                        ELSE generation
+                    END
                 """,
                 (identity.repository, identity.entity_type, identity.number),
             )
             return True
 
     def claim(self, repository: str) -> Optional[ClaimedInvalidation]:
-        """Atomically claim one dirty entity for authoritative reevaluation."""
+        """Atomically reserve one dirty identity for the in-memory queue."""
         with self._lock, self._connection:
             row = self._connection.execute(
                 """UPDATE entity_invalidations
-                   SET state = 'processing', claimed_generation = generation
+                   SET state = 'queued', claimed_generation = generation
                    WHERE rowid = (
                        SELECT rowid FROM entity_invalidations
                        WHERE repository = ? AND state = 'dirty' ORDER BY rowid LIMIT 1
@@ -100,6 +123,18 @@ class DurableInvalidationQueue:
                 return None
             entity_type, number, generation = row
             return ClaimedInvalidation(EntityIdentity(repository, entity_type, number), generation)
+
+    def begin_processing(self, claim: ClaimedInvalidation) -> bool:
+        """Mark queued work active at the point a worker actually receives it."""
+        identity = claim.identity
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """UPDATE entity_invalidations SET state = 'processing'
+                   WHERE repository = ? AND entity_type = ? AND entity_number = ?
+                     AND state = 'queued' AND claimed_generation = ?""",
+                (identity.repository, identity.entity_type, identity.number, claim.generation),
+            )
+            return cursor.rowcount == 1
 
     def complete(self, claim: ClaimedInvalidation) -> bool:
         """Complete evaluated generation; return True when a later generation remains."""
