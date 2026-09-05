@@ -62,7 +62,7 @@ test = [
     "pytest-xdist>=3.0.0",
 ]
 dev = [
-    "black>=24.0.0",
+    "black>=26.5.1",
     "isort>=9.0.1",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
@@ -233,7 +233,7 @@ norecursedirs = [
 
 [dependency-groups]
 dev = [
-    "black>=25.9.0",
+    "black>=26.5.1",
     "isort>=9.0.1",
     "flake8>=6.0.0",
     "types-pyyaml>=6.0.12.20250915",
