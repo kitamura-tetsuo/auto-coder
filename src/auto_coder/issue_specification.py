@@ -14,7 +14,7 @@ _REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(.*)$"
 _SCENARIO = re.compile(r"^(AC-\d{3})(?:\s*(?:—|-)\s*(.*))?$")
 _COVERS = re.compile(r"^Covers:\s*(.*)$", re.IGNORECASE)
 _REQ_REFERENCE = re.compile(r"\bREQ-\d{3}\b")
-_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True)
@@ -85,12 +85,20 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
         fence = _FENCE.match(raw_line)
         if not in_comment and fence:
             marker = fence.group(1)
-            if not fence_character:
+            trailing = fence.group(2)
+            if fence_character:
+                # CommonMark closing fences contain only an equal-or-longer
+                # marker and optional spaces. Fence-looking code remains code.
+                if marker[0] == fence_character and len(marker) >= fence_length and not trailing.strip():
+                    fence_character, fence_length = "", 0
+                continue
+            # Backtick info strings cannot themselves contain a backtick. Such
+            # a line is ordinary visible prose rather than a fence opener.
+            if marker[0] == "`" and "`" in trailing:
+                pass
+            else:
                 fence_character, fence_length = marker[0], len(marker)
                 continue
-            if marker[0] == fence_character and len(marker) >= fence_length:
-                fence_character, fence_length = "", 0
-            continue
         if fence_character:
             continue
 

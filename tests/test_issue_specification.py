@@ -132,3 +132,32 @@ def test_duplicate_empty_entry_reports_both_problems_on_stable_line() -> None:
         ("duplicate-requirement-id", 3),
         ("empty-requirement-text", 3),
     ]
+
+
+def test_commonmark_fence_grammar_is_shared_by_all_manifest_consumers() -> None:
+    hidden_body = """```markdown
+```still-code
+## Requirements
+REQ-001: Hidden example.
+```
+"""
+    visible_body = """```lang`bad
+## Requirements
+REQ-001: Visible contract.
+"""
+
+    hidden_shared = parse_issue_specification("Fence content", hidden_body)
+    hidden_intake = parse_requirement_contract(1726, hidden_body)
+    hidden_adversarial = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Fence content", body=hidden_body),)))
+    visible_shared = parse_issue_specification("Invalid opener", visible_body)
+    visible_intake = parse_requirement_contract(1726, visible_body)
+    visible_adversarial = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Invalid opener", body=visible_body),)))
+
+    assert hidden_shared.has_requirements_section is False
+    assert hidden_shared.requirements == []
+    assert hidden_intake.explicit is False
+    assert [item.text for item in hidden_adversarial.requirements] == []
+    expected = [("REQ-001", "Visible contract.")]
+    assert [(item.requirement_id, item.text) for item in visible_shared.requirements] == expected
+    assert visible_intake.entries == expected
+    assert [(item.requirement_id, item.text) for item in visible_adversarial.requirements] == expected
