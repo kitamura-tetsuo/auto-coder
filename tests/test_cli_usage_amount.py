@@ -200,18 +200,15 @@ class TestUsageAmountCLI:
         assert "claude auth login" in result.output
 
     def test_usage_amount_authenticated_cli_session_reaches_usage_api(self, tmp_path):
-        """Exercise CLI login discovery through acquisition and the usage request."""
-        credentials_path = tmp_path / ".credentials.json"
+        """Exercise a macOS Keychain login through acquisition and the usage request."""
 
         def run_claude(command, **kwargs):
             process = MagicMock(returncode=0, stderr="")
             if command[-3:] == ["auth", "status", "--json"]:
                 process.stdout = json.dumps({"loggedIn": True})
+            elif command[0] == "security":
+                process.stdout = json.dumps({"claudeAiOauth": {"accessToken": "session-token", "expiresAt": 9_999_999_999_999}})
             else:
-                credentials_path.write_text(
-                    json.dumps({"claudeAiOauth": {"accessToken": "session-token", "expiresAt": 9_999_999_999_999}}),
-                    encoding="utf-8",
-                )
                 process.stdout = "pong"
             return process
 
@@ -220,6 +217,7 @@ class TestUsageAmountCLI:
         runner = CliRunner()
         with (
             patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(tmp_path)}, clear=True),
+            patch("auto_coder.claude_usage_checker.platform.system", return_value="Darwin"),
             patch("auto_coder.claude_usage_checker.subprocess.run", side_effect=run_claude),
             patch("auto_coder.claude_usage_checker.urllib.request.urlopen", return_value=usage_response) as request,
         ):

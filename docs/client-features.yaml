@@ -1128,7 +1128,7 @@ Recent configuration schema changes that require migration:
           - "--token: Explicit Claude OAuth token to use for verification"
         behavior:
           - "Claude: Displays 5-hour window, 7-day window, model-specific windows (Sonnet/Opus/OAuth Apps), and extra usage / overage credit details."
-          - "Claude credential discovery preserves explicit, environment, and stored OAuth token precedence, then recognizes an authenticated Claude Code session through `claude auth status --json` and asks Claude Code to materialize or refresh a usable usage credential. Authenticated credential-acquisition failures are reported separately from missing login, while unauthenticated users are directed to `claude auth login`."
+          - "Claude credential discovery preserves explicit and environment token precedence, then supports Claude Code's platform storage (including macOS Keychain and `.credentials.json`) after verifying and refreshing an authenticated session through the Claude CLI. Authenticated credential-acquisition failures are reported separately from missing login, while unauthenticated users are directed to `claude auth login`."
           - "Codex: Displays weekly rate-limit window utilization, remaining percentage, reset timestamp, days until reset, minimum required threshold, and task execution allowance."
           - "Read-only command that does not require lock acquisition or GitHub authentication."
 

@@ -187,6 +187,30 @@ class TestClaudeUsageChecker:
         assert credential.token is None
         assert credential.status == "credential_acquisition_failed"
 
+    @pytest.mark.parametrize(
+        "keychain_output",
+        [
+            "not-json",
+            json.dumps({"claudeAiOauth": {"accessToken": "", "expiresAt": 9_999_999_999_999}}),
+            json.dumps({"claudeAiOauth": {"accessToken": "expired", "expiresAt": 1}}),
+        ],
+    )
+    def test_acquire_credential_rejects_unusable_macos_keychain_values(self, keychain_output):
+        """Keychain existence and successful commands do not prove token usability."""
+        status_process = MagicMock(returncode=0, stdout=json.dumps({"loggedIn": True}), stderr="")
+        ping_process = MagicMock(returncode=0, stdout="pong", stderr="")
+        keychain_process = MagicMock(returncode=0, stdout=keychain_output, stderr="")
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=None),
+            patch("auto_coder.claude_usage_checker.platform.system", return_value="Darwin"),
+            patch("subprocess.run", side_effect=[status_process, ping_process, keychain_process]),
+        ):
+            credential = acquire_claude_usage_credential()
+
+        assert credential.token is None
+        assert credential.status == "credential_acquisition_failed"
+
     def test_acquire_credential_preserves_environment_fast_path(self):
         with (
             patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "environment-token"}, clear=True),

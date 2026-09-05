@@ -10,6 +10,7 @@ it raises AutoCoderUsageLimitError to defer LLM invocations and route to next ba
 
 import json
 import os
+import platform
 import shlex
 import subprocess
 import threading
@@ -135,6 +136,48 @@ def _read_credentials_file() -> Optional[dict]:
         return None
 
 
+def _read_macos_keychain_credentials(timeout: float = 10.0) -> Optional[dict]:
+    """Read Claude Code's OAuth credential blob from the macOS Keychain."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(f"Failed to read Claude credentials from macOS Keychain: {e}")
+        return None
+    if result.returncode != 0:
+        logger.debug(f"macOS Keychain credential lookup returned code {result.returncode}: {result.stderr}")
+        return None
+    try:
+        credentials = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        logger.debug("Claude macOS Keychain credential is not valid JSON")
+        return None
+    return credentials if isinstance(credentials, dict) else None
+
+
+def _unexpired_access_token(credentials: Optional[dict]) -> Optional[str]:
+    """Return a non-expired OAuth access token from a credential container."""
+    if not credentials:
+        return None
+    oauth_info = credentials.get("claudeAiOauth")
+    if not isinstance(oauth_info, dict):
+        return None
+    token = oauth_info.get("accessToken")
+    expires_at = oauth_info.get("expiresAt")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    if isinstance(expires_at, (int, float)) and time.time() * 1000 >= expires_at:
+        return None
+    return token.strip()
+
+
 def _update_credentials_file(
     new_access_token: str,
     new_refresh_token: Optional[str] = None,
@@ -175,17 +218,14 @@ def refresh_claude_token_via_cli(timeout: float = 30.0) -> Optional[str]:
     primary_cmd = base_cmd + ["-p", "ping", "--tools", "", "--no-session-persistence"]
 
     def _check_refreshed_creds() -> Optional[str]:
-        creds = _read_credentials_file()
-        if creds:
-            oauth_info = creds.get("claudeAiOauth")
-            if isinstance(oauth_info, dict):
-                token = oauth_info.get("accessToken")
-                expires_at = oauth_info.get("expiresAt")
-                now_ms = time.time() * 1000
-                if token and isinstance(token, str) and token.strip():
-                    if not expires_at or (isinstance(expires_at, (int, float)) and now_ms < (expires_at - 60000)):
-                        logger.info("Successfully refreshed Claude OAuth token via Claude CLI")
-                        return token.strip()
+        for source, creds in (
+            ("credentials file", _read_credentials_file()),
+            ("macOS Keychain", _read_macos_keychain_credentials()),
+        ):
+            token = _unexpired_access_token(creds)
+            if token:
+                logger.info(f"Successfully acquired Claude OAuth token from {source} after Claude CLI refresh")
+                return token
         return None
 
     try:
