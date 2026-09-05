@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
 
+import httpx
+
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
@@ -2530,7 +2532,20 @@ class AutomationEngine:
                 # Get PR data
                 # repo = self.github.get_repository(repo_name)
                 # pr = repo.get_pull(number)
-                pr = self.github.get_pull_request(repo_name, number)
+                if propagate_errors:
+                    try:
+                        # Invalidation completion needs a cache-bypassing API
+                        # result that distinguishes authoritative 404 from a
+                        # transport failure. get_pull_request() intentionally
+                        # flattens both to None for legacy polling callers.
+                        pr = self.github.get_pull_request_metadata_strict(repo_name, number)
+                    except httpx.HTTPStatusError as error:
+                        if error.response.status_code == 404:
+                            logger.info(f"PR #{number} no longer exists in {repo_name}")
+                            return None
+                        raise
+                else:
+                    pr = self.github.get_pull_request(repo_name, number)
                 pr_data = self.github.get_pr_details(pr) if pr else None
                 if not pr_data or not pr_data.get("number"):
                     logger.error(f"PR #{number} not found in {repo_name}")

@@ -2,11 +2,13 @@ import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
+from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app, process_github_payload
 
 
@@ -87,14 +89,16 @@ def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path
 def test_fetch_failure_remains_durable_and_restart_retries(tmp_path: Path, monkeypatch):
     path = tmp_path / "invalidations.sqlite3"
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
-    failing = AutomationEngine(MagicMock(), AutomationConfig())
-    failing.github.get_pull_request.side_effect = RuntimeError("GitHub unavailable")
+    github = GitHubClient("test-token")
+    failing = AutomationEngine(github, AutomationConfig())
+    transport = MagicMock(side_effect=RuntimeError("GitHub unavailable"))
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", transport)
 
     async def fail_once():
         await process_github_payload("pull_request", {"action": "opened", "pull_request": {"number": 100}}, failing, "owner/repo", "outage")
         worker = asyncio.create_task(failing._worker_loop("owner/repo", 0))
         for _ in range(200):
-            if failing.github.get_pull_request.call_count == 1:
+            if transport.call_count == 1:
                 break
             await asyncio.sleep(0.01)
         worker.cancel()
@@ -106,9 +110,22 @@ def test_fetch_failure_remains_durable_and_restart_retries(tmp_path: Path, monke
     asyncio.run(fail_once())
     assert failing.invalidations.pending_count("owner/repo") == 1
 
-    restarted = AutomationEngine(MagicMock(), AutomationConfig())
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "number": 100,
+        "title": "Recovered PR",
+        "body": "",
+        "state": "open",
+        "user": {"login": "contributor", "id": 123},
+        "labels": [],
+        "assignees": [],
+        "head": {"ref": "feature", "sha": "abc"},
+        "base": {"ref": "main", "sha": "def"},
+    }
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", MagicMock(return_value=response))
+    restarted = AutomationEngine(GitHubClient("test-token"), AutomationConfig())
     processed = []
-    monkeypatch.setattr(restarted, "_create_candidate_from_single", _candidate)
     monkeypatch.setattr(restarted, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
 
@@ -216,3 +233,22 @@ def test_webhook_during_active_processing_forces_later_reevaluation(tmp_path: Pa
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
     asyncio.run(scenario())
     assert observed == ["first", "later"]
+
+
+def test_authoritative_pr_not_found_completes_invalidation(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = GitHubClient("test-token")
+    engine = AutomationEngine(github, AutomationConfig())
+    request = httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls/100")
+    not_found = httpx.Response(404, request=request)
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", lambda *args, **kwargs: not_found)
+    processed = []
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+
+    async def scenario():
+        await process_github_payload("pull_request", {"action": "opened", "pull_request": {"number": 100}}, engine, "owner/repo", "not-found")
+        await _run_worker_until(engine, 0, processed)
+
+    asyncio.run(scenario())
+    assert processed == []
+    assert engine.invalidations.pending_count("owner/repo") == 0
