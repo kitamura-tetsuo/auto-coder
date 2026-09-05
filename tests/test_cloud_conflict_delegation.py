@@ -12,11 +12,14 @@ from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.pr_processor import (
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
+    _delegate_cloud_review_thread_repair,
+    _link_jules_pr_to_issue,
     _merge_pr,
     _record_cloud_conflict_deliveries,
     _resolve_cloud_conflict_origin,
     _update_with_base_branch,
 )
+from src.auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 from src.auto_coder.utils import CommandResult
 
 
@@ -129,10 +132,25 @@ def test_duplicate_named_backend_session_url_fails_closed_after_dispatch(tmp_pat
         pull_request = pr_data()
         pull_request["body"] = "Created by Claude: https://claude.ai/code/shared-session"
         pull_request["user"] = {"login": "claude[bot]"}
-        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
+        original_body = pull_request["body"]
+        github.search_issues.return_value = []
 
-    assert result.delegated is False
-    assert result.reason == "no originating cloud implementation session could be resolved"
+        linked = _link_jules_pr_to_issue("owner/repo", pull_request, github)
+        conflict_result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
+        review_result = _delegate_cloud_review_thread_repair(
+            "owner/repo",
+            pull_request,
+            github,
+            (ReviewThread(id="thread-1", comments=[ReviewThreadComment(database_id=1, body="Fix this")]),),
+        )
+
+    assert linked is False
+    assert pull_request["body"] == original_body
+    github.update_pr_body.assert_not_called()
+    assert conflict_result.delegated is False
+    assert conflict_result.reason == "no originating cloud implementation session could be resolved"
+    assert review_result.delivered is False
+    assert review_result == ["Review repair was not delivered for PR #1589: no provider-owned cloud task association was found"]
     command.assert_not_called()
 
 

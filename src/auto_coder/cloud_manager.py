@@ -259,12 +259,13 @@ class CloudManager:
         """
         try:
             sessions = self._read_sessions()
-            # Reverse lookup: find issue number for given session_id
-            for issue_number_str, stored_session_id in sessions.items():
-                if stored_session_id == session_id:
-                    issue_number = int(issue_number_str)
-                    logger.debug(f"Found issue #{issue_number} for session_id={session_id}")
-                    return issue_number
+            issue_numbers = [int(issue_number) for issue_number, stored_session_id in sessions.items() if stored_session_id == session_id]
+            if len(issue_numbers) == 1:
+                logger.debug(f"Found issue #{issue_numbers[0]} for session_id={session_id}")
+                return issue_numbers[0]
+            if len(issue_numbers) > 1:
+                logger.warning(f"Session ID {session_id} has ambiguous issue ownership; refusing first-match inference")
+                return None
 
             logger.debug(f"No issue found for session_id={session_id}")
             return None
