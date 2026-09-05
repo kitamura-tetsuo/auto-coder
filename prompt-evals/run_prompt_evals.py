@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import json
 import subprocess
@@ -32,12 +33,29 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _value_at(document: object, dotted_key: str) -> object:
+    if isinstance(document, dict) and dotted_key in document:
+        return document[dotted_key]
     value = document
     for part in dotted_key.split("."):
         if not isinstance(value, dict) or part not in value:
             return {"__prompt_eval_missing__": True}
         value = value[part]
     return value
+
+
+def _glob_matches(path: str, pattern: str) -> bool:
+    """Match a repository path with the same recursive semantics as glob.glob."""
+    path_parts = Path(path).parts
+    pattern_parts = Path(pattern).parts
+
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+        if pattern_parts[pattern_index] == "**":
+            return match(path_index, pattern_index + 1) or (path_index < len(path_parts) and match(path_index + 1, pattern_index))
+        return path_index < len(path_parts) and fnmatch.fnmatchcase(path_parts[path_index], pattern_parts[pattern_index]) and match(path_index + 1, pattern_index + 1)
+
+    return match(0, 0)
 
 
 def _revision_yaml(repo: Path, revision: str, path: str) -> object:
@@ -64,8 +82,14 @@ def load_registry(repo: Path) -> list[dict[str, object]]:
         if not isinstance(target, dict) or not isinstance(target.get("id"), str) or target["id"] in ids:
             raise SelectionError("every target must have a unique string id")
         ids.add(target["id"])
-        if not isinstance(target.get("config"), str) or not isinstance(target.get("cases"), list) or not isinstance(target.get("prompt_dependencies"), list):
+        if not isinstance(target.get("config"), str) or not isinstance(target.get("cases"), list) or not all(isinstance(pattern, str) and pattern for pattern in target["cases"]) or not isinstance(target.get("prompt_dependencies"), list):
             raise SelectionError(f"target {target['id']} has an invalid registration")
+        for dependency in target["prompt_dependencies"]:
+            if not isinstance(dependency, dict) or not isinstance(dependency.get("path"), str):
+                raise SelectionError(f"target {target['id']} has an invalid prompt dependency")
+            keys = dependency.get("keys", [])
+            if not isinstance(keys, list) or not all(isinstance(key, str) and key for key in keys):
+                raise SelectionError(f"target {target['id']} has invalid dependency keys")
     return targets
 
 
@@ -76,16 +100,12 @@ def select_targets(repo: Path, base: str, head: str, changed: set[str], targets:
     for target in targets:
         config = str(target["config"])
         patterns = [str(item) for item in target["cases"]]
-        affected = config in changed or any(any(Path(path).match(pattern) for pattern in patterns) for path in changed)
+        affected = config in changed or any(any(_glob_matches(path, pattern) for pattern in patterns) for path in changed)
         for dependency in target["prompt_dependencies"]:
-            if not isinstance(dependency, dict) or not isinstance(dependency.get("path"), str):
-                raise SelectionError(f"target {target['id']} has an invalid prompt dependency")
             path = dependency["path"]
             if path not in changed:
                 continue
             keys = dependency.get("keys", [])
-            if not isinstance(keys, list) or not all(isinstance(key, str) and key for key in keys):
-                raise SelectionError(f"target {target['id']} has invalid dependency keys")
             if not keys:
                 affected = True
                 continue
@@ -100,7 +120,9 @@ def select_targets(repo: Path, base: str, head: str, changed: set[str], targets:
 
 def run(repo: Path, base: str, head: str, npx: str) -> int:
     targets = load_registry(repo)
-    changed = set(_git(repo, "diff", "--name-only", "--diff-filter=ACDMRT", base, head).splitlines())
+    # Disabling rename detection exposes both the deleted source and added
+    # destination, so a stale registration cannot silently miss a rename.
+    changed = set(_git(repo, "diff", "--name-only", "--no-renames", "--diff-filter=ACDMRT", base, head).splitlines())
     selected = select_targets(repo, base, head, changed, targets)
     if not selected:
         print("No prompt-evaluation targets affected; no provider will be invoked.")
