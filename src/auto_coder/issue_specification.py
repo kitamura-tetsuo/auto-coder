@@ -10,7 +10,7 @@ ISSUE_SPECIFICATION_PARSER_VERSION = "v1"
 
 _MARKDOWN_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _ENTRY_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
-_LIST_REQUIREMENT_PREFIX = re.compile(r"^( {0,3})((?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))")
+_LIST_REQUIREMENT_PREFIX = re.compile(r"^( {0,3})([-*+]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s+)?")
 _REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(.*)$")
 _SCENARIO = re.compile(r"^(AC-\d{3})(?:\s*(?:—|-)\s*(.*))?$")
 _COVERS = re.compile(r"^Covers:\s*(.*)$", re.IGNORECASE)
@@ -212,7 +212,9 @@ def parse_issue_specification(title: str, body: str) -> IssueSpecificationManife
                 manifest.diagnostics.append(SpecificationDiagnostic("malformed-requirement", f"Malformed requirement continuation: {line}", line_number))
                 continue
             list_prefix = _LIST_REQUIREMENT_PREFIX.match(raw_line)
-            list_content_indentation = _column_width(list_prefix.group(0)) if list_prefix else 0
+            # A GitHub task checkbox is inline content, not part of CommonMark's
+            # list marker or the content-column indentation it establishes.
+            list_content_indentation = _column_width("".join(list_prefix.groups())) if list_prefix else 0
             content = _ENTRY_PREFIX.sub("", line, count=1)
             match = _REQUIREMENT.fullmatch(content)
             if not match:
