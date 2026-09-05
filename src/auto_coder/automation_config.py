@@ -863,6 +863,7 @@ class Candidate:
     branch_name: Optional[str] = None
     related_issues: List[int] = field(default_factory=list)
     issue_number: Optional[int] = None
+    invalidation_generation: Optional[int] = None
 
 
 @dataclass

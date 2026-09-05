@@ -36,6 +36,9 @@ class MockEngine:
         self.github = MockGitHubClient()
         self.queue = MockQueue()
 
+    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None):
+        return True
+
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
 def test_github_webhook_security_valid_signature(mock_init_dashboard):
