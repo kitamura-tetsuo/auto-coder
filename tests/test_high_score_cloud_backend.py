@@ -9,8 +9,10 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine, Candidate
 from auto_coder.cli_helpers import create_high_score_cloud_backend_manager
+from auto_coder.cloud_manager import CloudManager
 from auto_coder.issue_processor import _process_issue_claude_routine_mode, _process_issue_high_score_cloud
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from auto_coder.pr_processor import _resolve_cloud_task_origin
 
 
 class TestHighScoreCloudBackendConfig:
@@ -107,13 +109,60 @@ class TestDifficultIssueHandling:
         )
 
         mock_routine_client.fire_routine.assert_called_once()
-        mock_cloud_mgr.add_session.assert_called_once_with(42, "session_999", provider="claude-routine")
+        mock_cloud_mgr.add_session.assert_called_once_with(
+            42,
+            "session_999",
+            provider="claude-routine",
+            backend_name="claude-opus-routine",
+        )
         mock_github.add_comment_to_issue.assert_called_once()
         comment_text = mock_github.add_comment_to_issue.call_args[0][2]
         assert "Session ID: session_999" in comment_text
         assert "https://claude.ai/code/session_999" in comment_text
         mock_label_ctx.keep_label.assert_called_once()
         assert any("Started Claude Routine session" in a for a in actions)
+
+    def test_named_claude_backend_persists_through_dispatch_and_restart(self, tmp_path):
+        """The production dispatch and PR-origin path retain named configuration."""
+        backend_a = BackendConfig(
+            name="claude-a",
+            backend_type="claude-routine",
+            url="https://claude-a.example/fire",
+            api_key="token-a",
+            options=["--profile=a"],
+        )
+        backend_b = BackendConfig(
+            name="claude-b",
+            backend_type="claude-routine",
+            url="https://claude-b.example/fire",
+            api_key="token-b",
+            options=["--profile=b"],
+        )
+        llm_config = MagicMock()
+        llm_config.get_backend_config.side_effect = {"claude-a": backend_a, "claude-b": backend_b, "claude-routine": backend_b}.get
+        github = MagicMock()
+        issue = {"number": 1748, "title": "Preserve backend", "body": "Details", "labels": [], "state": "open"}
+
+        with (
+            patch("auto_coder.cloud_manager.Path.home", return_value=tmp_path),
+            patch("auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
+            patch("auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=("session-a", None)),
+            patch("auto_coder.issue_processor.get_commit_log", return_value="initial"),
+        ):
+            _process_issue_claude_routine_mode("owner/repo", issue, AutomationConfig(), github, backend_name="claude-a")
+
+            persisted = CloudManager("owner/repo").get_binding(1748)
+            resolution = _resolve_cloud_task_origin("owner/repo", {"number": 99, "body": "Closes #1748"}, github)
+
+        assert persisted is not None
+        assert persisted.provider == "claude-routine"
+        assert persisted.backend_name == "claude-a"
+        assert resolution.origin is not None
+        reconstructed = resolution.origin.client
+        assert reconstructed.backend_name == "claude-a"
+        assert reconstructed.url == "https://claude-a.example/fire"
+        assert reconstructed.token == "token-a"
+        assert reconstructed.options == ["--profile=a"]
 
     @patch("auto_coder.issue_processor._process_issue_claude_routine_mode")
     def test_process_issue_high_score_cloud_delegates_to_routine(self, mock_routine_mode):

@@ -49,6 +49,7 @@ class TestCloudManager:
                 assert len(rows) == 1
                 assert rows[0]["issue_number"] == "123"
                 assert rows[0]["session_id"] == "session-abc"
+                assert rows[0]["backend_name"] == ""
 
     def test_provider_binding_survives_new_manager_instance(self, tmp_path):
         """A production-written association retains ownership after restart."""
@@ -61,6 +62,32 @@ class TestCloudManager:
         assert binding is not None
         assert binding.provider == "jules"
         assert binding.task_id == "11778985556824899970"
+        assert binding.backend_name == ""
+
+    def test_legacy_claude_binding_uses_historical_backend_identity(self, tmp_path):
+        cloud_file = tmp_path / "cloud.csv"
+        cloud_file.write_text(
+            "issue_number,provider,session_id\n1748,claude-routine,legacy-session\n",
+            encoding="utf-8",
+        )
+
+        binding = CloudManager("owner/repo", cloud_file).get_binding(1748)
+
+        assert binding is not None
+        assert binding.provider == "claude-routine"
+        assert binding.backend_name == "claude-routine"
+        assert binding.task_id == "legacy-session"
+
+    def test_task_lookup_exposes_conflicting_backend_ownership(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(1, "shared-session", provider="claude-routine", backend_name="claude-a")
+        assert manager.add_session(2, "shared-session", provider="claude-routine", backend_name="claude-b")
+
+        bindings = manager.get_bindings_for_task("claude-routine", "shared-session")
+
+        assert [binding.backend_name for binding in bindings] == ["claude-a", "claude-b"]
+        assert manager.get_issues_by_session("shared-session") == (1, 2)
+        assert manager.get_issue_by_session("shared-session") is None
 
     def test_legacy_session_without_provider_is_not_routable(self, tmp_path):
         cloud_file = tmp_path / "cloud.csv"
@@ -190,7 +217,7 @@ class TestCloudManager:
             with open(cloud_file, "r") as f:
                 reader = csv.reader(f)
                 header = next(reader)
-                assert header == ["issue_number", "provider", "session_id"]
+                assert header == ["issue_number", "provider", "backend_name", "session_id"]
 
     def test_csv_sorted_by_issue_number(self):
         """Test that CSV entries are sorted by issue number."""

@@ -3969,8 +3969,12 @@ def _resolve_jules_pr_issue_number(
         issue_number = cloud_manager.get_issue_by_session(session_id)
 
         if not issue_number:
-            logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
-            issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+            durable_issues = cloud_manager.get_issues_by_session(session_id)
+            if len(durable_issues) > 1:
+                logger.warning(f"Session ID '{session_id}' has ambiguous durable ownership; refusing comment-search inference")
+            else:
+                logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
+                issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
     else:
         logger.warning(f"No session ID found in Jules PR #{pr_number} body")
 
@@ -4313,6 +4317,29 @@ def _resolve_cloud_conflict_origin(
     github_client: Optional[Any] = None,
 ) -> Optional[Tuple[Any, str]]:
     """Return the capable client and existing task ID that originated a PR."""
+    issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+    explicitly_linked_issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body", "") or "")
+    manager = CloudManager(repo_name)
+
+    def claude_client(task_id: str) -> Optional[Any]:
+        """Reconstruct a Claude transport from durable task ownership."""
+        # Only explicit PR-to-issue links are authoritative here. ``issue_numbers``
+        # can also contain a first-match reverse lookup from a session URL, which
+        # must not break a tie between duplicate provider task identifiers.
+        bindings = [manager.get_binding(number) for number in explicitly_linked_issue_numbers]
+        matching = {binding for binding in bindings if binding is not None and binding.provider == "claude-routine" and binding.task_id == task_id}
+        if len(matching) > 1:
+            return None
+        persisted = manager.get_bindings_for_task("claude-routine", task_id)
+        if not matching and len(persisted) > 1:
+            return None
+        binding = matching.pop() if matching else (persisted[0] if persisted else None)
+        backend_name = binding.backend_name if binding else "claude-routine"
+
+        from .cloud_task_engine import CloudTaskEngine
+
+        return CloudTaskEngine().get_client_for_provider("claude-routine", repo_name, backend_name=backend_name)
+
     # CloudRun is the lifecycle's authoritative implementation association.
     # Consult it before heuristics based on an author name or PR body, because
     # provider-created PRs do not consistently retain those presentation cues.
@@ -4321,7 +4348,7 @@ def _resolve_cloud_conflict_origin(
 
         pr_number = int(pr_data["number"])
         repository = CloudRunRepository(repo_name)
-        associated_runs = [run for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client) for run in repository.list_for_issue(issue_number) if pr_number in run.pull_request_numbers]
+        associated_runs = [run for issue_number in issue_numbers for run in repository.list_for_issue(issue_number) if pr_number in run.pull_request_numbers]
         if associated_runs:
             run = max(associated_runs, key=lambda candidate: candidate.attempt)
             if run.provider == "codex-cloud":
@@ -4329,9 +4356,8 @@ def _resolve_cloud_conflict_origin(
 
                 return CodexCloudClient(repo_name=repo_name), run.task_id
             if run.provider == "claude-routine":
-                from .claude_routine_client import ClaudeRoutineClient
-
-                return ClaudeRoutineClient(repo_name=repo_name), run.task_id
+                client = claude_client(run.task_id)
+                return (client, run.task_id) if client else None
             logger.warning(f"Cloud run provider '{run.provider}' does not support PR conflict follow-up")
             return None
     except (KeyError, TypeError, ValueError, OSError) as exc:
@@ -4347,15 +4373,14 @@ def _resolve_cloud_conflict_origin(
     if _is_claude_pr(pr_data):
         task_id = _extract_session_id_from_pr_body(pr_data.get("body", "") or "")
         if not task_id:
-            manager = CloudManager(repo_name)
             for issue_number in extract_linked_issues_from_pr_body(pr_data.get("body", "") or ""):
-                task_id = manager.get_session_id(issue_number)
-                if task_id:
+                binding = manager.get_binding(issue_number)
+                if binding and binding.provider == "claude-routine":
+                    task_id = binding.task_id
                     break
         if task_id and not task_id.startswith("http"):
-            from .claude_routine_client import ClaudeRoutineClient
-
-            return ClaudeRoutineClient(repo_name=repo_name), task_id
+            client = claude_client(task_id)
+            return (client, task_id) if client else None
 
     return None
 
@@ -4580,16 +4605,20 @@ def _resolve_cloud_task_origin(
             binding = manager.get_binding(issue_number)
             if binding:
                 bindings.append(binding)
-    unique_bindings = {(binding.provider, binding.task_id) for binding in bindings}
+    unique_bindings = {(binding.provider, binding.task_id, binding.backend_name) for binding in bindings}
     if len(unique_bindings) != 1:
         reason = "no provider-owned cloud task association was found" if not unique_bindings else "multiple conflicting cloud task associations were found"
         return CloudTaskOriginResolution(reason=reason)
-    provider, task_id = unique_bindings.pop()
+    provider, task_id, backend_name = unique_bindings.pop()
 
     from .cloud_task_engine import CloudTaskEngine
 
     try:
-        client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
+        engine = CloudTaskEngine()
+        if provider == "claude-routine":
+            client = engine.get_client_for_provider(provider, repo_name, backend_name=backend_name or "claude-routine")
+        else:
+            client = engine.get_client_for_provider(provider, repo_name)
     except Exception as exc:
         logger.error(f"Failed to initialize cloud provider '{provider}' for PR #{pr_number}: {exc}")
         return CloudTaskOriginResolution(reason=f"cloud provider '{provider}' is unavailable: {exc}")
