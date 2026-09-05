@@ -208,6 +208,10 @@ class SpecificationValidationLifecycle:
             if not current_decision.findings_published:
                 marker = f"{FINDINGS_MARKER_PREFIX}:{current_decision.identity.key}"
                 comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                # Comment enumeration is external I/O. An edit during that read
+                # invalidates publication just as an edit before the read does.
+                if matching_snapshot() is None:
+                    return None
                 if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
                     github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current_decision))  # type: ignore[attr-defined]
                 current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed)

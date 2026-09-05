@@ -1606,6 +1606,18 @@ class AutomationEngine:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         result.actions = self._take_issue_actions(repo_name, candidate.data)
+
+                    # Cloud launchers persist the authoritative provider task in
+                    # CloudManager. Mirror that production output into logical
+                    # slot membership before the local launch execution returns,
+                    # so later generations cannot validate around remote work.
+                    from .cloud_manager import CloudManager
+
+                    binding = CloudManager(repo_name).get_binding(item_number)
+                    if binding is not None:
+                        owner = ImplementationOwner("issue", item_number)
+                        if not self._get_implementation_slots(repo_name).record_provider_session(owner, binding.task_id):
+                            raise RuntimeError(f"Could not retain asynchronous implementation ownership for issue #{item_number}")
                     result.success = True
                 elif item_type == "pr":
                     # PR processing

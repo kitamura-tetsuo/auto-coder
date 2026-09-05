@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
@@ -389,3 +389,75 @@ def test_reconciliation_edit_is_rechecked_before_retry_ownership(tmp_path):
     assert result.actions == ["Skipped - validated Issue generation changed during capacity reconciliation"]
     engine._process_single_candidate_reserved.assert_not_called()
     assert engine.implementation_slots.active_owners() == ()
+
+
+def test_production_jules_launch_registers_retained_provider_ownership(monkeypatch, tmp_path):
+    """Shared admission consumes the real Jules/CloudManager launch persistence."""
+    from auto_coder.issue_processor import _process_issue_jules_mode
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    current = {"body": BODY + " A"}
+    github = Mock()
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+        "number": number,
+        "title": "Async",
+        "body": current["body"],
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    github.get_all_sub_issues.return_value = []
+    github.get_item_type_strict.return_value = "issue"
+    github.try_add_labels.return_value = True
+    engine = AutomationEngine(github, config=AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    analyzed = []
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
+        "owner/repo",
+        "validator",
+        tmp_path / "validations.json",
+        lambda _manifest, body: analyzed.append(body) or SpecificationAnalysisResult("READY"),
+    )
+    jules = Mock()
+    jules.start_session.return_value = "real-session-a"
+
+    def production_launch(repo, issue_data, config, client, label_context=None):
+        return _process_issue_jules_mode(repo, issue_data, config, client, label_context)
+
+    candidate = Candidate(type="issue", data={"number": 1728, "title": "Async", "body": current["body"]}, priority=0)
+    with (
+        patch("auto_coder.issue_processor._process_issue_cloud_backend", side_effect=production_launch),
+        patch("auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+    ):
+        launched = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+    assert launched.success is True
+    owner = ImplementationOwner("issue", 1728)
+    assert slots.has_provider_sessions(owner) is True
+    assert slots.active_execution_ids(owner) == ()
+
+    current["body"] = BODY + " B"
+    deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True)
+    assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
+    assert analyzed == [BODY + " A"]
+
+
+def test_blocked_edit_during_comment_lookup_prevents_stale_publication(tmp_path):
+    """Shared BLOCKED processing rechecks generation after deduplication I/O."""
+    current = {"body": BODY}
+
+    class EditingCommentsGitHub(GitHubFlow):
+        def get_issue_dispatch_snapshot_strict(self, _repo, number):
+            return snapshot(body=current["body"])
+
+        def get_issue_comments_strict(self, _repo, _number):
+            current["body"] = BODY + "\nRevised during comment lookup"
+            return []
+
+    github = EditingCommentsGitHub([snapshot()])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "BLOCKED"))
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Rejected - blocked specification"]
+    assert github.comments == []
+    assert github.removals == 0
+    engine._process_single_candidate_reserved.assert_not_called()
