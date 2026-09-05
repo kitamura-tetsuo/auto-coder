@@ -352,6 +352,7 @@ class TestDifficultIssueHandling:
             config,
             mock_github,
             label_context=ANY,
+            implementation_slots=ANY,
         )
         mock_take_actions.assert_not_called()
         assert result.success is True

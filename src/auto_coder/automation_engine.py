@@ -1469,6 +1469,8 @@ class AutomationEngine:
             if item_number is None:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
 
+            implementation_slots = self._get_implementation_slots(repo_name)
+
             if item_type == "pr":
                 from .pr_processor import _reject_unsafe_codex_cloud_pr
 
@@ -1597,6 +1599,7 @@ class AutomationEngine:
                             config,
                             self.github,
                             label_context=should_process,
+                            implementation_slots=implementation_slots,
                         )
                     elif is_difficult:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
@@ -1610,6 +1613,7 @@ class AutomationEngine:
                             config,
                             self.github,
                             label_context=should_process,
+                            implementation_slots=implementation_slots,
                         )
                     elif jules_mode:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
@@ -1622,6 +1626,7 @@ class AutomationEngine:
                             config,
                             self.github,
                             label_context=should_process,
+                            implementation_slots=implementation_slots,
                         )
 
                     else:

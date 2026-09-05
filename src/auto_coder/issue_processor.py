@@ -443,6 +443,7 @@ def _process_issue_high_score_cloud(
     config: AutomationConfig,
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Process an issue using the backend_with_high_score_cloud configuration with failover support.
 
@@ -524,6 +525,7 @@ def _process_issue_high_score_cloud(
         github_client,
         backend_manager=backend_manager,
         check_labels=False,
+        implementation_slots=implementation_slots,
     )
 
 
@@ -533,6 +535,7 @@ def _process_issue_cloud_backend(
     config: AutomationConfig,
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Process an issue using the backend_cloud configuration with failover support.
 
@@ -621,6 +624,7 @@ def _process_issue_cloud_backend(
         github_client,
         backend_manager=backend_manager,
         check_labels=False,
+        implementation_slots=implementation_slots,
     )
 
 
