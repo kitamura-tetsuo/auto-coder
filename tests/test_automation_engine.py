@@ -528,7 +528,7 @@ class TestAutomationEngine:
             second_candidates = engine._get_candidates("owner/repo")
             second = engine._process_single_candidate_unified("owner/repo", second_candidates[0], engine.config)
 
-        assert second_candidates[0].data["body"] == cached_body
+        assert second_candidates[0].data["body"] == (cached_body if second_rejected else current_body)
         assert (first.error is not None) is first_rejected
         assert (second.error is not None) is second_rejected
         assert engine._process_single_candidate_reserved.call_count == int(not first_rejected) + int(not second_rejected)
@@ -589,7 +589,7 @@ class TestAutomationEngine:
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
+                return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}, {"name": "urgent"}]}
 
             def get_issue(self, _repo_name, number):
                 return {"number": number, "state": "open"}
@@ -612,8 +612,8 @@ class TestAutomationEngine:
         assert state["issue:2"]["emergency"] is True
         assert slots.start_execution(ImplementationOwner("issue", 3), allow_urgent_emergency=True) is None
 
-    def test_existing_urgent_issue_execution_is_rejected_at_engine_boundary(self, tmp_path):
-        """A previously collected urgent candidate cannot inherit an active execution."""
+    def test_unvalidated_existing_issue_execution_is_replaced_after_ready(self, tmp_path):
+        """An execution without current READY cannot retain ownership during validation."""
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
@@ -634,10 +634,8 @@ class TestAutomationEngine:
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        assert result.success is False
-        assert result.actions == ["Deferred - active execution already exists (issue:1680)"]
-        engine._process_single_candidate_reserved.assert_not_called()
-        assert slots.active_execution_ids(owner) == (execution_id,)
+        engine._process_single_candidate_reserved.assert_called_once()
+        assert slots.active_execution_ids(owner) == ()
 
     def test_first_branch_linked_pr_discovery_protects_existing_owner_before_reconciliation(self, tmp_path):
         """A newly discovered PR must record membership before its Issue can be released."""

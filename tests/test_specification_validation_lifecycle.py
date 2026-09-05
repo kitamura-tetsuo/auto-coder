@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.implementation_slots import ImplementationSlotRepository
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -130,7 +130,7 @@ def test_production_blocked_gate_generation_checks_and_deduplicates_effects(tmp_
     github.snapshots = [snapshot(), snapshot(), snapshot()]
     engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert len(github.comments) == 1
-    assert github.removals == 1
+    assert github.removals == 2
 
 
 def test_production_error_preserves_submission_without_github_mutation(tmp_path):
@@ -156,3 +156,105 @@ def test_blocked_side_effect_failure_remains_observable_and_denies_dispatch(tmp_
     assert "label API unavailable" in (result.error or "")
     assert len(github.comments) == 1
     engine._process_single_candidate_reserved.assert_not_called()
+
+
+def test_production_dispatch_replaces_stale_candidate_payload_with_validated_snapshot(tmp_path):
+    revised = snapshot(title="Revised title", body=BODY.replace("current", "revised"))
+    github = GitHubFlow([revised, revised])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    captured = []
+    engine._process_single_candidate_reserved.side_effect = lambda _repo, dispatched, *_args, **_kwargs: captured.append(dict(dispatched.data)) or CandidateProcessingResult("issue", 1728, "Revised title", True, ["dispatched"])
+    assert engine._process_single_candidate_unified("owner/repo", candidate, engine.config).success is True
+    assert captured[0]["title"] == "Revised title"
+    assert captured[0]["body"] == revised["body"]
+
+
+def test_concurrent_force_and_ordinary_paths_cannot_both_dispatch(tmp_path):
+    github = GitHubFlow([snapshot()] * 6)
+    gate = lifecycle(tmp_path, "READY")
+    engine, candidate = engine_with_gate(tmp_path, github, gate)
+    entered = Barrier(2)
+    release = Barrier(2)
+    dispatches = []
+
+    def dispatch(*_args, **_kwargs):
+        dispatches.append("started")
+        entered.wait()
+        release.wait()
+        return CandidateProcessingResult("issue", 1728, "Title", True, ["dispatched"])
+
+    engine._process_single_candidate_reserved.side_effect = dispatch
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config)
+        entered.wait()
+        second = pool.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config, False, True, True)
+        second_result = second.result(timeout=5)
+        release.wait()
+        assert first.result(timeout=5).success is True
+    assert len(dispatches) == 1
+    assert second_result.actions == ["Deferred - active execution already exists (issue:1728)"]
+
+
+def test_blocked_new_generation_releases_existing_implementation_capacity(tmp_path):
+    github = GitHubFlow([snapshot()] * 3)
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "BLOCKED"))
+    owner = ImplementationOwner("issue", 1728)
+    assert engine.implementation_slots.start_execution(owner) is not None
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Rejected - blocked specification"]
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+
+
+def test_resubmitted_unchanged_blocked_generation_removes_label_again_after_restart(tmp_path):
+    class StatefulGitHub(GitHubFlow):
+        def remove_labels(self, *_args, **_kwargs):
+            self.removals += 1
+            self.last["labels"] = []
+
+        def submit(self):
+            self.last["labels"] = [{"name": "implementation-ready"}]
+            self.snapshots = [dict(self.last), dict(self.last), dict(self.last)]
+
+    github = StatefulGitHub([snapshot(), snapshot(), snapshot()])
+    first_gate = lifecycle(tmp_path, "BLOCKED")
+    engine, candidate = engine_with_gate(tmp_path, github, first_gate)
+    engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert github.removals == 1
+    github.submit()
+    engine._specification_validators["owner/repo"] = lifecycle(tmp_path, "BLOCKED", Mock(side_effect=AssertionError("must reuse")))
+    engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert github.removals == 2
+    assert len(github.comments) == 1
+
+
+def test_supported_high_score_fallback_model_changes_production_policy_identity(monkeypatch):
+    from auto_coder.llm_backend_config import LLMBackendConfiguration
+    from auto_coder.specification_validation_lifecycle import configured_provider_identity
+
+    def config(model):
+        return LLMBackendConfiguration.load_from_dict({"backend_with_high_score": {"order": ["codex"]}, "backends": {"codex": {"model": model}}})
+
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda: config("model-a"))
+    first = configured_provider_identity()
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda: config("model-b"))
+    second = configured_provider_identity()
+    assert first != second
+    assert "model-a" in first
+    assert "model-b" in second
+
+
+def test_concurrent_different_issue_records_both_survive_restart(tmp_path):
+    path = tmp_path / "decisions.json"
+    calls = []
+
+    def analyze(manifest, _body):
+        calls.append(manifest.issue_number)
+        return SpecificationAnalysisResult("READY")
+
+    gate = SpecificationValidationLifecycle("owner/repo", "provider/model", path, analyze)
+    manifests = [build_normative_issue_manifest(number, f"Title {number}", BODY) for number in (1, 2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(lambda manifest: gate.decide(manifest, manifest.title, BODY).verdict, manifests)) == ["READY", "READY"]
+    restarted = SpecificationValidationLifecycle("owner/repo", "provider/model", path, Mock(side_effect=AssertionError("must reuse")))
+    assert [restarted.decide(manifest, manifest.title, BODY).verdict for manifest in manifests] == ["READY", "READY"]
+    assert sorted(calls) == [1, 2]

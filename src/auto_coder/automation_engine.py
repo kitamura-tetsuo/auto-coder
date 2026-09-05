@@ -24,7 +24,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
-from .implementation_slots import ImplementationOwnerResolutionError, ImplementationSlotRepository
+from .implementation_slots import ImplementationOwner, ImplementationOwnerResolutionError, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -167,6 +167,7 @@ class AutomationEngine:
                 self.config,
                 self.github,
                 implementation_slots=self._get_implementation_slots(repo_name),
+                authorize_dispatch=self._authorize_stale_jules_dispatch,
             )
             for action in stale_result.actions:
                 logger.info(f"Stale Jules issue session: {action}")
@@ -174,6 +175,37 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Error handling stale Jules issue sessions: {e}")
             return []
+
+    def _get_specification_validator(self, repo_name: str) -> SpecificationValidationLifecycle:
+        validator = self._specification_validators.get(repo_name)
+        if validator is None:
+            validator = SpecificationValidationLifecycle(repo_name, configured_provider_identity())
+            self._specification_validators[repo_name] = validator
+        return validator
+
+    def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Apply the same generation authorization to daemon replacement work."""
+        title = str(snapshot.get("title") or "")
+        body = str(snapshot.get("body") or "")
+        manifest = build_normative_issue_manifest(issue_number, title, body)
+        if manifest.error:
+            return None
+        validator = self._get_specification_validator(repo_name)
+        identity = validator.identity(issue_number, title, body)
+        durable = validator.store.get(identity)
+        if durable is None or durable.verdict != "READY":
+            self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", issue_number))
+        decision = validator.decide(manifest, title, body)
+        if decision.verdict == "BLOCKED":
+            validator.apply_blocked(self.github, decision)
+            return None
+        if decision.verdict != "READY":
+            return None
+        refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        if not isinstance(refreshed, dict) or not is_implementation_ready(refreshed):
+            return None
+        identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
+        return refreshed if identity == decision.identity else None
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
@@ -1246,15 +1278,17 @@ class AutomationEngine:
             # Semantic readiness is a durable authorization for this exact title,
             # body, repository, Issue and validator policy. It deliberately runs
             # before implementation ownership/capacity is consulted.
-            validator = self._specification_validators.get(repo_name)
-            if validator is None:
-                validator = SpecificationValidationLifecycle(
-                    repo_name,
-                    configured_provider_identity(),
-                )
-                self._specification_validators[repo_name] = validator
+            validator = self._get_specification_validator(repo_name)
+            validation_identity = validator.identity(item_number, current_title, current_body)
+            durable_decision = validator.store.get(validation_identity)
+            if durable_decision is None or durable_decision.verdict != "READY":
+                # Existing ownership belongs to an older/unauthorized generation.
+                # Release it before semantic validation so validation itself never
+                # retains implementation capacity.
+                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
             decision = validator.decide(contract, current_title, current_body)
             if decision.verdict == "ERROR":
+                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                 result.actions = ["Deferred - specification validation error"]
                 return result
@@ -1264,10 +1298,12 @@ class AutomationEngine:
                 except Exception as exc:
                     side_effect_error = str(exc)
                 if side_effect_error:
+                    self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                     logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
                     result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
                     result.actions = ["Rejected - blocked specification (side effects incomplete)"]
                     return result
+                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                 result.error = "Specification validation found material defects"
                 result.actions = ["Rejected - blocked specification"]
                 return result
@@ -1286,8 +1322,13 @@ class AutomationEngine:
                 str(dispatch_snapshot.get("body") or ""),
             )
             if not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
+                self._get_implementation_slots(repo_name).release(ImplementationOwner("issue", item_number))
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
+
+            # The backend must receive exactly the authoritative generation that
+            # READY authorized, never the older candidate collection payload.
+            candidate.data.update(dispatch_snapshot)
 
         slots = self._get_implementation_slots(repo_name)
         try:
@@ -1301,7 +1342,7 @@ class AutomationEngine:
 
         implementation_pr = item_number if candidate.type == "pr" and owner.kind != "pr" else None
         labels = candidate.data.get("labels", [])
-        urgent_issue = candidate.type == "issue" and isinstance(labels, list) and "urgent" in labels
+        urgent_issue = candidate.type == "issue" and isinstance(labels, list) and any(label == "urgent" or (isinstance(label, dict) and label.get("name") == "urgent") for label in labels)
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
@@ -1314,7 +1355,7 @@ class AutomationEngine:
                     owner,
                     implementation_pr=implementation_pr,
                     bypass_capacity=explicit_only,
-                    bypass_active_execution=explicit_only and force,
+                    bypass_active_execution=explicit_only and force and candidate.type == "pr",
                     allow_urgent_emergency=urgent_issue,
                 )
             if execution_id is None and not explicit_only:
@@ -1330,9 +1371,9 @@ class AutomationEngine:
             return result
 
         try:
-            # Forced recovery intentionally does not take the per-owner mutation
-            # lock; its separate durable execution identity protects sibling state.
-            if explicit_only and force:
+            # Issue force changes scheduling eligibility, not generation-level
+            # serialization. PR forced recovery retains its separate execution.
+            if explicit_only and force and candidate.type == "pr":
                 if advance_issue_attempt:
                     result = self._process_single_candidate_reserved(
                         repo_name,

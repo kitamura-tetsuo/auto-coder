@@ -39,6 +39,9 @@ def configured_provider_identity() -> str:
     if not order:
         default = config.get_adversarial_validation_default_backend()
         order = [default] if default else []
+    if not order:
+        getter = getattr(config, "get_high_score_backend_order", None)
+        order = getter() if callable(getter) else list(getattr(config, "backend_with_high_score_order", []) or [])
     route = [{"provider": name, "model": config.get_model_for_backend(name)} for name in order]
     return json.dumps(route, sort_keys=True, separators=(",", ":"))
 
@@ -131,18 +134,19 @@ class SpecificationValidationStore:
     def save(self, decision: ValidationDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
             raise ValueError("ERROR decisions must not be persisted")
-        state = self._read()
-        state[decision.identity.key] = {
-            "identity": asdict(decision.identity),
-            "verdict": decision.verdict,
-            "findings": [asdict(item) for item in decision.findings],
-            "findings_published": decision.findings_published,
-            "readiness_removed": decision.readiness_removed,
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
-        temporary.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, self.path)
+        with self.locked("repository-state"):
+            state = self._read()
+            state[decision.identity.key] = {
+                "identity": asdict(decision.identity),
+                "verdict": decision.verdict,
+                "findings": [asdict(item) for item in decision.findings],
+                "findings_published": decision.findings_published,
+                "readiness_removed": decision.readiness_removed,
+            }
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
+            temporary.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, self.path)
 
 
 Analyzer = Callable[[NormativeIssueManifest, str], SpecificationAnalysisResult]
@@ -201,10 +205,18 @@ class SpecificationValidationLifecycle:
                 self.store.save(current_decision)
             if matching_snapshot() is None:
                 return None
-            if not current_decision.readiness_removed:
-                github.remove_labels(self.repository, issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, current_decision.findings_published, True)
-                self.store.save(current_decision)
+            # readiness_removed describes the previous submission, not all future
+            # submissions. If the label is currently present it was explicitly
+            # re-added and must be removed again, while the findings stay unique.
+            github.remove_labels(self.repository, issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
+            current_decision = ValidationDecision(
+                current_decision.identity,
+                current_decision.verdict,
+                current_decision.findings,
+                current_decision.findings_published,
+                True,
+            )
+            self.store.save(current_decision)
         return None
 
     @staticmethod

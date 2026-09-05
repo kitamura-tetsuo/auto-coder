@@ -6,7 +6,7 @@ import json
 import sys
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, TypedDict, Union, cast
+from typing import Any, Callable, Dict, List, Optional, TypedDict, Union, cast
 
 from dateutil import parser
 
@@ -661,6 +661,7 @@ def handle_stale_jules_issue_sessions(
     config: AutomationConfig,
     github_client: GitHubClient,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    authorize_dispatch: Optional[Callable[[str, int, Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> StaleJulesIssueResult:
     """Take issues away from Jules sessions that ran out of time without opening a PR.
 
@@ -754,11 +755,21 @@ def handle_stale_jules_issue_sessions(
                 logger.info(f"Skipping stale Jules session {session_id}: issue #{issue_number} is not implementation-ready")
                 continue
 
+            if authorize_dispatch is None:
+                logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
+                continue
+            authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
+            if authorized_issue is None:
+                logger.info(f"Skipping stale Jules session {session_id}: current specification generation is not READY")
+                continue
+            current_issue = authorized_issue
+
             issue = github_client.get_issue(repo_name, issue_number)
             if issue is None:
                 continue
-
             issue_data = github_client.get_issue_details(issue)
+            issue_data["title"] = str(current_issue.get("title") or "")
+            issue_data["body"] = str(current_issue.get("body") or "")
 
             if issue_data.get("state") != "open":
                 continue

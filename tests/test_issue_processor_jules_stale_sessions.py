@@ -89,6 +89,7 @@ class TestHandleStaleJulesIssueSessions:
                 config,
                 github_client,
                 implementation_slots=implementation_slots,
+                authorize_dispatch=lambda _repo, _number, snapshot: snapshot,
             )
 
         return result, jules_client, take_actions, mark_stopped, increment
@@ -369,7 +370,7 @@ class TestHandleStaleJulesIssueSessions:
             patch("src.auto_coder.issue_processor._take_issue_actions", take_actions),
             patch("src.auto_coder.issue_processor.increment_attempt") as increment,
         ):
-            result = handle_stale_jules_issue_sessions("owner/repo", config, github_client)
+            result = handle_stale_jules_issue_sessions("owner/repo", config, github_client, authorize_dispatch=lambda _repo, _number, snapshot: snapshot)
 
         mark_stopped.assert_not_called()
         take_actions.assert_not_called()
@@ -413,6 +414,7 @@ class TestAutomationEngineHook:
             config,
             github_client,
             implementation_slots=engine._get_implementation_slots("owner/repo"),
+            authorize_dispatch=engine._authorize_stale_jules_dispatch,
         )
         assert actions == stale_result.actions
 
@@ -481,3 +483,46 @@ class TestLabelGateOverride:
     def test_check_labels_defaults_to_config(self):
         """Without an override the configured behaviour is unchanged."""
         assert self._run_with_label_manager(check_labels=None)["check_labels"] == AutomationConfig().CHECK_LABELS
+
+
+def test_daemon_stale_session_replacement_waits_for_current_generation_ready(config, tmp_path):
+    """The production daemon handoff cannot stop Jules or start replacement work on ERROR."""
+    from src.auto_coder.automation_engine import AutomationEngine
+    from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
+    from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+
+    github = _github_client()
+    body = "## Requirements\n- REQ-001: Implement revised behavior."
+    github.get_issue_dispatch_snapshot_strict.return_value = {
+        "number": 42,
+        "title": "Revised title",
+        "body": body,
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}, {"name": "@auto-coder"}],
+    }
+    engine = AutomationEngine(github, config=config)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
+        "owner/repo",
+        "validator",
+        tmp_path / "validations.json",
+        lambda _manifest, _body: SpecificationAnalysisResult("ERROR", error="provider unavailable"),
+    )
+    jules = MagicMock()
+    jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
+    cloud = MagicMock()
+    cloud.get_issue_by_session.return_value = 42
+
+    with (
+        patch("src.auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("src.auto_coder.issue_processor.CloudManager", return_value=cloud),
+        patch("src.auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("src.auto_coder.issue_processor.increment_attempt") as increment,
+        patch("src.auto_coder.issue_processor._take_issue_actions") as dispatch,
+    ):
+        assert engine.handle_stale_jules_issue_sessions("owner/repo") == []
+
+    jules.send_message.assert_not_called()
+    increment.assert_not_called()
+    dispatch.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
