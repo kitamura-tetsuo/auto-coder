@@ -374,12 +374,19 @@ class CodexCloudClient(CloudTaskClientBase):
                 else:
                     state = CloudTaskState.UNKNOWN
 
+                raw_data = None
+                if state in {CloudTaskState.COMPLETED, CloudTaskState.FAILED, CloudTaskState.PAUSED}:
+                    latest_turn_id = (self.wham_client or CodexWhamClient()).resolve_latest_assistant_turn(task_id)
+                    if latest_turn_id:
+                        raw_data = {"latest_turn_id": latest_turn_id}
+
                 return CloudTask(
                     task_id=task_id,
                     state=state,
                     raw_state=output,
                     prompt=self.active_tasks.get(task_id),
                     url=self.task_urls.get(task_id),
+                    raw_data=raw_data,
                 )
         except Exception as e:
             logger.debug(f"Failed to check Codex Cloud task status for {task_id}: {e}")

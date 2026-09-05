@@ -482,6 +482,45 @@ class TestAdversarialValidationCodexFeedback:
         persisted = json.loads(state_path.read_text(encoding="utf-8"))["delivered_feedback"]
         assert len(persisted) == 4  # one stable finding plus three remediation generations
 
+    def test_plain_text_codex_status_preserves_corrective_activity_for_delivery(self, tmp_path):
+        """The real plain-text parser carries task activity through routing."""
+        finding = "### Auto-Coder adversarial finding\n\nThe production boundary remains open"
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_plain_status", comments=[ReviewThreadComment(database_id=1693, body=finding)])]
+        config = MagicMock(quota_selection_strategy="surplus")
+        config.get_backend_config.return_value = None
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
+            backend = CodexCloudClient(repo_name="owner/repo")
+        backend.send_followup = MagicMock(return_value=True)
+        backend.wham_client = MagicMock()
+        backend.wham_client.resolve_latest_assistant_turn.side_effect = ["task_e_abc123~assttrn_1", "task_e_abc123~assttrn_1", "task_e_abc123~assttrn_2", "task_e_abc123~assttrn_2"]
+        status = MagicMock(returncode=0, stdout="COMPLETED", stderr="")
+        state_path = tmp_path / "review-repairs.json"
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #1693",
+            "head": {"ref": "repair-branch", "sha": "head-a"},
+            "base": {"ref": "main"},
+        }
+
+        with (
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=status),
+        ):
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
+            pr_data["head"]["sha"] = "unrelated-head-b"
+            unrelated = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
+            failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
+            duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
+
+        assert backend.send_followup.call_count == 2
+        assert "all actionable feedback was already delivered" in unrelated[0]
+        assert "latest corrective attempt did not resolve" in backend.send_followup.call_args.args[1]
+        assert "Sent adversarial NEEDS_FIX report" in failed_correction[0]
+        assert "all actionable feedback was already delivered" in duplicate[0]
+
     def test_jules_binding_routes_through_provider_followup_without_codex_probe(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete Jules defect"
         github = MagicMock()
