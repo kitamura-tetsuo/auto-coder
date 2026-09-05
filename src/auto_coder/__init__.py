@@ -2,7 +2,7 @@
 Auto-Coder: Automated application development using Antigravity CLI and GitHub integration.
 """
 
-__version__ = "2026.9.5.21+g3cf29847"
+__version__ = "2026.9.5.23+g57aa9097"
 __author__ = "Auto-Coder Team"
 __description__ = "Automated application development using Antigravity CLI and GitHub integration"
 
