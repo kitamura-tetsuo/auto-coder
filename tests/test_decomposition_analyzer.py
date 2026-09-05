@@ -25,6 +25,16 @@ def _set():
     )
 
 
+def _false_success_set():
+    return (
+        _issue(100, "Restart-readable workflows", "Keep completed workflows readable after restart."),
+        (
+            _issue(101, "Encrypted retention", "Retain each workflow encrypted with a fresh process key."),
+            _issue(102, "Workflow reader", "Read retained workflows using the current process key."),
+        ),
+    )
+
+
 def _finding(category="missing_requirement_ownership", issue_number=1730, requirement_ids=None):
     if requirement_ids is None:
         requirement_ids = ["REQ-001"]
@@ -121,14 +131,29 @@ def test_invalid_partial_contradictory_or_membership_inconsistent_output_is_erro
 
 
 @pytest.mark.parametrize(
-    "finding",
+    ("category", "finding"),
     [
-        _finding(requirement_ids=[]),
-        _finding(issue_number=1729),
+        ("missing_requirement_ownership", _finding(requirement_ids=[])),
+        ("missing_requirement_ownership", _finding(issue_number=1729)),
+        (
+            "decomposition_false_success",
+            _finding(
+                category="decomposition_false_success",
+                issue_number=100,
+                requirement_ids=[],
+            ),
+        ),
+        (
+            "decomposition_false_success",
+            _finding(category="decomposition_false_success", issue_number=101),
+        ),
     ],
 )
-def test_incomplete_missing_ownership_reference_fails_closed_through_public_operation(finding):
-    parent, children = _set()
+def test_incomplete_parent_requirement_reference_fails_closed_through_public_operation(category, finding):
+    if category == "decomposition_false_success":
+        parent, children = _false_success_set()
+    else:
+        parent, children = _set()
 
     result = analyze_issue_decomposition(
         parent,
@@ -139,7 +164,7 @@ def test_incomplete_missing_ownership_reference_fails_closed_through_public_oper
     assert result.verdict == "ERROR"
     assert result.is_ready is False
     assert result.findings == ()
-    assert result.error == "Missing ownership finding must identify the parent and its unowned Requirement"
+    assert result.error == f"{category} finding must identify the parent and an applicable Requirement"
 
 
 def test_invalid_child_manifest_fails_before_provider_execution():

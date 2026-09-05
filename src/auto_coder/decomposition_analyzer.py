@@ -21,6 +21,8 @@ DECOMPOSITION_FINDING_CATEGORIES = frozenset(
     }
 )
 
+PARENT_REQUIREMENT_FINDING_CATEGORIES = frozenset({"missing_requirement_ownership", "decomposition_false_success"})
+
 
 @dataclass(frozen=True)
 class DecompositionIssue:
@@ -126,13 +128,13 @@ def parse_decomposition_analysis_response(
                 return _error("Finding contains invalid Requirement IDs for an affected Issue")
             seen_issues.add(issue_number)
             affected.append(AffectedIssue(issue_number, tuple(requirement_ids)))
-        if category == "missing_requirement_ownership":
+        if category in PARENT_REQUIREMENT_FINDING_CATEGORIES:
             parent_reference = next(
                 (item for item in affected if item.issue_number == parent.manifest.issue_number),
                 None,
             )
             if parent_reference is None or not parent_reference.requirement_ids:
-                return _error("Missing ownership finding must identify the parent and its unowned Requirement")
+                return _error(f"{category} finding must identify the parent and an applicable Requirement")
         findings.append(DecompositionFinding(category, tuple(affected), explanation.strip(), clarification.strip()))
 
     if (verdict == "READY" and findings) or (verdict == "BLOCKED" and not findings):
