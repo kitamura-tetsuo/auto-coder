@@ -85,93 +85,36 @@ async def process_sentry_payload(payload: SentryWebhookPayload, engine: Automati
         logger.error(f"Failed to process Sentry payload: {e}")
 
 
-async def process_github_payload(event_type: Optional[str], payload: Dict[str, Any], engine: AutomationEngine, repo_name: str):
-    try:
-        if event_type == "pull_request":
-            action = payload.get("action")
-            if action == "closed":
-                pr_data_raw = payload.get("pull_request", {})
-                pr_number = pr_data_raw.get("number", "N/A")
-                merged = pr_data_raw.get("merged", False)
-                state_str = "merged" if merged else "closed"
-                logger.info(f"PR #{pr_number} was {state_str} on GitHub. Waking up engine producer loop...")
-                engine.notify_pr_merged_or_closed()
-            elif action in ["opened", "reopened", "synchronize", "ready_for_review"]:
-                pr_data_raw = payload.get("pull_request")
-                if pr_data_raw:
-                    pr_number = pr_data_raw.get("number")
-                    logger.info(f"Processing PR #{pr_number} event: {action}")
+async def process_github_payload(
+    event_type: Optional[str],
+    payload: Dict[str, Any],
+    engine: AutomationEngine,
+    repo_name: str,
+    delivery_id: Optional[str] = None,
+) -> None:
+    """Translate relevant webhook notifications into durable entity invalidations."""
+    identities: List[tuple[str, int]] = []
+    if event_type == "pull_request":
+        pull_request = payload.get("pull_request") or {}
+        number = pull_request.get("number")
+        if payload.get("action") == "closed":
+            engine.notify_pr_merged_or_closed()
+        if payload.get("action") in {"opened", "reopened", "synchronize", "ready_for_review"} and isinstance(number, int):
+            identities.append(("pr", number))
+    elif event_type == "workflow_run":
+        workflow_run = payload.get("workflow_run") or {}
+        if payload.get("action") == "completed" and workflow_run.get("conclusion") == "failure":
+            identities.extend(("pr", number) for pr in workflow_run.get("pull_requests", []) if isinstance((number := pr.get("number")), int))
+    elif event_type == "issues":
+        issue = payload.get("issue") or {}
+        number = issue.get("number")
+        if payload.get("action") in {"opened", "edited", "reopened"} and isinstance(number, int):
+            identities.append(("issue", number))
 
-                    loop = asyncio.get_running_loop()
-                    try:
-                        pr_obj = await loop.run_in_executor(None, lambda: engine.github.get_pull_request(repo_name, pr_number))
-
-                        if pr_obj:
-                            pr_details = await loop.run_in_executor(None, lambda: engine.github.get_pr_details(pr_obj))
-
-                            candidate = Candidate(type="pr", data=pr_details, priority=0)
-                            await engine.queue.put(candidate)
-                            logger.info(f"Queued PR #{pr_number}")
-                    except Exception as e:
-                        logger.error(f"Failed to fetch/queue PR #{pr_number}: {e}")
-
-        elif event_type == "workflow_run":
-            action = payload.get("action")
-            workflow_run = payload.get("workflow_run", {})
-            conclusion = workflow_run.get("conclusion")
-
-            if action == "completed" and conclusion == "failure":
-                pull_requests = workflow_run.get("pull_requests", [])
-                head_branch = workflow_run.get("head_branch")
-
-                logger.info(f"Processing failed workflow run on {head_branch}")
-
-                if pull_requests:
-                    for pr in pull_requests:
-                        pr_number = pr.get("number")
-                        loop = asyncio.get_running_loop()
-                        try:
-                            pr_obj = await loop.run_in_executor(None, lambda: engine.github.get_pull_request(repo_name, pr_number))
-                            if pr_obj:
-                                pr_details = await loop.run_in_executor(None, lambda: engine.github.get_pr_details(pr_obj))
-                                candidate = Candidate(type="pr", data=pr_details, priority=3)  # High priority for failing CI
-                                await engine.queue.put(candidate)
-                                logger.info(f"Queued failing PR #{pr_number}")
-                        except Exception as e:
-                            logger.error(f"Failed to fetch/queue PR #{pr_number}: {e}")
-
-        elif event_type == "issues":
-            action = payload.get("action")
-            if action in ["opened", "edited", "reopened"]:
-                issue_data_raw = payload.get("issue")
-                if issue_data_raw:
-                    issue_number = issue_data_raw.get("number")
-                    logger.info(f"Received issue #{issue_number} event: {action}. Waiting 5 minutes before processing...")
-
-                    # Wait 5 minutes
-                    await asyncio.sleep(300)
-
-                    logger.info(f"Processing issue #{issue_number} after delay")
-
-                    loop = asyncio.get_running_loop()
-                    try:
-                        # Fetch fresh issue details to ensure it's still open and get latest data
-                        issue_obj = await loop.run_in_executor(None, lambda: engine.github.get_issue(repo_name, issue_number))
-
-                        if issue_obj:
-                            issue_details = await loop.run_in_executor(None, lambda: engine.github.get_issue_details(issue_obj))
-
-                            if issue_details.get("state") == "open":
-                                candidate = Candidate(type="issue", data=issue_details, priority=0, issue_number=issue_number)
-                                await engine.queue.put(candidate)
-                                logger.info(f"Queued issue #{issue_number}")
-                            else:
-                                logger.info(f"Issue #{issue_number} is no longer open, skipping")
-                    except Exception as e:
-                        logger.error(f"Failed to fetch/queue issue #{issue_number}: {e}")
-
-    except Exception as e:
-        logger.error(f"Failed to process GitHub payload: {e}")
+    for index, (entity_type, number) in enumerate(identities):
+        entity_delivery_id = f"{delivery_id}:{index}" if delivery_id else None
+        accepted = await engine.invalidate_entity(repo_name, entity_type, number, entity_delivery_id)
+        logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 
 def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional[str] = None, sentry_secret: Optional[str] = None) -> FastAPI:
@@ -196,6 +139,7 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
     @app.post("/hooks/github")
     async def github_hook(request: Request, background_tasks: BackgroundTasks):
         event_type = request.headers.get("X-GitHub-Event")
+        delivery_id = request.headers.get("X-GitHub-Delivery")
 
         if github_secret:
             signature = request.headers.get("X-Hub-Signature-256")
@@ -203,7 +147,9 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
             verify_github_signature(body, github_secret, signature)
 
         payload = await request.json()
-        background_tasks.add_task(process_github_payload, event_type, payload, engine, repo_name)
+        # Persistence is part of accepting a delivery, so it must finish before
+        # returning 200 rather than being delegated to an in-memory task.
+        await process_github_payload(event_type, payload, engine, repo_name, delivery_id)
         return {"status": "received"}
 
     init_dashboard(app, engine)

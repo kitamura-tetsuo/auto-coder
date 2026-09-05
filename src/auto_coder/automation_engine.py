@@ -8,12 +8,14 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .deployment_channel import repository_dispatch_authority
+from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity
 from .exceptions import AutoCoderRetryableBackendError
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
@@ -62,6 +64,9 @@ class AutomationEngine:
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
+        invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
+        self.invalidations = DurableInvalidationQueue(invalidation_path)
+        self._invalidation_drain_lock = asyncio.Lock()
         self.active_workers: Dict[int, Optional[Candidate]] = {}
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
@@ -170,6 +175,8 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
+        self.invalidations.recover(repo_name)
+        await self._enqueue_pending_invalidations(repo_name)
         # Discover open PR ownership before releasing startup reservations.
         # A PR linked only by branch metadata has no Issue timeline event and
         # may not have been recorded if the previous process stopped before its
@@ -321,6 +328,7 @@ class AutomationEngine:
                 heartbeat(f"worker-{worker_id}:idle", f"queue={self.queue.qsize()}")
                 candidate = await self.queue.get()
                 item_number = candidate.data.get("number", "N/A")
+                decision_completed = False
 
                 try:
                     self.active_workers[worker_id] = candidate
@@ -332,12 +340,14 @@ class AutomationEngine:
                         logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
                         if candidate.type == "pr":
                             self.notify_pr_merged_or_closed()
+                        decision_completed = True
                         continue
 
                     get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
 
                     # Process candidate
                     result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+                    decision_completed = not bool(result.error)
 
                     if result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
@@ -358,8 +368,34 @@ class AutomationEngine:
                     logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                     get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
                 finally:
+                    if candidate.invalidation_generation is not None:
+                        claim = ClaimedInvalidation(EntityIdentity(repo_name, candidate.type, int(item_number)), candidate.invalidation_generation)
+                        if decision_completed:
+                            self.invalidations.complete(claim)
+                        else:
+                            self.invalidations.release(claim)
                     self.active_workers[worker_id] = None
                     self.queue.task_done()
+                    await self._enqueue_pending_invalidations(repo_name)
+
+    async def invalidate_entity(self, repo_name: str, entity_type: str, number: int, delivery_id: Optional[str] = None) -> bool:
+        """Durably mark an entity dirty and arrange an authoritative reevaluation."""
+        accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id)
+        if accepted:
+            await self._enqueue_pending_invalidations(repo_name)
+        return accepted
+
+    async def _enqueue_pending_invalidations(self, repo_name: str) -> None:
+        """Claim durable identities, fetch authoritative state, and queue decisions."""
+        async with self._invalidation_drain_lock:
+            while claim := await asyncio.to_thread(self.invalidations.claim, repo_name):
+                candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, claim.identity.entity_type, claim.identity.number)
+                if candidate is None:
+                    # The authoritative fetch and its ineligibility decision completed.
+                    self.invalidations.complete(claim)
+                    continue
+                candidate.invalidation_generation = claim.generation
+                await self.queue.put(candidate)
 
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the automation engine."""

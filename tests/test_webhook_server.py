@@ -34,6 +34,11 @@ class MockEngine:
     def __init__(self):
         self.github = MockGitHubClient()
         self.queue = MockQueue()
+        self.invalidations = []
+
+    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None):
+        self.invalidations.append((repo_name, entity_type, number, delivery_id))
+        return True
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
@@ -59,3 +64,4 @@ def test_github_pr_webhook(mock_init_dashboard):
 
         response = client.post("/hooks/github", json=payload, headers={"X-GitHub-Event": "pull_request"})
         assert response.status_code == 200
+        assert engine.invalidations == [("owner/repo", "pr", 202, None)]

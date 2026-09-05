@@ -1,0 +1,142 @@
+"""Durable, coalescing invalidations for authoritative GitHub reevaluation."""
+
+import sqlite3
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+
+@dataclass(frozen=True)
+class EntityIdentity:
+    repository: str
+    entity_type: str
+    number: int
+
+    def __post_init__(self) -> None:
+        if self.entity_type not in {"issue", "pr"}:
+            raise ValueError("entity_type must be 'issue' or 'pr'")
+        if not self.repository or self.number <= 0:
+            raise ValueError("repository and a positive entity number are required")
+
+
+@dataclass(frozen=True)
+class ClaimedInvalidation:
+    identity: EntityIdentity
+    generation: int
+
+
+class DurableInvalidationQueue:
+    """SQLite-backed dirty-entity set with generation-based in-flight coalescing."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._lock = threading.Lock()
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS entity_invalidations (
+                repository TEXT NOT NULL,
+                entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr')),
+                entity_number INTEGER NOT NULL,
+                generation INTEGER NOT NULL,
+                claimed_generation INTEGER,
+                state TEXT NOT NULL CHECK(state IN ('dirty', 'processing')),
+                PRIMARY KEY(repository, entity_type, entity_number)
+            );
+            CREATE TABLE IF NOT EXISTS github_deliveries (
+                repository TEXT NOT NULL,
+                delivery_id TEXT NOT NULL,
+                PRIMARY KEY(repository, delivery_id)
+            );
+            """
+        )
+
+    def recover(self, repository: str) -> None:
+        """Make work interrupted by process termination claimable again."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
+                   WHERE repository = ? AND state = 'processing'""",
+                (repository,),
+            )
+
+    def invalidate(self, identity: EntityIdentity, delivery_id: Optional[str] = None) -> bool:
+        """Persist an invalidation; return False only for a duplicate delivery."""
+        with self._lock, self._connection:
+            if delivery_id:
+                cursor = self._connection.execute(
+                    "INSERT OR IGNORE INTO github_deliveries(repository, delivery_id) VALUES (?, ?)",
+                    (identity.repository, delivery_id),
+                )
+                if cursor.rowcount == 0:
+                    return False
+            self._connection.execute(
+                """
+                INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state)
+                VALUES (?, ?, ?, 1, 'dirty')
+                ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
+                    generation = generation + 1
+                """,
+                (identity.repository, identity.entity_type, identity.number),
+            )
+            return True
+
+    def claim(self, repository: str) -> Optional[ClaimedInvalidation]:
+        """Atomically claim one dirty entity for authoritative reevaluation."""
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                """UPDATE entity_invalidations
+                   SET state = 'processing', claimed_generation = generation
+                   WHERE rowid = (
+                       SELECT rowid FROM entity_invalidations
+                       WHERE repository = ? AND state = 'dirty' ORDER BY rowid LIMIT 1
+                   ) AND state = 'dirty'
+                   RETURNING entity_type, entity_number, generation""",
+                (repository,),
+            ).fetchone()
+            if row is None:
+                return None
+            entity_type, number, generation = row
+            return ClaimedInvalidation(EntityIdentity(repository, entity_type, number), generation)
+
+    def complete(self, claim: ClaimedInvalidation) -> bool:
+        """Complete evaluated generation; return True when a later generation remains."""
+        identity = claim.identity
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                """SELECT generation, claimed_generation, state FROM entity_invalidations
+                   WHERE repository = ? AND entity_type = ? AND entity_number = ?""",
+                (identity.repository, identity.entity_type, identity.number),
+            ).fetchone()
+            if row is None or row[1] != claim.generation or row[2] != "processing":
+                return False
+            if row[0] > claim.generation:
+                self._connection.execute(
+                    """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
+                       WHERE repository = ? AND entity_type = ? AND entity_number = ?""",
+                    (identity.repository, identity.entity_type, identity.number),
+                )
+                return True
+            self._connection.execute(
+                "DELETE FROM entity_invalidations WHERE repository = ? AND entity_type = ? AND entity_number = ?",
+                (identity.repository, identity.entity_type, identity.number),
+            )
+            return False
+
+    def release(self, claim: ClaimedInvalidation) -> None:
+        """Return an interrupted or failed reevaluation to the dirty set."""
+        identity = claim.identity
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
+                   WHERE repository = ? AND entity_type = ? AND entity_number = ?
+                     AND state = 'processing' AND claimed_generation = ?""",
+                (identity.repository, identity.entity_type, identity.number, claim.generation),
+            )
+
+    def pending_count(self, repository: str) -> int:
+        with self._lock:
+            row = self._connection.execute("SELECT COUNT(*) FROM entity_invalidations WHERE repository = ?", (repository,)).fetchone()
+            return int(row[0])

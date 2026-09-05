@@ -1325,3 +1325,18 @@ indeterminate state explicitly. Provenance-clarification threads remain excluded
 Missing or ambiguous ownership, unsupported providers, rejected requests, and
 transport failures produce an explicit failed processing outcome rather than a
 successful defer.
+
+## Durable GitHub Entity Invalidations
+
+  durable_github_entity_invalidations:
+    description: "Coalesces webhook notifications into durable authoritative reevaluations keyed by GitHub entity identity."
+    implementation: |
+      DurableInvalidationQueue, EntityIdentity in src/auto_coder/entity_invalidation.py,
+      invalidate_entity, _enqueue_pending_invalidations, _worker_loop in src/auto_coder/automation_engine.py,
+      process_github_payload in src/auto_coder/webhook_server.py
+    behavior:
+      - "Relevant webhook deliveries persist only repository, entity type (issue or pr), and entity number; payload snapshots are not queued as authority."
+      - "Concurrent notifications for one entity coalesce into one dirty record, while a generation received during processing forces one subsequent authoritative reevaluation."
+      - "Dirty and in-flight records use SQLite durability. Startup recovers interrupted work before workers enter steady-state processing."
+      - "A record is completed only after authoritative fetching and the resulting eligibility or processing decision; failures and cancellation return it to the dirty set."
+      - "GitHub delivery identifiers are persisted for deduplication, preventing a redelivery from advancing the entity generation or causing duplicate processing by itself."
