@@ -4,8 +4,11 @@
 
 Successful `main` builds publish one immutable GHCR image tagged by commit and
 advance `beta`; failed builds cannot move that tag. The operator-only promotion
-workflow retags an existing manifest digest as `release` without rebuilding and
-also supports rollback to an older digest. `compose.channels.yml` pins both
+workflow derives and verifies the current tested `beta`, records its manifest
+under the immutable `release-<SHA>` history tag, and advances `release` without
+rebuilding. A separate rollback workflow accepts only a previously released SHA
+and moves `release` to its immutable history manifest.
+`compose.channels.yml` pins both
 instances by digest and gives release and beta separate durable state, workspace,
 cache, and log roots. Each externally deployed process records its channel and
 artifact identity, disables internal package updates, and fails closed unless a

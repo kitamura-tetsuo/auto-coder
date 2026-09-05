@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,68 @@ from auto_coder.cli_commands_main import process_issues
 from auto_coder.deployment_channel import DeploymentChannelError, assign_repository, validate_repository_ownership
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.update_manager import maybe_run_auto_update
+
+RELEASE_SHA = "a" * 40
+EXPECTED_DIGEST = "sha256:" + "1" * 64
+OTHER_DIGEST = "sha256:" + "2" * 64
+
+
+def _workflow_run_block(workflow_name, step_name):
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows" / workflow_name).read_text(encoding="utf-8"))
+    steps = next(iter(workflow["jobs"].values()))["steps"]
+    return next(step["run"] for step in steps if step.get("name") == step_name)
+
+
+def _run_release_workflow(tmp_path, workflow_name, step_name, registry_responses, release_sha=None):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker_log = tmp_path / "docker.log"
+    fake_docker = bin_dir / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+arguments = sys.argv[1:]
+with open(os.environ["FAKE_DOCKER_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(arguments) + "\\n")
+if arguments[:3] != ["buildx", "imagetools", "inspect"]:
+    if arguments[:3] == ["buildx", "imagetools", "create"]:
+        raise SystemExit(0)
+    raise SystemExit(2)
+reference = arguments[3]
+output_kind = "image" if any(".Image" in argument for argument in arguments) else "digest"
+response = json.loads(os.environ["FAKE_REGISTRY_RESPONSES"]).get(f"{reference}|{output_kind}")
+if response is None:
+    raise SystemExit(1)
+print(response)
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "FAKE_DOCKER_LOG": str(docker_log),
+            "FAKE_REGISTRY_RESPONSES": json.dumps(registry_responses),
+            "IMAGE": "ghcr.io/owner/repo",
+        }
+    )
+    if release_sha is not None:
+        env["RELEASE_SHA"] = release_sha
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _workflow_run_block(workflow_name, step_name)],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    operations = [json.loads(line) for line in docker_log.read_text(encoding="utf-8").splitlines()]
+    return result, operations
 
 
 def _external_environment(monkeypatch, tmp_path, channel="beta"):
@@ -123,13 +186,17 @@ def test_external_artifact_disables_internal_update(monkeypatch, tmp_path):
     assert result.reason == "disabled"
 
 
-def test_artifact_workflow_rejects_stale_main_and_untested_digest():
+def test_artifact_workflow_validation_gates_fail_closed():
     script = Path(__file__).parents[1] / "scripts/deployment_artifacts.py"
 
     newest = subprocess.run([sys.executable, str(script), "require-latest-successful-run", "202", "202"], capture_output=True, text=True)
     stale = subprocess.run([sys.executable, str(script), "require-latest-successful-run", "101", "202"], capture_output=True, text=True)
     tested = subprocess.run([sys.executable, str(script), "require-tested-beta", "sha256:tested", "sha256:tested"], capture_output=True, text=True)
     unrelated = subprocess.run([sys.executable, str(script), "require-tested-beta", "sha256:manual", "sha256:tested"], capture_output=True, text=True)
+    valid_sha = subprocess.run([sys.executable, str(script), "require-release-sha", "a" * 40], capture_output=True, text=True)
+    abbreviated_sha = subprocess.run([sys.executable, str(script), "require-release-sha", "a" * 12], capture_output=True, text=True)
+    changed_history = subprocess.run([sys.executable, str(script), "require-release-history", "sha256:candidate", "sha256:existing"], capture_output=True, text=True)
+    failed_postcondition = subprocess.run([sys.executable, str(script), "require-release-postcondition", "sha256:expected", "sha256:actual"], capture_output=True, text=True)
 
     assert newest.returncode == 0
     assert stale.returncode != 0
@@ -137,6 +204,13 @@ def test_artifact_workflow_rejects_stale_main_and_untested_digest():
     assert tested.returncode == 0
     assert unrelated.returncode != 0
     assert "tested beta digest mismatch" in unrelated.stderr
+    assert valid_sha.returncode == 0
+    assert abbreviated_sha.returncode != 0
+    assert "invalid release commit SHA" in abbreviated_sha.stderr
+    assert changed_history.returncode != 0
+    assert "immutable release history digest mismatch" in changed_history.stderr
+    assert failed_postcondition.returncode != 0
+    assert "release tag digest mismatch" in failed_postcondition.stderr
 
 
 def test_workflows_route_only_latest_successful_build_through_tested_provenance():
@@ -144,6 +218,7 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     publish = (workflow_root / "publish-beta.yml").read_text(encoding="utf-8")
     advance = (workflow_root / "advance-beta.yml").read_text(encoding="utf-8")
     promote = (workflow_root / "promote-release.yml").read_text(encoding="utf-8")
+    rollback = (workflow_root / "rollback-release.yml").read_text(encoding="utf-8")
 
     assert "bash scripts/test.sh" in publish
     assert ":sha-${{ github.sha }}" in publish
@@ -153,10 +228,103 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert 'require-latest-successful-run "$RUN_ID" "$LATEST_SUCCESSFUL_RUN"' in advance
     assert 'tested-beta-$SOURCE_SHA" "$IMAGE@$DIGEST' in advance
     assert 'tag "$IMAGE:beta" "$IMAGE@$DIGEST' in advance
-    assert 'TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$BETA_SHA"' in promote
+    assert "inputs:" not in promote
+    assert 'DIGEST=$(docker buildx imagetools inspect "$IMAGE:beta"' in promote
+    assert 'SOURCE_SHA=$(docker buildx imagetools inspect "$IMAGE:beta"' in promote
+    assert "org.opencontainers.image.revision" in promote
+    assert 'TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$SOURCE_SHA"' in promote
     assert 'require-tested-beta "$DIGEST" "$TESTED_DIGEST"' in promote
+    assert promote.index('require-tested-beta "$DIGEST" "$TESTED_DIGEST"') < promote.index('tag "$IMAGE:release-$SOURCE_SHA"')
+    assert 'require-release-history "$DIGEST" "$HISTORY_DIGEST"' in promote
+    assert promote.index('require-release-history "$DIGEST" "$HISTORY_DIGEST"') < promote.index('tag "$IMAGE:release"')
+    assert 'require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"' in promote
+    assert promote.count("docker buildx imagetools create --prefer-index=false") == 2
     assert "docker/build-push-action" not in promote
     assert "context:" not in promote
+
+    assert rollback.count("release_sha:") == 1
+    assert "digest:" not in rollback
+    assert "tested-beta-" not in rollback
+    assert 'inspect "$IMAGE:release-$RELEASE_SHA"' in rollback
+    assert 'create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"' in rollback
+    assert 'tag "$IMAGE:release-$RELEASE_SHA"' not in rollback
+    assert 'require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"' in rollback
+    assert "docker/build-push-action" not in rollback
+    assert "context:" not in rollback
+    assert "group: release-channel" in promote
+    assert "group: release-channel" in rollback
+
+
+def test_promotion_stops_before_writes_when_tested_beta_digest_differs(tmp_path):
+    image = "ghcr.io/owner/repo"
+    responses = {
+        f"{image}:beta|digest": json.dumps(EXPECTED_DIGEST),
+        f"{image}:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+        f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(OTHER_DIGEST),
+    }
+
+    result, operations = _run_release_workflow(
+        tmp_path,
+        "promote-release.yml",
+        "Validate and promote current beta without rebuilding",
+        responses,
+    )
+
+    assert result.returncode != 0
+    assert "tested beta digest mismatch" in result.stderr
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+def test_rollback_stops_before_write_when_release_history_is_missing(tmp_path):
+    image = "ghcr.io/owner/repo"
+    responses = {f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST)}
+
+    result, operations = _run_release_workflow(
+        tmp_path,
+        "rollback-release.yml",
+        "Roll back to immutable release history without rebuilding",
+        responses,
+        release_sha=RELEASE_SHA,
+    )
+
+    assert result.returncode != 0
+    assert ["buildx", "imagetools", "inspect", f"{image}:release-{RELEASE_SHA}"] == operations[0][:4]
+    assert not any(f"tested-beta-{RELEASE_SHA}" in argument for operation in operations for argument in operation)
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "step_name", "release_sha", "responses"),
+    [
+        (
+            "promote-release.yml",
+            "Validate and promote current beta without rebuilding",
+            None,
+            {
+                "ghcr.io/owner/repo:beta|digest": json.dumps(EXPECTED_DIGEST),
+                "ghcr.io/owner/repo:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+                f"ghcr.io/owner/repo:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+                f"ghcr.io/owner/repo:release-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+                "ghcr.io/owner/repo:release|digest": json.dumps(OTHER_DIGEST),
+            },
+        ),
+        (
+            "rollback-release.yml",
+            "Roll back to immutable release history without rebuilding",
+            RELEASE_SHA,
+            {
+                f"ghcr.io/owner/repo:release-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+                "ghcr.io/owner/repo:release|digest": json.dumps(OTHER_DIGEST),
+            },
+        ),
+    ],
+)
+def test_release_workflow_reports_failure_when_post_write_digest_differs(tmp_path, workflow_name, step_name, release_sha, responses):
+    result, operations = _run_release_workflow(tmp_path, workflow_name, step_name, responses, release_sha=release_sha)
+
+    assert any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+    assert result.returncode != 0
+    assert "release tag digest mismatch" in result.stderr
 
 
 def test_compose_channels_use_disjoint_private_storage_and_artifacts():
