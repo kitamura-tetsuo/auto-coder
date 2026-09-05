@@ -2,8 +2,9 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -136,7 +137,7 @@ class TestGitHubClientREST:
             assert issue["has_open_sub_issues"] is True
             assert issue["parent_issue_number"] == 999
 
-            mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100)
+            mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100, page=1)
             mock_linked.assert_called_once_with("owner/repo", 456)
             mock_sub.assert_called_once_with("owner/repo", 456)
 
@@ -172,28 +173,34 @@ class TestGitHubClientREST:
         assert client._open_issues_cache is None
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
-    def test_candidate_collection_uses_complete_ordinary_issue_query(self, mock_get_ghapi_client, mock_github_token):
-        """Candidate discovery must use the ordinary REST query even with a ready PR."""
+    @pytest.mark.parametrize("labels", [[], ["urgent"]], ids=["ordinary", "urgent"])
+    def test_candidate_collection_and_admission_cross_pr_filled_rest_page(
+        self,
+        mock_get_ghapi_client,
+        mock_github_token,
+        labels,
+        tmp_path,
+    ):
+        """PR-only REST pages cannot hide Issues from discovery or admission."""
         mock_api = MagicMock()
         mock_get_ghapi_client.return_value = mock_api
 
-        def issue(number):
-            return {
-                "number": number,
-                "title": f"Urgent {number}",
-                "body": "",
-                "state": "open",
-                "labels": [{"name": "urgent"}],
-                "assignees": [],
-                "created_at": "2024-01-01T00:00:00Z",
-                "updated_at": "2024-01-01T00:00:00Z",
-                "html_url": f"https://github.com/owner/repo/issues/{number}",
-                "user": {"login": "maintainer", "id": 7},
-                "comments": 0,
-                "sub_issues_summary": {"total": 0},
-            }
-
-        mock_api.issues.list_for_repo.return_value = [issue(number) for number in range(1, 101)]
+        issue = {
+            "number": 1742,
+            "title": "Eligible Issue",
+            "body": "## Requirements\n- REQ-001: Preserve discovery.",
+            "state": "open",
+            "labels": [{"name": label} for label in labels],
+            "assignees": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "html_url": "https://github.com/owner/repo/issues/1742",
+            "user": {"login": "maintainer", "id": 7},
+            "comments": 0,
+            "sub_issues_summary": {"total": 0},
+        }
+        pr_only_page = [{"number": number, "title": f"PR {number}", "pull_request": {}} for number in range(1, 101)]
+        mock_api.issues.list_for_repo.side_effect = [pr_only_page, [issue]]
         client = GitHubClient.get_instance(mock_github_token)
         client._open_issues_cache = None
 
@@ -211,6 +218,22 @@ class TestGitHubClientREST:
         ]
         github.get_open_issues_json.side_effect = client.get_open_issues_json
         engine = AutomationEngine(github, config=AutomationConfig(env_override=False))
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        if labels == ["urgent"]:
+            assert slots.start_execution(ImplementationOwner("issue", 99)) is not None
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock(
+            return_value=CandidateProcessingResult(
+                type="issue",
+                number=1742,
+                title="Eligible Issue",
+                success=True,
+            )
+        )
+        github.get_issue_dispatch_snapshot_strict.return_value = {
+            **issue,
+            "labels": [{"name": "implementation-ready"}, *issue["labels"]],
+        }
 
         with (
             patch.object(client, "get_linked_prs", return_value=[]),
@@ -222,9 +245,16 @@ class TestGitHubClientREST:
         ):
             candidates = engine._get_candidates("owner/repo")
 
-        assert [candidate.data["number"] for candidate in candidates] == list(range(1, 101)) + [200]
+        issue_candidate = next(candidate for candidate in candidates if candidate.type == "issue")
+        assert issue_candidate.data["number"] == 1742
+        assert issue_candidate.priority == (3 if labels == ["urgent"] else 0)
         github.get_open_issues_json.assert_called_once_with("owner/repo")
-        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100)
+        assert [call.kwargs["page"] for call in mock_api.issues.list_for_repo.call_args_list] == [1, 2]
+
+        result = engine._process_single_candidate_unified("owner/repo", issue_candidate, engine.config)
+
+        assert result.success is True
+        engine._process_single_candidate_reserved.assert_called_once()
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):
