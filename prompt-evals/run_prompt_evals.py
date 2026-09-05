@@ -52,8 +52,9 @@ def _glob_matches(path: str, pattern: str) -> bool:
         if pattern_index == len(pattern_parts):
             return path_index == len(path_parts)
         if pattern_parts[pattern_index] == "**":
-            return match(path_index, pattern_index + 1) or (path_index < len(path_parts) and match(path_index + 1, pattern_index))
-        return path_index < len(path_parts) and fnmatch.fnmatchcase(path_parts[path_index], pattern_parts[pattern_index]) and match(path_index + 1, pattern_index + 1)
+            return match(path_index, pattern_index + 1) or (path_index < len(path_parts) and not path_parts[path_index].startswith(".") and match(path_index + 1, pattern_index))
+        pattern_part = pattern_parts[pattern_index]
+        return path_index < len(path_parts) and (not path_parts[path_index].startswith(".") or pattern_part.startswith(".")) and fnmatch.fnmatchcase(path_parts[path_index], pattern_part) and match(path_index + 1, pattern_index + 1)
 
     return match(0, 0)
 

@@ -145,6 +145,34 @@ def test_recursive_corpus_change_selects_owning_target(tmp_path: Path) -> None:
     assert log.read_text().count("promptfoo@0.118.8") == 1
 
 
+@pytest.mark.parametrize(
+    ("pattern", "hidden_path"),
+    [
+        ("prompt-evals/targets/a/cases/*.yaml", ".notes.yaml"),
+        ("prompt-evals/targets/a/cases/**/*.yaml", ".draft/note.yaml"),
+    ],
+)
+def test_hidden_files_excluded_by_corpus_glob_do_not_select_target(tmp_path: Path, pattern: str, hidden_path: str) -> None:
+    registered = target("a", ["a.prompt"])
+    registered["cases"] = [pattern]
+    repo, base = setup_repo(tmp_path, [registered])
+    directory = repo / "prompt-evals/targets/a"
+    (directory / "cases").mkdir(parents=True)
+    (directory / "promptfooconfig.yaml").write_text("tests: cases/case.yaml\n")
+    (directory / "cases/case.yaml").write_text("tests: []\n")
+    hidden = directory / "cases" / hidden_path
+    hidden.parent.mkdir(parents=True, exist_ok=True)
+    hidden.write_text("draft: original\n")
+    commit(repo, "evaluation fixtures")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    hidden.write_text("draft: changed\n")
+    commit(repo, "change excluded draft")
+    result = invoke(repo, base, repo / "missing-npx")
+    assert result.returncode == 0
+    assert "No prompt-evaluation targets affected" in result.stdout
+    assert "Evaluating affected target" not in result.stdout
+
+
 def test_corpus_change_runs_promptfoo_and_propagates_failure(tmp_path: Path) -> None:
     repo, base = setup_repo(tmp_path, [target("a", ["a.prompt"])])
     directory = repo / "prompt-evals/targets/a"
