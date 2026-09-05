@@ -51,18 +51,28 @@ def _error(message: str) -> SpecificationAnalysisResult:
     return SpecificationAnalysisResult(verdict="ERROR", error=message)
 
 
+def _reject_duplicate_json_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build one JSON object while rejecting every duplicate member."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON member: {key}")
+        result[key] = value
+    return result
+
+
 def parse_specification_analysis_response(response: str, manifest: NormativeIssueManifest) -> SpecificationAnalysisResult:
     """Validate a model response without recovering a verdict from partial prose."""
     try:
-        payload = json.loads(response)
-    except (json.JSONDecodeError, TypeError):
+        payload = json.loads(response, object_pairs_hook=_reject_duplicate_json_members)
+    except (json.JSONDecodeError, TypeError, ValueError):
         return _error("Specification analyzer returned unparsable JSON")
 
     if not isinstance(payload, dict) or set(payload) != {"verdict", "findings"}:
         return _error("Specification analyzer output does not match the required top-level schema")
     verdict = payload["verdict"]
     raw_findings = payload["findings"]
-    if verdict not in {"READY", "BLOCKED", "ERROR"} or not isinstance(raw_findings, list):
+    if not isinstance(verdict, str) or verdict not in {"READY", "BLOCKED", "ERROR"} or not isinstance(raw_findings, list):
         return _error("Specification analyzer output contains an invalid verdict or findings value")
     if verdict == "ERROR":
         if raw_findings:
@@ -85,7 +95,7 @@ def parse_specification_analysis_response(response: str, manifest: NormativeIssu
         category = raw["category"]
         ids = raw["requirement_ids"]
         prose_fields = [raw[name] for name in ("explanation", "clarification", "counterexample", "missing_normative_boundary")]
-        if category not in SPECIFICATION_FINDING_CATEGORIES:
+        if not isinstance(category, str) or category not in SPECIFICATION_FINDING_CATEGORIES:
             return _error("Specification analyzer finding uses an unknown category")
         if not isinstance(ids, list) or any(not isinstance(value, str) or value not in known_ids for value in ids) or len(ids) != len(set(ids)):
             return _error("Specification analyzer finding contains invalid Requirement IDs")

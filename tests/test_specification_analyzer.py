@@ -116,3 +116,37 @@ def test_provider_failure_returns_error_not_a_policy_verdict():
     assert result.verdict == "ERROR"
     assert result.findings == ()
     assert result.error == "Specification analysis execution failed: RuntimeError"
+
+
+@pytest.mark.parametrize("invalid_verdict", [[], {}])
+def test_public_operation_fails_closed_for_unhashable_verdict(invalid_verdict):
+    response = json.dumps({"verdict": invalid_verdict, "findings": []})
+    result = analyze_issue_specification(_manifest(), "body", prompt_runner=lambda _prompt: response)
+    assert result.verdict == "ERROR"
+    assert result.findings == ()
+    assert result.is_ready is False
+
+
+@pytest.mark.parametrize("invalid_category", [[], {}])
+def test_public_operation_fails_closed_for_unhashable_category(invalid_category):
+    finding = _finding()
+    finding["category"] = invalid_category
+    response = _response("BLOCKED", [finding])
+    result = analyze_issue_specification(_manifest(), "body", prompt_runner=lambda _prompt: response)
+    assert result.verdict == "ERROR"
+    assert result.findings == ()
+    assert result.is_ready is False
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"verdict":"ERROR","verdict":"READY","findings":[]}',
+        '{"verdict":"READY","findings":[{"category":"hidden_requirement","requirement_ids":[],"explanation":"gap","clarification":"clarify","counterexample":"","missing_normative_boundary":""}],"findings":[]}',
+    ],
+)
+def test_public_operation_rejects_conflicting_duplicate_json_members(response):
+    result = analyze_issue_specification(_manifest(), "body", prompt_runner=lambda _prompt: response)
+    assert result.verdict == "ERROR"
+    assert result.findings == ()
+    assert result.is_ready is False
