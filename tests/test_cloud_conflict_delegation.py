@@ -95,6 +95,47 @@ def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_pa
     assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-a"
 
 
+def test_duplicate_named_backend_session_url_fails_closed_after_dispatch(tmp_path) -> None:
+    """A reverse session lookup cannot arbitrarily choose the first CSV issue."""
+    backends = {
+        name: BackendConfig(
+            name=name,
+            backend_type="claude-routine",
+            url=f"https://{name}.example/fire",
+            api_key=f"token-{name}",
+        )
+        for name in ("claude-a", "claude-b")
+    }
+    llm_config = MagicMock()
+    llm_config.get_backend_config.side_effect = backends.get
+    response = MagicMock(status_code=201, text="")
+    response.json.return_value = {"claude_code_session_id": "shared-session"}
+    github = MagicMock()
+
+    with (
+        patch("src.auto_coder.cloud_manager.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.pr_processor.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
+        patch("src.auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+        patch("src.auto_coder.claude_routine_client.requests.Session.post", return_value=response),
+        patch("src.auto_coder.claude_routine_client._save_claude_routine_state"),
+        patch("src.auto_coder.issue_processor.get_commit_log", return_value="initial"),
+        patch("src.auto_coder.claude_routine_client.CommandExecutor.run_command") as command,
+    ):
+        for issue_number, backend_name in ((1, "claude-b"), (2, "claude-a")):
+            issue = {"number": issue_number, "title": "Shared session", "body": "Details", "labels": [], "state": "open"}
+            _process_issue_claude_routine_mode("owner/repo", issue, AutomationConfig(), github, backend_name=backend_name)
+
+        pull_request = pr_data()
+        pull_request["body"] = "Created by Claude: https://claude.ai/code/shared-session"
+        pull_request["user"] = {"login": "claude[bot]"}
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
+
+    assert result.delegated is False
+    assert result.reason == "no originating cloud implementation session could be resolved"
+    command.assert_not_called()
+
+
 def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:
     client = FollowupClient()
     state_path = tmp_path / "repairs.json"

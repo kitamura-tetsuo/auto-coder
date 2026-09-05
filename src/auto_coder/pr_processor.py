@@ -4313,11 +4313,15 @@ def _resolve_cloud_conflict_origin(
 ) -> Optional[Tuple[Any, str]]:
     """Return the capable client and existing task ID that originated a PR."""
     issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+    explicitly_linked_issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body", "") or "")
     manager = CloudManager(repo_name)
 
     def claude_client(task_id: str) -> Optional[Any]:
         """Reconstruct a Claude transport from durable task ownership."""
-        bindings = [manager.get_binding(number) for number in issue_numbers]
+        # Only explicit PR-to-issue links are authoritative here. ``issue_numbers``
+        # can also contain a first-match reverse lookup from a session URL, which
+        # must not break a tie between duplicate provider task identifiers.
+        bindings = [manager.get_binding(number) for number in explicitly_linked_issue_numbers]
         matching = {binding for binding in bindings if binding is not None and binding.provider == "claude-routine" and binding.task_id == task_id}
         if len(matching) > 1:
             return None
