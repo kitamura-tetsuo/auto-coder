@@ -94,35 +94,45 @@ class TestCodexCloudClient:
                     "Implement GitHub issue #123",
                 ]
 
-    def test_configured_model_from_toml_is_ignored_at_cloud_cli_boundary(self, tmp_path, monkeypatch):
-        """A supported TOML configuration reaches dispatch without a model override."""
+    def test_configured_model_from_toml_is_ignored_at_cloud_boundaries(self, tmp_path, monkeypatch):
+        """Cloud dispatch ignores the model while status preserves server metadata."""
         config_path = tmp_path / "llm_config.toml"
         config_path.write_text(
             """
 [backends.codex-cloud]
 backend_type = "codex-cloud"
-model = "gpt-5.6-terra"
+model = "terra"
 environment_id = "env_from_toml"
 """.strip(),
             encoding="utf-8",
         )
         monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", str(config_path))
         reset_llm_config()
-        result = MagicMock(
+        start_result = MagicMock(
             returncode=0,
             stdout="https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
+            stderr="",
+        )
+        status_result = MagicMock(
+            returncode=0,
+            stdout=('{"task_id":"task_e_6a26c19ac8a88326af83ebfb44b89fe2",' '"status":"READY","model_version":"sol"}'),
             stderr="",
         )
 
         try:
             with (
                 patch("auto_coder.codex_cloud_client.logger.warning") as warning,
-                patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result) as run,
+                patch(
+                    "auto_coder.codex_cloud_client.CommandExecutor.run_command",
+                    side_effect=[start_result, status_result],
+                ) as run,
             ):
-                task_id = CodexCloudClient("codex-cloud").start_task("Implement issue #1716")
+                client = CodexCloudClient("codex-cloud")
+                task_id = client.start_task("Implement issue #1716")
+                task = client.get_task(task_id)
 
             assert task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
-            assert run.call_args.args[0] == [
+            assert run.call_args_list[0].args[0] == [
                 "codex",
                 "cloud",
                 "exec",
@@ -130,7 +140,17 @@ environment_id = "env_from_toml"
                 "env_from_toml",
                 "Implement issue #1716",
             ]
-            warning.assert_called_once_with("Codex Cloud does not support user-selected models; configured model " "'gpt-5.6-terra' for backend 'codex-cloud' is being ignored.")
+            assert run.call_args_list[1].args[0] == ["codex", "cloud", "status", task_id]
+            assert task is not None
+            assert task.state is CloudTaskState.COMPLETED
+            assert task.raw_state == "READY"
+            assert task.error is None
+            assert task.raw_data == {
+                "task_id": task_id,
+                "status": "READY",
+                "model_version": "sol",
+            }
+            warning.assert_called_once_with("Codex Cloud does not support user-selected models; configured model " "'terra' for backend 'codex-cloud' is being ignored.")
         finally:
             reset_llm_config()
 
