@@ -375,6 +375,28 @@ class ImplementationSlotRepository:
             if owners.pop(owner.key, None) is not None:
                 self._write(owners)
 
+    def _release_if_idle(self, owner: ImplementationOwner) -> bool:
+        """Release an owner only if it is still execution-free under the lock.
+
+        Lifecycle evidence is necessarily fetched without holding the registry
+        lock. Admission may therefore race that lookup; the final idle check and
+        removal must be one registry transaction so a newly admitted execution
+        can never be discarded with its owner.
+        """
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            executions = record.get("executions", [])
+            if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+                raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+            if executions:
+                return False
+            owners.pop(owner.key)
+            self._write(owners)
+            return True
+
     def record_implementation_pr(self, owner: ImplementationOwner, pr_number: int) -> bool:
         """Record PR membership only when *owner* is already reserved."""
         if isinstance(pr_number, bool) or not isinstance(pr_number, int):
@@ -488,14 +510,12 @@ class ImplementationSlotRepository:
                         if pr_details.get("state", "").lower() != "closed" and pr_details.get("merged") is not True:
                             linked_prs_terminal = False
                             break
-                    if linked_prs_terminal:
-                        self.release(owner)
+                    if linked_prs_terminal and self._release_if_idle(owner):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
                 elif owner.kind == "pr":
                     item = github_client.get_pull_request(self.repo_name, owner.number)
                     details = github_client.get_pr_details(item)
-                    if details.get("state", "").lower() == "closed" or details.get("merged") is True:
-                        self.release(owner)
+                    if (details.get("state", "").lower() == "closed" or details.get("merged") is True) and self._release_if_idle(owner):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
                 else:
                     # Provider-owned implementations are reconciled by their

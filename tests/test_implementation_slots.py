@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -528,6 +529,41 @@ def test_live_execution_in_another_process_survives_startup_reconciliation(tmp_p
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("owner", [ImplementationOwner("issue", 100), ImplementationOwner("pr", 200)])
+def test_execution_admitted_during_terminal_lifecycle_lookup_is_not_released(tmp_path, owner):
+    """REQ-002/REQ-009: final owner release atomically rechecks execution state."""
+    reconciling = repository(tmp_path)
+    admitting = repository(tmp_path)
+    assert reconciling.reserve(owner) is True
+    lifecycle_lookup_started = threading.Event()
+    permit_lifecycle_result = threading.Event()
+
+    class PausedTerminalGitHub(GitHubState):
+        def _terminal_item(self, number):
+            assert number == owner.number
+            lifecycle_lookup_started.set()
+            assert permit_lifecycle_result.wait(timeout=5)
+            return {"number": number, "state": "closed", "merged": False}
+
+        def get_issue(self, _repo, number):
+            return self._terminal_item(number)
+
+        def get_pull_request(self, _repo, number):
+            return self._terminal_item(number)
+
+    github = PausedTerminalGitHub(linked_prs={owner.number: []})
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        reconciliation = executor.submit(reconciling.reconcile, github)
+        assert lifecycle_lookup_started.wait(timeout=5)
+        execution_id = admitting.start_execution(owner)
+        assert execution_id is not None
+        permit_lifecycle_result.set()
+        reconciliation.result(timeout=5)
+
+    assert repository(tmp_path).active_owners() == (owner,)
+    assert repository(tmp_path).active_execution_ids(owner) == (execution_id,)
 
 
 def test_crashed_execution_is_reclaimed_before_standalone_pr_release(tmp_path):
