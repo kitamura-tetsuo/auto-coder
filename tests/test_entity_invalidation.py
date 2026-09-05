@@ -1,16 +1,18 @@
 import asyncio
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
 from src.auto_coder.util.gh_cache import GitHubClient
-from src.auto_coder.webhook_server import create_app, process_github_payload
+from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
 
 
 def _candidate(repo_name, entity_type, number, propagate_errors=False):
@@ -59,6 +61,73 @@ def test_duplicate_delivery_does_not_advance_generation(tmp_path: Path):
     assert not queue.invalidate(identity, "delivery-1")
     claim = queue.claim("owner/repo")
     assert claim is not None and claim.generation == 1
+
+
+def test_new_issue_webhooks_preserve_creation_anchored_stabilization(tmp_path: Path, monkeypatch):
+    """The HTTP-originated state reaches durable scheduling without snapshot dispatch."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    created = datetime.now(timezone.utc)
+
+    async def receive_mutations():
+        for index, action in enumerate(("opened", "edited", "labeled")):
+            await process_github_payload(
+                "issues",
+                {
+                    "action": action,
+                    "issue": {"number": 200, "created_at": created.isoformat()},
+                },
+                engine,
+                "owner/repo",
+                f"issue-{index}",
+            )
+
+    asyncio.run(receive_mutations())
+    assert engine.queue.qsize() == 0
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    assert 0 < engine.invalidations.seconds_until_next_ready("owner/repo") <= 60
+
+    monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: (created + timedelta(seconds=60)).timestamp())
+    asyncio.run(engine._enqueue_pending_invalidations("owner/repo"))
+    queued = engine.queue.get_nowait()
+    assert queued.data == {"number": 200}
+    assert queued.invalidation_generation == 1
+
+
+def test_mutation_deadlines_cannot_extend_existing_issue_window(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: 900.0)
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    identity = EntityIdentity("owner/repo", "issue", 200)
+    assert queue.invalidate(identity, "opened", not_before=1000.0)
+    assert queue.invalidate(identity, "edited", not_before=1055.0)
+    assert queue.seconds_until_next_ready("owner/repo") == 100.0
+
+
+def test_steady_state_maintenance_does_not_enumerate_candidates(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = MagicMock()
+    engine = AutomationEngine(github, AutomationConfig())
+    monkeypatch.setattr(engine, "_check_and_handle_closed_branch", lambda repo: True)
+    monkeypatch.setattr(engine, "_get_candidates", MagicMock(side_effect=AssertionError("candidate polling is forbidden")))
+    monkeypatch.setattr("src.auto_coder.automation_engine.check_for_updates_and_restart", lambda: None)
+    monkeypatch.setattr("src.auto_coder.automation_engine.git_pull", lambda: MagicMock(success=True))
+
+    waits = 0
+
+    async def finish_after_intervals(seconds):
+        nonlocal waits
+        waits += 1
+        if waits == 3:
+            raise asyncio.CancelledError
+        return False
+
+    monkeypatch.setattr(engine, "_sleep_or_wake", finish_after_intervals)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(engine._producer_loop("owner/repo"))
+
+    engine._get_candidates.assert_not_called()
+    github.get_open_issues.assert_not_called()
+    github.get_open_pull_requests.assert_not_called()
 
 
 def test_one_delivery_can_invalidate_multiple_entities_with_preserved_metadata(tmp_path: Path):
@@ -336,3 +405,111 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_issue.assert_not_called()
     assert processed[0]["body"] == "Current body"
     assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "event_type", "entity_key"),
+    [("pr", "pull_request", "pull_request"), ("issue", "issues", "issue")],
+)
+def test_reopened_invalidation_does_not_consult_cached_closed_state(tmp_path: Path, monkeypatch, entity_type, event_type, entity_key):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = MagicMock()
+    github.get_pull_request.return_value = {"number": 100, "state": "closed"}
+    github.get_issue.return_value = {"number": 100, "state": "closed"}
+    engine = AutomationEngine(github, AutomationConfig())
+    processed = []
+    monkeypatch.setattr(
+        engine,
+        "_create_candidate_from_single",
+        lambda *args: Candidate(type=entity_type, data={"number": 100, "state": "open"}, priority=0),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data["state"]) or CandidateProcessingResult(type=entity_type, number=100, success=True),
+    )
+
+    async def scenario():
+        await process_github_payload(event_type, {"action": "reopened", entity_key: {"number": 100}}, engine, "owner/repo", "reopened")
+        await _run_worker_until(engine, 1, processed)
+
+    asyncio.run(scenario())
+    assert processed == ["open"]
+    github.get_pull_request.assert_not_called()
+    github.get_issue.assert_not_called()
+
+
+def test_delayed_webhook_expires_through_consumer_and_fetches_final_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    final_state = {"number": 200, "state": "open", "labels": ["implementation-ready"]}
+    fetched = []
+    processed = []
+
+    def fetch(*args):
+        fetched.append(args[2])
+        return Candidate(type="issue", data=final_state, priority=0)
+
+    monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
+    )
+
+    async def scenario():
+        consumer = asyncio.create_task(engine._invalidation_loop("owner/repo"))
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        created_at = (datetime.now(timezone.utc) - timedelta(seconds=59.9)).isoformat()
+        await process_github_payload(
+            "issues",
+            {"action": "opened", "issue": {"number": 200, "created_at": created_at, "labels": []}},
+            engine,
+            "owner/repo",
+            "opened",
+        )
+        for _ in range(100):
+            if processed:
+                break
+            await asyncio.sleep(0.01)
+        consumer.cancel()
+        worker.cancel()
+        await asyncio.gather(consumer, worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert fetched == [200]
+    assert processed == [final_state]
+
+
+def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    created_at = (datetime.now(timezone.utc) - timedelta(seconds=59.5)).isoformat()
+    github = MagicMock()
+    github.create_issue.return_value = object()
+    github.get_issue_details.return_value = {"number": 200, "created_at": created_at, "state": "open"}
+    engine = AutomationEngine(github, AutomationConfig())
+    final_state = {"number": 200, "state": "open", "labels": ["implementation-ready"]}
+    processed = []
+    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *args: Candidate(type="issue", data=final_state, priority=0))
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
+    )
+
+    async def scenario():
+        consumer = asyncio.create_task(engine._invalidation_loop("owner/repo"))
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await process_sentry_payload(SentryWebhookPayload(message="failure"), engine, "owner/repo")
+        await asyncio.sleep(0.05)
+        assert processed == []
+        for _ in range(100):
+            if processed:
+                break
+            await asyncio.sleep(0.01)
+        consumer.cancel()
+        worker.cancel()
+        await asyncio.gather(consumer, worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert processed == [final_state]

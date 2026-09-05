@@ -1,13 +1,14 @@
 import asyncio
 import hashlib
 import hmac
+import time
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Union
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from .automation_config import Candidate
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
 from .logger_config import get_logger
@@ -77,10 +78,20 @@ async def process_sentry_payload(payload: SentryWebhookPayload, engine: Automati
         if issue:
             issue_details = await loop.run_in_executor(None, lambda: engine.github.get_issue_details(issue))
 
-            candidate = Candidate(type="issue", data=issue_details, priority=3, issue_number=issue_details.get("number"))  # Urgent
-
-            await engine.queue.put(candidate)
-            logger.info(f"Queued Sentry issue #{candidate.issue_number}")
+            issue_number = issue_details.get("number")
+            if isinstance(issue_number, int):
+                created_at = issue_details.get("created_at")
+                not_before = time.time() + 60
+                if isinstance(created_at, str):
+                    try:
+                        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=timezone.utc)
+                        not_before = (created + timedelta(seconds=60)).timestamp()
+                    except ValueError:
+                        logger.warning(f"Invalid created_at for Sentry issue #{issue_number}; using receipt-anchored stabilization")
+                await engine.invalidate_entity(repo_name, "issue", issue_number, event_type="sentry", action="created", not_before=not_before)
+                logger.info(f"Scheduled Sentry issue #{issue_number} after stabilization")
 
     except Exception as e:
         logger.error(f"Failed to process Sentry payload: {e}")
@@ -146,7 +157,23 @@ async def process_github_payload(
                 identities.update(("pr", number) for number in numbers)
 
     for entity_type, number in sorted(identities):
-        accepted = await engine.invalidate_entity(repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
+        not_before = None
+        if entity_type == "issue":
+            issue = payload.get("issue")
+            created_at = issue.get("created_at") if isinstance(issue, Mapping) else None
+            if isinstance(created_at, str):
+                try:
+                    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    not_before = (created + timedelta(seconds=60)).timestamp()
+                except ValueError:
+                    logger.warning(f"Invalid created_at for issue #{number}; scheduling immediate authoritative reevaluation")
+        invalidation_args = (repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
+        if not_before is None:
+            accepted = await engine.invalidate_entity(*invalidation_args)
+        else:
+            accepted = await engine.invalidate_entity(*invalidation_args, not_before=not_before)
         logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 

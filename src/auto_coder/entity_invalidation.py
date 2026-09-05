@@ -2,6 +2,7 @@
 
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,7 @@ class DurableInvalidationQueue:
                 generation INTEGER NOT NULL,
                 claimed_generation INTEGER,
                 state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
+                not_before REAL,
                 PRIMARY KEY(repository, entity_type, entity_number)
             );
             CREATE TABLE IF NOT EXISTS github_deliveries (
@@ -82,13 +84,19 @@ class DurableInvalidationQueue:
                     generation INTEGER NOT NULL,
                     claimed_generation INTEGER,
                     state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
+                    not_before REAL,
                     PRIMARY KEY(repository, entity_type, entity_number)
                 );
-                INSERT INTO entity_invalidations
+                INSERT INTO entity_invalidations(repository, entity_type, entity_number,
+                    generation, claimed_generation, state)
                     SELECT * FROM entity_invalidations_v1;
                 DROP TABLE entity_invalidations_v1;
                 """
             )
+
+        invalidation_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(entity_invalidations)")}
+        if "not_before" not in invalidation_columns:
+            self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN not_before REAL")
 
         delivery_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(github_deliveries)")}
         if "entity_type" not in delivery_columns:
@@ -137,6 +145,7 @@ class DurableInvalidationQueue:
         delivery_id: Optional[str] = None,
         event_type: Optional[str] = None,
         action: Optional[str] = None,
+        not_before: Optional[float] = None,
     ) -> bool:
         """Persist an invalidation; return False only for a duplicate delivery."""
         with self._lock, self._connection:
@@ -157,15 +166,20 @@ class DurableInvalidationQueue:
                     return False
             self._connection.execute(
                 """
-                INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state)
-                VALUES (?, ?, ?, 1, 'dirty')
+                INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state, not_before)
+                VALUES (?, ?, ?, 1, 'dirty', ?)
                 ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
                     generation = CASE
                         WHEN state = 'processing' THEN generation + 1
                         ELSE generation
+                    END,
+                    not_before = CASE
+                        WHEN entity_invalidations.not_before IS NULL THEN excluded.not_before
+                        WHEN excluded.not_before IS NULL THEN entity_invalidations.not_before
+                        ELSE MIN(entity_invalidations.not_before, excluded.not_before)
                     END
                 """,
-                (identity.repository, identity.entity_type, identity.number),
+                (identity.repository, identity.entity_type, identity.number, not_before),
             )
             return True
 
@@ -177,15 +191,29 @@ class DurableInvalidationQueue:
                    SET state = 'queued', claimed_generation = generation
                    WHERE rowid = (
                        SELECT rowid FROM entity_invalidations
-                       WHERE repository = ? AND state = 'dirty' ORDER BY rowid LIMIT 1
+                       WHERE repository = ? AND state = 'dirty'
+                         AND (not_before IS NULL OR not_before <= ?)
+                       ORDER BY rowid LIMIT 1
                    ) AND state = 'dirty'
                    RETURNING entity_type, entity_number, generation""",
-                (repository,),
+                (repository, time.time()),
             ).fetchone()
             if row is None:
                 return None
             entity_type, number, generation = row
             return ClaimedInvalidation(EntityIdentity(repository, entity_type, number), generation)
+
+    def seconds_until_next_ready(self, repository: str) -> Optional[float]:
+        """Return the delay until the earliest dirty invalidation is eligible."""
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT MIN(not_before) FROM entity_invalidations
+                   WHERE repository = ? AND state = 'dirty' AND not_before IS NOT NULL""",
+                (repository,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return max(0.0, float(row[0]) - time.time())
 
     def begin_processing(self, claim: ClaimedInvalidation) -> bool:
         """Mark queued work active at the point a worker actually receives it."""

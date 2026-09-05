@@ -44,7 +44,7 @@ class MockEngine:
         self.queue = MockQueue()
         self.invalidations = []
 
-    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None):
+    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None, not_before=None):
         self.invalidations.append((repo_name, entity_type, number, delivery_id, event_type, action))
         return True
 

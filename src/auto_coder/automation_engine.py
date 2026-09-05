@@ -30,7 +30,7 @@ from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
-from .llm_backend_config import active_repo_context, get_process_issues_empty_sleep_time_from_config, get_process_issues_sleep_time_from_config
+from .llm_backend_config import active_repo_context
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
@@ -50,6 +50,7 @@ from .utils import CommandExecutor, get_target_container, log_action
 logger = get_logger(__name__)
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
+MAINTENANCE_INTERVAL_SECONDS = 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
 
 
@@ -69,6 +70,7 @@ class AutomationEngine:
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self._invalidation_drain_lock = asyncio.Lock()
+        self._invalidation_wake_event: Optional[asyncio.Event] = None
         self.active_workers: Dict[int, Optional[Candidate]] = {}
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
@@ -196,20 +198,37 @@ class AutomationEngine:
         get_health_monitor().start()
         heartbeat("engine:start", repo_name)
 
-        # Start producer
+        # Maintenance and GitHub work have independent scheduling paths.
         producer_task = asyncio.create_task(self._producer_loop(repo_name), name="producer")
+        invalidation_task = asyncio.create_task(self._invalidation_loop(repo_name), name="github-invalidations")
 
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
 
-        try:
-            # Wait for all tasks (they run forever until cancelled)
+        async def wait_for_core_loops() -> None:
             await asyncio.gather(producer_task, *workers)
+
+        core_task = asyncio.create_task(wait_for_core_loops(), name="core-loops")
+        try:
+            # The invalidation consumer is a companion to the producer/workers,
+            # not a reason to keep an otherwise stopped engine alive forever.
+            done, _ = await asyncio.wait({core_task, invalidation_task}, return_when=asyncio.FIRST_COMPLETED)
+            if core_task in done:
+                invalidation_task.cancel()
+                await asyncio.gather(invalidation_task, return_exceptions=True)
+                await core_task
+            else:
+                core_task.cancel()
+                await asyncio.gather(core_task, return_exceptions=True)
+                await invalidation_task
             # Reaching this point means every loop returned on its own, which
             # is the silent-stop case we want explained in the log.
             logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
             get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
         except asyncio.CancelledError:
+            core_task.cancel()
+            invalidation_task.cancel()
+            await asyncio.gather(core_task, invalidation_task, return_exceptions=True)
             logger.info("Automation engine stopped")
             get_health_monitor().record_event("engine_stop", "cancelled", "")
             raise
@@ -221,7 +240,7 @@ class AutomationEngine:
             get_health_monitor().log_snapshot(reason="engine_stop")
 
     async def _producer_loop(self, repo_name: str) -> None:
-        """Producer loop that polls for candidates and adds them to the queue."""
+        """Run time-based maintenance without polling GitHub for candidate work."""
         logger.info("Producer started")
         get_trace_logger().log("System", "Producer started", details={"repo_name": repo_name})
 
@@ -236,10 +255,6 @@ class AutomationEngine:
             try:
                 iteration += 1
                 heartbeat("producer:check-updates", f"iteration {iteration}")
-                # Retry durable work released by a transient fetch or processing
-                # failure on the normal producer cadence, rather than hot-looping.
-                await self._enqueue_pending_invalidations(repo_name)
-
                 # Check updates
                 await asyncio.to_thread(check_for_updates_and_restart)
 
@@ -270,47 +285,8 @@ class AutomationEngine:
                 except Exception as e:
                     logger.warning(f"Failed to pull monitored repository: {e}")
 
-                # Get candidates
-                heartbeat("producer:get-candidates", f"iteration {iteration}")
-                candidates = await asyncio.to_thread(self._get_candidates, repo_name)
-
-                if not candidates:
-                    # No candidates found. Sleep longer.
-                    # Use asyncio.to_thread for API calls
-                    def check_open_items():
-                        issues = self.github.get_open_issues(repo_name, limit=1)
-                        prs = self.github.get_open_pull_requests(repo_name, limit=1)
-                        return len(issues) > 0 or len(prs) > 0
-
-                    any_open = await asyncio.to_thread(check_open_items)
-
-                    if not any_open:
-                        sleep_time = get_process_issues_empty_sleep_time_from_config()
-                        logger.info(f"No open issues or PRs found. Sleeping for {sleep_time} seconds...")
-                    else:
-                        sleep_time = get_process_issues_sleep_time_from_config()
-                        logger.info(f"No actionable candidates. Sleeping for {sleep_time} seconds...")
-
-                    heartbeat("producer:sleep-no-candidates", f"{sleep_time}s")
-                    woken_early = await self._sleep_or_wake(sleep_time)
-                    if woken_early:
-                        skip_jules_sessions = True
-                    continue
-
-                # Add candidates to queue
-                for candidate in candidates:
-                    await self.queue.put(candidate)
-                    item_number = candidate.data.get("number", "N/A")
-                    logger.info(f"Queued {candidate.type} #{item_number}")
-                    get_trace_logger().log("Queue", f"Queued {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"priority": candidate.priority})
-
-                # Clear cache
-                await asyncio.to_thread(lambda: get_github_cache().clear())
-
-                sleep_time = get_process_issues_sleep_time_from_config()
-                logger.info(f"Batch queued. Sleeping for {sleep_time} seconds...")
-                heartbeat("producer:sleep-after-batch", f"{sleep_time}s")
-                woken_early = await self._sleep_or_wake(sleep_time)
+                heartbeat("producer:maintenance-sleep", f"{MAINTENANCE_INTERVAL_SECONDS}s")
+                woken_early = await self._sleep_or_wake(MAINTENANCE_INTERVAL_SECONDS)
                 if woken_early:
                     skip_jules_sessions = True
 
@@ -322,6 +298,23 @@ class AutomationEngine:
                 logger.opt(exception=True).error(f"Error in producer loop: {e}")
                 get_health_monitor().record_event("producer_error", f"{type(e).__name__}: {e}", f"iteration {iteration}")
                 await asyncio.sleep(60)  # Sleep on error
+
+    async def _invalidation_loop(self, repo_name: str) -> None:
+        """Consume durable invalidations promptly, including delayed Issue work."""
+        self._invalidation_wake_event = asyncio.Event()
+        while True:
+            # Clear first so an invalidation arriving during the drain remains
+            # observable instead of being erased by a later clear.
+            self._invalidation_wake_event.clear()
+            await self._enqueue_pending_invalidations(repo_name)
+            delay = await asyncio.to_thread(self.invalidations.seconds_until_next_ready, repo_name)
+            try:
+                if delay is None:
+                    await self._invalidation_wake_event.wait()
+                else:
+                    await asyncio.wait_for(self._invalidation_wake_event.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
 
     async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
         """Worker loop that processes candidates from the queue."""
@@ -354,8 +347,13 @@ class AutomationEngine:
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
                     heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
 
-                    # Check if the item is already closed before processing
-                    if is_item_closed_on_github(repo_name, candidate.type, item_number, self.github):
+                    # An invalidation candidate was fetched strictly above. Do
+                    # not overwrite that authority with the cached closed-state
+                    # helper: a reopened entity may still have a cached closed
+                    # representation. Direct/operator candidates retain their
+                    # existing explicit closed-state check.
+                    is_closed = candidate.data.get("state") == "closed" if invalidation_claim is not None else is_item_closed_on_github(repo_name, candidate.type, item_number, self.github)
+                    if is_closed:
                         logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
                         if candidate.type == "pr":
                             self.notify_pr_merged_or_closed()
@@ -392,6 +390,11 @@ class AutomationEngine:
                             self.invalidations.complete(invalidation_claim)
                         else:
                             self.invalidations.release(invalidation_claim)
+                            # Retry transient authoritative-fetch/processing
+                            # failures independently of the maintenance loop,
+                            # but retain the former backoff against hot loops.
+                            if self._invalidation_wake_event is not None:
+                                asyncio.get_running_loop().call_later(60, self._invalidation_wake_event.set)
                     self.active_workers[worker_id] = None
                     self.queue.task_done()
                     if decision_completed:
@@ -405,11 +408,14 @@ class AutomationEngine:
         delivery_id: Optional[str] = None,
         event_type: Optional[str] = None,
         action: Optional[str] = None,
+        not_before: Optional[float] = None,
     ) -> bool:
         """Durably mark an entity dirty and arrange an authoritative reevaluation."""
-        accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id, event_type, action)
+        accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id, event_type, action, not_before)
         if accepted:
             await self._enqueue_pending_invalidations(repo_name)
+            if self._invalidation_wake_event is not None:
+                self._invalidation_wake_event.set()
         return accepted
 
     async def _enqueue_pending_invalidations(self, repo_name: str) -> None:
