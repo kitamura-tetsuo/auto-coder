@@ -678,9 +678,8 @@ class ImplementationSlotRepository:
         with owner_lock:
             depths = getattr(self._serialization_depth, "owners", {})
             depth = depths.get(owner.key, 0)
-            depths[owner.key] = depth + 1
-            self._serialization_depth.owners = depths
             if depth:
+                depths[owner.key] = depth + 1
                 try:
                     yield
                 finally:
@@ -698,6 +697,8 @@ class ImplementationSlotRepository:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 except OSError as exc:
                     self._raise_permission_error(mutation_lock_path, exc)
+                depths[owner.key] = 1
+                self._serialization_depth.owners = depths
                 try:
                     yield
                 finally:

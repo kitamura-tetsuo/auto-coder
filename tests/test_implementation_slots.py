@@ -61,7 +61,7 @@ def execution_process(storage_path, owner_kind="issue", owner_number=100, force=
 import os
 import time
 from pathlib import Path
-from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotUnavailable
 
 slots = ImplementationSlotRepository("owner/repo", 1, Path(os.environ["SLOT_PATH"]))
 execution_id = slots.start_execution(
@@ -111,12 +111,23 @@ def run_slot_writer_as(uid, gid, storage_path, owner_number, action="reserve"):
 import json
 import sys
 from pathlib import Path
-from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotUnavailable
 
 slots = ImplementationSlotRepository("owner/repo", 10, Path(sys.argv[1]))
 owner = ImplementationOwner("issue", int(sys.argv[2]))
 action = sys.argv[3]
-if action == "serialize-cycle":
+serialization_attempts = []
+if action == "serialize-retries":
+    for _attempt in range(2):
+        entered = False
+        try:
+            with slots.serialize(owner):
+                entered = True
+        except ImplementationSlotUnavailable as exc:
+            serialization_attempts.append({"entered": entered, "error": str(exc)})
+        else:
+            serialization_attempts.append({"entered": entered, "error": None})
+elif action == "serialize-cycle":
     execution_id = slots.start_execution(owner, bypass_capacity=True)
     assert execution_id
     with slots.serialize(owner):
@@ -129,6 +140,7 @@ else:
 print(json.dumps({
     "owners": [item.number for item in slots.active_owners()],
     "executions": list(slots.active_execution_ids(owner)),
+    "serialization_attempts": serialization_attempts,
 }))
 """
     return subprocess.run(
@@ -210,6 +222,24 @@ time.sleep(30)
         finally:
             live_process.terminate()
             live_process.wait(timeout=5)
+
+        for owner_number, legacy_mode in ((808, "600"), (809, "664")):
+            legacy_owner_lock = shared_directory / f"implementation-issue-{owner_number}.lock"
+            legacy_owner_lock.touch()
+            ownership_command = ["chown", f"{first_uid}:{shared_gid}", str(legacy_owner_lock)]
+            mode_command = ["chmod", legacy_mode, str(legacy_owner_lock)]
+            if os.geteuid() != 0:
+                ownership_command = ["sudo", "-n", *ownership_command]
+                mode_command = ["sudo", "-n", *mode_command]
+            subprocess.run(ownership_command, check=True)
+            subprocess.run(mode_command, check=True)
+
+            retry_result = json.loads(run_slot_writer_as(second_uid, shared_gid, storage_path, owner_number, "serialize-retries").stdout)
+
+            assert [attempt["entered"] for attempt in retry_result["serialization_attempts"]] == [False, False]
+            expected_error = f"Cannot safely establish or use implementation slot shared-state permissions for '{legacy_owner_lock}'"
+            assert len(retry_result["serialization_attempts"]) == 2
+            assert all(attempt["error"].startswith(expected_error) for attempt in retry_result["serialization_attempts"])
 
         restrict_command = ["chown", f"{first_uid}:{shared_gid}", str(inaccessible_path)]
         if os.geteuid() != 0:
