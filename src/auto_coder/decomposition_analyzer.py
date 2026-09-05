@@ -126,6 +126,13 @@ def parse_decomposition_analysis_response(
                 return _error("Finding contains invalid Requirement IDs for an affected Issue")
             seen_issues.add(issue_number)
             affected.append(AffectedIssue(issue_number, tuple(requirement_ids)))
+        if category == "missing_requirement_ownership":
+            parent_reference = next(
+                (item for item in affected if item.issue_number == parent.manifest.issue_number),
+                None,
+            )
+            if parent_reference is None or not parent_reference.requirement_ids:
+                return _error("Missing ownership finding must identify the parent and its unowned Requirement")
         findings.append(DecompositionFinding(category, tuple(affected), explanation.strip(), clarification.strip()))
 
     if (verdict == "READY" and findings) or (verdict == "BLOCKED" and not findings):
