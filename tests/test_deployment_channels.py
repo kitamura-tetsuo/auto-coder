@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,68 @@ from auto_coder.cli_commands_main import process_issues
 from auto_coder.deployment_channel import DeploymentChannelError, assign_repository, validate_repository_ownership
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.update_manager import maybe_run_auto_update
+
+RELEASE_SHA = "a" * 40
+EXPECTED_DIGEST = "sha256:" + "1" * 64
+OTHER_DIGEST = "sha256:" + "2" * 64
+
+
+def _workflow_run_block(workflow_name, step_name):
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).parents[1] / ".github/workflows" / workflow_name).read_text(encoding="utf-8"))
+    steps = next(iter(workflow["jobs"].values()))["steps"]
+    return next(step["run"] for step in steps if step.get("name") == step_name)
+
+
+def _run_release_workflow(tmp_path, workflow_name, step_name, registry_responses, release_sha=None):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker_log = tmp_path / "docker.log"
+    fake_docker = bin_dir / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+arguments = sys.argv[1:]
+with open(os.environ["FAKE_DOCKER_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(arguments) + "\\n")
+if arguments[:3] != ["buildx", "imagetools", "inspect"]:
+    if arguments[:3] == ["buildx", "imagetools", "create"]:
+        raise SystemExit(0)
+    raise SystemExit(2)
+reference = arguments[3]
+output_kind = "image" if any(".Image" in argument for argument in arguments) else "digest"
+response = json.loads(os.environ["FAKE_REGISTRY_RESPONSES"]).get(f"{reference}|{output_kind}")
+if response is None:
+    raise SystemExit(1)
+print(response)
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "FAKE_DOCKER_LOG": str(docker_log),
+            "FAKE_REGISTRY_RESPONSES": json.dumps(registry_responses),
+            "IMAGE": "ghcr.io/owner/repo",
+        }
+    )
+    if release_sha is not None:
+        env["RELEASE_SHA"] = release_sha
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _workflow_run_block(workflow_name, step_name)],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    operations = [json.loads(line) for line in docker_log.read_text(encoding="utf-8").splitlines()]
+    return result, operations
 
 
 def _external_environment(monkeypatch, tmp_path, channel="beta"):
@@ -190,6 +253,78 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert "context:" not in rollback
     assert "group: release-channel" in promote
     assert "group: release-channel" in rollback
+
+
+def test_promotion_stops_before_writes_when_tested_beta_digest_differs(tmp_path):
+    image = "ghcr.io/owner/repo"
+    responses = {
+        f"{image}:beta|digest": json.dumps(EXPECTED_DIGEST),
+        f"{image}:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+        f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(OTHER_DIGEST),
+    }
+
+    result, operations = _run_release_workflow(
+        tmp_path,
+        "promote-release.yml",
+        "Validate and promote current beta without rebuilding",
+        responses,
+    )
+
+    assert result.returncode != 0
+    assert "tested beta digest mismatch" in result.stderr
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+def test_rollback_stops_before_write_when_release_history_is_missing(tmp_path):
+    image = "ghcr.io/owner/repo"
+    responses = {f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST)}
+
+    result, operations = _run_release_workflow(
+        tmp_path,
+        "rollback-release.yml",
+        "Roll back to immutable release history without rebuilding",
+        responses,
+        release_sha=RELEASE_SHA,
+    )
+
+    assert result.returncode != 0
+    assert ["buildx", "imagetools", "inspect", f"{image}:release-{RELEASE_SHA}"] == operations[0][:4]
+    assert not any(f"tested-beta-{RELEASE_SHA}" in argument for operation in operations for argument in operation)
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "step_name", "release_sha", "responses"),
+    [
+        (
+            "promote-release.yml",
+            "Validate and promote current beta without rebuilding",
+            None,
+            {
+                "ghcr.io/owner/repo:beta|digest": json.dumps(EXPECTED_DIGEST),
+                "ghcr.io/owner/repo:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+                f"ghcr.io/owner/repo:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+                f"ghcr.io/owner/repo:release-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+                "ghcr.io/owner/repo:release|digest": json.dumps(OTHER_DIGEST),
+            },
+        ),
+        (
+            "rollback-release.yml",
+            "Roll back to immutable release history without rebuilding",
+            RELEASE_SHA,
+            {
+                f"ghcr.io/owner/repo:release-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+                "ghcr.io/owner/repo:release|digest": json.dumps(OTHER_DIGEST),
+            },
+        ),
+    ],
+)
+def test_release_workflow_reports_failure_when_post_write_digest_differs(tmp_path, workflow_name, step_name, release_sha, responses):
+    result, operations = _run_release_workflow(tmp_path, workflow_name, step_name, responses, release_sha=release_sha)
+
+    assert any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+    assert result.returncode != 0
+    assert "release tag digest mismatch" in result.stderr
 
 
 def test_compose_channels_use_disjoint_private_storage_and_artifacts():
