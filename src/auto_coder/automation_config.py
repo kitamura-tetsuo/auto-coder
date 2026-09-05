@@ -181,7 +181,6 @@ class AutomationConfig:
         issue_allowlist: Optional[List[int]] = None,
         pr_allowlist: Optional[List[int]] = None,
         repo_name: Optional[str] = None,
-        max_open_prs_for_issues: Optional[int] = None,
         max_adversarial_validations: Optional[int] = None,
         max_adversarial_reviews: Optional[int] = None,
     ):
@@ -196,7 +195,6 @@ class AutomationConfig:
             issue_allowlist: Optional custom issue author allowlist (numeric user IDs)
             pr_allowlist: Optional custom PR author allowlist (numeric user IDs)
             repo_name: Optional GitHub repository in 'owner/repo' format for repo-scoped config.
-            max_open_prs_for_issues: Optional maximum number of open PRs allowed when collecting issues.
             max_adversarial_validations: Optional maximum number of adversarial reviews to perform.
             max_adversarial_reviews: Optional alias for max_adversarial_validations.
         """
@@ -232,7 +230,6 @@ class AutomationConfig:
             get_jules_wait_timeout_hours_from_config,
             get_max_concurrent_implementations_from_config,
             get_pr_allowlist_from_config,
-            get_process_issues_max_open_prs_for_issues_from_config,
         )
 
         effective_repo = repo_name if repo_name is not None else get_active_repo_name()
@@ -245,10 +242,6 @@ class AutomationConfig:
         implementation_limit = get_max_concurrent_implementations_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_CONCURRENT_IMPLEMENTATIONS", implementation_limit)
         object.__setattr__(self, "max_concurrent_implementations", implementation_limit)
-
-        configured_max_open_prs = max_open_prs_for_issues if max_open_prs_for_issues is not None else get_process_issues_max_open_prs_for_issues_from_config(repo_name=effective_repo)
-        object.__setattr__(self, "MAX_OPEN_PRS_FOR_ISSUES", configured_max_open_prs)
-        object.__setattr__(self, "max_open_prs_for_issues", configured_max_open_prs)
 
         configured_max_adv_reviews = max_adversarial_validations if max_adversarial_validations is not None else max_adversarial_reviews if max_adversarial_reviews is not None else get_adversarial_validation_max_reviews_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATIONS", configured_max_adv_reviews)
@@ -572,17 +565,6 @@ class AutomationConfig:
             except ValueError as e:
                 logger.error(f"Failed to parse AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS: {e}")
 
-        # Max open PRs for issue processing override
-        max_open_prs_env = os.environ.get("AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES") or os.environ.get("AUTO_CODER_MAX_OPEN_PRS")
-        if max_open_prs_env is not None:
-            try:
-                val = int(max_open_prs_env)
-                object.__setattr__(self, "MAX_OPEN_PRS_FOR_ISSUES", val)
-                object.__setattr__(self, "max_open_prs_for_issues", val)
-                logger.info(f"Loaded MAX_OPEN_PRS_FOR_ISSUES={val} from environment")
-            except ValueError as e:
-                logger.error(f"Failed to parse AUTO_CODER_MAX_OPEN_PRS_FOR_ISSUES: {e}")
-
     def _merge_label_mappings(self, new_mappings: Dict[str, str]) -> None:
         """Merge new label mappings with existing ones.
 
@@ -632,8 +614,6 @@ class AutomationConfig:
     MAX_RESPONSE_SIZE: int = 200
     max_issues_per_run: int = -1
     max_prs_per_run: int = -1
-    MAX_OPEN_PRS_FOR_ISSUES: int = 3
-    max_open_prs_for_issues: int = 3
     # Default max attempts for fix loops
     # Note: tests expect strict default value of 30
     MAX_FIX_ATTEMPTS: int = 30

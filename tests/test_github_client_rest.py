@@ -172,8 +172,8 @@ class TestGitHubClientREST:
         assert client._open_issues_cache is None
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
-    def test_get_open_issues_json_paginates_filtered_results(self, mock_get_ghapi_client, mock_github_token):
-        """Filtered discovery must continue after a full REST page."""
+    def test_candidate_collection_uses_complete_ordinary_issue_query(self, mock_get_ghapi_client, mock_github_token):
+        """Candidate discovery must use the ordinary REST query even with a ready PR."""
         mock_api = MagicMock()
         mock_get_ghapi_client.return_value = mock_api
 
@@ -193,10 +193,7 @@ class TestGitHubClientREST:
                 "sub_issues_summary": {"total": 0},
             }
 
-        mock_api.issues.list_for_repo.side_effect = [
-            [issue(number) for number in range(1, 101)],
-            [issue(101)],
-        ]
+        mock_api.issues.list_for_repo.return_value = [issue(number) for number in range(1, 101)]
         client = GitHubClient.get_instance(mock_github_token)
         client._open_issues_cache = None
 
@@ -225,9 +222,9 @@ class TestGitHubClientREST:
         ):
             candidates = engine._get_candidates("owner/repo")
 
-        assert [candidate.data["number"] for candidate in candidates] == list(range(1, 102)) + [200]
-        github.get_open_issues_json.assert_called_once_with("owner/repo", labels=["urgent"])
-        assert [call.kwargs["page"] for call in mock_api.issues.list_for_repo.call_args_list] == [1, 2]
+        assert [candidate.data["number"] for candidate in candidates] == list(range(1, 101)) + [200]
+        github.get_open_issues_json.assert_called_once_with("owner/repo")
+        mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100)
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_get_issue_rest(self, mock_get_ghapi_client, mock_github_token):

@@ -1700,39 +1700,6 @@ def get_max_concurrent_implementations_from_config(
     return value
 
 
-def get_process_issues_max_open_prs_for_issues_from_config(
-    config_path: Optional[str] = None,
-    repo_name: Optional[str] = None,
-) -> int:
-    """Get max open PRs count for issue processing from [process_issues].max_open_prs_for_issues in config.toml.
-
-    Args:
-        config_path: Optional explicit path to config.toml file.
-        repo_name: Optional repository name in 'owner/repo' format.
-
-    Returns:
-        Max open PRs count (default: 3)
-    """
-    val = _get_config_value(
-        section="process_issues",
-        key="max_open_prs_for_issues",
-        default=None,
-        config_path=config_path,
-        value_type=int,
-        repo_name=repo_name,
-    )
-    if val is not None:
-        return val
-    return _get_config_value(
-        section="process_issues",
-        key="max_open_prs",
-        default=3,
-        config_path=config_path,
-        value_type=int,
-        repo_name=repo_name,
-    )
-
-
 def get_isolate_single_test_on_failure_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,
