@@ -76,11 +76,12 @@ class CodexCloudClient(CloudTaskClientBase):
         self.repo_name = repo_name
         self.active_tasks: Dict[str, str] = {}  # task_id -> prompt
         self.task_urls: Dict[str, str] = {}  # task_id -> url
+        self._warned_unsupported_models: set[str] = set()
 
         config = get_llm_config(repo_name=self.repo_name)
         self.quota_selection_strategy = config.quota_selection_strategy
         self.config_backend = config.get_backend_config(self.backend_name)
-        self.model_name = self.config_backend and self.config_backend.model
+        self._warn_unsupported_model(self.config_backend.model if self.config_backend else None)
         self.options = (self.config_backend and self.config_backend.options) or []
         self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         self.api_key = self.config_backend and self.config_backend.api_key
@@ -92,6 +93,12 @@ class CodexCloudClient(CloudTaskClientBase):
         self.attempts = (self.config_backend and self.config_backend.attempts) or 1
         self.wham_client: Optional[CodexWhamClient] = None
         self.last_continued_at: Dict[str, float] = {}
+
+    def _warn_unsupported_model(self, model_name: Optional[str]) -> None:
+        """Warn when configuration requests unsupported Cloud model selection."""
+        if model_name and model_name not in self._warned_unsupported_models:
+            logger.warning(f"Codex Cloud does not support user-selected models; configured model " f"'{model_name}' for backend '{self.backend_name}' is being ignored.")
+            self._warned_unsupported_models.add(model_name)
 
     def _extract_task_id(self, output: str) -> Optional[str]:
         """Extract a task ID or task URL from Codex Cloud CLI output.
@@ -171,8 +178,7 @@ class CodexCloudClient(CloudTaskClientBase):
                 env_id = backend_cfg.environment_id or getattr(backend_cfg, "environment", None)
                 if env_id:
                     self.environment_id = env_id
-                if backend_cfg.model:
-                    self.model_name = backend_cfg.model
+                self._warn_unsupported_model(backend_cfg.model)
                 if backend_cfg.options:
                     self.options = backend_cfg.options
                 if backend_cfg.api_key:
@@ -190,9 +196,6 @@ class CodexCloudClient(CloudTaskClientBase):
         if not self.environment_id:
             raise ValueError(f"No environment_id configured for Codex Cloud backend '{self.backend_name}'. " "Set environment_id in llm_config.toml or CODEX_CLOUD_ENV_ID.")
         cmd.extend(["--env", self.environment_id])
-
-        if self.model_name:
-            cmd.extend(["--config", f'model="{self.model_name}"'])
 
         if self.attempts != 1:
             cmd.extend(["--attempts", str(self.attempts)])
