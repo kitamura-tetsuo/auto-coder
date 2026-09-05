@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
-from src.auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntityNumbers
+from src.auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
 
 
@@ -297,7 +297,7 @@ def test_startup_reconciliation_recovers_missed_issue_through_worker_path(tmp_pa
     """AS-001/AS-005: production startup turns live GitHub state into normal work."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     github = MagicMock()
-    github.get_open_entity_numbers_strict.return_value = OpenGitHubEntityNumbers(issues=[1725])
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(1725)])
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
@@ -323,14 +323,14 @@ def test_startup_reconciliation_recovers_missed_issue_through_worker_path(tmp_pa
     asyncio.run(startup())
     assert processed == [1725]
     assert engine.get_status()["startup_reconciliation"] == {"complete": True, "error": None}
-    github.get_open_entity_numbers_strict.assert_called_once_with("owner/repo")
+    github.get_open_entities_strict.assert_called_once_with("owner/repo")
 
 
 def test_startup_reconciliation_failure_never_starts_steady_state(tmp_path: Path, monkeypatch):
     """AS-004/REQ-006: a failed one-shot scan is visible and fail-closed."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     github = MagicMock()
-    github.get_open_entity_numbers_strict.side_effect = RuntimeError("second page unavailable")
+    github.get_open_entities_strict.side_effect = RuntimeError("second page unavailable")
     engine = AutomationEngine(github, AutomationConfig())
     producer = MagicMock()
     monkeypatch.setattr(engine, "_producer_loop", producer)
@@ -344,14 +344,14 @@ def test_startup_reconciliation_failure_never_starts_steady_state(tmp_path: Path
         "complete": False,
         "error": "RuntimeError: second page unavailable",
     }
-    github.get_open_entity_numbers_strict.assert_called_once_with("owner/repo")
+    github.get_open_entities_strict.assert_called_once_with("owner/repo")
 
 
 def test_webhook_during_startup_reconciliation_is_not_cleared(tmp_path: Path, monkeypatch):
     """AS-003: a newer invalidation survives an older recovery observation."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
-    engine.github.get_open_entity_numbers_strict.return_value = OpenGitHubEntityNumbers(pull_requests=[100])
+    engine.github.get_open_entities_strict.return_value = OpenGitHubEntities(pull_requests=[100])
     observed = []
     processing_started = asyncio.Event()
     allow_completion = asyncio.Event()
@@ -401,12 +401,103 @@ def test_strict_startup_enumeration_reads_all_pages_and_current_open_state(monke
     get = MagicMock(side_effect=responses)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
 
-    entities = GitHubClient("token").get_open_entity_numbers_strict("owner/repo")
+    entities = GitHubClient("token").get_open_entities_strict("owner/repo")
 
-    assert entities == OpenGitHubEntityNumbers(issues=[1, 2], pull_requests=[100])
+    assert entities == OpenGitHubEntities(issues=[OpenGitHubIssue(1), OpenGitHubIssue(2)], pull_requests=[100])
     assert get.call_count == 3
     assert "issues-page-2" in get.call_args_list[1].args[0]
     assert "/pulls?state=open" in get.call_args_list[2].args[0]
+
+
+def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, monkeypatch):
+    """REQ-002/REQ-007: missed opening webhooks retain normal Issue delay."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    now = datetime.now(timezone.utc)
+    issue = {
+        "number": 1725,
+        "title": "Recent work",
+        "body": "Ready",
+        "state": "open",
+        "created_at": now.isoformat(),
+        "user": {"login": "contributor", "id": 123},
+        "labels": [{"name": "implementation-ready"}],
+        "assignees": [],
+        "comments": 0,
+    }
+
+    def response(payload, next_url=None):
+        result = MagicMock()
+        result.json.return_value = payload
+        result.links = {"next": {"url": next_url}} if next_url else {}
+        return result
+
+    get = MagicMock(side_effect=[response([issue]), response([])])
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.Client.get", MagicMock(return_value=response(issue)))
+    engine = AutomationEngine(GitHubClient("token"), AutomationConfig())
+    processed = []
+    monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
+    monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=1725, success=True),
+    )
+    monkeypatch.setattr("src.auto_coder.automation_engine.install_asyncio_diagnostics", lambda loop: None)
+    monkeypatch.setattr("src.auto_coder.automation_engine.get_health_monitor", MagicMock())
+
+    async def startup():
+        task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        for _ in range(200):
+            if engine.startup_reconciled:
+                break
+            await asyncio.sleep(0.01)
+        assert processed == []
+        assert engine.queue.qsize() == 0
+        remaining = engine.invalidations.seconds_until_next_ready("owner/repo")
+        assert remaining is not None and 55 < remaining <= 60
+
+        monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: (now + timedelta(seconds=60)).timestamp())
+        assert engine._invalidation_wake_event is not None
+        engine._invalidation_wake_event.set()
+        for _ in range(200):
+            if processed == [1725]:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(startup())
+    assert processed == [1725]
+    assert get.call_count == 2
+
+
+def test_real_paginated_scan_failure_blocks_startup(tmp_path: Path, monkeypatch):
+    """REQ-005: an HTTP failure after page one cannot become partial success."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    first = httpx.Response(
+        200,
+        json=[{"number": 1, "created_at": "2026-09-05T00:00:00Z"}],
+        headers={"Link": '<https://api.github.com/repos/owner/repo/issues?state=open&per_page=100&page=2>; rel="next"'},
+        request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues?state=open&per_page=100"),
+    )
+    failure = httpx.Response(
+        503,
+        request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues?state=open&per_page=100&page=2"),
+    )
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", MagicMock(side_effect=[first, failure]))
+    engine = AutomationEngine(GitHubClient("token"), AutomationConfig())
+    producer = MagicMock()
+    monkeypatch.setattr(engine, "_producer_loop", producer)
+    monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(engine.start_automation("owner/repo", concurrency=1))
+
+    producer.assert_not_called()
+    assert engine.startup_reconciled is False
+    assert engine.startup_reconciliation_error is not None
+    assert "HTTPStatusError" in engine.startup_reconciliation_error
 
 
 def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatch):

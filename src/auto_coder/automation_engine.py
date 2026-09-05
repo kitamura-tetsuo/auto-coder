@@ -17,7 +17,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .deployment_channel import repository_dispatch_authority
-from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity
+from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
 from .exceptions import AutoCoderRetryableBackendError
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
@@ -261,9 +261,10 @@ class AutomationEngine:
         self.startup_reconciled = False
         self.startup_reconciliation_error = None
         try:
-            entities = await asyncio.to_thread(self.github.get_open_entity_numbers_strict, repo_name)
-            for number in entities.issues:
-                await self.invalidate_entity(repo_name, "issue", number)
+            entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+            for issue in entities.issues:
+                not_before = issue_stabilization_deadline(issue.created_at) if issue.created_at is not None else None
+                await self.invalidate_entity(repo_name, "issue", issue.number, not_before=not_before)
             for number in entities.pull_requests:
                 await self.invalidate_entity(repo_name, "pr", number)
         except BaseException as exc:

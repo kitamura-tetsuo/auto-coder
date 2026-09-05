@@ -52,10 +52,18 @@ class PullRequestRepairMetadata:
 
 
 @dataclass(frozen=True)
-class OpenGitHubEntityNumbers:
-    """Complete live identities returned by startup recovery enumeration."""
+class OpenGitHubIssue:
+    """Issue identity and scheduling metadata needed by startup recovery."""
 
-    issues: List[int] = field(default_factory=list)
+    number: int
+    created_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OpenGitHubEntities:
+    """Complete live entities returned by startup recovery enumeration."""
+
+    issues: List[OpenGitHubIssue] = field(default_factory=list)
     pull_requests: List[int] = field(default_factory=list)
 
 
@@ -462,7 +470,7 @@ class GitHubClient:
             raise
 
     @retry_with_backoff()
-    def get_open_entity_numbers_strict(self, repo_name: str) -> OpenGitHubEntityNumbers:
+    def get_open_entities_strict(self, repo_name: str) -> OpenGitHubEntities:
         """Enumerate every currently open Issue and PR without cached evidence.
 
         Startup recovery deliberately reads the two authoritative REST
@@ -475,9 +483,9 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        def enumerate_numbers(entity_type: str) -> List[int]:
+        def enumerate_entities(entity_type: str) -> List[Any]:
             url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/{entity_type}?state=open&per_page=100"
-            numbers: List[int] = []
+            entities: List[Any] = []
             visited_urls: set[str] = set()
             while url:
                 if url in visited_urls or len(visited_urls) >= 1000:
@@ -494,17 +502,23 @@ class GitHubClient:
                     # GitHub's Issues collection also contains pull requests.
                     if entity_type == "issues" and "pull_request" in item:
                         continue
-                    numbers.append(item["number"])
+                    if entity_type == "issues":
+                        created_at = item.get("created_at")
+                        if created_at is not None and not isinstance(created_at, str):
+                            raise RuntimeError("GitHub open-issues response contained an invalid created_at")
+                        entities.append(OpenGitHubIssue(number=item["number"], created_at=created_at))
+                    else:
+                        entities.append(item["number"])
                 next_link = response.links.get("next", {})
                 next_url = next_link.get("url") if isinstance(next_link, dict) else None
                 if next_url is not None and not isinstance(next_url, str):
                     raise RuntimeError(f"GitHub open-{entity_type} pagination link was invalid")
                 url = next_url
-            return numbers
+            return entities
 
-        return OpenGitHubEntityNumbers(
-            issues=enumerate_numbers("issues"),
-            pull_requests=enumerate_numbers("pulls"),
+        return OpenGitHubEntities(
+            issues=enumerate_entities("issues"),
+            pull_requests=enumerate_entities("pulls"),
         )
 
     @retry_with_backoff()
