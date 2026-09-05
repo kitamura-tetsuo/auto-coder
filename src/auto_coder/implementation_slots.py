@@ -13,7 +13,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, NoReturn, Optional
 
 from .issue_context import resolve_issue_oracles
 from .logger_config import get_logger
@@ -53,6 +53,8 @@ class ProcessIdentity:
 
 class ImplementationSlotRepository:
     """Persist active owners and atomically reserve capacity across processes."""
+
+    _SHARED_FILE_MODE = 0o660
 
     def __init__(self, repo_name: str, max_implementations: int, storage_path: Optional[Path] = None):
         if isinstance(max_implementations, bool) or max_implementations < 1:
@@ -112,37 +114,95 @@ class ImplementationSlotRepository:
 
     @contextmanager
     def _state_lock(self) -> Iterator[None]:
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._raise_permission_error(self.storage_path.parent, exc)
         with self._thread_lock:
-            with io.open(self.lock_path, "a+", encoding="utf-8") as lock_file:
-                os.chmod(self.lock_path, 0o600)
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                lock_fd = self._open_lock_file(self.lock_path)
+            except OSError as exc:
+                self._raise_permission_error(self.lock_path, exc)
+            with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock_file:
+                self._establish_shared_permissions(lock_file.fileno(), self.lock_path)
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                except OSError as exc:
+                    self._raise_permission_error(self.lock_path, exc)
                 try:
                     yield
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    def _read(self) -> Dict[str, Dict[str, object]]:
-        if not self.storage_path.exists():
-            return {}
+    def _open_lock_file(self, lock_path: Path) -> int:
+        """Open the lock, atomically publishing fully prepared metadata if new."""
         try:
-            with io.open(self.storage_path, encoding="utf-8") as state_file:
+            return os.open(lock_path, os.O_RDWR)
+        except FileNotFoundError:
+            pass
+
+        bootstrap = lock_path.with_name(f".{lock_path.name}.{uuid.uuid4().hex}.tmp")
+        bootstrap_fd = os.open(bootstrap, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            self._establish_shared_permissions(bootstrap_fd, bootstrap)
+            try:
+                os.link(bootstrap, lock_path)
+            except FileExistsError:
+                pass
+        finally:
+            os.close(bootstrap_fd)
+            try:
+                os.unlink(bootstrap)
+            except FileNotFoundError:
+                pass
+        return os.open(lock_path, os.O_RDWR)
+
+    def _read(self) -> Dict[str, Dict[str, object]]:
+        try:
+            os.stat(self.storage_path)
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            self._raise_permission_error(self.storage_path, exc)
+        try:
+            with io.open(self.storage_path, "r", encoding="utf-8") as state_file:
                 value = json.load(state_file)
             if not isinstance(value, dict):
                 raise ValueError("slot state root must be an object")
             return value
-        except Exception as exc:
-            # Corrupt/unreadable state cannot safely be interpreted as empty.
-            raise ImplementationSlotUnavailable(f"Cannot safely read implementation slot state: {exc}") from exc
+        except (json.JSONDecodeError, UnicodeError, ValueError) as exc:
+            raise ImplementationSlotUnavailable(f"Cannot safely parse implementation slot state at '{self.storage_path}': {exc}") from exc
+        except OSError as exc:
+            self._raise_permission_error(self.storage_path, exc)
 
     def _write(self, owners: Dict[str, Dict[str, object]]) -> None:
         temporary = self.storage_path.with_suffix(".tmp")
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as state_file:
-            json.dump(owners, state_file, indent=2, sort_keys=True)
-            state_file.flush()
-            os.fsync(state_file.fileno())
-        os.replace(temporary, self.storage_path)
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, self._SHARED_FILE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8") as state_file:
+                self._establish_shared_permissions(state_file.fileno(), temporary)
+                json.dump(owners, state_file, indent=2, sort_keys=True)
+                state_file.flush()
+                os.fsync(state_file.fileno())
+            os.replace(temporary, self.storage_path)
+        except OSError as exc:
+            self._raise_permission_error(temporary if temporary.exists() else self.storage_path, exc)
+
+    def _establish_shared_permissions(self, fd: int, path: Path) -> None:
+        """Apply the containing directory's group and a non-world shared mode."""
+        try:
+            directory_gid = os.stat(self.storage_path.parent).st_gid
+            metadata = os.fstat(fd)
+            if metadata.st_gid != directory_gid:
+                os.fchown(fd, -1, directory_gid)
+            if metadata.st_mode & 0o777 != self._SHARED_FILE_MODE:
+                os.fchmod(fd, self._SHARED_FILE_MODE)
+        except OSError as exc:
+            self._raise_permission_error(path, exc)
+
+    @staticmethod
+    def _raise_permission_error(path: Path, exc: OSError) -> NoReturn:
+        raise ImplementationSlotUnavailable(f"Cannot safely establish or use implementation slot shared-state permissions for '{path}': {exc}") from exc
 
     @staticmethod
     def _capacity_usage(owners: Dict[str, Dict[str, object]]) -> tuple[int, bool]:
@@ -618,9 +678,8 @@ class ImplementationSlotRepository:
         with owner_lock:
             depths = getattr(self._serialization_depth, "owners", {})
             depth = depths.get(owner.key, 0)
-            depths[owner.key] = depth + 1
-            self._serialization_depth.owners = depths
             if depth:
+                depths[owner.key] = depth + 1
                 try:
                     yield
                 finally:
@@ -628,10 +687,18 @@ class ImplementationSlotRepository:
                 return
 
             mutation_lock_path = self.storage_path.parent / f"implementation-{owner.kind}-{owner.number}.lock"
-            mutation_lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with io.open(mutation_lock_path, "a+", encoding="utf-8") as lock_file:
-                os.chmod(mutation_lock_path, 0o600)
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                mutation_lock_fd = self._open_lock_file(mutation_lock_path)
+            except OSError as exc:
+                self._raise_permission_error(mutation_lock_path, exc)
+            with os.fdopen(mutation_lock_fd, "a+", encoding="utf-8") as lock_file:
+                self._establish_shared_permissions(lock_file.fileno(), mutation_lock_path)
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                except OSError as exc:
+                    self._raise_permission_error(mutation_lock_path, exc)
+                depths[owner.key] = 1
+                self._serialization_depth.owners = depths
                 try:
                     yield
                 finally:
