@@ -496,6 +496,8 @@ class TestAdversarialValidationCodexFeedback:
         backend.wham_client.resolve_latest_assistant_turn.side_effect = [
             None,
             "task_e_abc123~assttrn_1",
+            "task_e_abc123~assttrn_1",
+            "task_e_abc123~assttrn_1",
             "task_e_abc123~assttrn_2",
             "task_e_abc123~assttrn_2",
             "task_e_abc123~assttrn_2",
@@ -518,10 +520,14 @@ class TestAdversarialValidationCodexFeedback:
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
             pr_data["head"]["sha"] = "unrelated-head-b"
+            recovered_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
+            unchanged_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
 
         assert backend.wham_client.send_follow_up.call_count == 2
+        assert "all actionable feedback was already delivered" in recovered_baseline[0]
+        assert "all actionable feedback was already delivered" in unchanged_baseline[0]
         assert "latest corrective attempt did not resolve" in backend.wham_client.send_follow_up.call_args.kwargs["prompt"]
         assert "Sent adversarial NEEDS_FIX report" in failed_correction[0]
         assert "all actionable feedback was already delivered" in duplicate[0]

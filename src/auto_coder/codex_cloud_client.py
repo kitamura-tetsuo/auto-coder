@@ -528,7 +528,7 @@ class CodexCloudClient(CloudTaskClientBase):
             except (OSError, ValueError, TypeError):
                 return ""
         turns = {records[key].pre_send_turn_id for key in keys if key in records and records[key].pre_send_turn_id}
-        return turns.pop() if len(turns) == 1 else ""
+        return f"latest_turn_id:{turns.pop()}" if len(turns) == 1 else ""
 
     def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
