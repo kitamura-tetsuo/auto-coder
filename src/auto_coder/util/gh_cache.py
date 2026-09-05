@@ -51,6 +51,14 @@ class PullRequestRepairMetadata:
     base_ref: str
 
 
+@dataclass(frozen=True)
+class OpenGitHubEntityNumbers:
+    """Complete live identities returned by startup recovery enumeration."""
+
+    issues: List[int] = field(default_factory=list)
+    pull_requests: List[int] = field(default_factory=list)
+
+
 # Safety bound for paginated comment listings (100 comments per page).
 COMMENTS_MAX_PAGES = 50
 
@@ -452,6 +460,52 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to get repository {repo_name}: {e}")
             raise
+
+    @retry_with_backoff()
+    def get_open_entity_numbers_strict(self, repo_name: str) -> OpenGitHubEntityNumbers:
+        """Enumerate every currently open Issue and PR without cached evidence.
+
+        Startup recovery deliberately reads the two authoritative REST
+        collections directly.  A malformed or incomplete page fails the whole
+        operation; callers must not advertise reconciliation as complete from
+        a partial result.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        def enumerate_numbers(entity_type: str) -> List[int]:
+            url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/{entity_type}?state=open&per_page=100"
+            numbers: List[int] = []
+            visited_urls: set[str] = set()
+            while url:
+                if url in visited_urls or len(visited_urls) >= 1000:
+                    raise RuntimeError(f"GitHub open-{entity_type} pagination did not terminate safely")
+                visited_urls.add(url)
+                response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise RuntimeError(f"GitHub open-{entity_type} response was not a list")
+                for item in page:
+                    if not isinstance(item, dict) or not isinstance(item.get("number"), int):
+                        raise RuntimeError(f"GitHub open-{entity_type} response contained an invalid entity")
+                    # GitHub's Issues collection also contains pull requests.
+                    if entity_type == "issues" and "pull_request" in item:
+                        continue
+                    numbers.append(item["number"])
+                next_link = response.links.get("next", {})
+                next_url = next_link.get("url") if isinstance(next_link, dict) else None
+                if next_url is not None and not isinstance(next_url, str):
+                    raise RuntimeError(f"GitHub open-{entity_type} pagination link was invalid")
+                url = next_url
+            return numbers
+
+        return OpenGitHubEntityNumbers(
+            issues=enumerate_numbers("issues"),
+            pull_requests=enumerate_numbers("pulls"),
+        )
 
     @retry_with_backoff()
     def get_open_issues(self, repo_name: str, limit: Optional[int] = None) -> List[Any]:

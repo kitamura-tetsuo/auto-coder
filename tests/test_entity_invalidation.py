@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
-from src.auto_coder.util.gh_cache import GitHubClient
+from src.auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntityNumbers
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
 
 
@@ -291,6 +291,122 @@ def test_start_automation_recovers_before_steady_state(tmp_path: Path, monkeypat
 
     asyncio.run(startup())
     assert processed == [100]
+
+
+def test_startup_reconciliation_recovers_missed_issue_through_worker_path(tmp_path: Path, monkeypatch):
+    """AS-001/AS-005: production startup turns live GitHub state into normal work."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = MagicMock()
+    github.get_open_entity_numbers_strict.return_value = OpenGitHubEntityNumbers(issues=[1725])
+    engine = AutomationEngine(github, AutomationConfig())
+    processed = []
+    monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=1725, success=True),
+    )
+    monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
+    monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
+    monkeypatch.setattr("src.auto_coder.automation_engine.install_asyncio_diagnostics", lambda loop: None)
+    monkeypatch.setattr("src.auto_coder.automation_engine.get_health_monitor", MagicMock())
+
+    async def startup():
+        task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        for _ in range(200):
+            if processed == [1725] and engine.invalidations.pending_count("owner/repo") == 0:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(startup())
+    assert processed == [1725]
+    assert engine.get_status()["startup_reconciliation"] == {"complete": True, "error": None}
+    github.get_open_entity_numbers_strict.assert_called_once_with("owner/repo")
+
+
+def test_startup_reconciliation_failure_never_starts_steady_state(tmp_path: Path, monkeypatch):
+    """AS-004/REQ-006: a failed one-shot scan is visible and fail-closed."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = MagicMock()
+    github.get_open_entity_numbers_strict.side_effect = RuntimeError("second page unavailable")
+    engine = AutomationEngine(github, AutomationConfig())
+    producer = MagicMock()
+    monkeypatch.setattr(engine, "_producer_loop", producer)
+    monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
+
+    with pytest.raises(RuntimeError, match="second page unavailable"):
+        asyncio.run(engine.start_automation("owner/repo", concurrency=1))
+
+    producer.assert_not_called()
+    assert engine.get_status()["startup_reconciliation"] == {
+        "complete": False,
+        "error": "RuntimeError: second page unavailable",
+    }
+    github.get_open_entity_numbers_strict.assert_called_once_with("owner/repo")
+
+
+def test_webhook_during_startup_reconciliation_is_not_cleared(tmp_path: Path, monkeypatch):
+    """AS-003: a newer invalidation survives an older recovery observation."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    engine.github.get_open_entity_numbers_strict.return_value = OpenGitHubEntityNumbers(pull_requests=[100])
+    observed = []
+    processing_started = asyncio.Event()
+    allow_completion = asyncio.Event()
+    event_loop = None
+
+    def process(repo, candidate):
+        observed.append(candidate.data["number"])
+        if len(observed) == 1:
+            event_loop.call_soon_threadsafe(processing_started.set)
+            asyncio.run_coroutine_threadsafe(allow_completion.wait(), event_loop).result()
+        return CandidateProcessingResult(type="pr", number=100, success=True)
+
+    monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
+    monkeypatch.setattr(engine, "_process_single_candidate", process)
+
+    async def scenario():
+        nonlocal event_loop
+        event_loop = asyncio.get_running_loop()
+        await engine._reconcile_open_github_entities("owner/repo")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await processing_started.wait()
+        await process_github_payload("pull_request", {"action": "synchronize", "pull_request": {"number": 100}}, engine, "owner/repo", "newer")
+        allow_completion.set()
+        for _ in range(200):
+            if len(observed) == 2 and engine.invalidations.pending_count("owner/repo") == 0:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert observed == [100, 100]
+
+
+def test_strict_startup_enumeration_reads_all_pages_and_current_open_state(monkeypatch):
+    """AS-002: REST collections, not missed event history, define recovery input."""
+    responses = []
+    for payload, next_url in (
+        ([{"number": 1}, {"number": 90, "pull_request": {}}], "https://api.github.com/issues-page-2"),
+        ([{"number": 2}], None),
+        ([{"number": 100}], None),
+    ):
+        response = MagicMock()
+        response.json.return_value = payload
+        response.links = {"next": {"url": next_url}} if next_url else {}
+        responses.append(response)
+    get = MagicMock(side_effect=responses)
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
+
+    entities = GitHubClient("token").get_open_entity_numbers_strict("owner/repo")
+
+    assert entities == OpenGitHubEntityNumbers(issues=[1, 2], pull_requests=[100])
+    assert get.call_count == 3
+    assert "issues-page-2" in get.call_args_list[1].args[0]
+    assert "/pulls?state=open" in get.call_args_list[2].args[0]
 
 
 def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatch):
