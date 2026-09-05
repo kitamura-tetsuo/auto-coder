@@ -630,15 +630,25 @@ def _stop_jules_session_for_issue(
     timeout_hours: int,
     github_client: GitHubClient,
 ) -> bool:
-    """Tell a stale Jules session to stop and record it as stopped.
+    """Request a stop and confirm authoritative remote termination.
 
     Returns:
-        True when the stop message was accepted by the Jules API.
+        True only when the Jules API subsequently reports a terminal state.
     """
     try:
         jules_client.send_message(session_id, "stop")
     except Exception as e:
         logger.error(f"Failed to send stop message to Jules session {session_id} for issue #{issue_number}: {e}")
+        return False
+
+    try:
+        stopped_session = jules_client.get_session(session_id)
+    except Exception as e:
+        logger.warning(f"Stop was requested for Jules session {session_id}, but terminal state could not be confirmed: {e}")
+        return False
+    state = stopped_session.get("state") if isinstance(stopped_session, dict) else None
+    if state not in {"COMPLETED", "FAILED"}:
+        logger.info(f"Stop requested for Jules session {session_id}; retaining implementation capacity while state is {state or 'unknown'}")
         return False
 
     mark_session_stopped(session_id)

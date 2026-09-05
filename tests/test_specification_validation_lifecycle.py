@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
@@ -455,6 +455,7 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
     github.has_linked_pr.return_value = False
     github.get_issue_comments_strict.return_value = []
     stale_jules = Mock()
+    stale_jules.get_session.side_effect = [{"state": "IN_PROGRESS"}, {"state": "COMPLETED"}]
     stale_jules.list_sessions.return_value = [
         {
             "name": "sessions/real-session-a",
@@ -470,7 +471,15 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
         patch("auto_coder.issue_processor._take_issue_actions") as replacement,
     ):
         engine.handle_stale_jules_issue_sessions("owner/repo")
-    stale_jules.send_message.assert_called_once_with("real-session-a", "stop")
+        assert analyzed == [(BODY + " A", ())]
+        assert owner in slots.active_owners()
+        assert slots.start_execution(ImplementationOwner("issue", 99)) is None
+
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+    assert stale_jules.send_message.call_args_list == [
+        call("real-session-a", "stop"),
+        call("real-session-a", "stop"),
+    ]
     assert analyzed[-1] == (BODY + " B", ())
     assert owner not in slots.active_owners()
     increment.assert_not_called()

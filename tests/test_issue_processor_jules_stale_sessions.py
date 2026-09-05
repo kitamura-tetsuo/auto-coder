@@ -71,6 +71,7 @@ class TestHandleStaleJulesIssueSessions:
             implementation_slots.active_execution_ids.return_value = ()
             implementation_slots.start_execution.return_value = "replacement-execution"
         jules_client = MagicMock()
+        jules_client.get_session.return_value = {"state": "COMPLETED"}
         jules_client.list_sessions.return_value = sessions
 
         cloud_manager = MagicMock()
@@ -360,6 +361,7 @@ class TestHandleStaleJulesIssueSessions:
         """When Jules rejects the stop message the issue stays with Jules."""
         github_client = _github_client()
         jules_client = MagicMock()
+        jules_client.get_session.return_value = {"state": "COMPLETED"}
         jules_client.list_sessions.return_value = [_session("sess-1", age_hours=13)]
         jules_client.send_message.side_effect = RuntimeError("HTTP 500")
 
@@ -515,6 +517,7 @@ def test_daemon_stale_session_stops_old_generation_but_starts_no_replacement_on_
         lambda _manifest, _body: SpecificationAnalysisResult("ERROR", error="provider unavailable"),
     )
     jules = MagicMock()
+    jules.get_session.return_value = {"state": "COMPLETED"}
     jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
     cloud = MagicMock()
     cloud.get_issue_by_session.return_value = 42
@@ -557,6 +560,7 @@ def test_ready_stale_replacement_reenters_normal_capacity_after_validation(confi
 
     engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "validations.json", analyze)
     jules = MagicMock()
+    jules.get_session.return_value = {"state": "COMPLETED"}
     jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
     cloud = MagicMock()
     cloud.get_issue_by_session.return_value = 42
@@ -596,6 +600,7 @@ def test_stale_replacement_rechecks_after_link_lookup_before_ownership(config, t
     engine = AutomationEngine(github, config=config)
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
     jules = MagicMock()
+    jules.get_session.return_value = {"state": "COMPLETED"}
     jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
     cloud = MagicMock()
     cloud.get_issue_by_session.return_value = 42
@@ -624,6 +629,7 @@ def test_stale_replacement_rechecks_after_stop_io_before_ownership(config, tmp_p
     slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
     engine.implementation_slots = slots
     jules = MagicMock()
+    jules.get_session.return_value = {"state": "COMPLETED"}
     jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
 
     def withdraw_during_stop(*_args):
