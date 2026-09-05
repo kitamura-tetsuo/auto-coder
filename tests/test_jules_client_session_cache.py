@@ -149,7 +149,7 @@ class TestProducerLoopInvalidatesCache:
             patch.object(engine, "handle_stale_jules_issue_sessions", side_effect=lambda *_: calls.append("stale")),
             patch.object(engine, "check_and_start_recurrent_jules_tasks_async", side_effect=lambda *_: calls.append("recurrent")),
             patch("src.auto_coder.automation_engine.git_pull"),
-            patch.object(engine, "_get_candidates", side_effect=KeyboardInterrupt("Stop Loop")),
+            patch.object(engine, "_sleep_or_wake", side_effect=KeyboardInterrupt("Stop Loop")),
         ):
             with pytest.raises(KeyboardInterrupt):
                 await engine._producer_loop("owner/repo")

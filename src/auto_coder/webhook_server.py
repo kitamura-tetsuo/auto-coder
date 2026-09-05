@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Union
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
@@ -146,7 +147,23 @@ async def process_github_payload(
                 identities.update(("pr", number) for number in numbers)
 
     for entity_type, number in sorted(identities):
-        accepted = await engine.invalidate_entity(repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
+        not_before = None
+        if entity_type == "issue":
+            issue = payload.get("issue")
+            created_at = issue.get("created_at") if isinstance(issue, Mapping) else None
+            if isinstance(created_at, str):
+                try:
+                    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    not_before = (created + timedelta(seconds=60)).timestamp()
+                except ValueError:
+                    logger.warning(f"Invalid created_at for issue #{number}; scheduling immediate authoritative reevaluation")
+        invalidation_args = (repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
+        if not_before is None:
+            accepted = await engine.invalidate_entity(*invalidation_args)
+        else:
+            accepted = await engine.invalidate_entity(*invalidation_args, not_before=not_before)
         logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 

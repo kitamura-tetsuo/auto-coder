@@ -1343,3 +1343,5 @@ successful defer.
       - "GitHub issue, pull request, review, comment, review-thread, workflow, check, and commit-status events use an explicit material-action mapping; unsupported actions do not schedule work."
       - "Workflow and check completion payloads without embedded pull request numbers resolve associated pull requests from the event head commit through GitHub's REST API."
       - "Delivery UUID, event type, and action are retained with each affected entity for duplicate-delivery diagnostics, while signature verification and configured-repository scoping occur before invalidation."
+      - "Steady-state GitHub work discovery is event-driven: the maintenance scheduler never enumerates candidate Issues or pull requests, while invalidations wake a dedicated consumer and each worker fetches authoritative entity state."
+      - "Automatic processing of a newly created Issue is scheduled no earlier than 60 seconds after its GitHub creation time. Mutations coalesce without extending that deadline, and the post-deadline decision uses a fresh authoritative fetch; explicit operator processing remains immediate."
