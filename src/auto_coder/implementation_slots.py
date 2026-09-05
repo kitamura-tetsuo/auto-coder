@@ -120,7 +120,7 @@ class ImplementationSlotRepository:
             self._raise_permission_error(self.storage_path.parent, exc)
         with self._thread_lock:
             try:
-                lock_fd = self._open_lock_file()
+                lock_fd = self._open_lock_file(self.lock_path)
             except OSError as exc:
                 self._raise_permission_error(self.lock_path, exc)
             with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock_file:
@@ -134,19 +134,19 @@ class ImplementationSlotRepository:
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-    def _open_lock_file(self) -> int:
+    def _open_lock_file(self, lock_path: Path) -> int:
         """Open the lock, atomically publishing fully prepared metadata if new."""
         try:
-            return os.open(self.lock_path, os.O_RDWR)
+            return os.open(lock_path, os.O_RDWR)
         except FileNotFoundError:
             pass
 
-        bootstrap = self.lock_path.with_name(f".{self.lock_path.name}.{uuid.uuid4().hex}.tmp")
+        bootstrap = lock_path.with_name(f".{lock_path.name}.{uuid.uuid4().hex}.tmp")
         bootstrap_fd = os.open(bootstrap, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             self._establish_shared_permissions(bootstrap_fd, bootstrap)
             try:
-                os.link(bootstrap, self.lock_path)
+                os.link(bootstrap, lock_path)
             except FileExistsError:
                 pass
         finally:
@@ -155,7 +155,7 @@ class ImplementationSlotRepository:
                 os.unlink(bootstrap)
             except FileNotFoundError:
                 pass
-        return os.open(self.lock_path, os.O_RDWR)
+        return os.open(lock_path, os.O_RDWR)
 
     def _read(self) -> Dict[str, Dict[str, object]]:
         try:
@@ -166,7 +166,6 @@ class ImplementationSlotRepository:
             self._raise_permission_error(self.storage_path, exc)
         try:
             with io.open(self.storage_path, "r", encoding="utf-8") as state_file:
-                self._establish_shared_permissions(state_file.fileno(), self.storage_path)
                 value = json.load(state_file)
             if not isinstance(value, dict):
                 raise ValueError("slot state root must be an object")
@@ -689,10 +688,16 @@ class ImplementationSlotRepository:
                 return
 
             mutation_lock_path = self.storage_path.parent / f"implementation-{owner.kind}-{owner.number}.lock"
-            mutation_lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with io.open(mutation_lock_path, "a+", encoding="utf-8") as lock_file:
-                os.chmod(mutation_lock_path, 0o600)
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                mutation_lock_fd = self._open_lock_file(mutation_lock_path)
+            except OSError as exc:
+                self._raise_permission_error(mutation_lock_path, exc)
+            with os.fdopen(mutation_lock_fd, "a+", encoding="utf-8") as lock_file:
+                self._establish_shared_permissions(lock_file.fileno(), mutation_lock_path)
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                except OSError as exc:
+                    self._raise_permission_error(mutation_lock_path, exc)
                 try:
                     yield
                 finally:
