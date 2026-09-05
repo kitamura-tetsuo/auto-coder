@@ -10,6 +10,7 @@ it raises AutoCoderUsageLimitError to defer LLM invocations and route to next ba
 
 import json
 import os
+import platform
 import shlex
 import subprocess
 import threading
@@ -77,6 +78,14 @@ class ClaudeUsageQuota:
     cached_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class ClaudeCredentialResolution:
+    """Outcome of resolving a credential for the Claude usage endpoint."""
+
+    token: Optional[str] = None
+    status: str = "missing_credentials"
+
+
 _cache_lock = threading.Lock()
 _cached_quota: Optional[ClaudeUsageQuota] = None
 
@@ -127,6 +136,48 @@ def _read_credentials_file() -> Optional[dict]:
         return None
 
 
+def _read_macos_keychain_credentials(timeout: float = 10.0) -> Optional[dict]:
+    """Read Claude Code's OAuth credential blob from the macOS Keychain."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(f"Failed to read Claude credentials from macOS Keychain: {e}")
+        return None
+    if result.returncode != 0:
+        logger.debug(f"macOS Keychain credential lookup returned code {result.returncode}: {result.stderr}")
+        return None
+    try:
+        credentials = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        logger.debug("Claude macOS Keychain credential is not valid JSON")
+        return None
+    return credentials if isinstance(credentials, dict) else None
+
+
+def _unexpired_access_token(credentials: Optional[dict]) -> Optional[str]:
+    """Return a non-expired OAuth access token from a credential container."""
+    if not credentials:
+        return None
+    oauth_info = credentials.get("claudeAiOauth")
+    if not isinstance(oauth_info, dict):
+        return None
+    token = oauth_info.get("accessToken")
+    expires_at = oauth_info.get("expiresAt")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    if isinstance(expires_at, (int, float)) and time.time() * 1000 >= expires_at:
+        return None
+    return token.strip()
+
+
 def _update_credentials_file(
     new_access_token: str,
     new_refresh_token: Optional[str] = None,
@@ -157,27 +208,24 @@ def refresh_claude_token_via_cli(timeout: float = 30.0) -> Optional[str]:
 
     Executes `claude -p "ping" --tools "" --no-session-persistence` (with fallback to `claude -p "ping"`)
     so that Claude CLI performs its internal authentication refresh with Anthropic, updating
-    .credentials.json.
+    its platform credential store.
 
     Returns:
-        The refreshed accessToken from .credentials.json if valid and unexpired, else None.
+        The refreshed accessToken from Claude Code's platform credential store if valid and unexpired, else None.
     """
     cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
     base_cmd = shlex.split(cmd_override) if cmd_override else ["claude"]
     primary_cmd = base_cmd + ["-p", "ping", "--tools", "", "--no-session-persistence"]
 
     def _check_refreshed_creds() -> Optional[str]:
-        creds = _read_credentials_file()
-        if creds:
-            oauth_info = creds.get("claudeAiOauth")
-            if isinstance(oauth_info, dict):
-                token = oauth_info.get("accessToken")
-                expires_at = oauth_info.get("expiresAt")
-                now_ms = time.time() * 1000
-                if token and isinstance(token, str) and token.strip():
-                    if not expires_at or (isinstance(expires_at, (int, float)) and now_ms < (expires_at - 60000)):
-                        logger.info("Successfully refreshed Claude OAuth token via Claude CLI")
-                        return token.strip()
+        for source, creds in (
+            ("credentials file", _read_credentials_file()),
+            ("macOS Keychain", _read_macos_keychain_credentials()),
+        ):
+            token = _unexpired_access_token(creds)
+            if token:
+                logger.info(f"Successfully acquired Claude OAuth token from {source} after Claude CLI refresh")
+                return token
         return None
 
     try:
@@ -327,6 +375,55 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
             if token and isinstance(token, str):
                 return token.strip()
     return None
+
+
+def _claude_cli_is_authenticated(timeout: float = 10.0) -> bool:
+    """Ask Claude Code whether its own current session is authenticated."""
+    cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
+    base_cmd = shlex.split(cmd_override) if cmd_override else ["claude"]
+    try:
+        result = subprocess.run(
+            base_cmd + ["auth", "status", "--json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(f"Failed to query Claude CLI authentication status: {e}")
+        return False
+
+    if result.returncode != 0:
+        logger.debug(f"Claude CLI authentication status returned code {result.returncode}: {result.stderr or result.stdout}")
+        return False
+    try:
+        status = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        logger.debug("Claude CLI authentication status did not return valid JSON")
+        return False
+    return isinstance(status, dict) and status.get("loggedIn") is True
+
+
+def acquire_claude_usage_credential(explicit_token: Optional[str] = None) -> ClaudeCredentialResolution:
+    """Resolve a usage credential, including Claude Code-managed login state.
+
+    Explicit, environment, and readable stored credentials remain the fast path.
+    If those paths have no token, Claude Code is queried at its public CLI boundary.
+    An authenticated CLI session is then asked to perform a lightweight request so
+    that it can refresh or materialize a credential Auto-Coder can use. A successful
+    process alone is never considered a usable credential: the token must resolve.
+    """
+    token = resolve_claude_oauth_token(explicit_token)
+    if token:
+        return ClaudeCredentialResolution(token=token, status="resolved")
+
+    if not _claude_cli_is_authenticated():
+        return ClaudeCredentialResolution(status="missing_credentials")
+
+    token = refresh_claude_token_via_cli()
+    if token:
+        return ClaudeCredentialResolution(token=token, status="resolved")
+    return ClaudeCredentialResolution(status="credential_acquisition_failed")
 
 
 def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) -> Optional[dict]:

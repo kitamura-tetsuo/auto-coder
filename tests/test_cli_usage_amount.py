@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from auto_coder.claude_usage_checker import (
+    ClaudeCredentialResolution,
     ClaudeExtraUsage,
     ClaudeUsageQuota,
     ClaudeUsageWindow,
@@ -63,7 +64,7 @@ class TestUsageAmountCLI:
         """Test default execution showing both Claude and Codex usage."""
         runner = CliRunner()
         with (
-            patch("auto_coder.cli_commands_usage.resolve_claude_oauth_token", return_value="valid-token"),
+            patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=_mock_claude_quota()),
             patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
             patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),
@@ -83,7 +84,7 @@ class TestUsageAmountCLI:
         """Test usage-amount claude only outputs Claude usage."""
         runner = CliRunner()
         with (
-            patch("auto_coder.cli_commands_usage.resolve_claude_oauth_token", return_value="valid-token"),
+            patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=_mock_claude_quota()),
         ):
             result = runner.invoke(main, ["usage-amount", "claude"])
@@ -95,7 +96,7 @@ class TestUsageAmountCLI:
         """Test usage-amount --backend claude only outputs Claude usage."""
         runner = CliRunner()
         with (
-            patch("auto_coder.cli_commands_usage.resolve_claude_oauth_token", return_value="valid-token"),
+            patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=_mock_claude_quota()),
         ):
             result = runner.invoke(main, ["usage-amount", "--backend", "claude"])
@@ -131,7 +132,7 @@ class TestUsageAmountCLI:
         """Test usage-amount --json formats valid JSON."""
         runner = CliRunner()
         with (
-            patch("auto_coder.cli_commands_usage.resolve_claude_oauth_token", return_value="valid-token"),
+            patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=_mock_claude_quota()),
             patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
             patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),
@@ -186,10 +187,57 @@ class TestUsageAmountCLI:
     def test_usage_amount_claude_missing_credentials(self):
         """Test usage-amount when Claude OAuth token is missing."""
         runner = CliRunner()
-        with (patch("auto_coder.cli_commands_usage.resolve_claude_oauth_token", return_value=None),):
+        status_process = MagicMock(returncode=1, stdout=json.dumps({"loggedIn": False}), stderr="Not logged in")
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=None),
+            patch("auto_coder.claude_usage_checker.subprocess.run", return_value=status_process),
+        ):
             result = runner.invoke(main, ["usage-amount", "claude"])
-            assert result.exit_code == 0
-            assert "No Claude OAuth token found" in result.output
+
+        assert result.exit_code == 0
+        assert "No Claude OAuth credentials found" in result.output
+        assert "claude auth login" in result.output
+
+    def test_usage_amount_authenticated_cli_session_reaches_usage_api(self, tmp_path):
+        """Exercise a macOS Keychain login through acquisition and the usage request."""
+
+        def run_claude(command, **kwargs):
+            process = MagicMock(returncode=0, stderr="")
+            if command[-3:] == ["auth", "status", "--json"]:
+                process.stdout = json.dumps({"loggedIn": True})
+            elif command[0] == "security":
+                process.stdout = json.dumps({"claudeAiOauth": {"accessToken": "session-token", "expiresAt": 9_999_999_999_999}})
+            else:
+                process.stdout = "pong"
+            return process
+
+        usage_response = MagicMock()
+        usage_response.__enter__.return_value.read.return_value = json.dumps({"five_hour": {"utilization": 12.0}}).encode()
+        runner = CliRunner()
+        with (
+            patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(tmp_path)}, clear=True),
+            patch("auto_coder.claude_usage_checker.platform.system", return_value="Darwin"),
+            patch("auto_coder.claude_usage_checker.subprocess.run", side_effect=run_claude),
+            patch("auto_coder.claude_usage_checker.urllib.request.urlopen", return_value=usage_response) as request,
+        ):
+            result = runner.invoke(main, ["usage-amount", "claude", "--no-cache"])
+
+        assert result.exit_code == 0
+        assert "Quota Status: OK" in result.output
+        assert "missing" not in result.output.lower()
+        assert request.call_count == 1
+        assert request.call_args.args[0].headers["Authorization"] == "Bearer session-token"
+
+    def test_usage_amount_reports_authenticated_acquisition_failure(self):
+        runner = CliRunner()
+        credential = ClaudeCredentialResolution(status="credential_acquisition_failed")
+        with patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=credential):
+            result = runner.invoke(main, ["usage-amount", "claude"])
+
+        assert result.exit_code == 0
+        assert "Claude Code is authenticated" in result.output
+        assert "claude auth login" not in result.output
 
     def test_usage_amount_codex_missing_credentials(self):
         """Test usage-amount when Codex OAuth credentials are missing."""
@@ -204,7 +252,7 @@ class TestUsageAmountCLI:
         runner = CliRunner()
         insufficient_quota = _mock_claude_quota(insufficient=True, reason="5-hour limit reached")
         with (
-            patch("auto_coder.cli_commands_usage.resolve_claude_oauth_token", return_value="valid-token"),
+            patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=insufficient_quota),
             patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
             patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(can_start=False)),
