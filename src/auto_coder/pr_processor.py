@@ -2147,6 +2147,59 @@ def _get_published_adversarial_validation_status(
     return None, None
 
 
+# The two verdicts that carry material specification violations requiring
+# corrective changes (event=REQUEST_CHANGES in github_app_reviewer.publish).
+# ERROR/BLOCKED/INCONCLUSIVE are validator-side non-results that must be
+# retried rather than waited on (REQ-003), so they are deliberately excluded.
+ADVERSARIAL_REVIEW_BLOCKING_STATUSES = frozenset({"NEEDS_FIX", "NEEDS_TESTS"})
+
+
+def is_current_head_adversarial_review_blocked(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+) -> bool:
+    """Return whether Auto-Coder's own adversarial review blocks the current HEAD.
+
+    True only when the dedicated reviewer App's authoritative review for the
+    exact current ``head.sha`` recorded ``NEEDS_FIX`` or ``NEEDS_TESTS`` --
+    the two verdicts that carry material specification violations requiring
+    corrective changes and for which Auto-Coder has no further normal action
+    to perform until the PR author/backend supplies a new commit.
+
+    The status is re-read fresh for the current head SHA on every call, from
+    the same authoritative same-SHA lookup the merge gate itself uses, so a
+    verdict recorded against an older SHA can never keep a newer head
+    classified as blocked (REQ-002). A validator error/timeout/indeterminate
+    result (ERROR, BLOCKED, INCONCLUSIVE), a missing linked-Issue oracle, or
+    any lookup failure all resolve to "not blocked" rather than being
+    conflated with an actionable verdict (REQ-003). This intentionally never
+    consults generic GitHub review state or human review threads (REQ-004):
+    only the dedicated reviewer App's own marker-scoped verdict counts.
+    """
+    if not config.ENABLE_ADVERSARIAL_VALIDATION or _is_dependabot_pr(pr_data):
+        return False
+    pr_number = pr_data.get("number")
+    if not isinstance(pr_number, int):
+        return False
+    head_sha = pr_data.get("head", {}).get("sha", "")
+    if not head_sha:
+        return False
+    eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
+    if eligibility.lookup_error or not eligibility.is_applicable:
+        return False
+    status, lookup_error = _get_published_adversarial_validation_status(
+        github_client,
+        repo_name,
+        pr_number,
+        head_sha,
+    )
+    if lookup_error or status is None:
+        return False
+    return status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES
+
+
 def _get_published_adversarial_validation_comment(
     github_client: Any,
     repo_name: str,

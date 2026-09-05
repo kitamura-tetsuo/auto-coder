@@ -533,7 +533,9 @@ class AutomationEngine:
         - 4: Urgent + unmergeable PR (highest priority after breaking-change)
         - 3: Urgent + mergeable PR or urgent issue
         - 2: Unmergeable PR needing conflict resolution
-        - 1: PR requiring fixes (GH Actions failed but mergeable)
+        - 1: PR requiring fixes (GH Actions failed but mergeable), or mergeable
+             with passing checks but blocked awaiting corrective changes on the
+             current HEAD per Auto-Coder's own adversarial review (issue #1731)
         - 0: Regular issues
 
         Sort order:
@@ -547,6 +549,7 @@ class AutomationEngine:
             _is_dependabot_pr,
             _is_jules_pr,
             _reject_unsafe_codex_cloud_pr,
+            is_current_head_adversarial_review_blocked,
         )
         from .util.github_action import (
             _check_github_actions_status,
@@ -845,6 +848,13 @@ class AutomationEngine:
                     pr_priority = 2  # Unmergeable PRs (elevated from priority 1)
                 elif not checks.success:
                     pr_priority = 1  # Fix-required but mergeable PRs
+                elif is_current_head_adversarial_review_blocked(self.github, repo_name, pr_data, self.config):
+                    # Auto-Coder's own adversarial review already found material
+                    # violations at this exact HEAD and has no further normal
+                    # action until the PR author/backend supplies a new commit
+                    # (issue #1731). Deprioritize like any other fix-required PR
+                    # instead of competing at the auto-merge-candidate priority.
+                    pr_priority = 1
                 else:
                     pr_priority = 2  # Mergeable with successful checks (auto-merge candidate)
 
