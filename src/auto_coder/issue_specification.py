@@ -15,6 +15,7 @@ _SCENARIO = re.compile(r"^(AC-\d{3})(?:\s*(?:—|-)\s*(.*))?$")
 _COVERS = re.compile(r"^Covers:\s*(.*)$", re.IGNORECASE)
 _REQ_REFERENCE = re.compile(r"\bREQ-\d{3}\b")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+] |\d+[.)] )")
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,18 @@ def format_requirement_contract_error(issue_number: int, diagnostic: Specificati
     return f"Issue #{issue_number} Requirements section contains {detail}"
 
 
+def _indentation_columns(line: str) -> int:
+    columns = 0
+    for character in line:
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
 def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
     """Remove Markdown regions that GitHub does not render as Issue prose."""
     visible: list[tuple[int, str]] = []
@@ -82,6 +95,7 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
     fence_character = ""
     fence_length = 0
     paragraph_open = False
+    list_item_open = False
     for line_number, raw_line in enumerate(body.splitlines(), 1):
         if in_comment:
             closing = raw_line.find("-->")
@@ -118,15 +132,8 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
         # CommonMark expands tabs to four-column stops. Any non-blank line
         # reaching column four before its first visible character is an
         # indented code line, not a heading, fence, or requirement entry.
-        indentation = 0
-        for character in raw_line:
-            if character == " ":
-                indentation += 1
-            elif character == "\t":
-                indentation += 4 - (indentation % 4)
-            else:
-                break
-        if raw_line.strip() and indentation >= 4 and not paragraph_open:
+        indentation = _indentation_columns(raw_line)
+        if raw_line.strip() and indentation >= 4 and not paragraph_open and not list_item_open:
             continue
 
         line = raw_line
@@ -144,8 +151,12 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
         stripped = rendered.strip()
         if not stripped or _MARKDOWN_HEADING.match(rendered):
             paragraph_open = False
+            if stripped:
+                list_item_open = False
         else:
             paragraph_open = True
+            if indentation < 4:
+                list_item_open = bool(_LIST_ITEM.match(rendered))
     return visible
 
 
@@ -186,6 +197,9 @@ def parse_issue_specification(title: str, body: str) -> IssueSpecificationManife
         for line_number, raw_line in requirement_lines:
             line = raw_line.strip()
             if not line or line.startswith("<!--") or line.endswith("-->"):
+                continue
+            if _indentation_columns(raw_line) >= 4:
+                manifest.diagnostics.append(SpecificationDiagnostic("malformed-requirement", f"Malformed requirement continuation: {line}", line_number))
                 continue
             content = _ENTRY_PREFIX.sub("", line, count=1)
             match = _REQUIREMENT.fullmatch(content)

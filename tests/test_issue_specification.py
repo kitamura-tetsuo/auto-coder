@@ -215,3 +215,23 @@ def test_indented_html_comment_closer_exposes_following_contract_to_all_consumer
     assert [(item.requirement_id, item.text) for item in shared.requirements] == expected
     assert intake.entries == expected
     assert [(item.requirement_id, item.text) for item in adversarial.requirements] == expected
+
+
+def test_list_continuations_never_truncate_or_invent_requirements() -> None:
+    bodies = (
+        "## Requirements\n- REQ-001: First line.\n\n    Continued normative text.\n",
+        "## Requirements\n- REQ-001: First line.\n    REQ-002: Still text in the same list item.\n",
+        "## Requirements\n- REQ-001: First line. <!--\n+hidden comment\n+-->\n    Continued after comment.\n",
+    )
+
+    for body in bodies:
+        shared = parse_issue_specification("Continuation", body)
+        intake = parse_requirement_contract(1726, body)
+        adversarial = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Continuation", body=body),)))
+
+        assert [(item.requirement_id, item.text) for item in shared.requirements] == [("REQ-001", "First line.")]
+        assert [item.code for item in shared.diagnostics] == ["malformed-requirement"]
+        assert intake.entries == []
+        assert "malformed entries" in (intake.error or "")
+        assert adversarial.requirements == []
+        assert "malformed entries" in (adversarial.error or "")
