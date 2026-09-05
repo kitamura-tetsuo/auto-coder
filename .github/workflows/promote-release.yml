@@ -26,21 +26,26 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          DIGEST=$(docker buildx imagetools inspect "$IMAGE:beta" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          set -Eeuo pipefail
+          DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:beta")
           SOURCE_SHA=$(docker buildx imagetools inspect "$IMAGE:beta" --format '{{json .Image}}' | jq -er '.config.Labels["org.opencontainers.image.revision"]')
           python scripts/deployment_artifacts.py require-release-sha "$SOURCE_SHA"
 
-          TESTED_DIGEST=$(docker buildx imagetools inspect "$IMAGE:tested-beta-$SOURCE_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          TESTED_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:tested-beta-$SOURCE_SHA")
           python scripts/deployment_artifacts.py require-tested-beta "$DIGEST" "$TESTED_DIGEST"
 
-          if HISTORY_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release-$SOURCE_SHA" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"'); then
+          if HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA"); then
             python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
           else
+            INSPECT_STATUS=$?
+            if [ "$INSPECT_STATUS" -ne 3 ]; then
+              exit "$INSPECT_STATUS"
+            fi
             docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release-$SOURCE_SHA" "$IMAGE@$DIGEST"
-            HISTORY_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release-$SOURCE_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA")
             python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
           fi
 
           docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
-          RELEASE_DIGEST=$(docker buildx imagetools inspect "$IMAGE:release" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          RELEASE_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release")
           python scripts/deployment_artifacts.py require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"
