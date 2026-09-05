@@ -247,6 +247,29 @@ class TestAdversarialReviewBlockedPriorityIntegration:
         assert candidates[0].priority == 3
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
+    def test_breaking_change_label_keeps_highest_priority_over_adversarial_block(self, mock_check_actions, mock_github_client, mock_gemini_client, test_repo_name):
+        """REQ-005: a breaking-change, mergeable PR retains priority 7, not 1."""
+        engine = AutomationEngine(mock_github_client)
+        head_sha = "8" * 40
+
+        pr_data = _pr_data(1, head_sha, labels=["breaking-change"])
+        mock_github_client.get_open_prs_json.return_value = [pr_data]
+        mock_github_client.get_pr_details.return_value = pr_data
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_issue.return_value = {"number": 42, "title": "Spec", "body": ""}
+        mock_github_client.get_pr_reviews_strict.return_value = [_adversarial_review(head_sha, "NEEDS_FIX")]
+
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        assert len(candidates) == 1
+        assert candidates[0].priority == 7
+
+    @patch("auto_coder.util.github_action._check_github_actions_status")
     def test_validator_error_at_current_head_keeps_ordinary_priority(self, mock_check_actions, mock_github_client, mock_gemini_client, test_repo_name):
         """AS-004: an indeterminate validator result must remain actionable at priority 2."""
         engine = AutomationEngine(mock_github_client)
