@@ -175,7 +175,6 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as mock_check_mergeability,
         patch("src.auto_coder.conflict_resolver._extract_session_id_from_pr_body") as mock_extract_session_id,
         patch("src.auto_coder.cloud_manager.CloudManager") as mock_cloud_manager_class,
-        patch("src.auto_coder.automation_engine.LabelManager") as mock_label_manager,
         patch("src.auto_coder.attempt_manager.increment_attempt") as mock_increment_attempt,
         patch("src.auto_coder.issue_processor._process_issue_cloud_backend", return_value=["dispatched"]) as mock_process_issue,
     ):
@@ -213,7 +212,8 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
             "labels": [{"name": "implementation-ready"}, {"name": "@auto-coder"}],
         }
         mock_client.get_all_sub_issues.return_value = []
-        mock_label_manager.return_value.__enter__.return_value = MagicMock()
+        mock_client.disable_labels = False
+        mock_client.try_add_labels.return_value = False
 
         dispatch_order = []
         mock_increment_attempt.side_effect = lambda *_args: dispatch_order.append("increment") or 2
@@ -249,6 +249,8 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         mock_increment_attempt.assert_called_once_with("test/repo", 123)
         mock_process_issue.assert_called_once()
         assert dispatch_order == ["increment", "dispatch"]
+        mock_client.try_add_labels.assert_called_once_with("test/repo", 123, ["@auto-coder"], item_type="issue")
+        mock_client.remove_labels.assert_not_called()
 
 
 def test_perform_base_merge_skips_conflict_resolution_for_dependabot_pr():

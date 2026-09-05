@@ -1344,7 +1344,10 @@ class AutomationEngine:
                 item_number,
                 item_type=item_type,
                 config=config,
-                check_labels=config.CHECK_LABELS and not force_adversarial_validation,
+                # A replacement attempt continues the Issue's existing logical
+                # ownership. Its retained @auto-coder label belongs to this
+                # lifecycle, not another worker, so it must not reject the handoff.
+                check_labels=config.CHECK_LABELS and not force_adversarial_validation and not advance_issue_attempt,
                 known_labels=candidate.data.get("labels") if candidate.data else None,
             ) as should_process:
                 if not should_process:
