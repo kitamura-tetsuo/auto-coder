@@ -34,6 +34,13 @@ removing the label before dispatch makes the Issue ineligible again.
 
 ## Issue requirement-contract intake gate
 
+The shared requirement contract also exposes a provider-independent normative
+Issue manifest. It reports explicit-contract presence and structural validity,
+and exposes exact, ordered `REQ-NNN` text only for a valid contract. Intake and
+adversarial validation consume this same line-oriented manifest boundary;
+missing contracts remain explicit in the manifest and invalid contracts expose
+no trusted partial entries.
+
 Before any implementation slot, label, branch, local backend, or cloud task is
 started for an Issue, Auto-Coder validates an explicit Markdown
 `## Requirements` section with the same deterministic parser used by adversarial

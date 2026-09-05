@@ -815,6 +815,16 @@ diff --git a/src/service_test.py b/src/service_test.py
             ("REQ-003", "Keep gaps separate from findings."),
         ]
 
+    @pytest.mark.parametrize("extra_line", ["```", "    code example", "continuation text", "- [ ] task prose"])
+    def test_explicit_contract_keeps_line_oriented_semantics_at_adversarial_boundary(self, extra_line):
+        issue = VerifiedIssueOracle(number=1726, title="Line grammar", body=f"## Requirements\nREQ-001: Valid.\n{extra_line}")
+
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=(issue,)))
+
+        assert manifest.mode == "explicit-contract"
+        assert manifest.requirements == []
+        assert "malformed entries" in (manifest.error or "")
+
     def test_duplicate_explicit_ids_across_issues_are_issue_qualified(self):
         issues = (
             VerifiedIssueOracle(number=101, body="## Requirements\nREQ-001: First contract."),
@@ -1791,6 +1801,43 @@ class TestBuildAdversarialValidationContext:
 
 class TestRunAdversarialValidation:
     """Test executing adversarial validation."""
+
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_fetched_invalid_contract_blocks_before_llm_at_context_boundary(self, mock_run_prompt):
+        """The fetched oracle's shared manifest error must survive context construction."""
+        issue_body = "## Requirements\nREQ-001: Valid.\n```"
+        github = MagicMock()
+        github.get_pr_diff.return_value = "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py\n+change"
+        github.get_pr_changed_file_count.return_value = 1
+        github.get_issue.return_value = {
+            "number": 1726,
+            "title": "Invalid explicit contract",
+            "body": issue_body,
+        }
+        github.get_parent_issue_details.return_value = None
+        manager = MagicMock()
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {
+                "number": 1747,
+                "title": "Implement manifest",
+                "body": "Closes #1726",
+                "head": {"sha": "a" * 40},
+            },
+            AutomationConfig(),
+            github_client=github,
+            backend_manager=manager,
+        )
+
+        expected_error = "Issue #1726 Requirements section contains malformed entries: ```"
+        assert result.result == "BLOCKED"
+        assert result.diagnostic_category == "invalid_requirement_contract"
+        assert result.summary == expected_error
+        assert result.diagnostic_reason == expected_error
+        github.get_issue.assert_called_once_with("owner/repo", 1726)
+        mock_run_prompt.assert_not_called()
+        assert manager.mock_calls == []
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
