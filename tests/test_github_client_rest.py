@@ -5,6 +5,8 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
+from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -218,6 +220,12 @@ class TestGitHubClientREST:
         ]
         github.get_open_issues_json.side_effect = client.get_open_issues_json
         engine = AutomationEngine(github, config=AutomationConfig(env_override=False))
+        engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
+            "owner/repo",
+            "test-validator",
+            tmp_path / "specification-validations.json",
+            lambda _manifest, _body: SpecificationAnalysisResult("READY"),
+        )
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         if labels == ["urgent"]:
             assert slots.start_execution(ImplementationOwner("issue", 99)) is not None

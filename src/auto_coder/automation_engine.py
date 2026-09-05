@@ -38,6 +38,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
+from .specification_validation_lifecycle import SpecificationValidationLifecycle, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -78,6 +79,7 @@ class AutomationEngine:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pr_merged_or_closed: bool = False
         self.implementation_slots: Optional[ImplementationSlotRepository] = None
+        self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -1212,7 +1214,8 @@ class AutomationEngine:
                 return result
 
             current_body = str(current_issue.get("body") or "")
-            contract = build_normative_issue_manifest(item_number, str(current_issue.get("title") or ""), current_body)
+            current_title = str(current_issue.get("title") or "")
+            contract = build_normative_issue_manifest(item_number, current_title, current_body)
             if contract.error:
                 fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{current_body}\0{contract.error}".encode("utf-8")).hexdigest()
                 marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
@@ -1238,6 +1241,52 @@ class AutomationEngine:
                 logger.warning(f"Rejected Issue #{item_number} before implementation dispatch: {contract.error}")
                 result.actions = [f"Rejected - invalid requirement contract: {contract.error}"]
                 result.error = contract.error
+                return result
+
+            # Semantic readiness is a durable authorization for this exact title,
+            # body, repository, Issue and validator policy. It deliberately runs
+            # before implementation ownership/capacity is consulted.
+            validator = self._specification_validators.get(repo_name)
+            if validator is None:
+                validator = SpecificationValidationLifecycle(
+                    repo_name,
+                    configured_provider_identity(),
+                )
+                self._specification_validators[repo_name] = validator
+            decision = validator.decide(contract, current_title, current_body)
+            if decision.verdict == "ERROR":
+                result.error = "Specification validation failed; implementation-ready was preserved for retry"
+                result.actions = ["Deferred - specification validation error"]
+                return result
+            if decision.verdict == "BLOCKED":
+                try:
+                    side_effect_error = validator.apply_blocked(self.github, decision)
+                except Exception as exc:
+                    side_effect_error = str(exc)
+                if side_effect_error:
+                    logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
+                    result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
+                    result.actions = ["Rejected - blocked specification (side effects incomplete)"]
+                    return result
+                result.error = "Specification validation found material defects"
+                result.actions = ["Rejected - blocked specification"]
+                return result
+
+            # This is the final cache-bypassing check immediately before slot and
+            # ownership handling. READY for an edited or withdrawn submission is
+            # not transferable.
+            try:
+                dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            except Exception as exc:
+                result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                return result
+            dispatch_identity = validator.identity(
+                item_number,
+                str(dispatch_snapshot.get("title") or ""),
+                str(dispatch_snapshot.get("body") or ""),
+            )
+            if not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
+                result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
         slots = self._get_implementation_slots(repo_name)

@@ -2324,8 +2324,16 @@ class GitHubClient:
                 try:
                     api.issues.remove_label(owner, repo, item_number, name=label)
                 except Exception as e:
-                    # Ignore 404 (label not present)
-                    logger.debug(f"Failed to remove label {label} (maybe not present?): {e}")
+                    # Absence is the only idempotent success. Authentication,
+                    # transport, and server failures must remain observable to
+                    # fail-closed lifecycle gates.
+                    status = getattr(e, "status_code", None)
+                    if status is None:
+                        status = getattr(getattr(e, "response", None), "status_code", None)
+                    if status == 404:
+                        logger.debug(f"Label {label} was already absent")
+                        continue
+                    raise
 
             logger.info(f"Removed labels {labels} from {item_type} #{item_number}")
 
