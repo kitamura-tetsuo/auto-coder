@@ -4,9 +4,11 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,7 @@ from auto_coder.implementation_slots import (
     ImplementationOwner,
     ImplementationOwnerResolutionError,
     ImplementationSlotRepository,
+    ImplementationSlotUnavailable,
 )
 from auto_coder.llm_backend_config import get_max_concurrent_implementations_from_config
 from auto_coder.util.gh_cache import GitHubClient
@@ -95,6 +98,106 @@ def wait_for_zombie(process, timeout=5):
             return
         time.sleep(0.01)
     pytest.fail(f"process {process.pid} did not enter zombie state")
+
+
+def run_slot_writer_as(uid, gid, storage_path, owner_number):
+    """Run one production repository update under a selected Unix identity."""
+    script = """
+import json
+import sys
+from pathlib import Path
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+
+slots = ImplementationSlotRepository("owner/repo", 10, Path(sys.argv[1]))
+owner = ImplementationOwner("issue", int(sys.argv[2]))
+assert slots.reserve(owner)
+print(json.dumps([item.number for item in slots.active_owners()]))
+"""
+    identity = ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--clear-groups"]
+    if os.geteuid() != 0:
+        identity = ["sudo", "-n", *identity]
+    return subprocess.run(
+        [*identity, sys.executable, "-c", script, str(storage_path), str(owner_number)],
+        cwd=Path(__file__).parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_alternating_unix_identities_retain_shared_permissions_and_state():
+    """REQ-001/REQ-002/REQ-003: atomic writes remain usable across OS identities."""
+    shared_directory = Path(tempfile.mkdtemp(prefix="auto-coder-shared-slots-", dir="/tmp"))
+    storage_path = shared_directory / "implementation_slots.json"
+    inaccessible_path = shared_directory / "inaccessible.json"
+    inaccessible_path.write_text('{"issue:9": {"kind": "issue", "number": 9}}', encoding="utf-8")
+    first_uid, second_uid, shared_gid = 65532, 65533, os.getgid()
+    ownership_command = ["chown", f"{os.getuid()}:{shared_gid}", str(shared_directory)]
+    if os.geteuid() != 0:
+        ownership_command = ["sudo", "-n", *ownership_command]
+    try:
+        subprocess.run(ownership_command, check=True)
+        mode_command = ["chmod", "2770", str(shared_directory)]
+        if os.geteuid() != 0:
+            mode_command = ["sudo", "-n", *mode_command]
+        subprocess.run(mode_command, check=True)
+
+        assert json.loads(run_slot_writer_as(first_uid, shared_gid, storage_path, 101).stdout) == [101]
+        assert json.loads(run_slot_writer_as(second_uid, shared_gid, storage_path, 202).stdout) == [101, 202]
+        assert json.loads(run_slot_writer_as(first_uid, shared_gid, storage_path, 303).stdout) == [101, 202, 303]
+        assert json.loads(run_slot_writer_as(second_uid, shared_gid, storage_path, 404).stdout) == [101, 202, 303, 404]
+
+        state = json.loads(storage_path.read_text(encoding="utf-8"))
+        assert set(state) == {"issue:101", "issue:202", "issue:303", "issue:404"}
+        for path in (storage_path, storage_path.with_suffix(".lock")):
+            metadata = path.stat()
+            assert metadata.st_gid == shared_gid
+            assert metadata.st_mode & 0o777 == 0o660
+
+        restrict_command = ["chown", f"{first_uid}:{shared_gid}", str(inaccessible_path)]
+        if os.geteuid() != 0:
+            restrict_command = ["sudo", "-n", *restrict_command]
+        subprocess.run(restrict_command, check=True)
+        restrict_command = ["chmod", "600", str(inaccessible_path)]
+        if os.geteuid() != 0:
+            restrict_command = ["sudo", "-n", *restrict_command]
+        subprocess.run(restrict_command, check=True)
+        with pytest.raises(subprocess.CalledProcessError) as failure:
+            run_slot_writer_as(second_uid, shared_gid, inaccessible_path, 10)
+        assert "Cannot safely establish or use implementation slot shared-state permissions" in failure.value.stderr
+        assert str(inaccessible_path) in failure.value.stderr
+        read_command = ["cat", str(inaccessible_path)]
+        if os.geteuid() != 0:
+            read_command = ["sudo", "-n", *read_command]
+        preserved_state = subprocess.run(read_command, check=True, capture_output=True, text=True).stdout
+        assert json.loads(preserved_state) == {"issue:9": {"kind": "issue", "number": 9}}
+    finally:
+        cleanup_command = ["rm", "-rf", str(shared_directory)]
+        if os.geteuid() != 0:
+            cleanup_command = ["sudo", "-n", *cleanup_command]
+        subprocess.run(cleanup_command, check=True)
+
+
+def test_readable_legacy_state_is_migrated_without_semantic_reset(tmp_path):
+    owner = ImplementationOwner("issue", 1749)
+    storage_path = tmp_path / "slots.json"
+    storage_path.write_text(json.dumps({owner.key: {"kind": owner.kind, "number": owner.number}}), encoding="utf-8")
+    os.chmod(storage_path, 0o600)
+
+    slots = ImplementationSlotRepository("owner/repo", 2, storage_path)
+
+    assert slots.active_owners() == (owner,)
+    assert slots.reserve(ImplementationOwner("issue", 1750)) is True
+    assert storage_path.stat().st_mode & 0o777 == 0o660
+    assert storage_path.with_suffix(".lock").stat().st_mode & 0o777 == 0o660
+
+
+def test_corrupt_state_error_is_distinct_from_permission_failures(tmp_path):
+    slots = repository(tmp_path)
+    slots.storage_path.write_text("not-json", encoding="utf-8")
+
+    with pytest.raises(ImplementationSlotUnavailable, match="Cannot safely parse implementation slot state"):
+        slots.active_owners()
 
 
 def test_reservation_is_durable_and_independent_owners_obey_limit(tmp_path):
