@@ -86,6 +86,7 @@ class TestCloudManager:
         bindings = manager.get_bindings_for_task("claude-routine", "shared-session")
 
         assert [binding.backend_name for binding in bindings] == ["claude-a", "claude-b"]
+        assert manager.get_issues_by_session("shared-session") == (1, 2)
         assert manager.get_issue_by_session("shared-session") is None
 
     def test_legacy_session_without_provider_is_not_routable(self, tmp_path):

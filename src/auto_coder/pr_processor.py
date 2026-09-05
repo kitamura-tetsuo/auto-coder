@@ -3968,8 +3968,12 @@ def _resolve_jules_pr_issue_number(
         issue_number = cloud_manager.get_issue_by_session(session_id)
 
         if not issue_number:
-            logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
-            issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+            durable_issues = cloud_manager.get_issues_by_session(session_id)
+            if len(durable_issues) > 1:
+                logger.warning(f"Session ID '{session_id}' has ambiguous durable ownership; refusing comment-search inference")
+            else:
+                logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
+                issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
     else:
         logger.warning(f"No session ID found in Jules PR #{pr_number} body")
 

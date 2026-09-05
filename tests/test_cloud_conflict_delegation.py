@@ -114,6 +114,8 @@ def test_duplicate_named_backend_session_url_fails_closed_after_dispatch(tmp_pat
     response = MagicMock(status_code=201, text="")
     response.json.return_value = {"claude_code_session_id": "shared-session"}
     github = MagicMock()
+    session_comments = {}
+    github.add_comment_to_issue.side_effect = lambda _repo, issue_number, body: session_comments.setdefault(issue_number, []).append({"body": body})
 
     with (
         patch("src.auto_coder.cloud_manager.Path.home", return_value=tmp_path),
@@ -133,7 +135,8 @@ def test_duplicate_named_backend_session_url_fails_closed_after_dispatch(tmp_pat
         pull_request["body"] = "Created by Claude: https://claude.ai/code/shared-session"
         pull_request["user"] = {"login": "claude[bot]"}
         original_body = pull_request["body"]
-        github.search_issues.return_value = []
+        github.search_issues.return_value = [{"number": 1, "body": ""}, {"number": 2, "body": ""}]
+        github.get_issue_comments.side_effect = lambda _repo, issue_number: session_comments[issue_number]
 
         linked = _link_jules_pr_to_issue("owner/repo", pull_request, github)
         conflict_result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)

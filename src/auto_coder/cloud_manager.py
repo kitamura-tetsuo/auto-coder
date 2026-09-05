@@ -258,8 +258,7 @@ class CloudManager:
             Issue number if found, None otherwise
         """
         try:
-            sessions = self._read_sessions()
-            issue_numbers = [int(issue_number) for issue_number, stored_session_id in sessions.items() if stored_session_id == session_id]
+            issue_numbers = self.get_issues_by_session(session_id)
             if len(issue_numbers) == 1:
                 logger.debug(f"Found issue #{issue_numbers[0]} for session_id={session_id}")
                 return issue_numbers[0]
@@ -272,3 +271,8 @@ class CloudManager:
         except Exception as e:
             logger.error(f"Failed to lookup issue by session {session_id}: {e}")
             return None
+
+    def get_issues_by_session(self, session_id: str) -> Tuple[int, ...]:
+        """Return every issue durably associated with a session identifier."""
+        sessions = self._read_sessions()
+        return tuple(sorted(int(issue_number) for issue_number, stored_session_id in sessions.items() if stored_session_id == session_id))
