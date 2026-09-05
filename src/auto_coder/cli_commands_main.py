@@ -136,6 +136,12 @@ def process_issues(
     # Setup progress footer logging (re-configures logger with footer sink)
     setup_progress_footer_logging()
 
+    # Optional and deliberately failure-isolated: ordinary GitHub processing never
+    # receives or reuses the dedicated Actions Secrets credential.
+    from .github_secrets import synchronize_codex_auth_secret
+
+    synchronize_codex_auth_secret()
+
     # Record resource usage and crash diagnostics for this (long running) session
     start_health_monitoring()
 
