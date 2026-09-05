@@ -1,18 +1,25 @@
 """Tests for delegating merge-conflict repair to originating cloud sessions."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
+from src.auto_coder.issue_processor import _process_issue_claude_routine_mode
+from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.pr_processor import (
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
+    _delegate_cloud_review_thread_repair,
+    _link_jules_pr_to_issue,
     _merge_pr,
     _record_cloud_conflict_deliveries,
     _resolve_cloud_conflict_origin,
     _update_with_base_branch,
 )
+from src.auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 from src.auto_coder.utils import CommandResult
 
 
@@ -42,6 +49,112 @@ def pr_data(head_sha: str = "H1", base_sha: str = "B1") -> dict:
         "head": {"ref": "cloud/repair-1589", "sha": head_sha},
         "base": {"ref": "release/2.x", "sha": base_sha},
     }
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["Closes #1748", "Created by Claude: https://claude.ai/code/session-a"],
+    ids=["linked-issue", "session-url"],
+)
+def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_path, monkeypatch, body) -> None:
+    """Production persistence and conflict delivery retain backend credentials."""
+    backend_a = BackendConfig(
+        name="claude-a",
+        backend_type="claude-routine",
+        url="https://claude-a.example/fire",
+        api_key="token-a",
+    )
+    backend_b = BackendConfig(
+        name="claude-routine",
+        backend_type="claude-routine",
+        url="https://claude-b.example/fire",
+        api_key="token-b",
+    )
+    llm_config = MagicMock()
+    llm_config.get_backend_config.side_effect = {"claude-a": backend_a, "claude-routine": backend_b}.get
+    github = MagicMock()
+    issue = {"number": 1748, "title": "Preserve backend", "body": "Details", "labels": [], "state": "open"}
+    pull_request = pr_data()
+    pull_request["body"] = body
+    pull_request["user"] = {"login": "claude[bot]"}
+    monkeypatch.setenv("CLAUDE_CODE_ROUTINE_TOKEN", "token-b")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "token-b")
+
+    with (
+        patch("src.auto_coder.cloud_manager.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.pr_processor.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
+        patch("src.auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=("session-a", None)),
+        patch("src.auto_coder.issue_processor.get_commit_log", return_value="initial"),
+        patch("src.auto_coder.claude_routine_client.CommandExecutor.run_command", return_value=CommandResult(True, "", "", 0)) as command,
+    ):
+        _process_issue_claude_routine_mode("owner/repo", issue, AutomationConfig(), github, backend_name="claude-a")
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
+
+    assert result.delegated is True
+    args, kwargs = command.call_args
+    assert args[0][2] == "--cloud=session-a"
+    assert kwargs["env"]["CLAUDE_CODE_ROUTINE_TOKEN"] == "token-a"
+    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-a"
+
+
+def test_duplicate_named_backend_session_url_fails_closed_after_dispatch(tmp_path) -> None:
+    """A reverse session lookup cannot arbitrarily choose the first CSV issue."""
+    backends = {
+        name: BackendConfig(
+            name=name,
+            backend_type="claude-routine",
+            url=f"https://{name}.example/fire",
+            api_key=f"token-{name}",
+        )
+        for name in ("claude-a", "claude-b")
+    }
+    llm_config = MagicMock()
+    llm_config.get_backend_config.side_effect = backends.get
+    response = MagicMock(status_code=201, text="")
+    response.json.return_value = {"claude_code_session_id": "shared-session"}
+    github = MagicMock()
+    session_comments = {}
+    github.add_comment_to_issue.side_effect = lambda _repo, issue_number, body: session_comments.setdefault(issue_number, []).append({"body": body})
+
+    with (
+        patch("src.auto_coder.cloud_manager.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.pr_processor.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
+        patch("src.auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+        patch("src.auto_coder.claude_routine_client.requests.Session.post", return_value=response),
+        patch("src.auto_coder.claude_routine_client._save_claude_routine_state"),
+        patch("src.auto_coder.issue_processor.get_commit_log", return_value="initial"),
+        patch("src.auto_coder.claude_routine_client.CommandExecutor.run_command") as command,
+    ):
+        for issue_number, backend_name in ((1, "claude-b"), (2, "claude-a")):
+            issue = {"number": issue_number, "title": "Shared session", "body": "Details", "labels": [], "state": "open"}
+            _process_issue_claude_routine_mode("owner/repo", issue, AutomationConfig(), github, backend_name=backend_name)
+
+        pull_request = pr_data()
+        pull_request["body"] = "Created by Claude: https://claude.ai/code/shared-session"
+        pull_request["user"] = {"login": "claude[bot]"}
+        original_body = pull_request["body"]
+        github.search_issues.return_value = [{"number": 1, "body": ""}, {"number": 2, "body": ""}]
+        github.get_issue_comments.side_effect = lambda _repo, issue_number: session_comments[issue_number]
+
+        linked = _link_jules_pr_to_issue("owner/repo", pull_request, github)
+        conflict_result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
+        review_result = _delegate_cloud_review_thread_repair(
+            "owner/repo",
+            pull_request,
+            github,
+            (ReviewThread(id="thread-1", comments=[ReviewThreadComment(database_id=1, body="Fix this")]),),
+        )
+
+    assert linked is False
+    assert pull_request["body"] == original_body
+    github.update_pr_body.assert_not_called()
+    assert conflict_result.delegated is False
+    assert conflict_result.reason == "no originating cloud implementation session could be resolved"
+    assert review_result.delivered is False
+    assert review_result == ["Review repair was not delivered for PR #1589: no provider-owned cloud task association was found"]
+    command.assert_not_called()
 
 
 def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:

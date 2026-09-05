@@ -10,14 +10,14 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
-# CSV header fields
-CSV_FIELDS = ["issue_number", "provider", "session_id"]
+# Keep the provider family separate from the named configuration used by it.
+CSV_FIELDS = ["issue_number", "provider", "backend_name", "session_id"]
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class CloudTaskBinding:
 
     provider: str = ""
     task_id: str = ""
+    backend_name: str = ""
 
 
 class CloudManager:
@@ -83,8 +84,11 @@ class CloudManager:
                     issue_number = row.get("issue_number", "")
                     session_id = row.get("session_id", "")
                     provider = row.get("provider", "")
+                    backend_name = row.get("backend_name", "")
+                    if provider == "claude-routine" and not backend_name:
+                        backend_name = "claude-routine"
                     if issue_number and session_id:
-                        sessions[issue_number] = CloudTaskBinding(provider=provider, task_id=session_id)
+                        sessions[issue_number] = CloudTaskBinding(provider=provider, task_id=session_id, backend_name=backend_name)
         except Exception as e:
             logger.error(f"Failed to read cloud sessions from {self.cloud_file_path}: {e}")
 
@@ -120,7 +124,14 @@ class CloudManager:
                 # Sort by issue number for consistent output
                 for issue_number in sorted(sessions.keys()):
                     binding = sessions[issue_number]
-                    writer.writerow({"issue_number": issue_number, "provider": binding.provider, "session_id": binding.task_id})
+                    writer.writerow(
+                        {
+                            "issue_number": issue_number,
+                            "provider": binding.provider,
+                            "backend_name": binding.backend_name,
+                            "session_id": binding.task_id,
+                        }
+                    )
 
             logger.debug(f"Successfully wrote {len(sessions)} sessions to {self.cloud_file_path}")
             return True
@@ -131,10 +142,17 @@ class CloudManager:
     def _write_sessions(self, sessions: Dict[str, str]) -> bool:
         """Preserve provider values while supporting the historical private API."""
         current = self._read_bindings()
-        bindings = {number: CloudTaskBinding(provider=current.get(number, CloudTaskBinding()).provider, task_id=task_id) for number, task_id in sessions.items()}
+        bindings = {
+            number: CloudTaskBinding(
+                provider=current.get(number, CloudTaskBinding()).provider,
+                task_id=task_id,
+                backend_name=current.get(number, CloudTaskBinding()).backend_name,
+            )
+            for number, task_id in sessions.items()
+        }
         return self._write_bindings(bindings)
 
-    def add_session(self, issue_number: int, session_id: str, provider: str = "") -> bool:
+    def add_session(self, issue_number: int, session_id: str, provider: str = "", backend_name: str = "") -> bool:
         """
         Add a session for an issue number.
 
@@ -152,7 +170,7 @@ class CloudManager:
 
                 # Add or update the session
                 issue_key = str(issue_number)
-                sessions[issue_key] = CloudTaskBinding(provider=provider, task_id=session_id)
+                sessions[issue_key] = CloudTaskBinding(provider=provider, task_id=session_id, backend_name=backend_name)
 
                 # Write back to file
                 success = self._write_bindings(sessions)
@@ -171,6 +189,16 @@ class CloudManager:
         if binding and binding.provider and binding.task_id:
             return binding
         return None
+
+    def get_bindings_for_task(self, provider: str, task_id: str) -> Tuple[CloudTaskBinding, ...]:
+        """Return distinct durable bindings for a provider task.
+
+        Task identifiers are normally reached through their linked issue. This
+        lookup also supports provider session URLs. Callers can distinguish an
+        unpersisted task from conflicting ownership instead of guessing.
+        """
+        matches = {binding for binding in self._read_bindings().values() if binding.provider == provider and binding.task_id == task_id}
+        return tuple(sorted(matches, key=lambda binding: binding.backend_name))
 
     def get_session_id(self, issue_number: int) -> Optional[str]:
         """
@@ -230,16 +258,21 @@ class CloudManager:
             Issue number if found, None otherwise
         """
         try:
-            sessions = self._read_sessions()
-            # Reverse lookup: find issue number for given session_id
-            for issue_number_str, stored_session_id in sessions.items():
-                if stored_session_id == session_id:
-                    issue_number = int(issue_number_str)
-                    logger.debug(f"Found issue #{issue_number} for session_id={session_id}")
-                    return issue_number
+            issue_numbers = self.get_issues_by_session(session_id)
+            if len(issue_numbers) == 1:
+                logger.debug(f"Found issue #{issue_numbers[0]} for session_id={session_id}")
+                return issue_numbers[0]
+            if len(issue_numbers) > 1:
+                logger.warning(f"Session ID {session_id} has ambiguous issue ownership; refusing first-match inference")
+                return None
 
             logger.debug(f"No issue found for session_id={session_id}")
             return None
         except Exception as e:
             logger.error(f"Failed to lookup issue by session {session_id}: {e}")
             return None
+
+    def get_issues_by_session(self, session_id: str) -> Tuple[int, ...]:
+        """Return every issue durably associated with a session identifier."""
+        sessions = self._read_sessions()
+        return tuple(sorted(int(issue_number) for issue_number, stored_session_id in sessions.items() if stored_session_id == session_id))

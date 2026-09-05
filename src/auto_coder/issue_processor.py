@@ -303,7 +303,12 @@ def _process_issue_claude_routine_mode(
         session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
 
         cloud_manager = CloudManager(repo_name)
-        success = cloud_manager.add_session(issue_number, session_id, provider="claude-routine")
+        success = cloud_manager.add_session(
+            issue_number,
+            session_id,
+            provider="claude-routine",
+            backend_name=backend_name or "claude-routine",
+        )
 
         if not success:
             logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
