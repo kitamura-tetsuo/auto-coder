@@ -397,7 +397,8 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
     - Codex Cloud selects its model server-side. If `model` is configured, Auto-Coder warns that user-selected models are unsupported, ignores the value, and starts the task without a model CLI override.
     - `environment_id` is required for Codex Cloud; `attempts` optionally configures best-of-N execution and defaults to 1.
     - When `backend_type = "claude-routine"` is used, the system triggers the Claude routine via HTTP POST to the configured fire endpoint.
-    - Saves the returned session ID in `cloud.csv`, comments on the issue with the session link, and retains the `@auto-coder` label.
+    - Saves the returned session ID in `cloud.csv` together with the independent provider family and exact configured backend name, so Claude Routine follow-ups retain the same URL, token, and options after restart; legacy Claude Routine rows use the historical `claude-routine` backend identity.
+    - Comments on the issue with the session link and retains the `@auto-coder` label.
     - Subsequent pull requests opened by Claude routines are tracked and linked to the issue.
     - Parent-issue verification uses the same lifecycle-aware dispatch: asynchronous task/session IDs are persisted and reported on the issue, and `@auto-coder` remains until the existing cloud completion lifecycle releases it. Local high-score backends retain synchronous processing.
   - Configuration file: "~/.auto-coder/llm_config.toml"

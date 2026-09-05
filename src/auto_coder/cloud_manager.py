@@ -16,8 +16,8 @@ from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
-# CSV header fields
-CSV_FIELDS = ["issue_number", "provider", "session_id"]
+# Keep the provider family separate from the named configuration used by it.
+CSV_FIELDS = ["issue_number", "provider", "backend_name", "session_id"]
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class CloudTaskBinding:
 
     provider: str = ""
     task_id: str = ""
+    backend_name: str = ""
 
 
 class CloudManager:
@@ -83,8 +84,11 @@ class CloudManager:
                     issue_number = row.get("issue_number", "")
                     session_id = row.get("session_id", "")
                     provider = row.get("provider", "")
+                    backend_name = row.get("backend_name", "")
+                    if provider == "claude-routine" and not backend_name:
+                        backend_name = "claude-routine"
                     if issue_number and session_id:
-                        sessions[issue_number] = CloudTaskBinding(provider=provider, task_id=session_id)
+                        sessions[issue_number] = CloudTaskBinding(provider=provider, task_id=session_id, backend_name=backend_name)
         except Exception as e:
             logger.error(f"Failed to read cloud sessions from {self.cloud_file_path}: {e}")
 
@@ -120,7 +124,14 @@ class CloudManager:
                 # Sort by issue number for consistent output
                 for issue_number in sorted(sessions.keys()):
                     binding = sessions[issue_number]
-                    writer.writerow({"issue_number": issue_number, "provider": binding.provider, "session_id": binding.task_id})
+                    writer.writerow(
+                        {
+                            "issue_number": issue_number,
+                            "provider": binding.provider,
+                            "backend_name": binding.backend_name,
+                            "session_id": binding.task_id,
+                        }
+                    )
 
             logger.debug(f"Successfully wrote {len(sessions)} sessions to {self.cloud_file_path}")
             return True
@@ -131,10 +142,17 @@ class CloudManager:
     def _write_sessions(self, sessions: Dict[str, str]) -> bool:
         """Preserve provider values while supporting the historical private API."""
         current = self._read_bindings()
-        bindings = {number: CloudTaskBinding(provider=current.get(number, CloudTaskBinding()).provider, task_id=task_id) for number, task_id in sessions.items()}
+        bindings = {
+            number: CloudTaskBinding(
+                provider=current.get(number, CloudTaskBinding()).provider,
+                task_id=task_id,
+                backend_name=current.get(number, CloudTaskBinding()).backend_name,
+            )
+            for number, task_id in sessions.items()
+        }
         return self._write_bindings(bindings)
 
-    def add_session(self, issue_number: int, session_id: str, provider: str = "") -> bool:
+    def add_session(self, issue_number: int, session_id: str, provider: str = "", backend_name: str = "") -> bool:
         """
         Add a session for an issue number.
 
@@ -152,7 +170,7 @@ class CloudManager:
 
                 # Add or update the session
                 issue_key = str(issue_number)
-                sessions[issue_key] = CloudTaskBinding(provider=provider, task_id=session_id)
+                sessions[issue_key] = CloudTaskBinding(provider=provider, task_id=session_id, backend_name=backend_name)
 
                 # Write back to file
                 success = self._write_bindings(sessions)

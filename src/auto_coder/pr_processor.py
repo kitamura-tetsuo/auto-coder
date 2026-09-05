@@ -4579,16 +4579,20 @@ def _resolve_cloud_task_origin(
             binding = manager.get_binding(issue_number)
             if binding:
                 bindings.append(binding)
-    unique_bindings = {(binding.provider, binding.task_id) for binding in bindings}
+    unique_bindings = {(binding.provider, binding.task_id, binding.backend_name) for binding in bindings}
     if len(unique_bindings) != 1:
         reason = "no provider-owned cloud task association was found" if not unique_bindings else "multiple conflicting cloud task associations were found"
         return CloudTaskOriginResolution(reason=reason)
-    provider, task_id = unique_bindings.pop()
+    provider, task_id, backend_name = unique_bindings.pop()
 
     from .cloud_task_engine import CloudTaskEngine
 
     try:
-        client = CloudTaskEngine().get_client_for_provider(provider, repo_name)
+        engine = CloudTaskEngine()
+        if provider == "claude-routine":
+            client = engine.get_client_for_provider(provider, repo_name, backend_name=backend_name or "claude-routine")
+        else:
+            client = engine.get_client_for_provider(provider, repo_name)
     except Exception as exc:
         logger.error(f"Failed to initialize cloud provider '{provider}' for PR #{pr_number}: {exc}")
         return CloudTaskOriginResolution(reason=f"cloud provider '{provider}' is unavailable: {exc}")
