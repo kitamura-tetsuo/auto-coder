@@ -26,6 +26,14 @@ class ClaimedInvalidation:
     generation: int
 
 
+@dataclass(frozen=True)
+class GitHubDeliveryMetadata:
+    delivery_id: str
+    identity: EntityIdentity
+    event_type: Optional[str] = None
+    action: Optional[str] = None
+
+
 class DurableInvalidationQueue:
     """SQLite-backed dirty-entity set with generation-based in-flight coalescing."""
 
@@ -48,7 +56,11 @@ class DurableInvalidationQueue:
             CREATE TABLE IF NOT EXISTS github_deliveries (
                 repository TEXT NOT NULL,
                 delivery_id TEXT NOT NULL,
-                PRIMARY KEY(repository, delivery_id)
+                entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr')),
+                entity_number INTEGER NOT NULL,
+                event_type TEXT,
+                action TEXT,
+                PRIMARY KEY(repository, delivery_id, entity_type, entity_number)
             );
             """
         )
@@ -73,6 +85,22 @@ class DurableInvalidationQueue:
                 """
             )
 
+        delivery_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(github_deliveries)")}
+        if "entity_type" not in delivery_columns:
+            # Old delivery rows cannot be assigned safely to an entity, so only
+            # the diagnostic/deduplication ledger is replaced during migration.
+            self._connection.executescript(
+                """
+                DROP TABLE github_deliveries;
+                CREATE TABLE github_deliveries (
+                    repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
+                    entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr')),
+                    entity_number INTEGER NOT NULL, event_type TEXT, action TEXT,
+                    PRIMARY KEY(repository, delivery_id, entity_type, entity_number)
+                );
+                """
+            )
+
     def recover(self, repository: str) -> None:
         """Make work interrupted by process termination claimable again."""
         with self._lock, self._connection:
@@ -82,13 +110,21 @@ class DurableInvalidationQueue:
                 (repository,),
             )
 
-    def invalidate(self, identity: EntityIdentity, delivery_id: Optional[str] = None) -> bool:
+    def invalidate(
+        self,
+        identity: EntityIdentity,
+        delivery_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        action: Optional[str] = None,
+    ) -> bool:
         """Persist an invalidation; return False only for a duplicate delivery."""
         with self._lock, self._connection:
             if delivery_id:
                 cursor = self._connection.execute(
-                    "INSERT OR IGNORE INTO github_deliveries(repository, delivery_id) VALUES (?, ?)",
-                    (identity.repository, delivery_id),
+                    """INSERT OR IGNORE INTO github_deliveries
+                       (repository, delivery_id, entity_type, entity_number, event_type, action)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (identity.repository, delivery_id, identity.entity_type, identity.number, event_type, action),
                 )
                 if cursor.rowcount == 0:
                     return False
@@ -175,3 +211,14 @@ class DurableInvalidationQueue:
         with self._lock:
             row = self._connection.execute("SELECT COUNT(*) FROM entity_invalidations WHERE repository = ?", (repository,)).fetchone()
             return int(row[0])
+
+    def get_delivery_metadata(self, repository: str, delivery_id: str) -> list[GitHubDeliveryMetadata]:
+        """Expose preserved provider metadata for diagnostics and deduplication audits."""
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT entity_type, entity_number, event_type, action
+                   FROM github_deliveries WHERE repository = ? AND delivery_id = ?
+                   ORDER BY entity_type, entity_number""",
+                (repository, delivery_id),
+            ).fetchall()
+        return [GitHubDeliveryMetadata(delivery_id, EntityIdentity(repository, entity_type, number), event_type, action) for entity_type, number, event_type, action in rows]

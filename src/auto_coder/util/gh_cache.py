@@ -577,6 +577,25 @@ class GitHubClient:
             return None
 
     @retry_with_backoff()
+    def get_pull_request_numbers_for_commit(self, repo_name: str, commit_sha: str) -> List[int]:
+        """Return PR numbers associated with a commit using GitHub's REST API."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        response = httpx.get(
+            f"https://api.github.com/repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+            headers=headers,
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError(f"GitHub did not return associated PRs for commit {commit_sha}")
+        return sorted({number for item in payload if isinstance(item, dict) and isinstance((number := item.get("number")), int)})
+
+    @retry_with_backoff()
     def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> Any:
         """Fetch complete live PR metadata directly, bypassing every cache.
 

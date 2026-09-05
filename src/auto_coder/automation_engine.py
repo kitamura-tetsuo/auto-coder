@@ -397,9 +397,17 @@ class AutomationEngine:
                     if decision_completed:
                         await self._enqueue_pending_invalidations(repo_name)
 
-    async def invalidate_entity(self, repo_name: str, entity_type: str, number: int, delivery_id: Optional[str] = None) -> bool:
+    async def invalidate_entity(
+        self,
+        repo_name: str,
+        entity_type: str,
+        number: int,
+        delivery_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        action: Optional[str] = None,
+    ) -> bool:
         """Durably mark an entity dirty and arrange an authoritative reevaluation."""
-        accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id)
+        accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id, event_type, action)
         if accepted:
             await self._enqueue_pending_invalidations(repo_name)
         return accepted

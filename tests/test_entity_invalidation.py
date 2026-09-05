@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
+from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
 from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app, process_github_payload
 
@@ -58,6 +58,21 @@ def test_duplicate_delivery_does_not_advance_generation(tmp_path: Path):
     assert not queue.invalidate(identity, "delivery-1")
     claim = queue.claim("owner/repo")
     assert claim is not None and claim.generation == 1
+
+
+def test_one_delivery_can_invalidate_multiple_entities_with_preserved_metadata(tmp_path: Path):
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    first = EntityIdentity("owner/repo", "pr", 41)
+    second = EntityIdentity("owner/repo", "pr", 42)
+
+    assert queue.invalidate(first, "delivery-1", "check_run", "completed")
+    assert queue.invalidate(second, "delivery-1", "check_run", "completed")
+    assert not queue.invalidate(first, "delivery-1", "check_run", "completed")
+
+    assert queue.get_delivery_metadata("owner/repo", "delivery-1") == [
+        GitHubDeliveryMetadata("delivery-1", first, "check_run", "completed"),
+        GitHubDeliveryMetadata("delivery-1", second, "check_run", "completed"),
+    ]
 
 
 def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path, monkeypatch):
