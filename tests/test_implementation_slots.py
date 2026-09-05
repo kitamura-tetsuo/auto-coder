@@ -566,6 +566,52 @@ def test_execution_admitted_during_terminal_lifecycle_lookup_is_not_released(tmp
     assert repository(tmp_path).active_execution_ids(owner) == (execution_id,)
 
 
+def test_pr_membership_recorded_during_reconciliation_prevents_owner_release(tmp_path):
+    """REQ-005/REQ-009: final release rejects a stale PR-membership snapshot."""
+    reconciling = repository(tmp_path)
+    discovering = repository(tmp_path)
+    owner = ImplementationOwner("issue", 100)
+    assert reconciling.reserve(owner) is True
+    linked_pr_lookup_started = threading.Event()
+    permit_linked_pr_result = threading.Event()
+
+    class PausedMembershipGitHub(GitHubState):
+        def __init__(self):
+            super().__init__(issues={100: {"number": 100, "state": "closed"}}, linked_prs={100: []})
+            self.requested_prs = []
+
+        def get_linked_prs(self, _repo, issue_number, strict=False):
+            assert issue_number == owner.number
+            assert strict is True
+            linked_pr_lookup_started.set()
+            assert permit_linked_pr_result.wait(timeout=5)
+            return []
+
+        def get_pull_request(self, _repo, number):
+            self.requested_prs.append(number)
+            return {"number": number, "state": "open", "merged": False}
+
+    github = PausedMembershipGitHub()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        reconciliation = executor.submit(reconciling.reconcile, github)
+        assert linked_pr_lookup_started.wait(timeout=5)
+        assert discovering.record_implementation_pr(owner, 101) is True
+        permit_linked_pr_result.set()
+        reconciliation.result(timeout=5)
+
+    state = json.loads(reconciling.storage_path.read_text(encoding="utf-8"))
+    assert reconciling.active_owners() == (owner,)
+    assert state[owner.key]["implementation_prs"] == [101]
+    assert github.requested_prs == []
+
+    # The next lifecycle pass consumes the newly durable membership and retains
+    # the owner based on the PR's authoritative open state.
+    reconciling.reconcile(github)
+
+    assert github.requested_prs == [101]
+    assert reconciling.active_owners() == (owner,)
+
+
 def test_crashed_execution_is_reclaimed_before_standalone_pr_release(tmp_path):
     """AC-004: a terminal standalone PR releases capacity after its process crashes."""
     slots = repository(tmp_path)

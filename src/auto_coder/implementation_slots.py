@@ -375,13 +375,13 @@ class ImplementationSlotRepository:
             if owners.pop(owner.key, None) is not None:
                 self._write(owners)
 
-    def _release_if_idle(self, owner: ImplementationOwner) -> bool:
-        """Release an owner only if it is still execution-free under the lock.
+    def _release_if_idle(self, owner: ImplementationOwner, expected_implementation_prs: Optional[tuple[int, ...]] = None) -> bool:
+        """Release an owner only if relevant durable state is still unchanged.
 
         Lifecycle evidence is necessarily fetched without holding the registry
-        lock. Admission may therefore race that lookup; the final idle check and
-        removal must be one registry transaction so a newly admitted execution
-        can never be discarded with its owner.
+        lock. Admission or PR discovery may therefore race that lookup; the final
+        state checks and removal must be one registry transaction so newly
+        admitted work can never be discarded with its owner.
         """
         with self._state_lock():
             owners = self._read()
@@ -393,6 +393,12 @@ class ImplementationSlotRepository:
                 raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
             if executions:
                 return False
+            if expected_implementation_prs is not None:
+                implementation_prs = record.get("implementation_prs", [])
+                if not isinstance(implementation_prs, list) or any(isinstance(number, bool) or not isinstance(number, int) for number in implementation_prs):
+                    raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+                if tuple(implementation_prs) != expected_implementation_prs:
+                    return False
             owners.pop(owner.key)
             self._write(owners)
             return True
@@ -510,7 +516,7 @@ class ImplementationSlotRepository:
                         if pr_details.get("state", "").lower() != "closed" and pr_details.get("merged") is not True:
                             linked_prs_terminal = False
                             break
-                    if linked_prs_terminal and self._release_if_idle(owner):
+                    if linked_prs_terminal and self._release_if_idle(owner, tuple(recorded_prs)):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
                 elif owner.kind == "pr":
                     item = github_client.get_pull_request(self.repo_name, owner.number)
