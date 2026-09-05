@@ -265,6 +265,12 @@ class ImplementationSlotRepository:
             self._write(owners)
             return True
 
+    def available_normal_slots(self) -> int:
+        """Return normal capacity from the current cross-process state."""
+        with self._state_lock():
+            normal_usage, _ = self._capacity_usage(self._read())
+        return max(0, self.max_implementations - normal_usage)
+
     def start_execution(
         self,
         owner: ImplementationOwner,

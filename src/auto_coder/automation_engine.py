@@ -52,6 +52,8 @@ logger = get_logger(__name__)
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_SECONDS = 60
+CAPACITY_STATE_CHECK_INTERVAL_SECONDS = 1
+REFILL_RETRY_INTERVAL_SECONDS = 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
 
 
@@ -72,6 +74,7 @@ class AutomationEngine:
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self._invalidation_drain_lock = asyncio.Lock()
         self._invalidation_wake_event: Optional[asyncio.Event] = None
+        self._refill_lock = asyncio.Lock()
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_attempted = False
@@ -238,6 +241,8 @@ class AutomationEngine:
         # Maintenance and GitHub work have independent scheduling paths.
         producer_task = asyncio.create_task(self._producer_loop(repo_name), name="producer")
         invalidation_task = asyncio.create_task(self._invalidation_loop(repo_name), name="github-invalidations")
+        slot_repository = self._get_implementation_slots(repo_name)
+        capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
 
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
@@ -249,23 +254,29 @@ class AutomationEngine:
         try:
             # The invalidation consumer is a companion to the producer/workers,
             # not a reason to keep an otherwise stopped engine alive forever.
-            done, _ = await asyncio.wait({core_task, invalidation_task}, return_when=asyncio.FIRST_COMPLETED)
+            companion_tasks = {invalidation_task} | ({capacity_task} if capacity_task is not None else set())
+            done, _ = await asyncio.wait({core_task, *companion_tasks}, return_when=asyncio.FIRST_COMPLETED)
             if core_task in done:
-                invalidation_task.cancel()
-                await asyncio.gather(invalidation_task, return_exceptions=True)
+                for task in companion_tasks:
+                    task.cancel()
+                await asyncio.gather(*companion_tasks, return_exceptions=True)
                 await core_task
             else:
                 core_task.cancel()
-                await asyncio.gather(core_task, return_exceptions=True)
-                await invalidation_task
+                for task in companion_tasks:
+                    task.cancel()
+                await asyncio.gather(core_task, *companion_tasks, return_exceptions=True)
+                for task in done:
+                    task.result()
             # Reaching this point means every loop returned on its own, which
             # is the silent-stop case we want explained in the log.
             logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
             get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
         except asyncio.CancelledError:
             core_task.cancel()
-            invalidation_task.cancel()
-            await asyncio.gather(core_task, invalidation_task, return_exceptions=True)
+            for task in companion_tasks:
+                task.cancel()
+            await asyncio.gather(core_task, *companion_tasks, return_exceptions=True)
             logger.info("Automation engine stopped")
             get_health_monitor().record_event("engine_stop", "cancelled", "")
             raise
@@ -380,6 +391,64 @@ class AutomationEngine:
                     await asyncio.wait_for(self._invalidation_wake_event.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
+
+    @staticmethod
+    def _issue_refill_priority(issue: Dict[str, Any]) -> int:
+        """Apply the configured candidate scan's Issue priority semantics."""
+        labels = issue.get("labels", []) or []
+        names = {label if isinstance(label, str) else label.get("name") for label in labels if isinstance(label, (str, dict))}
+        if names.intersection({"breaking-change", "breaking", "api-change", "deprecation", "version-major"}):
+            return 7
+        return 3 if "urgent" in names else 0
+
+    async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
+        """Evaluate one level-triggered refill obligation from fresh GitHub state.
+
+        Returning false keeps the obligation pending. Candidate rejection is a
+        completed evaluation, while an incomplete enumeration is not.
+        """
+        async with self._refill_lock:
+            slots = self._get_implementation_slots(repo_name)
+            if await asyncio.to_thread(slots.available_normal_slots) == 0:
+                return True
+            try:
+                entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+                candidates: List[Candidate] = []
+                for observed in entities.issues:
+                    candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, "issue", observed.number, True)
+                    if candidate is None:
+                        continue
+                    candidate.priority = self._issue_refill_priority(candidate.data)
+                    candidates.append(candidate)
+                candidates.sort(key=lambda value: (-value.priority, value.data.get("created_at", ""), value.issue_number or 0))
+            except Exception as exc:
+                logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
+                return False
+
+            for candidate in candidates:
+                if await asyncio.to_thread(slots.available_normal_slots) == 0:
+                    break
+                # The common dispatch path repeats strict readiness, contract,
+                # hierarchy, ownership, authorization, duplicate and atomic
+                # capacity admission checks immediately before implementation.
+                await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+            return True
+
+    async def _capacity_refill_loop(self, repo_name: str) -> None:
+        """Observe shared slot state and service capacity transitions without GitHub polling."""
+        slots = self._get_implementation_slots(repo_name)
+        previously_available = await asyncio.to_thread(slots.available_normal_slots) > 0
+        refill_pending = False
+        while True:
+            available = await asyncio.to_thread(slots.available_normal_slots) > 0
+            if available and not previously_available:
+                refill_pending = True
+                logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
+            previously_available = available
+            if refill_pending and available:
+                refill_pending = not await self._refill_normal_implementation_slots(repo_name)
+            delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
+            await asyncio.sleep(delay)
 
     async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
         """Worker loop that processes candidates from the queue."""
@@ -1114,19 +1183,7 @@ class AutomationEngine:
                 # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
                 # - 3: Urgent
                 # - 0: Regular issues
-                issue_priority = 0
-                # Check for breaking-change related labels (highest priority)
-                breaking_change_labels = [
-                    "breaking-change",
-                    "breaking",
-                    "api-change",
-                    "deprecation",
-                    "version-major",
-                ]
-                if any(label in labels for label in breaking_change_labels):
-                    issue_priority = 7
-                elif "urgent" in labels:
-                    issue_priority = 3
+                issue_priority = self._issue_refill_priority(issue_data)
 
                 candidates.append(
                     Candidate(
