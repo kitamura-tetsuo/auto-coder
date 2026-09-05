@@ -11,7 +11,8 @@ and moves `release` to its immutable history manifest.
 Registry reads validate concrete SHA-256 digests and fail closed on transport,
 authentication, malformed-output, and ambiguous errors. Promotion creates an
 immutable history tag only when the registry explicitly confirms it is absent;
-an existing history tag is validated and is never rewritten.
+creation uses an atomic conditional registry write, so an existing or
+concurrently created history tag is validated and is never rewritten.
 `compose.channels.yml` pins both
 instances by digest and gives release and beta separate durable state, workspace,
 cache, and log roots. Each externally deployed process records its channel and

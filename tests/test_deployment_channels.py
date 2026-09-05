@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -29,7 +31,7 @@ def _workflow_run_block(workflow_name, step_name):
     return run_block.replace("${{ github.repository }}", "owner/repo")
 
 
-def _run_release_workflow(tmp_path, workflow_name, step_name, registry_responses, release_sha=None):
+def _run_release_workflow(tmp_path, workflow_name, step_name, registry_responses, release_sha=None, atomic_conflict=False):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker_log = tmp_path / "docker.log"
@@ -85,17 +87,49 @@ print(response)
     fake_gh = bin_dir / "gh"
     fake_gh.write_text("#!/bin/sh\nprintf '%s\\n' \"$RUN_ID\"\n", encoding="utf-8")
     fake_gh.chmod(0o755)
+    state_path = tmp_path / "docker-state.json"
+
+    class RegistryHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.oci.image.index.v1+json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_PUT(self):
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+            target = f"ghcr.io/owner/repo:{self.path.rsplit('/', 1)[-1]}"
+            with docker_log.open("a", encoding="utf-8") as log:
+                log.write(json.dumps(["registry", "manifest", "put-if-absent", target]) + "\n")
+            if atomic_conflict:
+                state[target] = OTHER_DIGEST
+            if target in state:
+                state_path.write_text(json.dumps(state))
+                self.send_response(412)
+            else:
+                state[target] = EXPECTED_DIGEST
+                state_path.write_text(json.dumps(state))
+                self.send_response(201)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    registry = ThreadingHTTPServer(("127.0.0.1", 0), RegistryHandler)
+    registry_thread = threading.Thread(target=registry.serve_forever)
+    registry_thread.start()
     env = os.environ.copy()
     env.update(
         {
             "PATH": f"{bin_dir}:{env['PATH']}",
             "FAKE_DOCKER_LOG": str(docker_log),
-            "FAKE_DOCKER_STATE": str(tmp_path / "docker-state.json"),
+            "FAKE_DOCKER_STATE": str(state_path),
             "FAKE_DOCKER_COUNTERS": str(tmp_path / "docker-counters.json"),
             "FAKE_REGISTRY_RESPONSES": json.dumps(registry_responses),
             "IMAGE": "ghcr.io/owner/repo",
             "RUN_ID": "42",
             "SOURCE_SHA": RELEASE_SHA,
+            "REGISTRY_API_BASE": f"http://127.0.0.1:{registry.server_port}",
         }
     )
     if release_sha is not None:
@@ -107,6 +141,8 @@ print(response)
         capture_output=True,
         text=True,
     )
+    registry.shutdown()
+    registry_thread.join()
     operations = [json.loads(line) for line in docker_log.read_text(encoding="utf-8").splitlines()] if docker_log.exists() else []
     return result, operations
 
@@ -267,11 +303,11 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert "org.opencontainers.image.revision" in promote
     assert 'TESTED_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:tested-beta-$SOURCE_SHA")' in promote
     assert 'require-tested-beta "$DIGEST" "$TESTED_DIGEST"' in promote
-    assert promote.index('require-tested-beta "$DIGEST" "$TESTED_DIGEST"') < promote.index('tag "$IMAGE:release-$SOURCE_SHA"')
+    assert promote.index('require-tested-beta "$DIGEST" "$TESTED_DIGEST"') < promote.index('create-history-if-absent "$IMAGE:release-$SOURCE_SHA"')
     assert 'require-release-history "$DIGEST" "$HISTORY_DIGEST"' in promote
     assert promote.index('require-release-history "$DIGEST" "$HISTORY_DIGEST"') < promote.index('tag "$IMAGE:release"')
     assert 'require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"' in promote
-    assert promote.count("docker buildx imagetools create --prefer-index=false") == 2
+    assert promote.count("docker buildx imagetools create --prefer-index=false") == 1
     assert "docker/build-push-action" not in promote
     assert "context:" not in promote
 
@@ -330,7 +366,9 @@ def test_promotion_creates_only_confirmed_missing_history_then_updates_release(t
 
     writes = [operation for operation in operations if operation[:3] == ["buildx", "imagetools", "create"]]
     assert result.returncode == 0, result.stderr
-    assert [operation[operation.index("--tag") + 1] for operation in writes] == ([f"{image}:release-{RELEASE_SHA}", f"{image}:release"] if history == "missing" else [f"{image}:release"])
+    assert [operation[operation.index("--tag") + 1] for operation in writes] == [f"{image}:release"]
+    atomic_writes = [operation for operation in operations if operation[:3] == ["registry", "manifest", "put-if-absent"]]
+    assert bool(atomic_writes) is (history == "missing")
 
 
 @pytest.mark.parametrize(
@@ -414,7 +452,7 @@ def test_promotion_validates_new_history_before_release_write(tmp_path):
         f"{image}:beta|digest": json.dumps(EXPECTED_DIGEST),
         f"{image}:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
         f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
-        f"{history}|digest": [missing, missing, json.dumps(OTHER_DIGEST)],
+        f"{history}|digest": [missing, json.dumps(OTHER_DIGEST)],
     }
 
     result, operations = _run_release_workflow(tmp_path, "promote-release.yml", "Validate and promote current beta without rebuilding", responses)
@@ -422,7 +460,27 @@ def test_promotion_validates_new_history_before_release_write(tmp_path):
     writes = [operation for operation in operations if operation[:3] == ["buildx", "imagetools", "create"]]
     assert result.returncode != 0
     assert "immutable release history digest mismatch" in result.stderr
-    assert [operation[operation.index("--tag") + 1] for operation in writes] == [history]
+    assert writes == []
+    assert [operation for operation in operations if operation[:3] == ["registry", "manifest", "put-if-absent"]] == [["registry", "manifest", "put-if-absent", history]]
+
+
+def test_atomic_history_create_cannot_overwrite_tag_published_after_final_inspection(tmp_path):
+    image = "ghcr.io/owner/repo"
+    history = f"{image}:release-{RELEASE_SHA}"
+    missing = {"status": 1, "stderr": f"ERROR: {history}: not found"}
+    responses = {
+        f"{image}:beta|digest": json.dumps(EXPECTED_DIGEST),
+        f"{image}:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+        f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+        f"{history}|digest": [missing, json.dumps(OTHER_DIGEST)],
+    }
+
+    result, operations = _run_release_workflow(tmp_path, "promote-release.yml", "Validate and promote current beta without rebuilding", responses, atomic_conflict=True)
+
+    assert result.returncode != 0
+    assert "immutable release history digest mismatch" in result.stderr
+    assert [operation for operation in operations if operation[:3] == ["registry", "manifest", "put-if-absent"]] == [["registry", "manifest", "put-if-absent", history]]
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
 
 
 def test_rollback_stops_before_write_when_release_history_is_missing(tmp_path):

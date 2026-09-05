@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 RELEASE_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 TAG_ABSENT_EXIT_CODE = 3
+MANIFEST_ACCEPT = ", ".join(("application/vnd.oci.image.index.v1+json", "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.docker.distribution.manifest.v2+json"))
 
 
 def require_equal(expected: str, actual: str, description: str) -> None:
@@ -58,12 +64,59 @@ def inspect_digest(reference: str) -> None:
     raise SystemExit(f"Refusing deployment: unable to inspect {reference}: {detail}")
 
 
+def create_history_if_absent(target: str, source_digest: str) -> None:
+    """Atomically create a registry tag using the HTTP conditional-write contract."""
+    registry, remainder = target.split("/", 1)
+    repository, tag = remainder.rsplit(":", 1)
+    base = os.environ.get("REGISTRY_API_BASE", f"https://{registry}")
+    username = os.environ.get("REGISTRY_USERNAME", "")
+    password = os.environ.get("REGISTRY_PASSWORD", "")
+    bearer_token = ""
+
+    def request(method: str, reference: str, data: bytes | None = None, extra: dict[str, str] | None = None):
+        nonlocal bearer_token
+        url = f"{base}/v2/{repository}/manifests/{reference}"
+        headers = {"Accept": MANIFEST_ACCEPT, **(extra or {})}
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+        elif username or password:
+            headers["Authorization"] = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+        registry_request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            return urllib.request.urlopen(registry_request)
+        except urllib.error.HTTPError as error:
+            challenge = error.headers.get("WWW-Authenticate", "")
+            if error.code != 401 or not challenge.lower().startswith("bearer ") or bearer_token:
+                raise
+            parameters = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+            token_url = parameters.pop("realm") + "?" + urllib.parse.urlencode(parameters)
+            token_headers = {"Authorization": "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()}
+            with urllib.request.urlopen(urllib.request.Request(token_url, headers=token_headers)) as token_response:
+                bearer_token = json.loads(token_response.read())["token"]
+            headers["Authorization"] = f"Bearer {bearer_token}"
+            return urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers, method=method))
+
+    try:
+        with request("GET", source_digest) as response:
+            manifest = response.read()
+            content_type = response.headers.get_content_type()
+        with request("PUT", tag, manifest, {"Content-Type": content_type, "If-None-Match": "*"}):
+            return
+    except urllib.error.HTTPError as error:
+        if error.code == 412:
+            return
+        raise SystemExit(f"Refusing deployment: atomic history creation failed for {target}: HTTP {error.code}") from error
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"Refusing deployment: atomic history creation failed for {target}: {error}") from error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "check",
         choices=(
             "inspect-digest",
+            "create-history-if-absent",
             "require-latest-successful-run",
             "require-tested-beta",
             "require-release-history",
@@ -76,6 +129,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.check == "inspect-digest":
         inspect_digest(args.candidate)
+        return
+    if args.check == "create-history-if-absent":
+        if args.authoritative is None:
+            parser.error("create-history-if-absent requires a source digest")
+        create_history_if_absent(args.candidate, args.authoritative)
         return
     if args.check == "require-release-sha":
         require_release_sha(args.candidate)

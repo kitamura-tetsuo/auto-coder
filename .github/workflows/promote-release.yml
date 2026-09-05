@@ -25,6 +25,8 @@ jobs:
       - name: Validate and promote current beta without rebuilding
         env:
           IMAGE: ghcr.io/${{ github.repository }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -Eeuo pipefail
           DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:beta")
@@ -41,19 +43,9 @@ jobs:
             if [ "$INSPECT_STATUS" -ne 3 ]; then
               exit "$INSPECT_STATUS"
             fi
-            # Re-read immediately before creation so a concurrently published
-            # immutable tag is validated rather than overwritten.
-            if HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA"); then
-              python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
-            else
-              INSPECT_STATUS=$?
-              if [ "$INSPECT_STATUS" -ne 3 ]; then
-                exit "$INSPECT_STATUS"
-              fi
-              docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release-$SOURCE_SHA" "$IMAGE@$DIGEST"
-              HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA")
-              python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
-            fi
+            python scripts/deployment_artifacts.py create-history-if-absent "$IMAGE:release-$SOURCE_SHA" "$DIGEST"
+            HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA")
+            python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
           fi
 
           docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
