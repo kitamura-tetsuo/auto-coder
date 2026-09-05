@@ -221,6 +221,8 @@ def test_list_continuations_never_truncate_or_invent_requirements() -> None:
     bodies = (
         "## Requirements\n- REQ-001: First line.\n\n    Continued normative text.\n",
         "## Requirements\n- REQ-001: First line.\n    REQ-002: Still text in the same list item.\n",
+        "## Requirements\n- REQ-001: First line.\n  REQ-002: Bullet continuation.\n",
+        "## Requirements\n1. REQ-001: First line.\n   REQ-002: Ordered continuation.\n",
         "## Requirements\n- REQ-001: First line. <!--\nhidden comment\n-->\n    Continued after comment.\n",
     )
 

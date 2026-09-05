@@ -10,6 +10,7 @@ ISSUE_SPECIFICATION_PARSER_VERSION = "v1"
 
 _MARKDOWN_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _ENTRY_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
+_LIST_REQUIREMENT_PREFIX = re.compile(r"^( {0,3})((?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))")
 _REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(.*)$")
 _SCENARIO = re.compile(r"^(AC-\d{3})(?:\s*(?:—|-)\s*(.*))?$")
 _COVERS = re.compile(r"^Covers:\s*(.*)$", re.IGNORECASE)
@@ -85,6 +86,13 @@ def _indentation_columns(line: str) -> int:
             columns += 4 - (columns % 4)
         else:
             break
+    return columns
+
+
+def _column_width(text: str) -> int:
+    columns = 0
+    for character in text:
+        columns += 4 - (columns % 4) if character == "\t" else 1
     return columns
 
 
@@ -194,13 +202,17 @@ def parse_issue_specification(title: str, body: str) -> IssueSpecificationManife
         manifest.diagnostics.append(SpecificationDiagnostic("missing-requirements-section", "No exact Requirements section was found"))
     else:
         seen: set[str] = set()
+        list_content_indentation = 0
         for line_number, raw_line in requirement_lines:
             line = raw_line.strip()
             if not line or line.startswith("<!--") or line.endswith("-->"):
                 continue
-            if _indentation_columns(raw_line) >= 4:
+            indentation = _indentation_columns(raw_line)
+            if indentation >= 4 or (list_content_indentation and indentation >= list_content_indentation):
                 manifest.diagnostics.append(SpecificationDiagnostic("malformed-requirement", f"Malformed requirement continuation: {line}", line_number))
                 continue
+            list_prefix = _LIST_REQUIREMENT_PREFIX.match(raw_line)
+            list_content_indentation = _column_width(list_prefix.group(0)) if list_prefix else 0
             content = _ENTRY_PREFIX.sub("", line, count=1)
             match = _REQUIREMENT.fullmatch(content)
             if not match:
