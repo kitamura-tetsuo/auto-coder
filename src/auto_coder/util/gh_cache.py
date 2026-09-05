@@ -16,11 +16,55 @@ from ghapi.all import GhApi
 from github import GithubException
 from hishel import SyncSqliteStorage
 from hishel.httpx import SyncCacheClient
+from nacl.encoding import Base64Encoder
+from nacl.public import PublicKey, SealedBox
 
 from ..logger_config import get_logger
 
 logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
+
+
+class ActionsSecretPermissionError(RuntimeError):
+    """The dedicated credential cannot publish repository Actions secrets."""
+
+
+class ActionsSecretPublisher:
+    """Uncached GitHub REST client scoped only to Actions Secret publication."""
+
+    def __init__(self, token: str, api_url: str = "https://api.github.com") -> None:
+        self._token = token
+        self._api_url = api_url.rstrip("/")
+
+    def set_repository_secret(self, repository: str, secret_name: str, value: str) -> None:
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        base = f"{self._api_url}/repos/{repository}/actions/secrets"
+        try:
+            with httpx.Client(timeout=30) as client:
+                key_response = client.get(f"{base}/public-key", headers=headers)
+                if key_response.status_code in (401, 403):
+                    raise ActionsSecretPermissionError("dedicated credential was rejected")
+                key_response.raise_for_status()
+                key_data = key_response.json()
+                public_key = PublicKey(key_data["key"].encode("ascii"), Base64Encoder)
+                encrypted = SealedBox(public_key).encrypt(value.encode("utf-8"), Base64Encoder).decode("ascii")
+                response = client.put(
+                    f"{base}/{secret_name}",
+                    headers=headers,
+                    json={"encrypted_value": encrypted, "key_id": key_data["key_id"]},
+                )
+                if response.status_code in (401, 403):
+                    raise ActionsSecretPermissionError("dedicated credential was rejected")
+                response.raise_for_status()
+        except ActionsSecretPermissionError:
+            raise
+        except Exception as exc:
+            # Avoid propagating response bodies or request details across the secret boundary.
+            raise RuntimeError("GitHub Actions secret publication failed") from exc
 
 
 @dataclass
