@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.adversarial_validator import (
     AdversarialValidationContext,
     IssueRequirement,
@@ -14,7 +16,16 @@ from auto_coder.adversarial_validator import (
     run_adversarial_validation,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
+from auto_coder.review_thread_validation import (
+    ClaimedReviewThread,
+    StaleReviewThreadRegistry,
+    classify_review_threads,
+    render_claimed_review_threads_section,
+    resolve_addressed_review_threads,
+)
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
+from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
 
 def gap_payload(
@@ -120,21 +131,21 @@ def test_llm_requirement_text_is_ignored_in_favor_of_manifest_text() -> None:
     assert result.test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
 
 
-def test_same_sha_inspection_cannot_resolve_an_open_gap() -> None:
+def test_same_sha_current_head_evidence_can_resolve_a_stale_open_gap() -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     resolved_payload = gap_payload(
         status="RESOLVED",
         phase="REREVIEW",
-        resolution_evidence="Reviewer inspected correct production behavior.",
+        resolution_evidence="The committed direct-boundary regression test exercises rejection and unchanged state.",
     )
     rereview = parsed_result(resolved_payload)
 
     result = _reconcile_test_oracle_gap_lifecycle(rereview, prior_session(initial), "sha-a")
     result = _apply_coverage_and_verdict_precedence(result, context())
 
-    assert result.result == "NEEDS_TESTS"
-    assert [gap.gap_id for gap in result.open_test_oracle_gaps] == [initial.gap_id]
-    assert result.open_test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
+    assert result.result == "PASS"
+    assert result.open_test_oracle_gaps == []
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
 
 
 def test_new_commit_with_focused_boundary_test_can_resolve_and_converge() -> None:
@@ -444,6 +455,262 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
     assert saved_after_retry is not None
     assert saved_after_retry.last_head_sha == "sha-b"
     assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"
+
+
+def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path) -> None:
+    """Exercise the production validator boundary used before thread resolution."""
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    classification = classify_review_threads(
+        (
+            ReviewThread(
+                id="thread-gap",
+                comments=[
+                    ReviewThreadComment(
+                        database_id=42,
+                        author_id=7,
+                        author_login="auto-coder-reviewer[bot]",
+                        body=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+                    ),
+                    ReviewThreadComment(
+                        database_id=43,
+                        author_id=8,
+                        author_login="agent[bot]",
+                        body=f"Added and ran the direct-boundary regression test.\n{REVIEW_ADDRESSED_MARKER}",
+                    ),
+                ],
+            ),
+        ),
+        {7},
+    )
+    assert classification.blocking_unresolved_count == 0
+    assert len(classification.claimed) == 1
+    claimed = classification.claimed[0]
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Requirements and regression protections are verified; provenance remains unclear.",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Guard and direct regression test verified."}],
+            "findings": [],
+            "test_oracle_gaps": [],
+            "unexplained_changes": [
+                {
+                    "paths": ["docs/generated.md"],
+                    "change_group": "Generated documentation contract update.",
+                    "why_unexplained": "No source relationship is established.",
+                }
+            ],
+            "thread_dispositions": [
+                {
+                    "thread_id": "thread-gap",
+                    "status": "ADDRESSED",
+                    "rationale": "The exact requested persisted-state invariant is now covered.",
+                    "evidence": "tests/test_grid.py calls GridMutation directly and asserts rejection, unchanged state, and revision.",
+                }
+            ],
+        }
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section((claimed,)),
+            claimed_review_threads=(claimed,),
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "INCONCLUSIVE"
+    assert result.diagnostic_category == "change_provenance_clarification"
+    assert result.open_test_oracle_gaps == []
+    assert result.thread_dispositions[0].status == "ADDRESSED"
+    assert saved is not None
+    assert saved.last_head_sha == "sha-a"
+    assert saved.test_oracle_gaps[0].status == "RESOLVED"
+    assert "tests/test_grid.py" in saved.test_oracle_gaps[0].resolution_evidence
+
+    client = MagicMock()
+    client.get_pull_request_head_sha_strict.return_value = "sha-a"
+    client.resolve_review_thread.return_value = True
+    resolved = resolve_addressed_review_threads(
+        client,
+        "owner/repo",
+        1,
+        "sha-a",
+        (claimed,),
+        result.thread_dispositions,
+        stale_registry=StaleReviewThreadRegistry(tmp_path / "stale-threads.json"),
+    )
+
+    assert resolved == ["thread-gap"]
+    client.resolve_review_thread.assert_called_once_with("thread-gap")
+    reloaded = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert reloaded is not None
+    assert reloaded.test_oracle_gaps[0].status == "RESOLVED"
+
+
+def test_same_head_explicit_gap_resolution_persists_when_resolved_thread_is_not_classified(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    resolved_thread = ReviewThread(
+        id="thread-gap",
+        is_resolved=True,
+        comments=[
+            ReviewThreadComment(
+                database_id=42,
+                author_id=7,
+                author_login="auto-coder-reviewer[bot]",
+                body=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+            )
+        ],
+    )
+    classification = classify_review_threads((resolved_thread,), {7})
+    assert classification.claimed == ()
+    assert classification.blocking_unresolved_count == 0
+
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    resolved_payload = gap_payload(
+        status="RESOLVED",
+        phase="REREVIEW",
+        resolution_evidence="tests/test_grid.py directly verifies rejection and unchanged persisted state at sha-a.",
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Regression protection is proven; documentation provenance remains unclear.",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current-head guard and direct regression verified."}],
+            "findings": [],
+            "test_oracle_gaps": [resolved_payload],
+            "unexplained_changes": [
+                {
+                    "paths": ["docs/generated.md"],
+                    "change_group": "Generated documentation contract update.",
+                    "why_unexplained": "No source relationship is established.",
+                }
+            ],
+            "thread_dispositions": [],
+        }
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section(classification.claimed),
+            claimed_review_threads=classification.claimed,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "INCONCLUSIVE"
+    assert result.diagnostic_category == "change_provenance_clarification"
+    assert result.thread_dispositions == []
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved is not None
+    assert saved.last_head_sha == "sha-a"
+    assert saved.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved.test_oracle_gaps[0].resolution_evidence == resolved_payload["resolution_evidence"]
+
+
+def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_recovers(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    claimed = ClaimedReviewThread(
+        thread_id="thread-gap",
+        root_comment_database_id=42,
+        root_author_login="auto-coder[bot]",
+        original_finding=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+        discussion="agent[bot]: Added the direct-boundary regression test.",
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "The current head and requested regression are verified.",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current-head implementation and test verified."}],
+            "findings": [],
+            "test_oracle_gaps": [],
+            "thread_dispositions": [
+                {
+                    "thread_id": "thread-gap",
+                    "status": "ADDRESSED",
+                    "rationale": "The requested invariant has direct committed coverage.",
+                    "evidence": "tests/test_grid.py exercises GridMutation and unchanged persistence.",
+                }
+            ],
+        }
+    )
+    client = MagicMock()
+    client.get_pull_request_head_sha_strict.return_value = "sha-a"
+    client.resolve_review_thread.return_value = True
+
+    with (
+        patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
+        patch("pathlib.Path.write_text", side_effect=OSError("disk full")),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        failed_result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section((claimed,)),
+            claimed_review_threads=(claimed,),
+        )
+        resolve_addressed_review_threads(client, "owner/repo", 1, "sha-a", (claimed,), failed_result.thread_dispositions)
+
+    client.resolve_review_thread.assert_not_called()
+    still_open = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert still_open is not None
+    assert still_open.test_oracle_gaps[0].status == "OPEN"
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        recovered = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section((claimed,)),
+            claimed_review_threads=(claimed,),
+        )
+    resolved = resolve_addressed_review_threads(
+        client,
+        "owner/repo",
+        1,
+        "sha-a",
+        (claimed,),
+        recovered.thread_dispositions,
+        stale_registry=StaleReviewThreadRegistry(tmp_path / "stale-retry.json"),
+    )
+
+    assert recovered.result == "PASS"
+    assert resolved == ["thread-gap"]
+    durable = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert durable is not None
+    assert durable.test_oracle_gaps[0].status == "RESOLVED"
 
 
 def test_non_authoritative_resolved_response_preserves_the_open_checkpoint(tmp_path) -> None:

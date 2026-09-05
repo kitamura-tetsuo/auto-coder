@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
 
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
@@ -25,6 +25,9 @@ from .security_utils import redact_string
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
+
+if TYPE_CHECKING:
+    from .review_thread_validation import ClaimedReviewThread
 
 logger = get_logger(__name__)
 
@@ -1872,6 +1875,7 @@ def _reconcile_test_oracle_gap_lifecycle(
     result: AdversarialValidationResult,
     stored_session: Optional[ReviewerSession],
     head_sha: str,
+    addressed_gap_evidence: Optional[dict[str, str]] = None,
 ) -> AdversarialValidationResult:
     """Enforce bounded initial discovery and deterministic rereview convergence."""
     if stored_session is None:
@@ -1888,12 +1892,16 @@ def _reconcile_test_oracle_gap_lifecycle(
     # registry-owned checkpoint objects during that speculative phase.
     prior_by_id = {gap.gap_id: replace(gap) for gap in stored_session.test_oracle_gaps}
     current_by_id = {gap.gap_id: gap for gap in result.test_oracle_gaps}
+    addressed_gap_evidence = addressed_gap_evidence or {}
     reconciled: List[TestOracleGap] = []
     rejected_new_ids: List[str] = []
 
     for gap_id, prior in prior_by_id.items():
         current = current_by_id.pop(gap_id, None)
         if current is None or not _same_test_oracle_gap_scope(prior, current):
+            if prior.status == "OPEN" and gap_id in addressed_gap_evidence:
+                prior.status = "RESOLVED"
+                prior.resolution_evidence = addressed_gap_evidence[gap_id]
             reconciled.append(prior)
             continue
         if prior.status in {"RESOLVED", "INVALID"}:
@@ -1903,11 +1911,6 @@ def _reconcile_test_oracle_gap_lifecycle(
         current.discovery_phase = prior.discovery_phase
         current.rereview_exception_reason = prior.rereview_exception_reason
         current.rereview_exception_evidence = prior.rereview_exception_evidence
-        if current.status == "RESOLVED" and stored_session.last_head_sha == head_sha:
-            # Correct current behavior on an unchanged commit cannot create the
-            # committed regression protection required to close an open gap.
-            reconciled.append(prior)
-            continue
         # Descriptive prose may be paraphrased by the reviewer. Preserve the
         # original authoritative scope while applying only lifecycle evidence.
         prior.status = current.status
@@ -1932,6 +1935,23 @@ def _reconcile_test_oracle_gap_lifecycle(
         note = "Rereview discarded newly invented test-oracle gaps without a permitted corrective-diff or required-revalidation exception: " + ", ".join(sorted(rejected_new_ids))
         result.summary = f"{result.summary.rstrip()} {note}".strip()
     return result
+
+
+def _addressed_test_oracle_gap_evidence(
+    result: AdversarialValidationResult,
+    claimed_review_threads: Sequence["ClaimedReviewThread"],
+) -> dict[str, str]:
+    """Map exact material-gap threads independently proven addressed this run."""
+    dispositions = {disposition.thread_id: disposition for disposition in result.thread_dispositions if disposition.status == "ADDRESSED" and disposition.rationale and disposition.evidence}
+    evidence_by_gap: dict[str, str] = {}
+    for thread in claimed_review_threads:
+        disposition = dispositions.get(thread.thread_id)
+        if disposition is None:
+            continue
+        match = re.search(r"^Gap identity:\s*`(TOG-[^`]+)`\s*$", thread.original_finding, re.MULTILINE)
+        if match:
+            evidence_by_gap[match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
+    return evidence_by_gap
 
 
 def _enforce_inconclusive_recovery_contract(
@@ -2186,6 +2206,7 @@ def run_adversarial_validation(
     backend_manager: Optional[BackendManager] = None,
     session_registry: Optional[ReviewerSessionRegistry] = None,
     claimed_review_threads_section: Optional[str] = None,
+    claimed_review_threads: Sequence["ClaimedReviewThread"] = (),
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -2364,7 +2385,7 @@ def run_adversarial_validation(
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
-    result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
+    result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha, _addressed_test_oracle_gap_evidence(result, claimed_review_threads))
     result = _apply_coverage_and_verdict_precedence(result, context)
     current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
 
@@ -2429,7 +2450,7 @@ def run_adversarial_validation(
                 _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                 result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
                 result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
-                result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha)
+                result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha, _addressed_test_oracle_gap_evidence(result, claimed_review_threads))
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
                     # The follow-up prompt explicitly asks for a final disposition
@@ -2460,8 +2481,17 @@ def run_adversarial_validation(
     if used_backend and persisted_session_id:
         incomplete_lifecycle_diagnostics = {"incomplete_evidence_coverage", "incomplete_requirement_coverage"}
         lifecycle_completed = result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS"} and result.diagnostic_category not in incomplete_lifecycle_diagnostics
+        # A proven exact-thread closure is authoritative for that gap even
+        # when an unrelated gate (for example change provenance) keeps the
+        # overall verdict inconclusive. Persist the semantic transition before
+        # the caller projects the disposition to GitHub.
+        prior_gaps_by_id = {gap.gap_id: gap for gap in lifecycle_session.test_oracle_gaps} if lifecycle_session else {}
+        has_proven_gap_closure = any(
+            prior_gaps_by_id.get(gap.gap_id) is not None and prior_gaps_by_id[gap.gap_id].status == "OPEN" and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap) and gap.status in {"RESOLVED", "INVALID"} and bool(gap.resolution_evidence) for gap in result.test_oracle_gaps
+        )
+        persist_proven_closure = has_proven_gap_closure and result.diagnostic_category == "change_provenance_clarification"
         persisted_head_sha = head_sha if lifecycle_completed else lifecycle_session.last_head_sha if lifecycle_session else ""
-        persisted_gaps = result.test_oracle_gaps if lifecycle_completed else lifecycle_session.test_oracle_gaps if lifecycle_session else []
+        persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
         registry.save(
             ReviewerSession(
                 repository=repo_name,

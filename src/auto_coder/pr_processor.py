@@ -2684,6 +2684,7 @@ def _handle_pr_merge(
                                     config,
                                     github_client=github_client,
                                     claimed_review_threads_section=claimed_review_threads_section,
+                                    claimed_review_threads=claimed_review_threads,
                                 )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
