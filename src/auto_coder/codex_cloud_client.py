@@ -374,12 +374,19 @@ class CodexCloudClient(CloudTaskClientBase):
                 else:
                     state = CloudTaskState.UNKNOWN
 
+                raw_data = None
+                if state in {CloudTaskState.COMPLETED, CloudTaskState.FAILED, CloudTaskState.PAUSED}:
+                    latest_turn_id = (self.wham_client or CodexWhamClient()).resolve_latest_assistant_turn(task_id)
+                    if latest_turn_id:
+                        raw_data = {"latest_turn_id": latest_turn_id}
+
                 return CloudTask(
                     task_id=task_id,
                     state=state,
                     raw_state=output,
                     prompt=self.active_tasks.get(task_id),
                     url=self.task_urls.get(task_id),
+                    raw_data=raw_data,
                 )
         except Exception as e:
             logger.debug(f"Failed to check Codex Cloud task status for {task_id}: {e}")
@@ -510,6 +517,18 @@ class CodexCloudClient(CloudTaskClientBase):
             _save_pending_followups(state_path, records)
         logger.info(f"Reconciled previously ambiguous Codex follow-up '{logical_identity}' as delivered")
         return FollowUpDeliveryOutcome.DELIVERED
+
+    def get_followup_remediation_baseline(self, task_id: str, logical_identities: tuple[str, ...]) -> str:
+        """Return the pre-send assistant turn durably captured for a follow-up."""
+        state_path = _codex_followup_state_path(self.repo_name)
+        keys = [hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest() for identity in logical_identities]
+        with _followup_state_lock:
+            try:
+                records = _load_pending_followups(state_path)
+            except (OSError, ValueError, TypeError):
+                return ""
+        turns = {records[key].pre_send_turn_id for key in keys if key in records and records[key].pre_send_turn_id}
+        return f"latest_turn_id:{turns.pop()}" if len(turns) == 1 else ""
 
     def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
