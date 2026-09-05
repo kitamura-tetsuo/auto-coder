@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -81,6 +82,19 @@ time.sleep(float(os.environ["LIFETIME"]))
     execution_id = process.stdout.readline().strip()
     assert execution_id and execution_id != "None"
     return process, execution_id
+
+
+def wait_for_zombie(process, timeout=5):
+    """Wait for a child to terminate without reaping its procfs record."""
+    deadline = time.monotonic() + timeout
+    stat_path = f"/proc/{process.pid}/stat"
+    while time.monotonic() < deadline:
+        stat = open(stat_path, encoding="ascii").read()
+        state = stat[stat.rfind(")") + 2 :].split()[0]
+        if state == "Z":
+            return
+        time.sleep(0.01)
+    pytest.fail(f"process {process.pid} did not enter zombie state")
 
 
 def test_reservation_is_durable_and_independent_owners_obey_limit(tmp_path):
@@ -510,6 +524,45 @@ def test_crashed_execution_on_open_issue_is_retried_without_releasing_owner(tmp_
     assert replacement != stale_execution
     assert repository(tmp_path).active_owners() == (owner,)
     assert repository(tmp_path).active_execution_ids(owner) == (replacement,)
+
+
+def test_unreaped_zombie_execution_is_reclaimed_during_retry_admission(tmp_path):
+    """REQ-001/REQ-003/REQ-007: a terminated procfs identity cannot block retry."""
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 100)
+    process, stale_execution = execution_process(slots.storage_path, lifetime=0)
+    try:
+        wait_for_zombie(process)
+
+        replacement = repository(tmp_path).start_execution(owner)
+
+        assert replacement is not None
+        assert replacement != stale_execution
+        assert repository(tmp_path).active_execution_ids(owner) == (replacement,)
+        assert repository(tmp_path).active_owners() == (owner,)
+    finally:
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("owner", [ImplementationOwner("issue", 100), ImplementationOwner("pr", 200)])
+def test_unreaped_zombie_execution_allows_terminal_owner_release(tmp_path, owner):
+    """REQ-005/REQ-006: reconciliation treats terminated zombie tasks as stale."""
+    slots = repository(tmp_path)
+    process, execution_id = execution_process(slots.storage_path, owner_kind=owner.kind, owner_number=owner.number, lifetime=0)
+    try:
+        wait_for_zombie(process)
+        github = GitHubState(
+            issues={owner.number: {"number": owner.number, "state": "closed"}},
+            prs={owner.number: {"number": owner.number, "state": "closed", "merged": False}},
+            linked_prs={owner.number: []},
+        )
+
+        repository(tmp_path).reconcile(github)
+
+        assert execution_id not in repository(tmp_path).active_execution_ids(owner)
+        assert repository(tmp_path).active_owners() == ()
+    finally:
+        process.wait(timeout=5)
 
 
 def test_live_execution_in_another_process_survives_startup_reconciliation(tmp_path):

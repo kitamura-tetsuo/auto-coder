@@ -48,6 +48,7 @@ class ProcessIdentity:
     pid: int
     boot_id: str
     start_ticks: int
+    state: str
 
 
 class ImplementationSlotRepository:
@@ -283,8 +284,11 @@ class ImplementationSlotRepository:
                 return None
             fields_after_name = stat[closing_parenthesis + 2 :].split()
             # The suffix begins at field 3 (state); process start time is field 22.
+            state = fields_after_name[0]
             start_ticks = int(fields_after_name[19])
-            return ProcessIdentity(pid=pid, boot_id=boot_id, start_ticks=start_ticks)
+            if len(state) != 1:
+                return None
+            return ProcessIdentity(pid=pid, boot_id=boot_id, start_ticks=start_ticks, state=state)
         except (OSError, UnicodeError, ValueError, IndexError):
             return None
 
@@ -300,7 +304,10 @@ class ImplementationSlotRepository:
             return False
         current = self._read_process_identity(pid)
         if current is not None:
-            return current.boot_id != boot_id or current.start_ticks != start_ticks
+            identity_changed = current.boot_id != boot_id or current.start_ticks != start_ticks
+            # Zombie and dead tasks retain a procfs identity until their parent
+            # reaps them, but cannot execute and are conclusively no longer live.
+            return identity_changed or current.state in {"Z", "X", "x"}
         try:
             current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
             process_exists = Path(f"/proc/{pid}").exists()
