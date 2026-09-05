@@ -1,7 +1,8 @@
 import asyncio
 import hashlib
 import hmac
-from typing import Any, Dict, List, Optional, Union
+from collections.abc import Mapping
+from typing import Any, Dict, Optional, Union
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -93,27 +94,59 @@ async def process_github_payload(
     delivery_id: Optional[str] = None,
 ) -> None:
     """Translate relevant webhook notifications into durable entity invalidations."""
-    identities: List[tuple[str, int]] = []
-    if event_type == "pull_request":
-        pull_request = payload.get("pull_request") or {}
-        number = pull_request.get("number")
-        if payload.get("action") == "closed":
+    action = payload.get("action")
+    identities: set[tuple[str, int]] = set()
+    entity_actions = {
+        "pull_request": {"opened", "edited", "closed", "reopened", "synchronize", "converted_to_draft", "ready_for_review", "labeled", "unlabeled", "assigned", "unassigned"},
+        "issues": {"opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned", "deleted", "transferred"},
+        "pull_request_review": {"submitted", "edited", "dismissed"},
+        "pull_request_review_comment": {"created", "edited", "deleted"},
+        "pull_request_review_thread": {"resolved", "unresolved"},
+        "issue_comment": {"created", "edited", "deleted"},
+    }
+    if event_type in entity_actions and action in entity_actions[event_type]:
+        if event_type == "issues":
+            entity, entity_type = payload.get("issue"), "issue"
+        elif event_type == "issue_comment":
+            entity = payload.get("issue")
+            entity_type = "pr" if isinstance(entity, Mapping) and "pull_request" in entity else "issue"
+        else:
+            entity, entity_type = payload.get("pull_request"), "pr"
+        number = entity.get("number") if isinstance(entity, Mapping) else None
+        if isinstance(number, int):
+            identities.add((entity_type, number))
+        if event_type == "pull_request" and action == "closed":
             engine.notify_pr_merged_or_closed()
-        if payload.get("action") in {"opened", "reopened", "synchronize", "ready_for_review"} and isinstance(number, int):
-            identities.append(("pr", number))
-    elif event_type == "workflow_run":
-        workflow_run = payload.get("workflow_run") or {}
-        if payload.get("action") == "completed" and workflow_run.get("conclusion") == "failure":
-            identities.extend(("pr", number) for pr in workflow_run.get("pull_requests", []) if isinstance((number := pr.get("number")), int))
-    elif event_type == "issues":
-        issue = payload.get("issue") or {}
-        number = issue.get("number")
-        if payload.get("action") in {"opened", "edited", "reopened"} and isinstance(number, int):
-            identities.append(("issue", number))
 
-    for index, (entity_type, number) in enumerate(identities):
-        entity_delivery_id = f"{delivery_id}:{index}" if delivery_id else None
-        accepted = await engine.invalidate_entity(repo_name, entity_type, number, entity_delivery_id)
+    completion_events = {("workflow_run", "completed"), ("workflow_job", "completed"), ("check_run", "completed"), ("check_suite", "completed")}
+    if (event_type, action) in completion_events or event_type == "status":
+        container_name: Optional[str] = {
+            "workflow_run": "workflow_run",
+            "workflow_job": "workflow_job",
+            "check_run": "check_run",
+            "check_suite": "check_suite",
+        }.get(event_type or "")
+        container: object
+        if container_name is None:
+            container = payload
+        else:
+            container = payload.get(container_name)
+        if not isinstance(container, Mapping):
+            container = {}
+        pull_requests = container.get("pull_requests", [])
+        if isinstance(pull_requests, list):
+            for pull_request in pull_requests:
+                number = pull_request.get("number") if isinstance(pull_request, Mapping) else None
+                if isinstance(number, int):
+                    identities.add(("pr", number))
+        if not identities:
+            sha = container.get("head_sha") or container.get("sha")
+            if isinstance(sha, str) and sha:
+                numbers = await asyncio.to_thread(engine.github.get_pull_request_numbers_for_commit, repo_name, sha)
+                identities.update(("pr", number) for number in numbers)
+
+    for entity_type, number in sorted(identities):
+        accepted = await engine.invalidate_entity(repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
         logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 
@@ -147,6 +180,10 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
             verify_github_signature(body, github_secret, signature)
 
         payload = await request.json()
+        repository = payload.get("repository") if isinstance(payload, dict) else None
+        payload_repo = repository.get("full_name") if isinstance(repository, dict) else None
+        if not isinstance(payload_repo, str) or payload_repo.casefold() != repo_name.casefold():
+            raise HTTPException(status_code=403, detail="Repository is outside webhook scope")
         # Persistence is part of accepting a delivery, so it must finish before
         # returning 200 rather than being delegated to an in-memory task.
         await process_github_payload(event_type, payload, engine, repo_name, delivery_id)

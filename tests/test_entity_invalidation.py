@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
+from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
 from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app, process_github_payload
 
@@ -58,6 +59,57 @@ def test_duplicate_delivery_does_not_advance_generation(tmp_path: Path):
     assert not queue.invalidate(identity, "delivery-1")
     claim = queue.claim("owner/repo")
     assert claim is not None and claim.generation == 1
+
+
+def test_one_delivery_can_invalidate_multiple_entities_with_preserved_metadata(tmp_path: Path):
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    first = EntityIdentity("owner/repo", "pr", 41)
+    second = EntityIdentity("owner/repo", "pr", 42)
+
+    assert queue.invalidate(first, "delivery-1", "check_run", "completed")
+    assert queue.invalidate(second, "delivery-1", "check_run", "completed")
+    assert not queue.invalidate(first, "delivery-1", "check_run", "completed")
+
+    assert queue.get_delivery_metadata("owner/repo", "delivery-1") == [
+        GitHubDeliveryMetadata("delivery-1", first, "check_run", "completed"),
+        GitHubDeliveryMetadata("delivery-1", second, "check_run", "completed"),
+    ]
+
+
+def test_http_redelivery_after_migration_recognizes_former_adapter_suffix(tmp_path: Path, monkeypatch):
+    path = tmp_path / "invalidations.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE entity_invalidations (
+            repository TEXT NOT NULL, entity_type TEXT NOT NULL, entity_number INTEGER NOT NULL,
+            generation INTEGER NOT NULL, claimed_generation INTEGER, state TEXT NOT NULL,
+            PRIMARY KEY(repository, entity_type, entity_number)
+        );
+        CREATE TABLE github_deliveries (
+            repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
+            PRIMARY KEY(repository, delivery_id)
+        );
+        INSERT INTO github_deliveries VALUES ('owner/repo', 'same-delivery:0');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    with patch("src.auto_coder.webhook_server.init_dashboard"):
+        app = create_app(engine, "owner/repo")
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json={"action": "opened", "pull_request": {"number": 77}, "repository": {"full_name": "owner/repo"}},
+            headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "same-delivery"},
+        )
+
+    assert response.status_code == 200
+    assert engine.invalidations.pending_count("owner/repo") == 0
+    assert engine.queue.qsize() == 0
 
 
 def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path, monkeypatch):
@@ -184,8 +236,9 @@ def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatc
         app = create_app(engine, "owner/repo")
     headers = {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "same-delivery"}
     with TestClient(app) as client:
-        assert client.post("/hooks/github", json={"action": "opened", "pull_request": {"number": 100}}, headers=headers).status_code == 200
-        assert client.post("/hooks/github", json={"action": "opened", "pull_request": {"number": 100}}, headers=headers).status_code == 200
+        payload = {"action": "opened", "pull_request": {"number": 100}, "repository": {"full_name": "owner/repo"}}
+        assert client.post("/hooks/github", json=payload, headers=headers).status_code == 200
+        assert client.post("/hooks/github", json=payload, headers=headers).status_code == 200
 
     asyncio.run(_run_worker_until(engine, 1, processed))
     assert processed == [100]

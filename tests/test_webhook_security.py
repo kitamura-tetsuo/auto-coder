@@ -36,7 +36,7 @@ class MockEngine:
         self.github = MockGitHubClient()
         self.queue = MockQueue()
 
-    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None):
+    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None):
         return True
 
 
@@ -47,8 +47,7 @@ def test_github_webhook_security_valid_signature(mock_init_dashboard):
     app = create_app(engine, "owner/repo", github_secret=secret)
 
     with TestClient(app) as client:
-        payload = {"action": "opened", "pull_request": {"number": 202, "title": "New Feature"}}
-        payload_bytes = b'{"action": "opened", "pull_request": {"number": 202, "title": "New Feature"}}'
+        payload_bytes = b'{"action":"opened","pull_request":{"number":202},"repository":{"full_name":"owner/repo"}}'
 
         # Calculate valid signature
         mac = hmac.new(secret.encode(), msg=payload_bytes, digestmod=hashlib.sha256)
@@ -109,3 +108,44 @@ def test_github_webhook_security_missing_signature(mock_init_dashboard):
     with TestClient(app) as client:
         response = client.post("/hooks/github", json={}, headers={"X-GitHub-Event": "pull_request"})
         assert response.status_code == 403
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_newly_supported_check_event_rejects_invalid_signature(mock_init_dashboard):
+    engine = MockEngine()
+    engine.invalidate_entity = MagicMock()
+    app = create_app(engine, "owner/repo", github_secret="mysecret")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json={"action": "completed", "check_run": {"head_sha": "abc"}},
+            headers={
+                "X-GitHub-Event": "check_run",
+                "X-GitHub-Delivery": "untrusted",
+                "X-Hub-Signature-256": "sha256=invalid",
+            },
+        )
+
+    assert response.status_code == 403
+    engine.invalidate_entity.assert_not_called()
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_signed_check_event_without_repository_identity_fails_closed(mock_init_dashboard):
+    engine = MockEngine()
+    engine.invalidate_entity = MagicMock()
+    secret = "mysecret"
+    app = create_app(engine, "owner/repo", github_secret=secret)
+    payload_bytes = b'{"action":"completed","check_run":{"head_sha":"abc"}}'
+    signature = f"sha256={hmac.new(secret.encode(), msg=payload_bytes, digestmod=hashlib.sha256).hexdigest()}"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            content=payload_bytes,
+            headers={"X-GitHub-Event": "check_run", "X-Hub-Signature-256": signature, "Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 403
+    engine.invalidate_entity.assert_not_called()

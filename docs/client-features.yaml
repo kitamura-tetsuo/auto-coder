@@ -1340,3 +1340,6 @@ successful defer.
       - "Dirty and in-flight records use SQLite durability. Startup recovers interrupted work before workers enter steady-state processing."
       - "A record is completed only after authoritative fetching and the resulting eligibility or processing decision; failures and cancellation return it to the dirty set."
       - "GitHub delivery identifiers are persisted for deduplication, preventing a redelivery from advancing the entity generation or causing duplicate processing by itself."
+      - "GitHub issue, pull request, review, comment, review-thread, workflow, check, and commit-status events use an explicit material-action mapping; unsupported actions do not schedule work."
+      - "Workflow and check completion payloads without embedded pull request numbers resolve associated pull requests from the event head commit through GitHub's REST API."
+      - "Delivery UUID, event type, and action are retained with each affected entity for duplicate-delivery diagnostics, while signature verification and configured-repository scoping occur before invalidation."
