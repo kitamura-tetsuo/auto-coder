@@ -32,6 +32,23 @@ implementation slot, adding ownership, creating a branch, or starting any local
 or cloud backend. The rule also applies to explicit `--only` and forced runs;
 removing the label before dispatch makes the Issue ineligible again.
 
+Semantic validation decisions are bound to the repository and Issue number, an
+exact SHA-256 digest of the authoritative title and body, and a policy identity
+covering the analyzer prompt, structured finding contract, provider route, and
+model. Completed `READY` and `BLOCKED` decisions are durable across restarts;
+transport or malformed-output `ERROR` decisions are never cached. Validation is
+coalesced per identity and happens before implementation capacity is acquired.
+Immediately before dispatch, Auto-Coder re-fetches the Issue and rejects stale
+`READY` evidence if its text changed or readiness was withdrawn.
+
+A current `BLOCKED` decision independently denies dispatch even if its GitHub
+updates fail. Before publishing its single identity-marked actionable summary
+and before removing `implementation-ready`, Auto-Coder re-fetches and compares
+the generation. Consequently a late result cannot modify edited Issue text, and
+an edit after label removal is not silently resubmitted; a user must explicitly
+add `implementation-ready` again. Validator `ERROR` preserves the label and
+publishes no specification-defect claim so a later attempt can retry.
+
 ## Adversarial implementation-readiness analysis
 
 Auto-Coder exposes a provider-independent semantic analysis operation for an

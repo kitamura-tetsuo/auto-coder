@@ -6,7 +6,7 @@ import json
 import sys
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, TypedDict, Union, cast
+from typing import Any, Callable, Dict, List, Optional, TypedDict, Union, cast
 
 from dateutil import parser
 
@@ -67,6 +67,7 @@ def _take_issue_actions(
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
     check_labels: Optional[bool] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation.
 
@@ -99,14 +100,25 @@ def _take_issue_actions(
                 backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
 
         # Ask LLM CLI to analyze the issue and take appropriate actions
-        action_results = _apply_issue_actions_directly(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-            backend_manager=backend_manager,
-            check_labels=check_labels,
-        )
+        if implementation_slots is None:
+            action_results = _apply_issue_actions_directly(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+                backend_manager=backend_manager,
+                check_labels=check_labels,
+            )
+        else:
+            action_results = _apply_issue_actions_directly(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+                backend_manager=backend_manager,
+                check_labels=check_labels,
+                implementation_slots=implementation_slots,
+            )
         actions.extend(action_results)
 
     except AutoCoderRetryableBackendError:
@@ -431,6 +443,7 @@ def _process_issue_high_score_cloud(
     config: AutomationConfig,
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Process an issue using the backend_with_high_score_cloud configuration with failover support.
 
@@ -512,6 +525,7 @@ def _process_issue_high_score_cloud(
         github_client,
         backend_manager=backend_manager,
         check_labels=False,
+        implementation_slots=implementation_slots,
     )
 
 
@@ -521,6 +535,7 @@ def _process_issue_cloud_backend(
     config: AutomationConfig,
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Process an issue using the backend_cloud configuration with failover support.
 
@@ -609,6 +624,7 @@ def _process_issue_cloud_backend(
         github_client,
         backend_manager=backend_manager,
         check_labels=False,
+        implementation_slots=implementation_slots,
     )
 
 
@@ -630,15 +646,25 @@ def _stop_jules_session_for_issue(
     timeout_hours: int,
     github_client: GitHubClient,
 ) -> bool:
-    """Tell a stale Jules session to stop and record it as stopped.
+    """Request a stop and confirm authoritative remote termination.
 
     Returns:
-        True when the stop message was accepted by the Jules API.
+        True only when the Jules API subsequently reports a terminal state.
     """
     try:
         jules_client.send_message(session_id, "stop")
     except Exception as e:
         logger.error(f"Failed to send stop message to Jules session {session_id} for issue #{issue_number}: {e}")
+        return False
+
+    try:
+        stopped_session = jules_client.get_session(session_id)
+    except Exception as e:
+        logger.warning(f"Stop was requested for Jules session {session_id}, but terminal state could not be confirmed: {e}")
+        return False
+    state = stopped_session.get("state") if isinstance(stopped_session, dict) else None
+    if state not in {"COMPLETED", "FAILED"}:
+        logger.info(f"Stop requested for Jules session {session_id}; retaining implementation capacity while state is {state or 'unknown'}")
         return False
 
     mark_session_stopped(session_id)
@@ -661,6 +687,7 @@ def handle_stale_jules_issue_sessions(
     config: AutomationConfig,
     github_client: GitHubClient,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    authorize_dispatch: Optional[Callable[[str, int, Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> StaleJulesIssueResult:
     """Take issues away from Jules sessions that ran out of time without opening a PR.
 
@@ -757,8 +784,9 @@ def handle_stale_jules_issue_sessions(
             issue = github_client.get_issue(repo_name, issue_number)
             if issue is None:
                 continue
-
             issue_data = github_client.get_issue_details(issue)
+            issue_data["title"] = str(current_issue.get("title") or "")
+            issue_data["body"] = str(current_issue.get("body") or "")
 
             if issue_data.get("state") != "open":
                 continue
@@ -768,50 +796,84 @@ def handle_stale_jules_issue_sessions(
                 continue
 
             owner = ImplementationOwner("issue", issue_number)
-            serialization = implementation_slots.serialize(owner) if implementation_slots is not None else nullcontext()
+            if implementation_slots is None:
+                logger.warning(f"Skipping stale Jules session {session_id}: implementation capacity admission is unavailable")
+                continue
+            serialization = implementation_slots.serialize(owner)
             with serialization:
+                if authorize_dispatch is None:
+                    logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
+                    continue
                 if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
                     continue
 
-                result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
-                get_trace_logger().log(
-                    "Jules Timeout",
-                    f"Stopped Jules session for issue #{issue_number}",
-                    item_type="issue",
-                    item_number=issue_number,
-                    details={"session_id": session_id, "timeout_hours": timeout_hours},
-                )
+                # The remote generation is now stopped. Remove its durable task
+                # membership before validating the replacement generation, so
+                # semantic validation never retains implementation capacity.
+                for old_execution_id in implementation_slots.active_execution_ids(owner):
+                    implementation_slots.finish_execution(owner, old_execution_id)
+                if not implementation_slots.finish_provider_session(owner, session_id):
+                    # Legacy launches may predate provider-session membership.
+                    # The remote task is confirmed stopped and has no PR, so its
+                    # old logical ownership can now be safely retired.
+                    implementation_slots.release(owner)
 
-                # The abandoned Jules run counts as a failed attempt, so the fallback starts
-                # from a fresh attempt branch instead of the one Jules left behind.
+                # Stopping Jules is external I/O. Fetch and validate afterward so
+                # edits during that request are part of the replacement identity.
+                authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
+                if authorized_issue is None:
+                    continue
+                issue_data["title"] = str(authorized_issue.get("title") or "")
+                issue_data["body"] = str(authorized_issue.get("body") or "")
+
+                replacement_execution_id = implementation_slots.start_execution(owner)
+                if replacement_execution_id is None:
+                    logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: implementation capacity is occupied")
+                    continue
+
                 try:
-                    new_attempt = increment_attempt(repo_name, issue_number)
-                    result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
-                except Exception as e:
-                    logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
-                    result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
-
-                from .cli_helpers import create_high_score_backend_manager
-
-                backend_manager = create_high_score_backend_manager()
-                if backend_manager is None:
-                    logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
-
-                # The @auto-coder label the Jules run left on the issue is kept so no other
-                # instance picks the issue up while the fallback is working on it. Passing
-                # check_labels=False makes the label gate let this run through instead of
-                # skipping the issue it already owns.
-                result.actions.extend(
-                    _take_issue_actions(
-                        repo_name,
-                        issue_data,
-                        config,
-                        github_client,
-                        backend_manager=backend_manager,
-                        check_labels=False,
+                    result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")
+                    get_trace_logger().log(
+                        "Jules Timeout",
+                        f"Stopped Jules session for issue #{issue_number}",
+                        item_type="issue",
+                        item_number=issue_number,
+                        details={"session_id": session_id, "timeout_hours": timeout_hours},
                     )
-                )
-                result.issue_numbers.append(issue_number)
+
+                    # The abandoned Jules run counts as a failed attempt, so the fallback starts
+                    # from a fresh attempt branch instead of the one Jules left behind.
+                    try:
+                        new_attempt = increment_attempt(repo_name, issue_number)
+                        result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+                    except Exception as e:
+                        logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                        result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+
+                    from .cli_helpers import create_high_score_backend_manager
+
+                    backend_manager = create_high_score_backend_manager()
+                    if backend_manager is None:
+                        logger.warning("backend_with_high_score is not configured; using the default backend for the Jules fallback")
+
+                    # The @auto-coder label the Jules run left on the issue is kept so no other
+                    # instance picks the issue up while the fallback is working on it. Passing
+                    # check_labels=False makes the label gate let this run through instead of
+                    # skipping the issue it already owns.
+                    result.actions.extend(
+                        _take_issue_actions(
+                            repo_name,
+                            issue_data,
+                            config,
+                            github_client,
+                            backend_manager=backend_manager,
+                            check_labels=False,
+                            implementation_slots=implementation_slots,
+                        )
+                    )
+                    result.issue_numbers.append(issue_number)
+                finally:
+                    implementation_slots.finish_execution(owner, replacement_execution_id)
 
         except Exception as e:
             logger.error(f"Failed to handle stale Jules session {session_id}: {e}")
@@ -827,6 +889,7 @@ def _create_pr_for_issue(
     llm_response: str,
     github_client: GitHubClient,
     config: AutomationConfig,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> str:
     """
     Create a pull request for the issue.
@@ -912,6 +975,8 @@ def _create_pr_for_issue(
             existing_pr = github_client.find_pr_by_head_branch(repo_name, work_branch)
             if existing_pr:
                 pr_number = existing_pr["number"]
+                if implementation_slots is not None and not implementation_slots.record_implementation_pr(ImplementationOwner("issue", int(issue_number)), int(pr_number)):
+                    raise RuntimeError(f"Could not retain ownership for existing PR #{pr_number}")
                 pr_url = existing_pr.get("html_url", f"https://github.com/{repo_name}/pull/{pr_number}")
                 logger.info(f"PR already exists for issue #{issue_number}: {pr_url}")
                 return f"PR already exists for issue #{issue_number}: {pr_url}"
@@ -930,6 +995,8 @@ def _create_pr_for_issue(
 
             # Propagate semantic labels from issue to PR if present
             if pr_number:
+                if implementation_slots is not None and not implementation_slots.record_implementation_pr(ImplementationOwner("issue", int(issue_number)), int(pr_number)):
+                    raise RuntimeError(f"Could not retain ownership for PR #{pr_number}")
                 import time
 
                 # Wait a moment for GitHub to process the PR creation
@@ -1006,6 +1073,7 @@ def _apply_issue_actions_directly(
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
     check_labels: Optional[bool] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly.
 
@@ -1224,6 +1292,7 @@ def _apply_issue_actions_directly(
                                 llm_response=response,
                                 github_client=github_client,
                                 config=config,
+                                implementation_slots=implementation_slots,
                             )
                         actions.append(pr_creation_result)
 

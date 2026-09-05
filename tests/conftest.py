@@ -18,6 +18,23 @@ if str(_src_path) not in sys.path:
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
+from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
+
+
+@pytest.fixture(autouse=True)
+def default_semantic_specification_result(monkeypatch, tmp_path):
+    """Prevent unrelated production-boundary tests from invoking an external LLM."""
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "auto_coder.specification_validation_lifecycle.analyze_issue_specification",
+        lambda _manifest, _body: SpecificationAnalysisResult("READY"),
+    )
+    monkeypatch.setattr(
+        "src.auto_coder.specification_validation_lifecycle.analyze_issue_specification",
+        lambda _manifest, _body: SpecificationAnalysisResult("READY"),
+    )
+
+
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.jules_client import invalidate_jules_sessions_cache
 from src.auto_coder.llm_backend_config import reset_llm_config

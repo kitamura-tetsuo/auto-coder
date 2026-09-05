@@ -24,7 +24,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
-from .implementation_slots import ImplementationOwnerResolutionError, ImplementationSlotRepository
+from .implementation_slots import ImplementationOwner, ImplementationOwnerResolutionError, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -38,6 +38,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
+from .specification_validation_lifecycle import SpecificationValidationLifecycle, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -81,6 +82,7 @@ class AutomationEngine:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pr_merged_or_closed: bool = False
         self.implementation_slots: Optional[ImplementationSlotRepository] = None
+        self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -168,6 +170,7 @@ class AutomationEngine:
                 self.config,
                 self.github,
                 implementation_slots=self._get_implementation_slots(repo_name),
+                authorize_dispatch=self._authorize_stale_jules_dispatch,
             )
             for action in stale_result.actions:
                 logger.info(f"Stale Jules issue session: {action}")
@@ -175,6 +178,33 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Error handling stale Jules issue sessions: {e}")
             return []
+
+    def _get_specification_validator(self, repo_name: str) -> SpecificationValidationLifecycle:
+        validator = self._specification_validators.get(repo_name)
+        if validator is None:
+            validator = SpecificationValidationLifecycle(repo_name, configured_provider_identity())
+            self._specification_validators[repo_name] = validator
+        return validator
+
+    def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Apply the same generation authorization to daemon replacement work."""
+        title = str(snapshot.get("title") or "")
+        body = str(snapshot.get("body") or "")
+        manifest = build_normative_issue_manifest(issue_number, title, body)
+        if manifest.error:
+            return None
+        validator = self._get_specification_validator(repo_name)
+        decision = validator.decide(manifest, title, body)
+        if decision.verdict == "BLOCKED":
+            validator.apply_blocked(self.github, decision)
+            return None
+        if decision.verdict != "READY":
+            return None
+        refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        if not isinstance(refreshed, dict) or not is_implementation_ready(refreshed):
+            return None
+        identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
+        return refreshed if identity == decision.identity else None
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
@@ -1184,6 +1214,7 @@ class AutomationEngine:
         force: bool = False,
         continue_execution: bool = False,
         advance_issue_attempt: bool = False,
+        generation_serialized: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1227,6 +1258,45 @@ class AutomationEngine:
             if not self._is_issue_author_allowed(candidate.data):
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
+            if not generation_serialized:
+                # One owner lock spans validation, final verification, admission,
+                # and implementation. A changed generation therefore waits for
+                # the preceding implementation to actually finish; validation
+                # never deletes or overlaps its capacity ownership.
+                owner = ImplementationOwner("issue", item_number)
+                slots = self._get_implementation_slots(repo_name)
+                retained_async_owner = slots.has_provider_sessions(owner)
+                if (slots.active_execution_ids(owner) or retained_async_owner) and not continue_execution:
+                    result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
+                    return result
+                with slots.serialize(owner):
+                    if owner in slots.active_owners() and not continue_execution:
+                        # A completed local launch can leave a bare owner while
+                        # its Issue stays open. It has no actual implementation
+                        # work to coordinate, so retire it before validation.
+                        # Owners with PR/provider/execution membership remain
+                        # protected and cannot be silently discarded.
+                        snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                        validator = self._get_specification_validator(repo_name)
+                        current_identity = validator.identity(
+                            item_number,
+                            str(snapshot.get("title") or ""),
+                            str(snapshot.get("body") or ""),
+                        ).key
+                        if (is_implementation_ready(snapshot) and slots.validation_identity(owner) == current_identity) or not slots.release_unbound_idle_owner(owner):
+                            result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
+                            return result
+                    return self._process_single_candidate_unified(
+                        repo_name,
+                        candidate,
+                        config,
+                        jules_mode,
+                        explicit_only,
+                        force,
+                        continue_execution,
+                        advance_issue_attempt,
+                        generation_serialized=True,
+                    )
             try:
                 current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
@@ -1251,7 +1321,8 @@ class AutomationEngine:
                 return result
 
             current_body = str(current_issue.get("body") or "")
-            contract = build_normative_issue_manifest(item_number, str(current_issue.get("title") or ""), current_body)
+            current_title = str(current_issue.get("title") or "")
+            contract = build_normative_issue_manifest(item_number, current_title, current_body)
             if contract.error:
                 fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{current_body}\0{contract.error}".encode("utf-8")).hexdigest()
                 marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
@@ -1279,6 +1350,50 @@ class AutomationEngine:
                 result.error = contract.error
                 return result
 
+            # Semantic readiness is a durable authorization for this exact title,
+            # body, repository, Issue and validator policy. It deliberately runs
+            # before implementation ownership/capacity is consulted.
+            validator = self._get_specification_validator(repo_name)
+            decision = validator.decide(contract, current_title, current_body)
+            if decision.verdict == "ERROR":
+                result.error = "Specification validation failed; implementation-ready was preserved for retry"
+                result.actions = ["Deferred - specification validation error"]
+                return result
+            if decision.verdict == "BLOCKED":
+                try:
+                    side_effect_error = validator.apply_blocked(self.github, decision)
+                except Exception as exc:
+                    side_effect_error = str(exc)
+                if side_effect_error:
+                    logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
+                    result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
+                    result.actions = ["Rejected - blocked specification (side effects incomplete)"]
+                    return result
+                result.error = "Specification validation found material defects"
+                result.actions = ["Rejected - blocked specification"]
+                return result
+
+            # This is the final cache-bypassing check immediately before slot and
+            # ownership handling. READY for an edited or withdrawn submission is
+            # not transferable.
+            try:
+                dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            except Exception as exc:
+                result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                return result
+            dispatch_identity = validator.identity(
+                item_number,
+                str(dispatch_snapshot.get("title") or ""),
+                str(dispatch_snapshot.get("body") or ""),
+            )
+            if not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
+                result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
+                return result
+
+            # The backend must receive exactly the authoritative generation that
+            # READY authorized, never the older candidate collection payload.
+            candidate.data.update(dispatch_snapshot)
+
         slots = self._get_implementation_slots(repo_name)
         try:
             owner = slots.resolve_owner(candidate.type, candidate.data, self.github)
@@ -1291,12 +1406,22 @@ class AutomationEngine:
 
         implementation_pr = item_number if candidate.type == "pr" and owner.kind != "pr" else None
         labels = candidate.data.get("labels", [])
-        urgent_issue = candidate.type == "issue" and isinstance(labels, list) and "urgent" in labels
+        urgent_issue = candidate.type == "issue" and isinstance(labels, list) and any(label == "urgent" or (isinstance(label, dict) and label.get("name") == "urgent") for label in labels)
+
+        def issue_generation_is_current() -> bool:
+            if candidate.type != "issue":
+                return True
+            latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            return isinstance(latest, dict) and is_implementation_ready(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
+
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
         with repository_dispatch_authority(repo_name):
+            if not issue_generation_is_current():
+                result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
+                return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             if not inherited_execution:
@@ -1304,11 +1429,14 @@ class AutomationEngine:
                     owner,
                     implementation_pr=implementation_pr,
                     bypass_capacity=explicit_only,
-                    bypass_active_execution=explicit_only and force,
+                    bypass_active_execution=explicit_only and force and candidate.type == "pr",
                     allow_urgent_emergency=urgent_issue,
                 )
             if execution_id is None and not explicit_only:
                 slots.reconcile(self.github)
+                if not issue_generation_is_current():
+                    result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
+                    return result
                 execution_id = slots.start_execution(
                     owner,
                     implementation_pr=implementation_pr,
@@ -1319,10 +1447,16 @@ class AutomationEngine:
             result.actions = [f"Deferred - {reason} ({owner.key})"]
             return result
 
+        if candidate.type == "issue" and not inherited_execution:
+            if not slots.record_validation_identity(owner, decision.identity.key):
+                slots.finish_execution(owner, execution_id)
+                result.error = "Could not bind implementation ownership to validated Issue generation"
+                return result
+
         try:
-            # Forced recovery intentionally does not take the per-owner mutation
-            # lock; its separate durable execution identity protects sibling state.
-            if explicit_only and force:
+            # Issue force changes scheduling eligibility, not generation-level
+            # serialization. PR forced recovery retains its separate execution.
+            if explicit_only and force and candidate.type == "pr":
                 if advance_issue_attempt:
                     result = self._process_single_candidate_reserved(
                         repo_name,
@@ -1373,6 +1507,8 @@ class AutomationEngine:
             # Ensure item_number is not None
             if item_number is None:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
+
+            implementation_slots = self._get_implementation_slots(repo_name)
 
             if item_type == "pr":
                 from .pr_processor import _reject_unsafe_codex_cloud_pr
@@ -1502,6 +1638,7 @@ class AutomationEngine:
                             config,
                             self.github,
                             label_context=should_process,
+                            implementation_slots=implementation_slots,
                         )
                     elif is_difficult:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
@@ -1515,6 +1652,7 @@ class AutomationEngine:
                             config,
                             self.github,
                             label_context=should_process,
+                            implementation_slots=implementation_slots,
                         )
                     elif jules_mode:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
@@ -1527,12 +1665,25 @@ class AutomationEngine:
                             config,
                             self.github,
                             label_context=should_process,
+                            implementation_slots=implementation_slots,
                         )
 
                     else:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         result.actions = self._take_issue_actions(repo_name, candidate.data)
+
+                    # Cloud launchers persist the authoritative provider task in
+                    # CloudManager. Mirror that production output into logical
+                    # slot membership before the local launch execution returns,
+                    # so later generations cannot validate around remote work.
+                    from .cloud_manager import CloudManager
+
+                    binding = CloudManager(repo_name).get_binding(item_number)
+                    if binding is not None:
+                        owner = ImplementationOwner("issue", item_number)
+                        if not self._get_implementation_slots(repo_name).record_provider_session(owner, binding.task_id):
+                            raise RuntimeError(f"Could not retain asynchronous implementation ownership for issue #{item_number}")
                     result.success = True
                 elif item_type == "pr":
                     # PR processing
@@ -2088,6 +2239,7 @@ class AutomationEngine:
             self.config,
             self.github,
             backend_manager=backend_manager,
+            implementation_slots=self._get_implementation_slots(repo_name),
         )
 
     def _apply_issue_actions_directly(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:

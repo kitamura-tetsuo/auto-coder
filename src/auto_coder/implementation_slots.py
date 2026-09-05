@@ -442,7 +442,79 @@ class ImplementationSlotRepository:
             if session_id not in provider_sessions:
                 provider_sessions.append(session_id)
                 self._write(owners)
+        return True
+
+    def has_provider_sessions(self, owner: ImplementationOwner) -> bool:
+        """Return whether logical ownership includes asynchronous provider work."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return False
+        sessions = record.get("provider_sessions", [])
+        if not isinstance(sessions, list) or any(not isinstance(value, str) for value in sessions):
+            raise ImplementationSlotUnavailable("Cannot safely parse provider implementation membership")
+        return bool(sessions)
+
+    def finish_provider_session(self, owner: ImplementationOwner, session_id: str) -> bool:
+        """Remove stopped remote work and release its idle logical ownership."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            sessions = record.get("provider_sessions", [])
+            executions = record.get("executions", [])
+            implementation_prs = record.get("implementation_prs", [])
+            if not isinstance(sessions, list) or any(not isinstance(value, str) for value in sessions):
+                raise ImplementationSlotUnavailable("Cannot safely parse provider implementation membership")
+            if session_id not in sessions:
+                return False
+            remaining = [value for value in sessions if value != session_id]
+            record["provider_sessions"] = remaining
+            if not remaining and not executions and not implementation_prs:
+                owners.pop(owner.key)
+            self._write(owners)
             return True
+
+    def release_unbound_idle_owner(self, owner: ImplementationOwner) -> bool:
+        """Release ownership with no execution, provider task, or implementation PR."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            executions = record.get("executions", [])
+            sessions = record.get("provider_sessions", [])
+            implementation_prs = record.get("implementation_prs", [])
+            if not isinstance(executions, list) or not isinstance(sessions, list) or not isinstance(implementation_prs, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse retained implementation ownership")
+            if executions or sessions or implementation_prs:
+                return False
+            owners.pop(owner.key)
+            self._write(owners)
+            return True
+
+    def record_validation_identity(self, owner: ImplementationOwner, identity: str) -> bool:
+        """Bind logical Issue ownership to its authorized specification identity."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            record["validation_identity"] = identity
+            self._write(owners)
+            return True
+
+    def validation_identity(self, owner: ImplementationOwner) -> Optional[str]:
+        """Return the generation identity attached to retained ownership."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return None
+        identity = record.get("validation_identity")
+        if identity is not None and not isinstance(identity, str):
+            raise ImplementationSlotUnavailable("Cannot safely parse implementation validation identity")
+        return identity
 
     def active_owners(self) -> tuple[ImplementationOwner, ...]:
         with self._state_lock():
