@@ -24,7 +24,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
-from .implementation_slots import ImplementationOwnerResolutionError, ImplementationSlotRepository
+from .implementation_slots import ImplementationOwner, ImplementationOwnerResolutionError, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -1175,6 +1175,7 @@ class AutomationEngine:
         force: bool = False,
         continue_execution: bool = False,
         advance_issue_attempt: bool = False,
+        generation_serialized: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1218,6 +1219,28 @@ class AutomationEngine:
             if not self._is_issue_author_allowed(candidate.data):
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
+            if not generation_serialized:
+                # One owner lock spans validation, final verification, admission,
+                # and implementation. A changed generation therefore waits for
+                # the preceding implementation to actually finish; validation
+                # never deletes or overlaps its capacity ownership.
+                owner = ImplementationOwner("issue", item_number)
+                slots = self._get_implementation_slots(repo_name)
+                if slots.active_execution_ids(owner) and not continue_execution:
+                    result.actions = [f"Deferred - active execution already exists ({owner.key})"]
+                    return result
+                with slots.serialize(owner):
+                    return self._process_single_candidate_unified(
+                        repo_name,
+                        candidate,
+                        config,
+                        jules_mode,
+                        explicit_only,
+                        force,
+                        continue_execution,
+                        advance_issue_attempt,
+                        generation_serialized=True,
+                    )
             try:
                 current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:

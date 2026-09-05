@@ -755,15 +755,6 @@ def handle_stale_jules_issue_sessions(
                 logger.info(f"Skipping stale Jules session {session_id}: issue #{issue_number} is not implementation-ready")
                 continue
 
-            if authorize_dispatch is None:
-                logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
-                continue
-            authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
-            if authorized_issue is None:
-                logger.info(f"Skipping stale Jules session {session_id}: current specification generation is not READY")
-                continue
-            current_issue = authorized_issue
-
             issue = github_client.get_issue(repo_name, issue_number)
             if issue is None:
                 continue
@@ -784,6 +775,9 @@ def handle_stale_jules_issue_sessions(
                 continue
             serialization = implementation_slots.serialize(owner)
             with serialization:
+                if authorize_dispatch is None:
+                    logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
+                    continue
                 # Authorization must be the last external state check before
                 # ownership transition. Earlier Issue/PR lookups and lock waits
                 # cannot carry READY forward across an edit or label withdrawal.
@@ -794,6 +788,15 @@ def handle_stale_jules_issue_sessions(
                 issue_data["body"] = str(authorized_issue.get("body") or "")
                 if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
                     continue
+
+                # Stopping Jules is external I/O. Re-check afterward so an edit or
+                # withdrawal during that request cannot authorize replacement
+                # ownership, attempt mutation, or backend dispatch.
+                authorized_issue = authorize_dispatch(repo_name, issue_number, authorized_issue)
+                if authorized_issue is None:
+                    continue
+                issue_data["title"] = str(authorized_issue.get("title") or "")
+                issue_data["body"] = str(authorized_issue.get("body") or "")
 
                 # The stopped remote execution relinquishes its identities before
                 # the replacement performs normal, atomic capacity admission.

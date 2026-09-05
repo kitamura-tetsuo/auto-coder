@@ -195,8 +195,9 @@ def test_concurrent_force_and_ordinary_paths_cannot_both_dispatch(tmp_path):
     assert second_result.actions == ["Deferred - active execution already exists (issue:1728)"]
 
 
-def test_blocked_revalidation_cannot_untrack_live_execution_or_bypass_capacity(tmp_path):
-    state = {1728: snapshot(body=BODY + " A"), 1729: {**snapshot(title="Other", body=BODY), "number": 1729}}
+def test_changed_generation_revalidation_defers_until_live_implementation_finishes(tmp_path):
+    state = {1728: snapshot(body=BODY + " A")}
+    validation_b_started = Event()
 
     class MutableGitHub(GitHubFlow):
         def get_issue_dispatch_snapshot_strict(self, _repo, number):
@@ -205,7 +206,10 @@ def test_blocked_revalidation_cannot_untrack_live_execution_or_bypass_capacity(t
     github = MutableGitHub([state[1728]])
 
     def analyze(_manifest, body):
-        return SpecificationAnalysisResult("BLOCKED", (FINDING,)) if body.endswith(" B") else SpecificationAnalysisResult("READY")
+        if body.endswith(" B"):
+            validation_b_started.set()
+            return SpecificationAnalysisResult("BLOCKED", (FINDING,))
+        return SpecificationAnalysisResult("READY")
 
     gate = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "live.json", analyze)
     engine, candidate = engine_with_gate(tmp_path, github, gate)
@@ -218,20 +222,24 @@ def test_blocked_revalidation_cannot_untrack_live_execution_or_bypass_capacity(t
         return CandidateProcessingResult("issue", 1728, "Title", True, ["dispatched"])
 
     engine._process_single_candidate_reserved.side_effect = live_dispatch
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=1) as pool:
         running = pool.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config)
         assert entered.wait(5)
         state[1728] = snapshot(body=BODY + " B")
-        blocked = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-        assert blocked.actions == ["Rejected - blocked specification"]
+        deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        assert deferred.actions == ["Deferred - active execution already exists (issue:1728)"]
+        assert not validation_b_started.is_set()
         owner = ImplementationOwner("issue", 1728)
         assert engine.implementation_slots.active_execution_ids(owner)
-
-        other = Candidate(type="issue", data={"number": 1729, "title": "Other", "body": BODY}, priority=0)
-        deferred = engine._process_single_candidate_unified("owner/repo", other, engine.config)
-        assert deferred.actions == ["Deferred - logical implementation limit is occupied (issue:1729)"]
         release.set()
         assert running.result(timeout=5).success is True
+
+    engine._process_single_candidate_reserved = Mock()
+    blocked = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert validation_b_started.is_set()
+    assert blocked.actions == ["Rejected - blocked specification"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
 
 
 def test_resubmitted_unchanged_blocked_generation_removes_label_again_after_restart(tmp_path):

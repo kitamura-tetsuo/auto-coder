@@ -610,3 +610,38 @@ def test_stale_replacement_rechecks_after_link_lookup_before_ownership(config, t
     jules.send_message.assert_not_called()
     increment.assert_not_called()
     dispatch.assert_not_called()
+
+
+def test_stale_replacement_rechecks_after_stop_io_before_ownership(config, tmp_path):
+    """Withdrawal during the real stop request invalidates READY before admission."""
+    from src.auto_coder.automation_engine import AutomationEngine
+
+    github = _github_client()
+    body = "## Requirements\n- REQ-001: Implement replacement."
+    current = {"number": 42, "title": "Replacement", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: dict(current)
+    engine = AutomationEngine(github, config=config)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    jules = MagicMock()
+    jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
+
+    def withdraw_during_stop(*_args):
+        current["body"] = body + "\nEdited during stop"
+        current["labels"] = []
+
+    jules.send_message.side_effect = withdraw_during_stop
+    cloud = MagicMock()
+    cloud.get_issue_by_session.return_value = 42
+    with (
+        patch("src.auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("src.auto_coder.issue_processor.CloudManager", return_value=cloud),
+        patch("src.auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("src.auto_coder.issue_processor.increment_attempt") as increment,
+        patch("src.auto_coder.issue_processor._take_issue_actions") as dispatch,
+    ):
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+    jules.send_message.assert_called_once_with("sess-1", "stop")
+    increment.assert_not_called()
+    dispatch.assert_not_called()
+    assert slots.active_owners() == ()
