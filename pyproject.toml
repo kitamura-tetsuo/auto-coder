@@ -63,7 +63,7 @@ test = [
 ]
 dev = [
     "black>=24.0.0",
-    "isort>=5.0.0",
+    "isort>=9.0.1",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
     "pre-commit>=4.6.2",
@@ -234,7 +234,7 @@ norecursedirs = [
 [dependency-groups]
 dev = [
     "black>=25.9.0",
-    "isort>=5.0.0",
+    "isort>=9.0.1",
     "flake8>=6.0.0",
     "types-pyyaml>=6.0.12.20250915",
     "pre-commit>=4.6.2",
