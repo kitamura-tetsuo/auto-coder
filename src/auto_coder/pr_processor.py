@@ -4416,6 +4416,11 @@ def _has_adversarial_remediation_evidence(remediation_token: str, validation_rep
     return bool(remediation_token) or bool(re.search(r"<!-- auto-coder-change-provenance-evidence:v1:[a-f0-9]+ -->", validation_report))
 
 
+def _adversarial_feedback_baseline_identity(feedback_identity: str) -> str:
+    """Identify a recovered initial activity baseline without implying repair."""
+    return f"{feedback_identity}:remediation-baseline-established"
+
+
 def _adversarial_feedback_belongs_to_report(body: str, validation_report: str) -> bool:
     """Return whether a standalone adversarial finding is represented in a report."""
     blocks = [block.strip() for block in re.split(r"\n\s*\n", body) if block.strip()]
@@ -4940,8 +4945,33 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
-            all_identities = [identity for _body, finding_identity, generation_identity in feedback_items for identity in (finding_identity, generation_identity)]
+            all_identities = [
+                identity
+                for _body, finding_identity, generation_identity in feedback_items
+                for identity in (
+                    finding_identity,
+                    generation_identity,
+                    _adversarial_feedback_generation_identity(finding_identity, "", validation_report),
+                    _adversarial_feedback_baseline_identity(finding_identity),
+                )
+            ]
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, all_identities))
+            baseline_adoptions = {
+                identity
+                for _body, finding_identity, generation_identity in feedback_items
+                if remediation_token and finding_identity in delivered and _adversarial_feedback_generation_identity(finding_identity, "", validation_report) in delivered and _adversarial_feedback_baseline_identity(finding_identity) not in delivered
+                for identity in (generation_identity, _adversarial_feedback_baseline_identity(finding_identity))
+            }
+            if baseline_adoptions:
+                delivered.update(baseline_adoptions)
+                _record_delivered_review_feedback(state_path, delivered)
+                _record_pr_delivered_review_feedback(
+                    github_client,
+                    repo_name,
+                    pr_number,
+                    sorted(baseline_adoptions),
+                    f"🤖 Auto-Coder: I recorded recovered {provider} activity as the baseline for previously delivered adversarial feedback.",
+                )
             reconciled = _reconcile_codex_review_feedback(
                 client,
                 provider,
