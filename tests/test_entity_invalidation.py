@@ -520,6 +520,67 @@ def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatc
     assert processed == [100]
 
 
+def test_out_of_order_http_webhooks_reconcile_one_authoritative_pr_state(tmp_path: Path, monkeypatch):
+    """AS-002: live closed state survives normalization and blocks dispatch."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = GitHubClient("test-token")
+    engine = AutomationEngine(github, AutomationConfig(pr_allowlist=[123]))
+    request = httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls/100")
+    response = httpx.Response(
+        200,
+        request=request,
+        json={
+            "number": 100,
+            "title": "Current GitHub title",
+            "body": "",
+            "state": "closed",
+            "user": {"login": "allowed-contributor", "id": 123},
+            "labels": [],
+            "assignees": [],
+            "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main", "sha": "def"},
+        },
+    )
+    get = MagicMock(return_value=response)
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
+    processed = []
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="pr", number=100, success=True),
+    )
+
+    with patch("src.auto_coder.webhook_server.init_dashboard"):
+        app = create_app(engine, "owner/repo")
+    with TestClient(app) as client:
+        for delivery, action, stale_title in (
+            ("newer-delivery", "edited", "Newer payload snapshot"),
+            ("older-delivery", "opened", "Older payload snapshot"),
+        ):
+            response = client.post(
+                "/hooks/github",
+                json={
+                    "action": action,
+                    "pull_request": {
+                        "number": 100,
+                        "state": "open",
+                        "title": stale_title,
+                        "user": {"login": "allowed-contributor", "id": 123},
+                    },
+                    "repository": {"full_name": "owner/repo"},
+                },
+                headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": delivery},
+            )
+            assert response.status_code == 200
+
+    asyncio.run(_run_worker_until(engine, 0, processed))
+
+    assert get.call_count == 1
+    assert get.call_args.args[0] == "https://api.github.com/repos/owner/repo/pulls/100"
+    assert processed == []
+    assert engine.invalidations.pending_count("owner/repo") == 0
+
+
 def test_webhook_during_active_processing_forces_later_reevaluation(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
