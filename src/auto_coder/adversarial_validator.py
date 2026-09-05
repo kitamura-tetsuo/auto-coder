@@ -2481,8 +2481,13 @@ def run_adversarial_validation(
     if used_backend and persisted_session_id:
         incomplete_lifecycle_diagnostics = {"incomplete_evidence_coverage", "incomplete_requirement_coverage"}
         lifecycle_completed = result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS"} and result.diagnostic_category not in incomplete_lifecycle_diagnostics
+        # A proven exact-thread closure is authoritative for that gap even
+        # when an unrelated gate (for example change provenance) keeps the
+        # overall verdict inconclusive. Persist the semantic transition before
+        # the caller projects the disposition to GitHub.
+        has_proven_gap_closure = bool(_addressed_test_oracle_gap_evidence(result, claimed_review_threads))
         persisted_head_sha = head_sha if lifecycle_completed else lifecycle_session.last_head_sha if lifecycle_session else ""
-        persisted_gaps = result.test_oracle_gaps if lifecycle_completed else lifecycle_session.test_oracle_gaps if lifecycle_session else []
+        persisted_gaps = result.test_oracle_gaps if lifecycle_completed or has_proven_gap_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
         registry.save(
             ReviewerSession(
                 repository=repo_name,
