@@ -401,6 +401,13 @@ class AutomationEngine:
             return 7
         return 3 if "urgent" in names else 0
 
+    @staticmethod
+    def _is_open_issue(issue: Dict[str, Any]) -> bool:
+        """Return whether an authoritative Issue snapshot is currently open."""
+        # Legacy GitHub adapters omit state for successfully fetched open
+        # Issues; an explicit closed state is nevertheless authoritative.
+        return str(issue.get("state") or "open").lower() == "open"
+
     async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
         """Evaluate one level-triggered refill obligation from fresh GitHub state.
 
@@ -425,28 +432,37 @@ class AutomationEngine:
                 logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
                 return False
 
+            retry_required = False
             for candidate in candidates:
                 if await asyncio.to_thread(slots.available_normal_slots) == 0:
                     break
                 # The common dispatch path repeats strict readiness, contract,
                 # hierarchy, ownership, authorization, duplicate and atomic
                 # capacity admission checks immediately before implementation.
-                await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
-            return True
+                result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+                retry_required = retry_required or result.refill_retry_required
+            return not retry_required
 
     async def _capacity_refill_loop(self, repo_name: str) -> None:
         """Observe shared slot state and service capacity transitions without GitHub polling."""
         slots = self._get_implementation_slots(repo_name)
-        previously_available = await asyncio.to_thread(slots.available_normal_slots) > 0
+        previous_count, previous_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
         refill_pending = False
         while True:
-            available = await asyncio.to_thread(slots.available_normal_slots) > 0
-            if available and not previously_available:
+            available_count, identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+            if available_count > 0 and previous_count == 0:
                 refill_pending = True
                 logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
-            previously_available = available
-            if refill_pending and available:
+            previous_count, previous_identity = available_count, identity
+            if refill_pending and available_count > 0:
                 refill_pending = not await self._refill_normal_implementation_slots(repo_name)
+                current_count, current_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+                # Dispatch may run long enough for another process to fill and
+                # release a slot between samples. Atomic state replacement is
+                # the durable evidence that this transition needs a fresh pass.
+                if current_count > 0 and current_identity != previous_identity:
+                    refill_pending = True
+                previous_count, previous_identity = current_count, current_identity
             delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
             await asyncio.sleep(delay)
 
@@ -1358,6 +1374,7 @@ class AutomationEngine:
                 current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
                 result.error = str(exc)
+                result.refill_retry_required = True
                 return result
             if not isinstance(current_issue, dict) or current_issue.get("number") != item_number:
                 result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub returned an ambiguous item snapshot"
@@ -1372,7 +1389,7 @@ class AutomationEngine:
             # allow a subsequently removed readiness label to start work. Keep
             # this before slot resolution and every implementation ownership side
             # effect; explicit/forced processing therefore cannot bypass it.
-            if not is_implementation_ready(current_issue):
+            if not self._is_open_issue(current_issue) or not is_implementation_ready(current_issue):
                 logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
                 result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
@@ -1437,19 +1454,25 @@ class AutomationEngine:
                 dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
                 result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                result.refill_retry_required = True
                 return result
             dispatch_identity = validator.identity(
                 item_number,
                 str(dispatch_snapshot.get("title") or ""),
                 str(dispatch_snapshot.get("body") or ""),
             )
-            if not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
+            if not self._is_open_issue(dispatch_snapshot) or not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
             # The backend must receive exactly the authoritative generation that
             # READY authorized, never the older candidate collection payload.
             candidate.data.update(dispatch_snapshot)
+            dispatch_labels = candidate.data.get("labels", []) or []
+            dispatch_label_names = {label if isinstance(label, str) else label.get("name") for label in dispatch_labels if isinstance(label, (str, dict))}
+            if config.CHECK_LABELS and "@auto-coder" in dispatch_label_names:
+                result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
+                return result
 
         slots = self._get_implementation_slots(repo_name)
         try:
@@ -1469,7 +1492,7 @@ class AutomationEngine:
             if candidate.type != "issue":
                 return True
             latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-            return isinstance(latest, dict) and is_implementation_ready(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
+            return isinstance(latest, dict) and self._is_open_issue(latest) and is_implementation_ready(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
 
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
@@ -1481,6 +1504,7 @@ class AutomationEngine:
                 return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
+            owner_existed_before_admission = owner in slots.active_owners()
             if not inherited_execution:
                 execution_id = slots.start_execution(
                     owner,
@@ -1534,6 +1558,8 @@ class AutomationEngine:
         finally:
             if not inherited_execution:
                 slots.finish_execution(owner, execution_id)
+                if not owner_existed_before_admission and result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]:
+                    slots.release_unbound_idle_owner(owner)
                 slots.reconcile(self.github)
         return result
 

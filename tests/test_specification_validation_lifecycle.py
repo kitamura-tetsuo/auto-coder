@@ -112,6 +112,31 @@ def test_production_dispatch_gate_rejects_stale_ready_before_slot(tmp_path):
     assert not (tmp_path / "slots.json").exists()
 
 
+def test_production_dispatch_rejects_closed_ready_issue_before_slot(tmp_path):
+    closed = {**snapshot(), "state": "closed"}
+    github = GitHubFlow([closed])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Skipped - missing implementation-ready label"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+def test_processing_label_rejection_releases_newly_admitted_owner(tmp_path):
+    labeled = snapshot()
+    labeled["labels"].append("@auto-coder")
+    github = GitHubFlow([labeled, labeled, labeled])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    engine.config.CHECK_LABELS = True
+    candidate.data["labels"] = labeled["labels"]
+
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+    assert result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
 def test_production_blocked_gate_generation_checks_and_deduplicates_effects(tmp_path):
     revised = snapshot(body=BODY + "\nEdited")
     github = GitHubFlow([snapshot(), revised])
