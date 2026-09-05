@@ -520,6 +520,50 @@ def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatc
     assert processed == [100]
 
 
+def test_out_of_order_http_webhooks_reconcile_one_authoritative_pr_state(tmp_path: Path, monkeypatch):
+    """AS-002: HTTP payload order cannot become the worker's state authority."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = MagicMock()
+    engine = AutomationEngine(github, AutomationConfig())
+    authoritative = Candidate(
+        type="pr",
+        data={"number": 100, "state": "open", "title": "Current GitHub title"},
+        priority=0,
+    )
+    fetch = MagicMock(return_value=authoritative)
+    processed = []
+    monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="pr", number=100, success=True),
+    )
+
+    with patch("src.auto_coder.webhook_server.init_dashboard"):
+        app = create_app(engine, "owner/repo")
+    with TestClient(app) as client:
+        for delivery, action, stale_title in (
+            ("newer-delivery", "edited", "Newer payload snapshot"),
+            ("older-delivery", "opened", "Older payload snapshot"),
+        ):
+            response = client.post(
+                "/hooks/github",
+                json={
+                    "action": action,
+                    "pull_request": {"number": 100, "state": "open", "title": stale_title},
+                    "repository": {"full_name": "owner/repo"},
+                },
+                headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": delivery},
+            )
+            assert response.status_code == 200
+
+    asyncio.run(_run_worker_until(engine, 1, processed))
+
+    fetch.assert_called_once_with("owner/repo", "pr", 100, True)
+    assert processed == [authoritative.data]
+    assert engine.invalidations.pending_count("owner/repo") == 0
+
+
 def test_webhook_during_active_processing_forces_later_reevaluation(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
