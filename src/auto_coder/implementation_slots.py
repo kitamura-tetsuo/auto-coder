@@ -41,6 +41,16 @@ class ImplementationOwnerResolutionError(RuntimeError):
     """Raised when resolving a PR owner is uncertain and must fail closed."""
 
 
+@dataclass(frozen=True)
+class ProcessIdentity:
+    """OS identity that distinguishes a process from a reused numeric PID."""
+
+    pid: int
+    boot_id: str
+    start_ticks: int
+    state: str
+
+
 class ImplementationSlotRepository:
     """Persist active owners and atomically reserve capacity across processes."""
 
@@ -213,8 +223,14 @@ class ImplementationSlotRepository:
         if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
             raise ValueError("implementation_pr must identify a PR belonging to a non-PR implementation owner")
         execution_id = uuid.uuid4().hex
+        process_identity = self._current_process_identity()
         with self._state_lock():
             owners = self._read()
+            reclaimed = self._remove_stale_executions(owners)
+            if reclaimed:
+                # Persist cleanup even when capacity or duplicate admission
+                # returns early below.
+                self._write(owners)
             record = owners.get(owner.key)
             if record is None:
                 normal_usage, emergency_in_use = self._capacity_usage(owners)
@@ -242,12 +258,90 @@ class ImplementationSlotRepository:
                 raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
             if implementation_pr is not None and implementation_pr not in known_prs:
                 known_prs.append(implementation_pr)
-            executions.append({"id": execution_id, "pid": os.getpid(), "started_at": time.time()})
+            execution = {"id": execution_id, "pid": os.getpid(), "started_at": time.time()}
+            if process_identity is not None:
+                execution.update({"boot_id": process_identity.boot_id, "process_start_ticks": process_identity.start_ticks})
+            executions.append(execution)
             self._write(owners)
         active = getattr(self._execution_context, "owners", {})
         active[owner.key] = execution_id
         self._execution_context.owners = active
         return execution_id
+
+    @staticmethod
+    def _read_process_identity(pid: int) -> Optional[ProcessIdentity]:
+        """Read a Linux process identity, returning ``None`` when it is uncertain.
+
+        The kernel boot ID and ``/proc/<pid>/stat`` start time together remain
+        stable for a process lifetime and prevent a reused PID from being
+        mistaken for the execution which originally wrote the record.
+        """
+        try:
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+            closing_parenthesis = stat.rfind(")")
+            if not boot_id or closing_parenthesis < 0:
+                return None
+            fields_after_name = stat[closing_parenthesis + 2 :].split()
+            # The suffix begins at field 3 (state); process start time is field 22.
+            state = fields_after_name[0]
+            start_ticks = int(fields_after_name[19])
+            if len(state) != 1:
+                return None
+            return ProcessIdentity(pid=pid, boot_id=boot_id, start_ticks=start_ticks, state=state)
+        except (OSError, UnicodeError, ValueError, IndexError):
+            return None
+
+    def _current_process_identity(self) -> Optional[ProcessIdentity]:
+        return self._read_process_identity(os.getpid())
+
+    def _execution_is_stale(self, execution: Dict[str, object]) -> bool:
+        """Return true only when strong OS identity proves an execution is dead."""
+        pid = execution.get("pid")
+        boot_id = execution.get("boot_id")
+        start_ticks = execution.get("process_start_ticks")
+        if isinstance(pid, bool) or not isinstance(pid, int) or not isinstance(boot_id, str) or isinstance(start_ticks, bool) or not isinstance(start_ticks, int):
+            return False
+        current = self._read_process_identity(pid)
+        if current is not None:
+            identity_changed = current.boot_id != boot_id or current.start_ticks != start_ticks
+            # Zombie and dead tasks retain a procfs identity until their parent
+            # reaps them, but cannot execute and are conclusively no longer live.
+            return identity_changed or current.state in {"Z", "X", "x"}
+        try:
+            current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+            process_exists = Path(f"/proc/{pid}").exists()
+        except OSError:
+            return False
+        # A changed boot is conclusive. Within the same boot, an absent procfs
+        # entry is conclusive; an existing but unreadable entry is uncertain.
+        return bool(current_boot_id) and (current_boot_id != boot_id or not process_exists)
+
+    def _remove_stale_executions(self, owners: Dict[str, Dict[str, object]]) -> tuple[str, ...]:
+        """Remove only executions conclusively shown stale from locked state."""
+        removed = []
+        for owner_key, record in owners.items():
+            executions = record.setdefault("executions", [])
+            if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+                raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+            remaining = []
+            for execution in executions:
+                if self._execution_is_stale(execution):
+                    removed.append(str(execution["id"]))
+                    logger.info(f"Reclaimed stale implementation execution {execution['id']} for {owner_key}")
+                else:
+                    remaining.append(execution)
+            record["executions"] = remaining
+        return tuple(removed)
+
+    def reclaim_stale_executions(self) -> tuple[str, ...]:
+        """Atomically reclaim executions whose strong process identity is dead."""
+        with self._state_lock():
+            owners = self._read()
+            removed = self._remove_stale_executions(owners)
+            if removed:
+                self._write(owners)
+            return removed
 
     def finish_execution(self, owner: ImplementationOwner, execution_id: str) -> None:
         """Remove only the named execution, preserving its owner and siblings."""
@@ -287,6 +381,34 @@ class ImplementationSlotRepository:
             owners = self._read()
             if owners.pop(owner.key, None) is not None:
                 self._write(owners)
+
+    def _release_if_idle(self, owner: ImplementationOwner, expected_implementation_prs: Optional[tuple[int, ...]] = None) -> bool:
+        """Release an owner only if relevant durable state is still unchanged.
+
+        Lifecycle evidence is necessarily fetched without holding the registry
+        lock. Admission or PR discovery may therefore race that lookup; the final
+        state checks and removal must be one registry transaction so newly
+        admitted work can never be discarded with its owner.
+        """
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            executions = record.get("executions", [])
+            if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+                raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
+            if executions:
+                return False
+            if expected_implementation_prs is not None:
+                implementation_prs = record.get("implementation_prs", [])
+                if not isinstance(implementation_prs, list) or any(isinstance(number, bool) or not isinstance(number, int) for number in implementation_prs):
+                    raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
+                if tuple(implementation_prs) != expected_implementation_prs:
+                    return False
+            owners.pop(owner.key)
+            self._write(owners)
+            return True
 
     def record_implementation_pr(self, owner: ImplementationOwner, pr_number: int) -> bool:
         """Record PR membership only when *owner* is already reserved."""
@@ -351,6 +473,10 @@ class ImplementationSlotRepository:
 
     def reconcile(self, github_client: Any, discover_open_prs: bool = False) -> None:
         """Release only owners whose complete authoritative lifecycle is terminal."""
+        # Execution cleanup is deliberately independent from owner cleanup. A
+        # dead process ceases to block lifecycle evaluation, but the GitHub
+        # lifecycle below remains the sole authority for releasing its owner.
+        self.reclaim_stale_executions()
         if discover_open_prs:
             try:
                 self._record_open_pr_memberships(github_client)
@@ -397,14 +523,12 @@ class ImplementationSlotRepository:
                         if pr_details.get("state", "").lower() != "closed" and pr_details.get("merged") is not True:
                             linked_prs_terminal = False
                             break
-                    if linked_prs_terminal:
-                        self.release(owner)
+                    if linked_prs_terminal and self._release_if_idle(owner, tuple(recorded_prs)):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
                 elif owner.kind == "pr":
                     item = github_client.get_pull_request(self.repo_name, owner.number)
                     details = github_client.get_pr_details(item)
-                    if details.get("state", "").lower() == "closed" or details.get("merged") is True:
-                        self.release(owner)
+                    if (details.get("state", "").lower() == "closed" or details.get("merged") is True) and self._release_if_idle(owner):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
                 else:
                     # Provider-owned implementations are reconciled by their
