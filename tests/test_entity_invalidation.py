@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -73,6 +74,32 @@ def test_one_delivery_can_invalidate_multiple_entities_with_preserved_metadata(t
         GitHubDeliveryMetadata("delivery-1", first, "check_run", "completed"),
         GitHubDeliveryMetadata("delivery-1", second, "check_run", "completed"),
     ]
+
+
+def test_migration_preserves_previous_delivery_deduplication(tmp_path: Path):
+    path = tmp_path / "invalidations.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE entity_invalidations (
+            repository TEXT NOT NULL, entity_type TEXT NOT NULL, entity_number INTEGER NOT NULL,
+            generation INTEGER NOT NULL, claimed_generation INTEGER, state TEXT NOT NULL,
+            PRIMARY KEY(repository, entity_type, entity_number)
+        );
+        CREATE TABLE github_deliveries (
+            repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
+            PRIMARY KEY(repository, delivery_id)
+        );
+        INSERT INTO github_deliveries VALUES ('owner/repo', 'already-seen');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    queue = DurableInvalidationQueue(path)
+
+    assert not queue.invalidate(EntityIdentity("owner/repo", "pr", 77), "already-seen", "pull_request", "opened")
+    assert queue.pending_count("owner/repo") == 0
 
 
 def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path, monkeypatch):
@@ -199,8 +226,9 @@ def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatc
         app = create_app(engine, "owner/repo")
     headers = {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "same-delivery"}
     with TestClient(app) as client:
-        assert client.post("/hooks/github", json={"action": "opened", "pull_request": {"number": 100}}, headers=headers).status_code == 200
-        assert client.post("/hooks/github", json={"action": "opened", "pull_request": {"number": 100}}, headers=headers).status_code == 200
+        payload = {"action": "opened", "pull_request": {"number": 100}, "repository": {"full_name": "owner/repo"}}
+        assert client.post("/hooks/github", json=payload, headers=headers).status_code == 200
+        assert client.post("/hooks/github", json=payload, headers=headers).status_code == 200
 
     asyncio.run(_run_worker_until(engine, 1, processed))
     assert processed == [100]

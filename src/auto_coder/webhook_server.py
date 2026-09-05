@@ -182,7 +182,7 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
         payload = await request.json()
         repository = payload.get("repository") if isinstance(payload, dict) else None
         payload_repo = repository.get("full_name") if isinstance(repository, dict) else None
-        if payload_repo is not None and payload_repo.casefold() != repo_name.casefold():
+        if not isinstance(payload_repo, str) or payload_repo.casefold() != repo_name.casefold():
             raise HTTPException(status_code=403, detail="Repository is outside webhook scope")
         # Persistence is part of accepting a delivery, so it must finish before
         # returning 200 rather than being delegated to an in-memory task.

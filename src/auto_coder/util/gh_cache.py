@@ -583,17 +583,25 @@ class GitHubClient:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        response = httpx.get(
-            f"https://api.github.com/repos/{owner}/{repo}/commits/{commit_sha}/pulls",
-            headers=headers,
-            follow_redirects=False,
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise RuntimeError(f"GitHub did not return associated PRs for commit {commit_sha}")
-        return sorted({number for item in payload if isinstance(item, dict) and isinstance((number := item.get("number")), int)})
+        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/commits/{commit_sha}/pulls?per_page=100"
+        numbers: set[int] = set()
+        visited_urls: set[str] = set()
+        while url:
+            if url in visited_urls or len(visited_urls) >= 1000:
+                raise RuntimeError("GitHub associated-PR pagination did not terminate safely")
+            visited_urls.add(url)
+            response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise RuntimeError(f"GitHub did not return associated PRs for commit {commit_sha}")
+            numbers.update(number for item in payload if isinstance(item, dict) and isinstance((number := item.get("number")), int))
+            next_link = response.links.get("next", {})
+            next_url = next_link.get("url") if isinstance(next_link, dict) else None
+            if next_url is not None and not isinstance(next_url, str):
+                raise RuntimeError("GitHub associated-PR pagination link was invalid")
+            url = next_url
+        return sorted(numbers)
 
     @retry_with_backoff()
     def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> Any:

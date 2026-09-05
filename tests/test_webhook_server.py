@@ -1,9 +1,11 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app
 
 
@@ -66,7 +68,7 @@ def test_github_pr_webhook(mock_init_dashboard):
     app = create_app(engine, "owner/repo")
 
     with TestClient(app) as client:
-        payload = {"action": "opened", "pull_request": {"number": 202, "title": "New Feature"}}
+        payload = {"action": "opened", "pull_request": {"number": 202, "title": "New Feature"}, "repository": {"full_name": "owner/repo"}}
 
         response = client.post("/hooks/github", json=payload, headers={"X-GitHub-Event": "pull_request"})
         assert response.status_code == 200
@@ -109,12 +111,41 @@ def test_completed_check_without_embedded_pr_resolves_commit(mock_init_dashboard
     with TestClient(app) as client:
         response = client.post(
             "/hooks/github",
-            json={"action": "completed", "check_run": {"head_sha": "abc", "pull_requests": []}},
+            json={"action": "completed", "check_run": {"head_sha": "abc", "pull_requests": []}, "repository": {"full_name": "owner/repo"}},
             headers={"X-GitHub-Event": "check_run", "X-GitHub-Delivery": "check-delivery"},
         )
     assert response.status_code == 200
     assert [item[2] for item in engine.invalidations] == [21, 22]
     assert all(item[3:] == ("check-delivery", "check_run", "completed") for item in engine.invalidations)
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_completed_check_paginates_commit_lookup_before_invalidating(mock_init_dashboard, monkeypatch):
+    engine = MockEngine()
+    engine.github = GitHubClient("token")
+    app = create_app(engine, "owner/repo")
+    first_url = "https://api.github.com/repos/owner/repo/commits/abc/pulls?per_page=100"
+    second_url = "https://api.github.com/repositories/1/commits/abc/pulls?per_page=100&page=2"
+    first = httpx.Response(
+        200,
+        json=[{"number": number} for number in range(1, 31)],
+        headers={"Link": f'<{second_url}>; rel="next"'},
+        request=httpx.Request("GET", first_url),
+    )
+    second = httpx.Response(200, json=[{"number": 31}], request=httpx.Request("GET", second_url))
+    get = MagicMock(side_effect=[first, second])
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json={"action": "completed", "check_run": {"head_sha": "abc", "pull_requests": []}, "repository": {"full_name": "owner/repo"}},
+            headers={"X-GitHub-Event": "check_run", "X-GitHub-Delivery": "paginated-check"},
+        )
+
+    assert response.status_code == 200
+    assert [item[2] for item in engine.invalidations] == list(range(1, 32))
+    assert [call.args[0] for call in get.call_args_list] == [first_url, second_url]
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
