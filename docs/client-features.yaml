@@ -60,6 +60,19 @@ Blocked findings use stable material-defect categories, exact affected
 Requirement IDs, and (for false-success gaps) a concrete incorrect outcome and
 the missing normative boundary.
 
+## Adversarial parent/child decomposition analysis
+
+Auto-Coder exposes a provider-independent set analysis for exactly one supplied
+parent and its authoritative direct-child membership. It consumes each Issue's
+prebuilt normative Requirement manifest and uses titles and bodies only as
+non-normative evidence. The strictly validated result is `READY`, `BLOCKED`, or
+fail-closed `ERROR`; blockers identify supplied Issue identities, exact applicable
+Requirement IDs, one stable decomposition category, and the smallest necessary
+contract clarification. The analysis detects missing child ownership, cross-Issue
+contradictions, unstated dependencies, incompatible boundary semantics, and cases
+where every child can pass while the parent contract still fails, without imposing
+one-to-one ownership or internal implementation choices.
+
 ## Issue requirement-contract intake gate
 
 The shared requirement contract also exposes a provider-independent normative

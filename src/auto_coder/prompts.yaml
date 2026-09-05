@@ -939,6 +939,27 @@ pr:
     $actionable_feedback
 
 issue:
+  adversarial_decomposition_analysis: |-
+    Evaluate whether the supplied parent Issue and complete direct-child set form a sufficient contract for sequential child implementation and parent verification.
+
+    Perform semantic specification analysis only. The supplied manifests are the sole authoritative normative Requirements. Titles and body evidence may expose omissions or contradictions, but must never be inherited into another Issue's Requirements. Do not reparse Markdown, inspect repository code, add Issues outside the supplied membership, or rely on history, conventions, architecture preferences, external standards, or protocols unless a Requirement explicitly incorporates one.
+
+    Return READY only when collective child behavior makes every parent Requirement verifiable and all explicit cross-child boundaries are sufficient and compatible. A dependency is allowed when the dependent child states it and its identity, lifecycle, and failure semantics are compatible with the supplier's contract. Do not require one-to-one ownership, reject shared ownership, or block different internal techniques or merely desirable examples.
+
+    Return BLOCKED only for a demonstrated material defect, using exactly one category per finding: missing_requirement_ownership, cross_issue_contradiction, unstated_cross_issue_dependency, boundary_semantics_conflict, or decomposition_false_success. A missing ownership finding applies when a parent Requirement has no explicit normative child ownership and the parent will not be independently implemented. False success means all children may meet their own Requirements while an explicit parent Requirement can still fail. Identify every affected supplied Issue, and list exact REQ IDs when the defect maps to them. Explain the smallest contract clarification needed. ERROR is never READY or BLOCKED.
+
+    Output exactly one JSON object and no other text:
+    {"verdict":"READY|BLOCKED|ERROR","findings":[{"category":"one allowed category","affected_issues":[{"issue_number":123,"requirement_ids":["REQ-001"]}],"explanation":"demonstrated material cross-Issue defect","clarification":"smallest specification clarification"}]}
+    READY and ERROR require no findings. BLOCKED requires at least one finding. Never reference an Issue outside the supplied membership or a Requirement ID outside that Issue's manifest.
+
+    Parent independently implemented: $parent_implemented_independently
+
+    Parent specification (manifest is normative; title/body are evidence only):
+    $parent_specification
+
+    Complete authoritative direct-child membership and specifications (manifests are normative; title/body are evidence only):
+    $direct_child_specifications
+
   adversarial_specification_analysis: |-
     Evaluate whether Issue #$issue_number is a precise, independent implementation and verification contract.
 
