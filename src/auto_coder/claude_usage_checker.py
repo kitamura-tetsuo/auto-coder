@@ -77,6 +77,14 @@ class ClaudeUsageQuota:
     cached_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class ClaudeCredentialResolution:
+    """Outcome of resolving a credential for the Claude usage endpoint."""
+
+    token: Optional[str] = None
+    status: str = "missing_credentials"
+
+
 _cache_lock = threading.Lock()
 _cached_quota: Optional[ClaudeUsageQuota] = None
 
@@ -327,6 +335,55 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
             if token and isinstance(token, str):
                 return token.strip()
     return None
+
+
+def _claude_cli_is_authenticated(timeout: float = 10.0) -> bool:
+    """Ask Claude Code whether its own current session is authenticated."""
+    cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
+    base_cmd = shlex.split(cmd_override) if cmd_override else ["claude"]
+    try:
+        result = subprocess.run(
+            base_cmd + ["auth", "status", "--json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug(f"Failed to query Claude CLI authentication status: {e}")
+        return False
+
+    if result.returncode != 0:
+        logger.debug(f"Claude CLI authentication status returned code {result.returncode}: {result.stderr or result.stdout}")
+        return False
+    try:
+        status = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        logger.debug("Claude CLI authentication status did not return valid JSON")
+        return False
+    return isinstance(status, dict) and status.get("loggedIn") is True
+
+
+def acquire_claude_usage_credential(explicit_token: Optional[str] = None) -> ClaudeCredentialResolution:
+    """Resolve a usage credential, including Claude Code-managed login state.
+
+    Explicit, environment, and readable stored credentials remain the fast path.
+    If those paths have no token, Claude Code is queried at its public CLI boundary.
+    An authenticated CLI session is then asked to perform a lightweight request so
+    that it can refresh or materialize a credential Auto-Coder can use. A successful
+    process alone is never considered a usable credential: the token must resolve.
+    """
+    token = resolve_claude_oauth_token(explicit_token)
+    if token:
+        return ClaudeCredentialResolution(token=token, status="resolved")
+
+    if not _claude_cli_is_authenticated():
+        return ClaudeCredentialResolution(status="missing_credentials")
+
+    token = refresh_claude_token_via_cli()
+    if token:
+        return ClaudeCredentialResolution(token=token, status="resolved")
+    return ClaudeCredentialResolution(status="credential_acquisition_failed")
 
 
 def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) -> Optional[dict]:

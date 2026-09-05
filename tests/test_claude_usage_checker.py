@@ -12,6 +12,7 @@ import pytest
 from auto_coder.claude_usage_checker import (
     ClaudeUsageQuota,
     ClaudeUsageWindow,
+    acquire_claude_usage_credential,
     check_claude_usage,
     check_claude_usage_or_raise,
     clear_claude_usage_cache,
@@ -146,6 +147,56 @@ class TestClaudeUsageChecker:
             ),
         ):
             assert resolve_claude_oauth_token(None) == "file-tok"
+
+    def test_acquire_credential_from_authenticated_claude_cli(self, tmp_path):
+        """An authenticated CLI session can materialize a production-readable token."""
+        credentials_path = tmp_path / ".credentials.json"
+
+        def run_claude(command, **kwargs):
+            process = MagicMock(returncode=0, stderr="")
+            if command[-3:] == ["auth", "status", "--json"]:
+                process.stdout = json.dumps({"loggedIn": True, "authMethod": "claude.ai"})
+            else:
+                credentials_path.write_text(
+                    json.dumps({"claudeAiOauth": {"accessToken": "cli-session-token", "expiresAt": 9_999_999_999_999}}),
+                    encoding="utf-8",
+                )
+                process.stdout = "pong"
+            return process
+
+        with (
+            patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(tmp_path)}, clear=True),
+            patch("subprocess.run", side_effect=run_claude) as mock_run,
+        ):
+            credential = acquire_claude_usage_credential()
+
+        assert credential.token == "cli-session-token"
+        assert credential.status == "resolved"
+        assert mock_run.call_args_list[0].args[0] == ["claude", "auth", "status", "--json"]
+
+    def test_acquire_credential_distinguishes_authenticated_but_unavailable(self):
+        status_process = MagicMock(returncode=0, stdout=json.dumps({"loggedIn": True}), stderr="")
+        ping_process = MagicMock(returncode=0, stdout="pong", stderr="")
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("auto_coder.claude_usage_checker._read_credentials_file", return_value=None),
+            patch("subprocess.run", side_effect=[status_process, ping_process]),
+        ):
+            credential = acquire_claude_usage_credential()
+
+        assert credential.token is None
+        assert credential.status == "credential_acquisition_failed"
+
+    def test_acquire_credential_preserves_environment_fast_path(self):
+        with (
+            patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "environment-token"}, clear=True),
+            patch("subprocess.run") as mock_run,
+        ):
+            credential = acquire_claude_usage_credential()
+
+        assert credential.token == "environment-token"
+        assert credential.status == "resolved"
+        mock_run.assert_not_called()
 
     def test_fetch_claude_usage_data_handles_401_and_refresh(self):
         """Test that HTTP 401 attempts token refresh and retries."""

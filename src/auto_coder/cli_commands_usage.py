@@ -12,7 +12,7 @@ from typing import List, Optional
 
 import click
 
-from .claude_usage_checker import check_claude_usage, resolve_claude_oauth_token
+from .claude_usage_checker import acquire_claude_usage_credential, check_claude_usage
 from .codex_usage_checker import get_codex_weekly_usage, load_codex_oauth_credentials
 from .logger_config import setup_logger
 
@@ -71,15 +71,21 @@ def _get_claude_usage_report(
     use_cache: bool = True,
 ) -> ClaudeUsageReport:
     """Fetch and construct Claude usage report."""
-    resolved_token = resolve_claude_oauth_token(token)
-    if not resolved_token:
+    credential = acquire_claude_usage_credential(token)
+    if not credential.token:
+        if credential.status == "credential_acquisition_failed":
+            return ClaudeUsageReport(
+                available=False,
+                status=credential.status,
+                message="Claude Code is authenticated, but Auto-Coder could not acquire a credential usable for the Anthropic usage API.",
+            )
         return ClaudeUsageReport(
             available=False,
             status="missing_credentials",
-            message="No Claude OAuth token found. Please login via Claude Code CLI or set CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN.",
+            message="No Claude OAuth credentials found. Run `claude auth login` or set CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN.",
         )
 
-    quota = check_claude_usage(token=token, use_cache=use_cache)
+    quota = check_claude_usage(token=credential.token, use_cache=use_cache)
     windows: List[UsageWindowSummary] = []
 
     if quota.five_hour.utilization is not None:
