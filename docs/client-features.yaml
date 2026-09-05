@@ -454,6 +454,17 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
   - Configuration file: "~/.auto-coder/config.toml"
   - Optional field: Defaults to 3 if not specified
 
+- **Adversarial-review-blocked PR priority (issue #1731)**: Deprioritizes PRs that cannot make progress at their unchanged HEAD
+  - Purpose: A PR whose current HEAD already completed Auto-Coder's own adversarial validation with material specification violations (`NEEDS_FIX` or `NEEDS_TESTS`) has no further normal action to perform until the PR author/backend supplies a new commit. Without this, such a PR keeps competing at the ordinary auto-merge-candidate priority (2), crowding out genuinely actionable work.
+  - Implementation: `is_current_head_adversarial_review_blocked()` in `pr_processor.py`, called from `AutomationEngine._get_candidates()`.
+  - Behavior:
+    - When `[ENABLE_ADVERSARIAL_VALIDATION]` is enabled, the PR is not a dependency-bot PR, and it is otherwise mergeable with passing checks, the dedicated reviewer App's authoritative same-SHA verdict (looked up the same way the merge gate does, via `_get_published_adversarial_validation_status`) is consulted for the PR's exact current `head.sha`.
+    - `NEEDS_FIX` or `NEEDS_TESTS` for the current HEAD lowers the PR to `pr_priority = 1`, the same tier as a mergeable PR with failing GitHub Actions checks.
+    - The classification is re-derived from the current HEAD on every candidate-collection pass; a verdict recorded against an older SHA never suppresses a newer HEAD, so a fresh commit immediately restores the ordinary priority even before a new adversarial result exists for it.
+    - Validator errors, timeouts, or indeterminate verdicts (`ERROR`, `BLOCKED`, `INCONCLUSIVE`), a PR with no linked-Issue specification oracle, and any lookup failure all resolve to "not blocked" so they remain retried rather than deprioritized.
+    - Only the dedicated `auto-coder-reviewer` GitHub App's own marker-scoped verdict counts; a generic human `CHANGES_REQUESTED` review or unrelated unresolved review thread never triggers this classification on its own.
+    - An independently applicable higher-priority condition (unmergeable, `urgent`, breaking-change) is unaffected: this check only runs, and can only apply, in the branch that would otherwise assign the mergeable/passing-checks priority of 2.
+
 #### Placeholder Replacement System
 
 - **Purpose**: Enable dynamic configuration values in option lists using placeholders
