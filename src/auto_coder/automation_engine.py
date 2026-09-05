@@ -2567,15 +2567,30 @@ class AutomationEngine:
                     related_issues=related_issues,
                 )
             elif target_type == "issue":
-                authoritative_type = self._get_authoritative_item_type(repo_name, number)
-                if authoritative_type != "issue":
-                    logger.error(f"Refusing Issue candidate for {repo_name}#{number}: GitHub identifies the target as {authoritative_type}")
-                    return None
+                if propagate_errors:
+                    try:
+                        # This one strict snapshot is both the type authority and
+                        # the candidate source. A second, failure-flattening read
+                        # could otherwise turn a transport outage into absence.
+                        issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                    except httpx.HTTPStatusError as error:
+                        if error.response.status_code == 404:
+                            logger.info(f"Issue #{number} no longer exists in {repo_name}")
+                            return None
+                        raise
+                    if "pull_request" in issue:
+                        logger.error(f"Refusing Issue candidate for {repo_name}#{number}: GitHub identifies the target as pr")
+                        return None
+                else:
+                    authoritative_type = self._get_authoritative_item_type(repo_name, number)
+                    if authoritative_type != "issue":
+                        logger.error(f"Refusing Issue candidate for {repo_name}#{number}: GitHub identifies the target as {authoritative_type}")
+                        return None
 
-                # Get issue data
-                # repo = self.github.get_repository(repo_name)
-                # issue = repo.get_issue(number)
-                issue = self.github.get_issue(repo_name, number)
+                    # Get issue data
+                    # repo = self.github.get_repository(repo_name)
+                    # issue = repo.get_issue(number)
+                    issue = self.github.get_issue(repo_name, number)
                 issue_data = self.github.get_issue_details(issue)
                 if not issue_data or not issue_data.get("number"):
                     return None

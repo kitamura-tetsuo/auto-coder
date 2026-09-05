@@ -252,3 +252,34 @@ def test_authoritative_pr_not_found_completes_invalidation(tmp_path: Path, monke
     asyncio.run(scenario())
     assert processed == []
     assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = GitHubClient("test-token")
+    strict_snapshot = {
+        "number": 42,
+        "title": "Authoritative issue",
+        "body": "Current body",
+        "state": "open",
+        "user": {"login": "contributor", "id": 123},
+        "labels": [],
+        "assignees": [],
+        "comments": 0,
+    }
+    github.get_issue_dispatch_snapshot_strict = MagicMock(return_value=strict_snapshot)
+    github.get_issue = MagicMock(side_effect=RuntimeError("second request unavailable"))
+    engine = AutomationEngine(github, AutomationConfig())
+    processed = []
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data) or CandidateProcessingResult(type="issue", number=42, success=True))
+    monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
+
+    async def scenario():
+        await process_github_payload("issues", {"action": "opened", "issue": {"number": 42, "title": "stale"}}, engine, "owner/repo", "issue-delivery")
+        await _run_worker_until(engine, 1, processed)
+
+    asyncio.run(scenario())
+    github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 42)
+    github.get_issue.assert_not_called()
+    assert processed[0]["body"] == "Current body"
+    assert engine.invalidations.pending_count("owner/repo") == 0
