@@ -208,6 +208,7 @@ def test_changed_generation_revalidation_defers_until_live_implementation_finish
     def analyze(_manifest, body):
         if body.endswith(" B"):
             validation_b_started.set()
+            assert ImplementationOwner("issue", 1728) not in engine.implementation_slots.active_owners()
             return SpecificationAnalysisResult("BLOCKED", (FINDING,))
         return SpecificationAnalysisResult("READY")
 
@@ -240,6 +241,7 @@ def test_changed_generation_revalidation_defers_until_live_implementation_finish
     assert blocked.actions == ["Rejected - blocked specification"]
     engine._process_single_candidate_reserved.assert_not_called()
     assert engine.implementation_slots.active_execution_ids(owner) == ()
+    assert owner not in engine.implementation_slots.active_owners()
 
 
 def test_resubmitted_unchanged_blocked_generation_removes_label_again_after_restart(tmp_path):
@@ -452,6 +454,7 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
     # membership before it semantically validates submitted generation B.
     github.get_issue.return_value = {"number": 1728, "state": "open"}
     github.get_issue_details.return_value = {"number": 1728, "state": "open"}
+    github.get_issue_comments_strict.return_value = []
     github.has_linked_pr.return_value = False
     github.get_issue_comments_strict.return_value = []
     stale_jules = Mock()
@@ -505,3 +508,48 @@ def test_blocked_edit_during_comment_lookup_prevents_stale_publication(tmp_path)
     assert github.comments == []
     assert github.removals == 0
     engine._process_single_candidate_reserved.assert_not_called()
+
+
+def test_completed_local_generation_owner_is_retired_before_changed_validation(tmp_path):
+    """A real shared local route cannot retain bare A ownership during B validation."""
+    current = {"body": BODY + " A"}
+    github = Mock()
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+        "number": number,
+        "title": "Local",
+        "body": current["body"],
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    github.get_item_type_strict.return_value = "issue"
+    github.get_all_sub_issues.return_value = []
+    github.try_add_labels.return_value = True
+    github.get_issue.return_value = {"number": 1728, "state": "open"}
+    github.get_issue_details.return_value = {"number": 1728, "state": "open"}
+    github.get_issue_comments_strict.return_value = []
+    engine = AutomationEngine(github, config=AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    owner = ImplementationOwner("issue", 1728)
+    observations = []
+
+    def analyze(_manifest, body):
+        observations.append((body, slots.active_owners()))
+        if body.endswith(" B"):
+            return SpecificationAnalysisResult("BLOCKED", (FINDING,))
+        return SpecificationAnalysisResult("READY")
+
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "local.json", analyze)
+    candidate = Candidate(type="issue", data={"number": 1728, "title": "Local", "body": current["body"]}, priority=0)
+    with patch.object(engine, "_take_issue_actions", return_value=["implemented A"]) as local_backend:
+        first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert first.success is True
+    local_backend.assert_called_once()
+    assert slots.active_execution_ids(owner) == ()
+    assert owner in slots.active_owners()
+
+    current["body"] = BODY + " B"
+    blocked = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert blocked.actions == ["Rejected - blocked specification"]
+    assert observations[-1] == (BODY + " B", ())
+    assert owner not in slots.active_owners()

@@ -476,6 +476,46 @@ class ImplementationSlotRepository:
             self._write(owners)
             return True
 
+    def release_unbound_idle_owner(self, owner: ImplementationOwner) -> bool:
+        """Release ownership with no execution, provider task, or implementation PR."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            executions = record.get("executions", [])
+            sessions = record.get("provider_sessions", [])
+            implementation_prs = record.get("implementation_prs", [])
+            if not isinstance(executions, list) or not isinstance(sessions, list) or not isinstance(implementation_prs, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse retained implementation ownership")
+            if executions or sessions or implementation_prs:
+                return False
+            owners.pop(owner.key)
+            self._write(owners)
+            return True
+
+    def record_validation_identity(self, owner: ImplementationOwner, identity: str) -> bool:
+        """Bind logical Issue ownership to its authorized specification identity."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                return False
+            record["validation_identity"] = identity
+            self._write(owners)
+            return True
+
+    def validation_identity(self, owner: ImplementationOwner) -> Optional[str]:
+        """Return the generation identity attached to retained ownership."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return None
+        identity = record.get("validation_identity")
+        if identity is not None and not isinstance(identity, str):
+            raise ImplementationSlotUnavailable("Cannot safely parse implementation validation identity")
+        return identity
+
     def active_owners(self) -> tuple[ImplementationOwner, ...]:
         with self._state_lock():
             records = self._read()

@@ -1231,6 +1231,22 @@ class AutomationEngine:
                     result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                     return result
                 with slots.serialize(owner):
+                    if owner in slots.active_owners() and not continue_execution:
+                        # A completed local launch can leave a bare owner while
+                        # its Issue stays open. It has no actual implementation
+                        # work to coordinate, so retire it before validation.
+                        # Owners with PR/provider/execution membership remain
+                        # protected and cannot be silently discarded.
+                        snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                        validator = self._get_specification_validator(repo_name)
+                        current_identity = validator.identity(
+                            item_number,
+                            str(snapshot.get("title") or ""),
+                            str(snapshot.get("body") or ""),
+                        ).key
+                        if (is_implementation_ready(snapshot) and slots.validation_identity(owner) == current_identity) or not slots.release_unbound_idle_owner(owner):
+                            result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
+                            return result
                     return self._process_single_candidate_unified(
                         repo_name,
                         candidate,
@@ -1391,6 +1407,12 @@ class AutomationEngine:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
             result.actions = [f"Deferred - {reason} ({owner.key})"]
             return result
+
+        if candidate.type == "issue" and not inherited_execution:
+            if not slots.record_validation_identity(owner, decision.identity.key):
+                slots.finish_execution(owner, execution_id)
+                result.error = "Could not bind implementation ownership to validated Issue generation"
+                return result
 
         try:
             # Issue force changes scheduling eligibility, not generation-level
