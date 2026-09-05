@@ -76,7 +76,7 @@ def test_one_delivery_can_invalidate_multiple_entities_with_preserved_metadata(t
     ]
 
 
-def test_migration_preserves_previous_delivery_deduplication(tmp_path: Path):
+def test_http_redelivery_after_migration_recognizes_former_adapter_suffix(tmp_path: Path, monkeypatch):
     path = tmp_path / "invalidations.sqlite3"
     connection = sqlite3.connect(path)
     connection.executescript(
@@ -90,16 +90,26 @@ def test_migration_preserves_previous_delivery_deduplication(tmp_path: Path):
             repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
             PRIMARY KEY(repository, delivery_id)
         );
-        INSERT INTO github_deliveries VALUES ('owner/repo', 'already-seen');
+        INSERT INTO github_deliveries VALUES ('owner/repo', 'same-delivery:0');
         """
     )
     connection.commit()
     connection.close()
 
-    queue = DurableInvalidationQueue(path)
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    with patch("src.auto_coder.webhook_server.init_dashboard"):
+        app = create_app(engine, "owner/repo")
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json={"action": "opened", "pull_request": {"number": 77}, "repository": {"full_name": "owner/repo"}},
+            headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "same-delivery"},
+        )
 
-    assert not queue.invalidate(EntityIdentity("owner/repo", "pr", 77), "already-seen", "pull_request", "opened")
-    assert queue.pending_count("owner/repo") == 0
+    assert response.status_code == 200
+    assert engine.invalidations.pending_count("owner/repo") == 0
+    assert engine.queue.qsize() == 0
 
 
 def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path, monkeypatch):

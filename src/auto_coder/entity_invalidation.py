@@ -107,6 +107,20 @@ class DurableInvalidationQueue:
                 );
                 """
             )
+            legacy_rows = self._connection.execute("SELECT repository, delivery_id FROM legacy_github_deliveries").fetchall()
+            with self._connection:
+                self._connection.executemany(
+                    "INSERT OR IGNORE INTO legacy_github_deliveries(repository, delivery_id) VALUES (?, ?)",
+                    ((repository, self._raw_legacy_delivery_id(delivery_id)) for repository, delivery_id in legacy_rows),
+                )
+
+    @staticmethod
+    def _raw_legacy_delivery_id(delivery_id: str) -> str:
+        """Undo the former adapter's ``:<entity index>`` delivery suffix."""
+        raw_delivery_id, separator, index = delivery_id.rpartition(":")
+        if separator and raw_delivery_id and index.isdigit():
+            return raw_delivery_id
+        return delivery_id
 
     def recover(self, repository: str) -> None:
         """Make work interrupted by process termination claimable again."""
