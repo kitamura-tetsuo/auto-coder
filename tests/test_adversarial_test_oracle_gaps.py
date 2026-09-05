@@ -14,6 +14,7 @@ from auto_coder.adversarial_validator import (
     run_adversarial_validation,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.review_thread_validation import ClaimedReviewThread, render_claimed_review_threads_section
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 
 
@@ -120,21 +121,21 @@ def test_llm_requirement_text_is_ignored_in_favor_of_manifest_text() -> None:
     assert result.test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
 
 
-def test_same_sha_inspection_cannot_resolve_an_open_gap() -> None:
+def test_same_sha_current_head_evidence_can_resolve_a_stale_open_gap() -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     resolved_payload = gap_payload(
         status="RESOLVED",
         phase="REREVIEW",
-        resolution_evidence="Reviewer inspected correct production behavior.",
+        resolution_evidence="The committed direct-boundary regression test exercises rejection and unchanged state.",
     )
     rereview = parsed_result(resolved_payload)
 
     result = _reconcile_test_oracle_gap_lifecycle(rereview, prior_session(initial), "sha-a")
     result = _apply_coverage_and_verdict_precedence(result, context())
 
-    assert result.result == "NEEDS_TESTS"
-    assert [gap.gap_id for gap in result.open_test_oracle_gaps] == [initial.gap_id]
-    assert result.open_test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
+    assert result.result == "PASS"
+    assert result.open_test_oracle_gaps == []
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
 
 
 def test_new_commit_with_focused_boundary_test_can_resolve_and_converge() -> None:
@@ -444,6 +445,62 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
     assert saved_after_retry is not None
     assert saved_after_retry.last_head_sha == "sha-b"
     assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"
+
+
+def test_same_head_addressed_gap_thread_converges_session_when_gap_is_omitted(tmp_path) -> None:
+    """Exercise the production validator boundary used before thread resolution."""
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    claimed = ClaimedReviewThread(
+        thread_id="thread-gap",
+        root_comment_database_id=42,
+        root_author_login="auto-coder[bot]",
+        original_finding=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+        discussion="agent[bot]: Added and ran the direct-boundary regression test.",
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "All requirements and regression protections are verified.",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Guard and direct regression test verified."}],
+            "findings": [],
+            "test_oracle_gaps": [],
+            "thread_dispositions": [
+                {
+                    "thread_id": "thread-gap",
+                    "status": "ADDRESSED",
+                    "rationale": "The exact requested persisted-state invariant is now covered.",
+                    "evidence": "tests/test_grid.py calls GridMutation directly and asserts rejection, unchanged state, and revision.",
+                }
+            ],
+        }
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section((claimed,)),
+            claimed_review_threads=(claimed,),
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "PASS"
+    assert result.open_test_oracle_gaps == []
+    assert result.thread_dispositions[0].status == "ADDRESSED"
+    assert saved is not None
+    assert saved.last_head_sha == "sha-a"
+    assert saved.test_oracle_gaps[0].status == "RESOLVED"
+    assert "tests/test_grid.py" in saved.test_oracle_gaps[0].resolution_evidence
 
 
 def test_non_authoritative_resolved_response_preserves_the_open_checkpoint(tmp_path) -> None:

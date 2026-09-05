@@ -2022,6 +2022,7 @@ class TestAdversarialValidationPRFlow:
             config,
             github_client=client,
             claimed_review_threads_section="(No claimed-addressed review threads for this run.)",
+            claimed_review_threads=(),
         )
         mock_merge_pr.assert_called_once()
 
