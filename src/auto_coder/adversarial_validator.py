@@ -2485,9 +2485,13 @@ def run_adversarial_validation(
         # when an unrelated gate (for example change provenance) keeps the
         # overall verdict inconclusive. Persist the semantic transition before
         # the caller projects the disposition to GitHub.
-        has_proven_gap_closure = bool(_addressed_test_oracle_gap_evidence(result, claimed_review_threads))
+        prior_gaps_by_id = {gap.gap_id: gap for gap in lifecycle_session.test_oracle_gaps} if lifecycle_session else {}
+        has_proven_gap_closure = any(
+            prior_gaps_by_id.get(gap.gap_id) is not None and prior_gaps_by_id[gap.gap_id].status == "OPEN" and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap) and gap.status in {"RESOLVED", "INVALID"} and bool(gap.resolution_evidence) for gap in result.test_oracle_gaps
+        )
+        persist_proven_closure = has_proven_gap_closure and result.diagnostic_category == "change_provenance_clarification"
         persisted_head_sha = head_sha if lifecycle_completed else lifecycle_session.last_head_sha if lifecycle_session else ""
-        persisted_gaps = result.test_oracle_gaps if lifecycle_completed or has_proven_gap_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
+        persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
         registry.save(
             ReviewerSession(
                 repository=repo_name,

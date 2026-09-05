@@ -558,6 +558,76 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
     assert reloaded.test_oracle_gaps[0].status == "RESOLVED"
 
 
+def test_same_head_explicit_gap_resolution_persists_when_resolved_thread_is_not_classified(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    resolved_thread = ReviewThread(
+        id="thread-gap",
+        is_resolved=True,
+        comments=[
+            ReviewThreadComment(
+                database_id=42,
+                author_id=7,
+                author_login="auto-coder-reviewer[bot]",
+                body=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+            )
+        ],
+    )
+    classification = classify_review_threads((resolved_thread,), {7})
+    assert classification.claimed == ()
+    assert classification.blocking_unresolved_count == 0
+
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    resolved_payload = gap_payload(
+        status="RESOLVED",
+        phase="REREVIEW",
+        resolution_evidence="tests/test_grid.py directly verifies rejection and unchanged persisted state at sha-a.",
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Regression protection is proven; documentation provenance remains unclear.",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current-head guard and direct regression verified."}],
+            "findings": [],
+            "test_oracle_gaps": [resolved_payload],
+            "unexplained_changes": [
+                {
+                    "paths": ["docs/generated.md"],
+                    "change_group": "Generated documentation contract update.",
+                    "why_unexplained": "No source relationship is established.",
+                }
+            ],
+            "thread_dispositions": [],
+        }
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section(classification.claimed),
+            claimed_review_threads=classification.claimed,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "INCONCLUSIVE"
+    assert result.diagnostic_category == "change_provenance_clarification"
+    assert result.thread_dispositions == []
+    assert result.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved is not None
+    assert saved.last_head_sha == "sha-a"
+    assert saved.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved.test_oracle_gaps[0].resolution_evidence == resolved_payload["resolution_evidence"]
+
+
 def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_recovers(tmp_path) -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
