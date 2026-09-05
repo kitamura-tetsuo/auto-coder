@@ -868,6 +868,7 @@ def handle_stale_jules_issue_sessions(
                             github_client,
                             backend_manager=backend_manager,
                             check_labels=False,
+                            implementation_slots=implementation_slots,
                         )
                     )
                     result.issue_numbers.append(issue_number)

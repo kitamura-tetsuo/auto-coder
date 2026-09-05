@@ -709,3 +709,108 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
     assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
     assert analyzed == [BODY + " A"]
     assert slots.start_execution(ImplementationOwner("issue", 99)) is None
+
+
+def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch, tmp_path):
+    """A real Jules launch and daemon fallback retain the replacement PR owner."""
+    from auto_coder.issue_processor import _create_pr_for_issue, _process_issue_jules_mode
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    current = {"body": BODY + " A"}
+    github = Mock(token="token")
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+        "number": number,
+        "title": "Daemon PR",
+        "body": current["body"],
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    github.get_item_type_strict.return_value = "issue"
+    github.get_all_sub_issues.return_value = []
+    github.get_parent_issue_details.return_value = None
+    github.get_open_sub_issues.return_value = []
+    github.get_issue.return_value = {"number": 1728, "state": "open"}
+    github.get_issue_details.return_value = {"number": 1728, "state": "open"}
+    github.has_linked_pr.return_value = False
+    github.find_pr_by_head_branch.return_value = None
+    github.get_pr_closing_issues.return_value = [1728]
+    github.get_labels.return_value = []
+    github.try_add_labels.return_value = True
+    engine = AutomationEngine(github, config=AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "daemon-pr-slots.json")
+    engine.implementation_slots = slots
+    analyzed = []
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
+        "owner/repo",
+        "validator",
+        tmp_path / "daemon-pr-validations.json",
+        lambda _manifest, body: analyzed.append(body) or SpecificationAnalysisResult("READY"),
+    )
+    launch_jules = Mock()
+    launch_jules.start_session.return_value = "daemon-session-a"
+
+    def production_launch(repo, issue_data, config, client, label_context=None, implementation_slots=None):
+        assert implementation_slots is slots
+        return _process_issue_jules_mode(repo, issue_data, config, client, label_context)
+
+    candidate = Candidate(type="issue", data={"number": 1728}, priority=0)
+    with (
+        patch("auto_coder.issue_processor._process_issue_cloud_backend", side_effect=production_launch),
+        patch("auto_coder.issue_processor.JulesClient", return_value=launch_jules),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+    ):
+        assert engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=True).success is True
+    owner = ImplementationOwner("issue", 1728)
+    assert slots.has_provider_sessions(owner) is True
+
+    current["body"] = BODY + " B"
+    stale_jules = Mock()
+    stale_jules.list_sessions.return_value = [
+        {
+            "name": "sessions/daemon-session-a",
+            "state": "IN_PROGRESS",
+            "createTime": "2000-01-01T00:00:00Z",
+            "outputs": {},
+        }
+    ]
+    stale_jules.get_session.return_value = {"state": "COMPLETED"}
+    api = Mock()
+    api.pulls.create.return_value = {"number": 100, "html_url": "https://github.test/pull/100"}
+
+    def replacement_actions(repo, issue_data, config, client, **kwargs):
+        assert kwargs["implementation_slots"] is slots
+        return [
+            _create_pr_for_issue(
+                repo,
+                issue_data,
+                "issue-1728-attempt-2",
+                "main",
+                "replacement implemented",
+                client,
+                config,
+                implementation_slots=kwargs["implementation_slots"],
+            )
+        ]
+
+    with (
+        patch("auto_coder.issue_processor.JulesClient", return_value=stale_jules),
+        patch("auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("auto_coder.issue_processor.increment_attempt", return_value=2),
+        patch("auto_coder.issue_processor._apply_issue_actions_directly", side_effect=replacement_actions),
+        patch("auto_coder.issue_processor.get_ghapi_client", return_value=api),
+        patch("auto_coder.issue_processor.run_llm_noedit_prompt", return_value=""),
+        patch("auto_coder.issue_processor.validate_issue_references"),
+        patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=Mock()),
+        patch("time.sleep"),
+    ):
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+    assert analyzed == [BODY + " A", BODY + " B"]
+    assert slots.has_provider_sessions(owner) is False
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.active_owners() == (owner,)
+
+    current["body"] = BODY + " C"
+    deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
+    assert analyzed == [BODY + " A", BODY + " B"]
+    assert slots.start_execution(ImplementationOwner("issue", 99)) is None
