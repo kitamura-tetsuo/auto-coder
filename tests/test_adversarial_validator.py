@@ -815,6 +815,16 @@ diff --git a/src/service_test.py b/src/service_test.py
             ("REQ-003", "Keep gaps separate from findings."),
         ]
 
+    @pytest.mark.parametrize("extra_line", ["```", "    code example", "continuation text", "- [ ] task prose"])
+    def test_explicit_contract_keeps_line_oriented_semantics_at_adversarial_boundary(self, extra_line):
+        issue = VerifiedIssueOracle(number=1726, title="Line grammar", body=f"## Requirements\nREQ-001: Valid.\n{extra_line}")
+
+        manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=(issue,)))
+
+        assert manifest.mode == "explicit-contract"
+        assert manifest.requirements == []
+        assert "malformed entries" in (manifest.error or "")
+
     def test_duplicate_explicit_ids_across_issues_are_issue_qualified(self):
         issues = (
             VerifiedIssueOracle(number=101, body="## Requirements\nREQ-001: First contract."),

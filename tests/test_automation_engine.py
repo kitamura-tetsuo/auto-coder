@@ -345,6 +345,8 @@ class TestAutomationEngine:
         [
             ("## Requirements\n\n### 1. First requirement\n...", "no valid REQ-NNN entries"),
             ("## Requirements\n- Must do something", "malformed entries"),
+            ("## Requirements\nREQ-001: Valid.\n```\nexample\n```", "malformed entries"),
+            ("## Requirements\nREQ-001: Valid.\n  continuation text", "malformed entries"),
             ("## Requirements\nREQ-001: One.\nREQ-001: Again.", "duplicate IDs"),
         ],
     )

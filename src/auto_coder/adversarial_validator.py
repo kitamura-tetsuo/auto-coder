@@ -19,7 +19,7 @@ from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linke
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .requirement_contract import parse_requirement_contract
+from .requirement_contract import build_normative_issue_manifest
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
@@ -799,8 +799,9 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
 
 def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
     """Adapt the shared contract oracle to the adversarial manifest builder."""
-    result = parse_requirement_contract(issue.number, issue.body)
-    return result.explicit, result.entries, result.error
+    manifest = build_normative_issue_manifest(issue.number, issue.title, issue.body)
+    entries = [(entry.requirement_id, entry.text) for entry in manifest.requirements]
+    return manifest.explicit_contract_present, entries, manifest.error
 
 
 def build_issue_requirement_manifest(resolution: IssueOracleResolution) -> IssueRequirementManifest:

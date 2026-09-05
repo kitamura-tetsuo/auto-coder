@@ -37,7 +37,7 @@ from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, parse_requirement_contract
+from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -1228,7 +1228,7 @@ class AutomationEngine:
                 return result
 
             current_body = str(current_issue.get("body") or "")
-            contract = parse_requirement_contract(item_number, current_body)
+            contract = build_normative_issue_manifest(item_number, str(current_issue.get("title") or ""), current_body)
             if contract.error:
                 fingerprint = hashlib.sha256(f"{REQUIREMENT_CONTRACT_PARSER_VERSION}\0{current_body}\0{contract.error}".encode("utf-8")).hexdigest()
                 marker = f"<!-- {INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX}:{REQUIREMENT_CONTRACT_PARSER_VERSION}:{fingerprint} -->"
