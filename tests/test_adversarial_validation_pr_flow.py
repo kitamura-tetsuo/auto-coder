@@ -494,6 +494,8 @@ class TestAdversarialValidationCodexFeedback:
             backend = CodexCloudClient(repo_name="owner/repo")
         backend.wham_client = MagicMock()
         backend.wham_client.resolve_latest_assistant_turn.side_effect = [
+            "task_e_abc123~assttrn_0",
+            "task_e_abc123~assttrn_0",
             None,
             "task_e_abc123~assttrn_1",
             "task_e_abc123~assttrn_1",
@@ -511,6 +513,7 @@ class TestAdversarialValidationCodexFeedback:
             "head": {"ref": "repair-branch", "sha": "head-a"},
             "base": {"ref": "main"},
         }
+        provenance_report = f"{finding}\n\n<!-- auto-coder-change-provenance-evidence:v1:0123456789abcdef0123 -->"
 
         with (
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
@@ -520,12 +523,13 @@ class TestAdversarialValidationCodexFeedback:
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
             pr_data["head"]["sha"] = "unrelated-head-b"
-            recovered_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
-            unchanged_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
-            failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
-            duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
+            recovered_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
+            unchanged_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
+            failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
+            duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", provenance_report, github, [finding])
 
-        assert backend.wham_client.send_follow_up.call_count == 2
+        assert backend.wham_client.send_follow_up.call_count == 3
         assert "all actionable feedback was already delivered" in recovered_baseline[0]
         assert "all actionable feedback was already delivered" in unchanged_baseline[0]
         assert "latest corrective attempt did not resolve" in backend.wham_client.send_follow_up.call_args.kwargs["prompt"]

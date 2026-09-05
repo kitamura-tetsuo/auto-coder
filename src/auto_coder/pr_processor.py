@@ -4900,6 +4900,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     """Send actionable findings only to the owning provider task."""
     pr_number = pr_data["number"]
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
+    source_validation_report = validation_report
 
     resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
     if resolution.origin is None:
@@ -4922,18 +4923,18 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         logger.error(f"Failed to identify actionable adversarial feedback for PR #{pr_number}: {exc}")
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"]
     requested_bodies = set(actionable_feedback)
-    has_remediation_evidence = _has_adversarial_remediation_evidence(remediation_token, validation_report)
+    has_remediation_evidence = _has_adversarial_remediation_evidence(remediation_token, source_validation_report)
     feedback_items = [
         (
             thread.comments[0].body,
             _review_feedback_identity(prefix, thread, 0),
-            _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), remediation_token, validation_report),
+            _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), remediation_token, source_validation_report),
         )
         for thread in review_threads
         if not thread.is_resolved
         and thread.comments
         and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))
-        and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report))
+        and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report))
     ]
     if not feedback_items:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]
@@ -4946,7 +4947,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                 for identity in (
                     finding_identity,
                     generation_identity,
-                    _adversarial_feedback_generation_identity(finding_identity, "", validation_report),
+                    _adversarial_feedback_generation_identity(finding_identity, "", source_validation_report),
                 )
             ]
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, all_identities))
@@ -4973,7 +4974,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
         failed_correction = any(finding_identity in delivered for _body, finding_identity, _generation_identity in pending_feedback)
         report_template = "pr.adversarial_feedback_failed_correction" if failed_correction else "pr.adversarial_feedback_new"
-        validation_report = Template(get_prompt_template(report_template)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
+        delivery_report = Template(get_prompt_template(report_template)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
     except (OSError, ValueError) as exc:
         return [f"Could not check prior {provider} actionable feedback for PR #{pr_number}: {exc}"]
 
@@ -4987,7 +4988,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         repo_name=repo_name,
         pr_number=pr_number,
         head_sha=head_sha,
-        validation_report=validation_report,
+        validation_report=delivery_report,
     )
     prompt = build_existing_pr_repair_prompt(target, details)
 
@@ -5009,7 +5010,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         baseline_activity = client.get_followup_remediation_baseline(task_id, logical_identities)
         if isinstance(baseline_activity, str) and baseline_activity:
             baseline_token = hashlib.sha256(f"{task_id}\n{baseline_activity}".encode("utf-8")).hexdigest()
-            baseline_receipts = {_adversarial_feedback_generation_identity(finding_identity, baseline_token, validation_report) for _body, finding_identity, _generation_identity in pending_feedback}
+            baseline_receipts = {_adversarial_feedback_generation_identity(finding_identity, baseline_token, source_validation_report) for _body, finding_identity, _generation_identity in pending_feedback}
 
     local_receipt = False
     try:
