@@ -36,6 +36,7 @@ from .adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, Revie
 from .logger_config import get_logger
 from .review_feedback_marker import reply_claims_review_addressed
 from .util.gh_cache import ReviewThread
+from .utils import is_same_github_login
 
 logger = get_logger(__name__)
 
@@ -342,7 +343,7 @@ def _find_github_stale_blockers(github_client: Any, repo_name: str, pr_number: i
             body = (comment.body or "").strip()
             if not (body == STALE_BLOCKER_CLEARED_MARKER or body == STALE_BLOCKER_MARKER or body.startswith(f"{STALE_BLOCKER_MARKER}\n")):
                 continue
-            if comment.author_login != _trusted_marker_author():
+            if not is_same_github_login(comment.author_login, _trusted_marker_author()):
                 continue
             if body == STALE_BLOCKER_CLEARED_MARKER:
                 latest_blocker_head = None

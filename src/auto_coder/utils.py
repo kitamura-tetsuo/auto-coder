@@ -92,6 +92,20 @@ def get_pr_author_login(pr_obj: Any) -> Optional[str]:
         return None
 
 
+def is_same_github_login(login1: Optional[str], login2: Optional[str]) -> bool:
+    """Compare two GitHub logins case-insensitively, ignoring any trailing '[bot]' suffix.
+
+    GitHub GraphQL APIs return the slug directly for Bot actors (e.g.
+    'auto-coder-reviewer'), whereas GitHub REST APIs append '[bot]' (e.g.
+    'auto-coder-reviewer[bot]'). This helper treats them as equivalent.
+    """
+    if not isinstance(login1, str) or not isinstance(login2, str):
+        return False
+    norm1 = login1.strip().lower().removesuffix("[bot]")
+    norm2 = login2.strip().lower().removesuffix("[bot]")
+    return bool(norm1 and norm1 == norm2)
+
+
 VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"
 
 

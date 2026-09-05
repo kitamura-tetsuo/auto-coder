@@ -76,7 +76,7 @@ from .test_log_utils import extract_all_failed_tests, extract_first_failed_test,
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .util.github_action import _create_github_action_log_summary
-from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
+from .utils import CommandExecutor, CommandResult, get_pr_author_login, is_same_github_login, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -339,7 +339,7 @@ def _allow_older_head_adversarial_threads(
     for thread in state.blocking_unresolved:
         comments = thread.comments or []
         root = comments[0] if comments else None
-        if root is None or thread.comments_truncated or root.author_login != reviewer_login or not any(root.body.startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
+        if root is None or thread.comments_truncated or not is_same_github_login(root.author_login, reviewer_login) or not any(root.body.startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
             remaining.append(thread)
             continue
         promoted.append(
@@ -2065,7 +2065,7 @@ def _find_authoritative_adversarial_review(
     for review in reviews:
         login = _comment_value(_comment_value(review, "user") or {}, "login", "")
         body = _comment_value(review, "body", "")
-        if login == identity.login and isinstance(body, str) and body.startswith(marker):
+        if identity.matches_login(login) and isinstance(body, str) and body.startswith(marker):
             matching_bodies.append(body)
 
     if matching_bodies:
@@ -2516,7 +2516,7 @@ def _handle_pr_merge(
                         existing_pr_comments = github_client.get_pr_comments(repo_name, pr_number) if github_client else []
                         existing_reviews = github_client.get_pr_reviews_strict(repo_name, pr_number) if github_client else []
                         reviewer_identity = resolve_reviewer_app_identity(repo_name)
-                        authoritative_reviews = [review for review in existing_reviews if _comment_value(_comment_value(review, "user") or {}, "login", "") == reviewer_identity.login]
+                        authoritative_reviews = [review for review in existing_reviews if reviewer_identity.matches_login(_comment_value(_comment_value(review, "user") or {}, "login", ""))]
                         adv_review_count = count_adversarial_validation_comments(existing_pr_comments) + count_adversarial_validation_comments(authoritative_reviews)
                     except Exception as e:
                         logger.error(f"Failed to check adversarial validation count for PR #{pr_number}: {e}")
@@ -4631,7 +4631,7 @@ def _delegate_cloud_review_thread_repair(
         for index, comment in enumerate(thread.comments)
         # A root is reviewer feedback by definition. Later comments create new
         # work only when they come from someone other than the PR implementer.
-        if index == 0 or not implementer_login or comment.author_login.lower() != implementer_login
+        if index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login)
     ]
     with _cloud_review_delivery_lock:
         try:

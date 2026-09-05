@@ -26,6 +26,7 @@ from .adversarial_validator import (
 )
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
+from .utils import is_same_github_login
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,10 @@ class ReviewerAppIdentity:
 
     login: str = ""
     app_id: int = 0
+
+    def matches_login(self, candidate_login: Optional[str]) -> bool:
+        """Return whether candidate_login matches this identity, ignoring '[bot]' suffix."""
+        return is_same_github_login(self.login, candidate_login)
 
 
 @dataclass

@@ -5,7 +5,7 @@ repos:
     - id: black
       name: black
       language: system
-      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run black "$@"; else black "$@"; fi'
+      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run black "$@"; else black "$@"; fi' --
       args: ["--check", "src/", "tests/"]
       pass_filenames: false
 
@@ -15,7 +15,7 @@ repos:
     - id: isort
       name: isort
       language: system
-      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run isort "$@"; else isort "$@"; fi'
+      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run isort "$@"; else isort "$@"; fi' --
       args: ["--check-only", "src/", "tests/"]
       pass_filenames: false
 
@@ -25,7 +25,7 @@ repos:
     - id: flake8
       name: flake8
       language: system
-      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run flake8 "$@"; else flake8 "$@"; fi'
+      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run flake8 "$@"; else flake8 "$@"; fi' --
       args: ["src/", "tests/"]
       pass_filenames: false
 

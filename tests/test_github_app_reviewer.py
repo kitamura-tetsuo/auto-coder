@@ -7,6 +7,7 @@ import pytest
 
 from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition, TestOracleGap
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
+from auto_coder.utils import is_same_github_login
 
 
 class RecordingClient:
@@ -457,3 +458,35 @@ def test_resolve_reviewer_app_identity_loads_config_and_resolves(tmp_path: Path,
 
     assert identity == ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=4765828)
     assert captured["url"].endswith("/app")
+
+
+@pytest.mark.parametrize(
+    ("login1", "login2", "expected"),
+    [
+        ("auto-coder-reviewer", "auto-coder-reviewer[bot]", True),
+        ("auto-coder-reviewer[bot]", "auto-coder-reviewer", True),
+        ("Auto-Coder-Reviewer[bot]", "auto-coder-reviewer", True),
+        ("auto-coder-reviewer", "auto-coder-reviewer", True),
+        ("auto-coder-reviewer[bot]", "auto-coder-reviewer[bot]", True),
+        ("other-user", "auto-coder-reviewer[bot]", False),
+        ("auto-coder-reviewer", "other-user", False),
+        ("", "auto-coder-reviewer", False),
+        (None, "auto-coder-reviewer", False),
+        ("auto-coder-reviewer", None, False),
+        (None, None, False),
+        ("[bot]", "", False),
+        ("[bot]", "[bot]", False),
+    ],
+)
+def test_is_same_github_login(login1: str | None, login2: str | None, expected: bool) -> None:
+    assert is_same_github_login(login1, login2) is expected
+
+
+def test_reviewer_app_identity_matches_login() -> None:
+    identity = ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=4765828)
+    assert identity.matches_login("auto-coder-reviewer") is True
+    assert identity.matches_login("auto-coder-reviewer[bot]") is True
+    assert identity.matches_login("AUTO-CODER-REVIEWER") is True
+    assert identity.matches_login("someone-else") is False
+    assert identity.matches_login(None) is False
+    assert identity.matches_login("") is False

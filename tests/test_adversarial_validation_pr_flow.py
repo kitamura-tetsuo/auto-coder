@@ -259,6 +259,18 @@ class TestAdversarialValidationPRComment:
         assert error is None
         assert body == rendered_body
 
+    def test_finds_native_review_from_dedicated_reviewer_app_with_slug_login(self):
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        result = AdversarialValidationResult(result="PASS", summary="Verified")
+        rendered_body = format_adversarial_validation_comment(result, "abc123")
+        client.get_pr_reviews_strict.return_value = [{"id": 1, "body": rendered_body, "user": {"login": "auto-coder-reviewer"}}]
+
+        body, error = _find_authoritative_adversarial_review(client, "owner/repo", 100, "abc123")
+
+        assert error is None
+        assert body == rendered_body
+
     def test_latest_native_review_for_same_sha_is_authoritative(self):
         client = MagicMock()
         first = format_adversarial_validation_comment(AdversarialValidationResult(result="INCONCLUSIVE"), "abc123")
@@ -2291,7 +2303,85 @@ class TestMaxAdversarialValidationsGating:
 class TestClaimedReviewThreadValidationFlow:
     """Production-flow coverage for independently adjudicated review threads."""
 
-    def test_changed_head_revalidates_promoted_older_finding_at_review_limit(self):
+    @pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"])
+    @pytest.mark.parametrize(
+        ("author_login", "reviewer_login"),
+        [
+            ("auto-coder-reviewer", "auto-coder-reviewer[bot]"),
+            ("auto-coder-reviewer[bot]", "auto-coder-reviewer"),
+            ("Auto-Coder-Reviewer", "auto-coder-reviewer[BOT]"),
+        ],
+    )
+    def test_allow_older_head_adversarial_threads_matches_slug_and_bot_suffix(self, heading, author_login, reviewer_login):
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState, _allow_older_head_adversarial_threads
+
+        thread = ReviewThread(
+            id="thread-old-finding",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body=f"{heading}\n\n`REQ-001`: validate the new head",
+                    author_login=author_login,
+                    author_id=322638342,
+                )
+            ],
+        )
+        initial_state = ClaimedReviewThreadGateState(
+            claimed=(),
+            unresolved=(thread,),
+            blocking_unresolved=(thread,),
+            has_blocking_unresolved=True,
+        )
+        new_state = _allow_older_head_adversarial_threads(initial_state, reviewer_login)
+
+        assert new_state.has_blocking_unresolved is False
+        assert len(new_state.blocking_unresolved) == 0
+        assert len(new_state.claimed) == 1
+        assert new_state.claimed[0].thread_id == "thread-old-finding"
+        assert new_state.claimed[0].revalidation_after_head_change is True
+        assert new_state.claimed[0].root_author_login == author_login
+        assert new_state.claimed[0].root_comment_database_id == 17
+        assert new_state.claimed[0].original_finding == thread.comments[0].body
+        assert new_state.unresolved == (thread,)
+        assert thread.is_resolved is False
+
+    @pytest.mark.parametrize(
+        ("author_login", "body", "truncated", "has_root"),
+        [
+            ("someone-else[bot]", "### Auto-Coder adversarial finding", False, True),
+            ("", "### Auto-Coder adversarial finding", False, True),
+            ("auto-coder-reviewer-extra", "### Auto-Coder adversarial finding", False, True),
+            ("auto-coder-reviewer", "Unrelated review feedback", False, True),
+            ("auto-coder-reviewer", "### Auto-Coder adversarial finding", True, True),
+            ("auto-coder-reviewer", "### Auto-Coder adversarial finding", False, False),
+        ],
+    )
+    def test_older_head_revalidation_preserves_ineligible_blockers(self, author_login, body, truncated, has_root):
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState, _allow_older_head_adversarial_threads
+
+        thread = ReviewThread(
+            id="blocked-thread",
+            is_resolved=False,
+            comments=[ReviewThreadComment(database_id=17, body=body, author_login=author_login)] if has_root else [],
+            comments_truncated=truncated,
+        )
+        state = ClaimedReviewThreadGateState(
+            unresolved=(thread,),
+            blocking_unresolved=(thread,),
+            has_blocking_unresolved=True,
+        )
+
+        result = _allow_older_head_adversarial_threads(state, "auto-coder-reviewer[bot]")
+
+        assert result is state
+        assert result.claimed == ()
+        assert result.blocking_unresolved == (thread,)
+        assert result.has_blocking_unresolved is True
+        assert thread.is_resolved is False
+
+    @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
+    def test_changed_head_revalidates_promoted_older_finding_at_review_limit(self, app_identity_login):
         """The supported GitHub thread/review inputs reach validation even
         when durable repair deduplication would otherwise leave the thread open."""
         from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
@@ -2366,7 +2456,7 @@ class TestClaimedReviewThreadValidationFlow:
             patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
             patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=github_thread_state),
             patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
-            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=reviewer_login, app_id=1)),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=app_identity_login, app_id=1)),
             patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
             patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
             patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=[]) as resolve_threads,
