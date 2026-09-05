@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -31,10 +32,15 @@ def inspect_digest(reference: str) -> None:
         capture_output=True,
         text=True,
     )
-    output = result.stdout.strip().strip('"')
-    if result.returncode == 0 and DIGEST_PATTERN.fullmatch(output):
-        print(output)
-        return
+    output = result.stdout.strip()
+    if result.returncode == 0:
+        try:
+            digest = json.loads(output)
+        except json.JSONDecodeError:
+            digest = None
+        if isinstance(digest, str) and DIGEST_PATTERN.fullmatch(digest):
+            print(digest)
+            return
 
     diagnostic = result.stderr.strip()
     # Buildx does not expose registry error codes separately. Only diagnostics

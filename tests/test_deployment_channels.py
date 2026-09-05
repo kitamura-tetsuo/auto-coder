@@ -56,9 +56,18 @@ if arguments[:3] != ["buildx", "imagetools", "inspect"]:
 reference = arguments[3]
 output_kind = "image" if any(".Image" in argument for argument in arguments) else "digest"
 response = json.loads(os.environ["FAKE_REGISTRY_RESPONSES"]).get(f"{reference}|{output_kind}")
+response_is_sequence = isinstance(response, list)
+if response_is_sequence:
+    counters_path = Path(os.environ["FAKE_DOCKER_COUNTERS"])
+    counters = json.loads(counters_path.read_text()) if counters_path.exists() else {}
+    response_key = f"{reference}|{output_kind}"
+    response_index = counters.get(response_key, 0)
+    counters[response_key] = response_index + 1
+    counters_path.write_text(json.dumps(counters))
+    response = response[min(response_index, len(response) - 1)]
 state_path = Path(os.environ["FAKE_DOCKER_STATE"])
 state = json.loads(state_path.read_text()) if state_path.exists() else {}
-if output_kind == "digest" and reference in state and (response is None or isinstance(response, dict)):
+if output_kind == "digest" and reference in state and not response_is_sequence and (response is None or isinstance(response, dict)):
     response = json.dumps(state[reference])
 if response is None:
     raise SystemExit(1)
@@ -82,6 +91,7 @@ print(response)
             "PATH": f"{bin_dir}:{env['PATH']}",
             "FAKE_DOCKER_LOG": str(docker_log),
             "FAKE_DOCKER_STATE": str(tmp_path / "docker-state.json"),
+            "FAKE_DOCKER_COUNTERS": str(tmp_path / "docker-counters.json"),
             "FAKE_REGISTRY_RESPONSES": json.dumps(registry_responses),
             "IMAGE": "ghcr.io/owner/repo",
             "RUN_ID": "42",
@@ -356,6 +366,63 @@ def test_advance_beta_inspection_failure_precedes_all_registry_writes(tmp_path):
     assert result.returncode != 0
     assert "unable to inspect" in result.stderr
     assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "step_name", "release_sha", "reference"),
+    [
+        ("advance-beta.yml", "Reject an out-of-order older successful run", None, f"ghcr.io/owner/repo:sha-{RELEASE_SHA}"),
+        ("promote-release.yml", "Validate and promote current beta without rebuilding", None, "ghcr.io/owner/repo:beta"),
+        ("rollback-release.yml", "Roll back to immutable release history without rebuilding", RELEASE_SHA, f"ghcr.io/owner/repo:release-{RELEASE_SHA}"),
+    ],
+)
+def test_workflow_rejects_multiply_quoted_digest_before_any_write(tmp_path, workflow_name, step_name, release_sha, reference):
+    malformed = f'""{EXPECTED_DIGEST}""'
+
+    result, operations = _run_release_workflow(tmp_path, workflow_name, step_name, {f"{reference}|digest": {"status": 0, "stdout": malformed}}, release_sha)
+
+    assert result.returncode != 0
+    assert "invalid digest output" in result.stderr
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+def test_promotion_rechecks_missing_history_before_create_and_detects_concurrent_publisher(tmp_path):
+    image = "ghcr.io/owner/repo"
+    history = f"{image}:release-{RELEASE_SHA}"
+    responses = {
+        f"{image}:beta|digest": json.dumps(EXPECTED_DIGEST),
+        f"{image}:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+        f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+        f"{history}|digest": [
+            {"status": 1, "stderr": f"ERROR: {history}: not found"},
+            json.dumps(OTHER_DIGEST),
+        ],
+    }
+
+    result, operations = _run_release_workflow(tmp_path, "promote-release.yml", "Validate and promote current beta without rebuilding", responses)
+
+    assert result.returncode != 0
+    assert "immutable release history digest mismatch" in result.stderr
+    assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
+
+
+def test_promotion_validates_new_history_before_release_write(tmp_path):
+    image = "ghcr.io/owner/repo"
+    history = f"{image}:release-{RELEASE_SHA}"
+    missing = {"status": 1, "stderr": f"ERROR: {history}: not found"}
+    responses = {
+        f"{image}:beta|digest": json.dumps(EXPECTED_DIGEST),
+        f"{image}:beta|image": json.dumps({"config": {"Labels": {"org.opencontainers.image.revision": RELEASE_SHA}}}),
+        f"{image}:tested-beta-{RELEASE_SHA}|digest": json.dumps(EXPECTED_DIGEST),
+        f"{history}|digest": [missing, missing, json.dumps(OTHER_DIGEST)],
+    }
+
+    result, operations = _run_release_workflow(tmp_path, "promote-release.yml", "Validate and promote current beta without rebuilding", responses)
+
+    writes = [operation for operation in operations if operation[:3] == ["buildx", "imagetools", "create"]]
+    assert result.returncode != 0
+    assert "immutable release history digest mismatch" in result.stderr
+    assert [operation[operation.index("--tag") + 1] for operation in writes] == [history]
 
 
 def test_rollback_stops_before_write_when_release_history_is_missing(tmp_path):
