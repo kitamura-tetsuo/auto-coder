@@ -78,6 +78,15 @@ class TestCloudManager:
         assert binding.backend_name == "claude-routine"
         assert binding.task_id == "legacy-session"
 
+    def test_task_lookup_exposes_conflicting_backend_ownership(self, tmp_path):
+        manager = CloudManager("owner/repo", tmp_path / "cloud.csv")
+        assert manager.add_session(1, "shared-session", provider="claude-routine", backend_name="claude-a")
+        assert manager.add_session(2, "shared-session", provider="claude-routine", backend_name="claude-b")
+
+        bindings = manager.get_bindings_for_task("claude-routine", "shared-session")
+
+        assert [binding.backend_name for binding in bindings] == ["claude-a", "claude-b"]
+
     def test_legacy_session_without_provider_is_not_routable(self, tmp_path):
         cloud_file = tmp_path / "cloud.csv"
         cloud_file.write_text("issue_number,session_id\n1677,opaque-task\n", encoding="utf-8")

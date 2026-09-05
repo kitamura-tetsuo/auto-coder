@@ -1,10 +1,14 @@
 """Tests for delegating merge-conflict repair to originating cloud sessions."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
+from src.auto_coder.issue_processor import _process_issue_claude_routine_mode
+from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.pr_processor import (
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
@@ -42,6 +46,53 @@ def pr_data(head_sha: str = "H1", base_sha: str = "B1") -> dict:
         "head": {"ref": "cloud/repair-1589", "sha": head_sha},
         "base": {"ref": "release/2.x", "sha": base_sha},
     }
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["Closes #1748", "Created by Claude: https://claude.ai/code/session-a"],
+    ids=["linked-issue", "session-url"],
+)
+def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_path, monkeypatch, body) -> None:
+    """Production persistence and conflict delivery retain backend credentials."""
+    backend_a = BackendConfig(
+        name="claude-a",
+        backend_type="claude-routine",
+        url="https://claude-a.example/fire",
+        api_key="token-a",
+    )
+    backend_b = BackendConfig(
+        name="claude-routine",
+        backend_type="claude-routine",
+        url="https://claude-b.example/fire",
+        api_key="token-b",
+    )
+    llm_config = MagicMock()
+    llm_config.get_backend_config.side_effect = {"claude-a": backend_a, "claude-routine": backend_b}.get
+    github = MagicMock()
+    issue = {"number": 1748, "title": "Preserve backend", "body": "Details", "labels": [], "state": "open"}
+    pull_request = pr_data()
+    pull_request["body"] = body
+    pull_request["user"] = {"login": "claude[bot]"}
+    monkeypatch.setenv("CLAUDE_CODE_ROUTINE_TOKEN", "token-b")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "token-b")
+
+    with (
+        patch("src.auto_coder.cloud_manager.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.pr_processor.Path.home", return_value=tmp_path),
+        patch("src.auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
+        patch("src.auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=("session-a", None)),
+        patch("src.auto_coder.issue_processor.get_commit_log", return_value="initial"),
+        patch("src.auto_coder.claude_routine_client.CommandExecutor.run_command", return_value=CommandResult(True, "", "", 0)) as command,
+    ):
+        _process_issue_claude_routine_mode("owner/repo", issue, AutomationConfig(), github, backend_name="claude-a")
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
+
+    assert result.delegated is True
+    args, kwargs = command.call_args
+    assert args[0][2] == "--cloud=session-a"
+    assert kwargs["env"]["CLAUDE_CODE_ROUTINE_TOKEN"] == "token-a"
+    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-a"
 
 
 def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:

@@ -10,7 +10,7 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from .logger_config import get_logger
 
@@ -189,6 +189,16 @@ class CloudManager:
         if binding and binding.provider and binding.task_id:
             return binding
         return None
+
+    def get_bindings_for_task(self, provider: str, task_id: str) -> Tuple[CloudTaskBinding, ...]:
+        """Return distinct durable bindings for a provider task.
+
+        Task identifiers are normally reached through their linked issue. This
+        lookup also supports provider session URLs. Callers can distinguish an
+        unpersisted task from conflicting ownership instead of guessing.
+        """
+        matches = {binding for binding in self._read_bindings().values() if binding.provider == provider and binding.task_id == task_id}
+        return tuple(sorted(matches, key=lambda binding: binding.backend_name))
 
     def get_session_id(self, issue_number: int) -> Optional[str]:
         """

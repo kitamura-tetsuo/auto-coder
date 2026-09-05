@@ -382,7 +382,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
 
         logger.info(f"Sending '{message}' to Claude Routine session {task_id} via claude CLI (attempt {continue_count + 1}/5)")
         try:
-            result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
+            result = CommandExecutor.run_command(cmd, env=env if self.token else None)
             if result.returncode == 0:
                 session_info["continue_count"] = continue_count + 1
                 session_info["last_continued_at"] = now
@@ -407,7 +407,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             env["CLAUDE_CODE_ROUTINE_TOKEN"] = self.token
             env["CLAUDE_CODE_OAUTH_TOKEN"] = self.token
         try:
-            result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
+            result = CommandExecutor.run_command(cmd, env=env if self.token else None)
             if result.returncode == 0:
                 self.active_sessions[task_id] = message
                 return True

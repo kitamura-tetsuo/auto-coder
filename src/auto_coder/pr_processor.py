@@ -4312,6 +4312,25 @@ def _resolve_cloud_conflict_origin(
     github_client: Optional[Any] = None,
 ) -> Optional[Tuple[Any, str]]:
     """Return the capable client and existing task ID that originated a PR."""
+    issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+    manager = CloudManager(repo_name)
+
+    def claude_client(task_id: str) -> Optional[Any]:
+        """Reconstruct a Claude transport from durable task ownership."""
+        bindings = [manager.get_binding(number) for number in issue_numbers]
+        matching = {binding for binding in bindings if binding is not None and binding.provider == "claude-routine" and binding.task_id == task_id}
+        if len(matching) > 1:
+            return None
+        persisted = manager.get_bindings_for_task("claude-routine", task_id)
+        if not matching and len(persisted) > 1:
+            return None
+        binding = matching.pop() if matching else (persisted[0] if persisted else None)
+        backend_name = binding.backend_name if binding else "claude-routine"
+
+        from .cloud_task_engine import CloudTaskEngine
+
+        return CloudTaskEngine().get_client_for_provider("claude-routine", repo_name, backend_name=backend_name)
+
     # CloudRun is the lifecycle's authoritative implementation association.
     # Consult it before heuristics based on an author name or PR body, because
     # provider-created PRs do not consistently retain those presentation cues.
@@ -4320,7 +4339,7 @@ def _resolve_cloud_conflict_origin(
 
         pr_number = int(pr_data["number"])
         repository = CloudRunRepository(repo_name)
-        associated_runs = [run for issue_number in _resolve_pr_issue_numbers(repo_name, pr_data, github_client) for run in repository.list_for_issue(issue_number) if pr_number in run.pull_request_numbers]
+        associated_runs = [run for issue_number in issue_numbers for run in repository.list_for_issue(issue_number) if pr_number in run.pull_request_numbers]
         if associated_runs:
             run = max(associated_runs, key=lambda candidate: candidate.attempt)
             if run.provider == "codex-cloud":
@@ -4328,9 +4347,8 @@ def _resolve_cloud_conflict_origin(
 
                 return CodexCloudClient(repo_name=repo_name), run.task_id
             if run.provider == "claude-routine":
-                from .claude_routine_client import ClaudeRoutineClient
-
-                return ClaudeRoutineClient(repo_name=repo_name), run.task_id
+                client = claude_client(run.task_id)
+                return (client, run.task_id) if client else None
             logger.warning(f"Cloud run provider '{run.provider}' does not support PR conflict follow-up")
             return None
     except (KeyError, TypeError, ValueError, OSError) as exc:
@@ -4346,15 +4364,14 @@ def _resolve_cloud_conflict_origin(
     if _is_claude_pr(pr_data):
         task_id = _extract_session_id_from_pr_body(pr_data.get("body", "") or "")
         if not task_id:
-            manager = CloudManager(repo_name)
             for issue_number in extract_linked_issues_from_pr_body(pr_data.get("body", "") or ""):
-                task_id = manager.get_session_id(issue_number)
-                if task_id:
+                binding = manager.get_binding(issue_number)
+                if binding and binding.provider == "claude-routine":
+                    task_id = binding.task_id
                     break
         if task_id and not task_id.startswith("http"):
-            from .claude_routine_client import ClaudeRoutineClient
-
-            return ClaudeRoutineClient(repo_name=repo_name), task_id
+            client = claude_client(task_id)
+            return (client, task_id) if client else None
 
     return None
 
