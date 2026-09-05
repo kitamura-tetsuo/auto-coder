@@ -4,8 +4,22 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+ISSUE_STABILIZATION_SECONDS = 60
+
+
+def issue_stabilization_deadline(created_at: str) -> Optional[float]:
+    """Return the shared creation-anchored eligibility deadline for an Issue."""
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (created + timedelta(seconds=ISSUE_STABILIZATION_SECONDS)).timestamp()
 
 
 @dataclass(frozen=True)

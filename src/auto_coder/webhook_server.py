@@ -3,7 +3,6 @@ import hashlib
 import hmac
 import time
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Union
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
@@ -11,6 +10,7 @@ from pydantic import BaseModel
 
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
+from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, issue_stabilization_deadline
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -81,15 +81,13 @@ async def process_sentry_payload(payload: SentryWebhookPayload, engine: Automati
             issue_number = issue_details.get("number")
             if isinstance(issue_number, int):
                 created_at = issue_details.get("created_at")
-                not_before = time.time() + 60
+                not_before = time.time() + ISSUE_STABILIZATION_SECONDS
                 if isinstance(created_at, str):
-                    try:
-                        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                        if created.tzinfo is None:
-                            created = created.replace(tzinfo=timezone.utc)
-                        not_before = (created + timedelta(seconds=60)).timestamp()
-                    except ValueError:
+                    deadline = issue_stabilization_deadline(created_at)
+                    if deadline is None:
                         logger.warning(f"Invalid created_at for Sentry issue #{issue_number}; using receipt-anchored stabilization")
+                    else:
+                        not_before = deadline
                 await engine.invalidate_entity(repo_name, "issue", issue_number, event_type="sentry", action="created", not_before=not_before)
                 logger.info(f"Scheduled Sentry issue #{issue_number} after stabilization")
 
@@ -162,12 +160,8 @@ async def process_github_payload(
             issue = payload.get("issue")
             created_at = issue.get("created_at") if isinstance(issue, Mapping) else None
             if isinstance(created_at, str):
-                try:
-                    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                    if created.tzinfo is None:
-                        created = created.replace(tzinfo=timezone.utc)
-                    not_before = (created + timedelta(seconds=60)).timestamp()
-                except ValueError:
+                not_before = issue_stabilization_deadline(created_at)
+                if not_before is None:
                     logger.warning(f"Invalid created_at for issue #{number}; scheduling immediate authoritative reevaluation")
         invalidation_args = (repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
         if not_before is None:

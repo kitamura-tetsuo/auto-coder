@@ -17,7 +17,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .deployment_channel import repository_dispatch_authority
-from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity
+from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
 from .exceptions import AutoCoderRetryableBackendError
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
@@ -71,6 +71,9 @@ class AutomationEngine:
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self._invalidation_drain_lock = asyncio.Lock()
         self._invalidation_wake_event: Optional[asyncio.Event] = None
+        self.startup_reconciled = False
+        self.startup_reconciliation_error: Optional[str] = None
+        self._startup_reconciliation_attempted = False
         self.active_workers: Dict[int, Optional[Candidate]] = {}
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
@@ -187,6 +190,10 @@ class AutomationEngine:
         # first candidate scan.
         self._get_implementation_slots(repo_name).reconcile(self.github, discover_open_prs=True)
 
+        # Webhooks are not a durable event log. Recover work missed while this
+        # process was offline before claiming steady-state correctness.
+        await self._reconcile_open_github_entities(repo_name)
+
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
 
@@ -238,6 +245,34 @@ class AutomationEngine:
             raise
         finally:
             get_health_monitor().log_snapshot(reason="engine_stop")
+
+    async def _reconcile_open_github_entities(self, repo_name: str) -> None:
+        """One-shot startup recovery through the normal invalidation path.
+
+        Enumeration observations never complete or clean an entity. They only
+        mark its stable identity dirty; workers subsequently perform the same
+        strict current-state fetch and eligibility decision used for webhooks.
+        Consequently, a webhook arriving after an older enumeration observation
+        cannot be cleared by reconciliation.
+        """
+        if self._startup_reconciliation_attempted:
+            raise RuntimeError("Startup GitHub reconciliation was already attempted for this engine")
+        self._startup_reconciliation_attempted = True
+        self.startup_reconciled = False
+        self.startup_reconciliation_error = None
+        try:
+            entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+            for issue in entities.issues:
+                not_before = issue_stabilization_deadline(issue.created_at) if issue.created_at is not None else None
+                await self.invalidate_entity(repo_name, "issue", issue.number, not_before=not_before)
+            for number in entities.pull_requests:
+                await self.invalidate_entity(repo_name, "pr", number)
+        except BaseException as exc:
+            self.startup_reconciliation_error = f"{type(exc).__name__}: {exc}"
+            logger.opt(exception=True).error(f"Startup GitHub reconciliation failed for {repo_name}: {exc}")
+            raise
+        self.startup_reconciled = True
+        logger.info(f"Startup GitHub reconciliation completed for {repo_name}: " f"{len(entities.issues)} Issues and {len(entities.pull_requests)} PRs invalidated")
 
     async def _producer_loop(self, repo_name: str) -> None:
         """Run time-based maintenance without polling GitHub for candidate work."""
@@ -491,6 +526,10 @@ class AutomationEngine:
             )
 
         status = {
+            "startup_reconciliation": {
+                "complete": self.startup_reconciled,
+                "error": self.startup_reconciliation_error,
+            },
             "queue_length": self.queue.qsize(),
             "queue_items": [
                 {
