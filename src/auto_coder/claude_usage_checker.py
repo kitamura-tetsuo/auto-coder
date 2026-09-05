@@ -208,10 +208,10 @@ def refresh_claude_token_via_cli(timeout: float = 30.0) -> Optional[str]:
 
     Executes `claude -p "ping" --tools "" --no-session-persistence` (with fallback to `claude -p "ping"`)
     so that Claude CLI performs its internal authentication refresh with Anthropic, updating
-    .credentials.json.
+    its platform credential store.
 
     Returns:
-        The refreshed accessToken from .credentials.json if valid and unexpired, else None.
+        The refreshed accessToken from Claude Code's platform credential store if valid and unexpired, else None.
     """
     cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
     base_cmd = shlex.split(cmd_override) if cmd_override else ["claude"]
