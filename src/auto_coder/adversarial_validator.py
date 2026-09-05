@@ -16,10 +16,11 @@ from typing import Any, Dict, Iterable, List, Optional
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
 from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
+from .issue_specification import NormativeRequirement as IssueRequirement
+from .issue_specification import format_requirement_contract_error, parse_issue_specification
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .requirement_contract import parse_requirement_contract
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
@@ -70,14 +71,6 @@ class AdversarialValidationFinding:
     def all_requirement_ids(self) -> List[str]:
         """Return every requirement implicated by this concrete finding."""
         return list(dict.fromkeys([requirement_id for requirement_id in [self.requirement_id, *self.requirement_ids] if requirement_id]))
-
-
-@dataclass
-class IssueRequirement:
-    """Stable requirement unit extracted deterministically from the Issue oracle."""
-
-    requirement_id: str = ""
-    text: str = ""
 
 
 @dataclass
@@ -799,8 +792,13 @@ def extract_issue_requirements(issue_context: str) -> List[IssueRequirement]:
 
 def _explicit_requirements_section(issue: VerifiedIssueOracle) -> tuple[bool, List[tuple[str, str]], Optional[str]]:
     """Adapt the shared contract oracle to the adversarial manifest builder."""
-    result = parse_requirement_contract(issue.number, issue.body)
-    return result.explicit, result.entries, result.error
+    manifest = parse_issue_specification(issue.title, issue.body)
+    if not manifest.has_requirements_section:
+        return False, [], None
+    if manifest.requirement_diagnostics:
+        error = format_requirement_contract_error(issue.number, manifest.requirement_diagnostics[0])
+        return True, [], error
+    return True, [(item.requirement_id, item.text) for item in manifest.requirements], None
 
 
 def build_issue_requirement_manifest(resolution: IssueOracleResolution) -> IssueRequirementManifest:

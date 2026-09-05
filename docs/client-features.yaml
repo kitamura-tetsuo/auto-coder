@@ -46,6 +46,16 @@ edited body is evaluated again and can proceed normally once valid. Issues
 without an explicit Requirements section continue to use legacy requirement
 extraction.
 
+The provider-independent Issue specification manifest preserves each stable
+`REQ-NNN` identifier and its exact requirement text. It explicitly distinguishes
+a missing Requirements section from an empty or malformed one and reports
+deterministic diagnostics for duplicate IDs, empty text, and malformed entries.
+Acceptance Scenarios are retained separately as non-normative verification
+metadata; their `Covers:` references are validated against the manifest but can
+never create normative requirements. Intake and adversarial PR validation both
+consume this shared parsing boundary, which performs no GitHub, repository, or
+LLM operations.
+
 ## Structured PR processing outcomes
 
 Codex Cloud pull requests whose authoritative remote head is the shared
