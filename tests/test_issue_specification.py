@@ -161,3 +161,29 @@ REQ-001: Visible contract.
     assert [(item.requirement_id, item.text) for item in visible_shared.requirements] == expected
     assert visible_intake.entries == expected
     assert [(item.requirement_id, item.text) for item in visible_adversarial.requirements] == expected
+
+
+def test_commonmark_indented_code_is_shared_by_all_manifest_consumers() -> None:
+    hidden_entry = "## Requirements\n    REQ-001: Indented example.\n"
+    hidden_heading = "\t## Requirements\n\tREQ-001: Indented example.\n"
+    visible_after_indented_fence = "\t```markdown\n## Requirements\nREQ-001: Visible contract.\n"
+    hidden_after_indented_fence_like_content = "```markdown\n\t```\n## Requirements\nREQ-001: Hidden example.\n```\n"
+
+    def manifests(body: str):
+        return (
+            parse_issue_specification("Indented code", body),
+            parse_requirement_contract(1726, body),
+            build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Indented code", body=body),))),
+        )
+
+    for body in (hidden_entry, hidden_heading, hidden_after_indented_fence_like_content):
+        shared, intake, adversarial = manifests(body)
+        assert shared.requirements == []
+        assert intake.entries == []
+        assert adversarial.requirements == []
+
+    shared, intake, adversarial = manifests(visible_after_indented_fence)
+    expected = [("REQ-001", "Visible contract.")]
+    assert [(item.requirement_id, item.text) for item in shared.requirements] == expected
+    assert intake.entries == expected
+    assert [(item.requirement_id, item.text) for item in adversarial.requirements] == expected

@@ -8,13 +8,13 @@ from typing import List
 
 ISSUE_SPECIFICATION_PARSER_VERSION = "v1"
 
-_MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+_MARKDOWN_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _ENTRY_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
 _REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(.*)$")
 _SCENARIO = re.compile(r"^(AC-\d{3})(?:\s*(?:—|-)\s*(.*))?$")
 _COVERS = re.compile(r"^Covers:\s*(.*)$", re.IGNORECASE)
 _REQ_REFERENCE = re.compile(r"\bREQ-\d{3}\b")
-_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True)
@@ -100,6 +100,20 @@ def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
                 fence_character, fence_length = marker[0], len(marker)
                 continue
         if fence_character:
+            continue
+
+        # CommonMark expands tabs to four-column stops. Any non-blank line
+        # reaching column four before its first visible character is an
+        # indented code line, not a heading, fence, or requirement entry.
+        indentation = 0
+        for character in raw_line:
+            if character == " ":
+                indentation += 1
+            elif character == "\t":
+                indentation += 4 - (indentation % 4)
+            else:
+                break
+        if raw_line.strip() and indentation >= 4:
             continue
 
         line = raw_line
