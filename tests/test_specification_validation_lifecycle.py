@@ -553,3 +553,71 @@ def test_completed_local_generation_owner_is_retired_before_changed_validation(t
     assert blocked.actions == ["Rejected - blocked specification"]
     assert observations[-1] == (BODY + " B", ())
     assert owner not in slots.active_owners()
+
+
+def test_real_local_pr_creation_preserves_capacity_across_issue_edit(tmp_path):
+    """Production PR creation records membership before local launch cleanup."""
+    from auto_coder.issue_processor import _create_pr_for_issue
+
+    current = {"body": BODY + " A"}
+    github = Mock(token="token")
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+        "number": number,
+        "title": "Local PR",
+        "body": current["body"],
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    github.get_item_type_strict.return_value = "issue"
+    github.get_all_sub_issues.return_value = []
+    github.try_add_labels.return_value = True
+    github.get_issue.return_value = {"number": 1728, "state": "open"}
+    github.get_issue_details.return_value = {"number": 1728, "state": "open"}
+    github.find_pr_by_head_branch.return_value = None
+    github.get_pr_closing_issues.return_value = [1728]
+    github.get_labels.return_value = []
+    engine = AutomationEngine(github, config=AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    analyzed = []
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
+        "owner/repo",
+        "validator",
+        tmp_path / "local-pr.json",
+        lambda _manifest, body: analyzed.append(body) or SpecificationAnalysisResult("READY"),
+    )
+    api = Mock()
+    api.pulls.create.return_value = {"number": 100, "html_url": "https://github.test/pull/100"}
+
+    def create_real_pr(_repo, issue_data, _backend_manager=None):
+        return [
+            _create_pr_for_issue(
+                "owner/repo",
+                issue_data,
+                "issue-1728",
+                "main",
+                "implemented",
+                github,
+                engine.config,
+                implementation_slots=slots,
+            )
+        ]
+
+    candidate = Candidate(type="issue", data={"number": 1728, "title": "Local PR", "body": current["body"]}, priority=0)
+    with (
+        patch.object(engine, "_take_issue_actions", side_effect=create_real_pr),
+        patch("auto_coder.issue_processor.get_ghapi_client", return_value=api),
+        patch("auto_coder.issue_processor.run_llm_noedit_prompt", return_value=""),
+        patch("auto_coder.issue_processor.validate_issue_references"),
+        patch("time.sleep"),
+    ):
+        assert engine._process_single_candidate_unified("owner/repo", candidate, engine.config).success is True
+    owner = ImplementationOwner("issue", 1728)
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.active_owners() == (owner,)
+
+    current["body"] = BODY + " B"
+    deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
+    assert analyzed == [BODY + " A"]
+    assert slots.start_execution(ImplementationOwner("issue", 99)) is None

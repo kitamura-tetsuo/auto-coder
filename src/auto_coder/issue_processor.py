@@ -67,6 +67,7 @@ def _take_issue_actions(
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
     check_labels: Optional[bool] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation.
 
@@ -99,14 +100,25 @@ def _take_issue_actions(
                 backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
 
         # Ask LLM CLI to analyze the issue and take appropriate actions
-        action_results = _apply_issue_actions_directly(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-            backend_manager=backend_manager,
-            check_labels=check_labels,
-        )
+        if implementation_slots is None:
+            action_results = _apply_issue_actions_directly(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+                backend_manager=backend_manager,
+                check_labels=check_labels,
+            )
+        else:
+            action_results = _apply_issue_actions_directly(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+                backend_manager=backend_manager,
+                check_labels=check_labels,
+                implementation_slots=implementation_slots,
+            )
         actions.extend(action_results)
 
     except AutoCoderRetryableBackendError:
@@ -872,6 +884,7 @@ def _create_pr_for_issue(
     llm_response: str,
     github_client: GitHubClient,
     config: AutomationConfig,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> str:
     """
     Create a pull request for the issue.
@@ -957,6 +970,8 @@ def _create_pr_for_issue(
             existing_pr = github_client.find_pr_by_head_branch(repo_name, work_branch)
             if existing_pr:
                 pr_number = existing_pr["number"]
+                if implementation_slots is not None and not implementation_slots.record_implementation_pr(ImplementationOwner("issue", int(issue_number)), int(pr_number)):
+                    raise RuntimeError(f"Could not retain ownership for existing PR #{pr_number}")
                 pr_url = existing_pr.get("html_url", f"https://github.com/{repo_name}/pull/{pr_number}")
                 logger.info(f"PR already exists for issue #{issue_number}: {pr_url}")
                 return f"PR already exists for issue #{issue_number}: {pr_url}"
@@ -975,6 +990,8 @@ def _create_pr_for_issue(
 
             # Propagate semantic labels from issue to PR if present
             if pr_number:
+                if implementation_slots is not None and not implementation_slots.record_implementation_pr(ImplementationOwner("issue", int(issue_number)), int(pr_number)):
+                    raise RuntimeError(f"Could not retain ownership for PR #{pr_number}")
                 import time
 
                 # Wait a moment for GitHub to process the PR creation
@@ -1051,6 +1068,7 @@ def _apply_issue_actions_directly(
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
     check_labels: Optional[bool] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly.
 
@@ -1269,6 +1287,7 @@ def _apply_issue_actions_directly(
                                 llm_response=response,
                                 github_client=github_client,
                                 config=config,
+                                implementation_slots=implementation_slots,
                             )
                         actions.append(pr_creation_result)
 

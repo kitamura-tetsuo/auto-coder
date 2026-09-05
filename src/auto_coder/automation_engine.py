@@ -2195,6 +2195,7 @@ class AutomationEngine:
             self.config,
             self.github,
             backend_manager=backend_manager,
+            implementation_slots=self._get_implementation_slots(repo_name),
         )
 
     def _apply_issue_actions_directly(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
