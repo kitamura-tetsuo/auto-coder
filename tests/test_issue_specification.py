@@ -221,7 +221,7 @@ def test_list_continuations_never_truncate_or_invent_requirements() -> None:
     bodies = (
         "## Requirements\n- REQ-001: First line.\n\n    Continued normative text.\n",
         "## Requirements\n- REQ-001: First line.\n    REQ-002: Still text in the same list item.\n",
-        "## Requirements\n- REQ-001: First line. <!--\n+hidden comment\n+-->\n    Continued after comment.\n",
+        "## Requirements\n- REQ-001: First line. <!--\nhidden comment\n-->\n    Continued after comment.\n",
     )
 
     for body in bodies:
