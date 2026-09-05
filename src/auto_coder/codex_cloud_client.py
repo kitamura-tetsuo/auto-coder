@@ -518,6 +518,18 @@ class CodexCloudClient(CloudTaskClientBase):
         logger.info(f"Reconciled previously ambiguous Codex follow-up '{logical_identity}' as delivered")
         return FollowUpDeliveryOutcome.DELIVERED
 
+    def get_followup_remediation_baseline(self, task_id: str, logical_identities: tuple[str, ...]) -> str:
+        """Return the pre-send assistant turn durably captured for a follow-up."""
+        state_path = _codex_followup_state_path(self.repo_name)
+        keys = [hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest() for identity in logical_identities]
+        with _followup_state_lock:
+            try:
+                records = _load_pending_followups(state_path)
+            except (OSError, ValueError, TypeError):
+                return ""
+        turns = {records[key].pre_send_turn_id for key in keys if key in records and records[key].pre_send_turn_id}
+        return turns.pop() if len(turns) == 1 else ""
+
     def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
         if not is_valid_codex_cloud_task_id(task_id) or not message:

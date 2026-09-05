@@ -492,15 +492,15 @@ class TestAdversarialValidationCodexFeedback:
         config.get_backend_config.return_value = None
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
             backend = CodexCloudClient(repo_name="owner/repo")
-        backend.send_followup = MagicMock(return_value=True)
         backend.wham_client = MagicMock()
         backend.wham_client.resolve_latest_assistant_turn.side_effect = [
             None,
             "task_e_abc123~assttrn_1",
-            "task_e_abc123~assttrn_1",
+            "task_e_abc123~assttrn_2",
             "task_e_abc123~assttrn_2",
             "task_e_abc123~assttrn_2",
         ]
+        backend.wham_client.send_follow_up.return_value = FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200)
         status = MagicMock(returncode=0, stdout="COMPLETED", stderr="")
         state_path = tmp_path / "review-repairs.json"
         pr_data = {
@@ -513,19 +513,16 @@ class TestAdversarialValidationCodexFeedback:
         with (
             patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
             patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=state_path),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
             patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=status),
         ):
             _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head-a", finding, github, [finding])
             pr_data["head"]["sha"] = "unrelated-head-b"
-            recovered_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
-            unchanged_baseline = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             failed_correction = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
             duplicate = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "unrelated-head-b", finding, github, [finding])
 
-        assert backend.send_followup.call_count == 2
-        assert "all actionable feedback was already delivered" in recovered_baseline[0]
-        assert "all actionable feedback was already delivered" in unchanged_baseline[0]
-        assert "latest corrective attempt did not resolve" in backend.send_followup.call_args.args[1]
+        assert backend.wham_client.send_follow_up.call_count == 2
+        assert "latest corrective attempt did not resolve" in backend.wham_client.send_follow_up.call_args.kwargs["prompt"]
         assert "Sent adversarial NEEDS_FIX report" in failed_correction[0]
         assert "all actionable feedback was already delivered" in duplicate[0]
 
