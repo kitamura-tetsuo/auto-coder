@@ -9,8 +9,7 @@ from typing import List
 ISSUE_SPECIFICATION_PARSER_VERSION = "v1"
 
 _MARKDOWN_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
-_ENTRY_PREFIX = re.compile(r"^(?:(?:[-*+]\s+(?:\[[ xX]\]\s+)?)|(?:\d+[.)]\s+))?")
-_LIST_REQUIREMENT_PREFIX = re.compile(r"^( {0,3})([-*+]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s+)?")
+_POTENTIAL_LIST_PREFIX = re.compile(r"^( {0,3})([-*+]|\d+[.)])([ \t]+)(?:\[[ xX]\]([ \t]+))?")
 _REQUIREMENT = re.compile(r"^(?:`(REQ-\d{3})(?::)?`(?::)?|(REQ-\d{3}):)\s*(.*)$")
 _SCENARIO = re.compile(r"^(AC-\d{3})(?:\s*(?:—|-)\s*(.*))?$")
 _COVERS = re.compile(r"^Covers:\s*(.*)$", re.IGNORECASE)
@@ -94,6 +93,22 @@ def _column_width(text: str) -> int:
     for character in text:
         columns += 4 - (columns % 4) if character == "\t" else 1
     return columns
+
+
+def _parse_entry_line(raw_line: str) -> tuple[str, int, bool]:
+    """Return entry content, CommonMark content column, and prefix validity."""
+    prefix = _POTENTIAL_LIST_PREFIX.match(raw_line)
+    if not prefix:
+        return raw_line.strip(), 0, False
+    leading, marker, padding, checkbox_padding = prefix.groups()
+    marker_end = f"{leading}{marker}"
+    padding_width = _column_width(f"{marker_end}{padding}") - _column_width(marker_end)
+    valid_marker = not marker[0].isdigit() or len(marker[:-1]) <= 9
+    if not valid_marker or not 1 <= padding_width <= 4:
+        return raw_line.strip(), 0, True
+    content_column = _column_width(f"{marker_end}{padding}")
+    prefix_end = prefix.end() if checkbox_padding is not None else len(marker_end + padding)
+    return raw_line[prefix_end:].strip(), content_column, False
 
 
 def visible_markdown_lines(body: str) -> list[tuple[int, str]]:
@@ -211,11 +226,10 @@ def parse_issue_specification(title: str, body: str) -> IssueSpecificationManife
             if indentation >= 4 or (list_content_indentation and indentation >= list_content_indentation):
                 manifest.diagnostics.append(SpecificationDiagnostic("malformed-requirement", f"Malformed requirement continuation: {line}", line_number))
                 continue
-            list_prefix = _LIST_REQUIREMENT_PREFIX.match(raw_line)
-            # A GitHub task checkbox is inline content, not part of CommonMark's
-            # list marker or the content-column indentation it establishes.
-            list_content_indentation = _column_width("".join(list_prefix.groups())) if list_prefix else 0
-            content = _ENTRY_PREFIX.sub("", line, count=1)
+            content, list_content_indentation, invalid_list_prefix = _parse_entry_line(raw_line)
+            if invalid_list_prefix:
+                manifest.diagnostics.append(SpecificationDiagnostic("malformed-requirement", f"Malformed list prefix: {line}", line_number))
+                continue
             match = _REQUIREMENT.fullmatch(content)
             if not match:
                 manifest.diagnostics.append(SpecificationDiagnostic("malformed-requirement", f"Malformed requirement entry: {line}", line_number))

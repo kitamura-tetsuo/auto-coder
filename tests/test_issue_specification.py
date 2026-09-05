@@ -239,3 +239,23 @@ def test_list_continuations_never_truncate_or_invent_requirements() -> None:
         assert "malformed entries" in (intake.error or "")
         assert adversarial.requirements == []
         assert "malformed entries" in (adversarial.error or "")
+
+
+def test_invalid_commonmark_list_prefixes_never_create_requirements() -> None:
+    bodies = (
+        "## Requirements\n-     REQ-001: Bullet code example.\n",
+        "## Requirements\n1.     REQ-001: Ordered code example.\n",
+        "## Requirements\n1234567890. REQ-001: Numbered prose.\n",
+    )
+
+    for body in bodies:
+        shared = parse_issue_specification("Invalid marker", body)
+        intake = parse_requirement_contract(1726, body)
+        adversarial = build_issue_requirement_manifest(IssueOracleResolution(issues=(VerifiedIssueOracle(number=1726, title="Invalid marker", body=body),)))
+
+        assert shared.requirements == []
+        assert [item.code for item in shared.diagnostics] == ["malformed-requirement"]
+        assert intake.entries == []
+        assert "malformed entries" in (intake.error or "")
+        assert adversarial.requirements == []
+        assert "malformed entries" in (adversarial.error or "")
