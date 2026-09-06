@@ -459,3 +459,58 @@ def test_late_individual_validation_snapshot_is_reconciled(tmp_path: Path, owned
         assert "blocked" in (result.error or "").lower()
     if owned:
         assert slots.active_execution_ids(owner)
+
+
+def test_late_marker_for_new_ready_parent_defers_until_latest_generation(tmp_path: Path, monkeypatch):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+    created = datetime.now(timezone.utc)
+
+    class LateNewParentGraph(GraphGitHub):
+        child_reads = 0
+
+        def get_issue_dispatch_snapshot_strict(self, repo, number):
+            snapshot = super().get_issue_dispatch_snapshot_strict(repo, number)
+            if number == 1:
+                self.child_reads += 1
+                if self.child_reads >= 3:
+                    snapshot["body"] = "Parent-Issue: #3\n" + body
+                    self.issues[1]["body"] = snapshot["body"]
+            return snapshot
+
+    github = LateNewParentGraph(
+        {
+            1: graph_issue(1, body, ready=True),
+            3: graph_issue(3, body, ready=True, created_at=created.isoformat()),
+        },
+        {},
+        {},
+    )
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle(
+        "o/r",
+        "provider/model",
+        tmp_path / "sets.json",
+        lambda parent, _children: analyzed.append(("set", parent.body)) or DecompositionAnalysisResult("READY"),
+    )
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle(
+        "o/r",
+        "provider/model",
+        tmp_path / "issues.json",
+        lambda manifest, _body: analyzed.append(("individual", manifest.issue_number)) or SpecificationAnalysisResult("READY"),
+    )
+
+    first = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
+    assert first.actions == ["Deferred - readiness submission is in its initial stabilization window"]
+    assert github.events == ["linked"]
+    assert analyzed == []
+    assert engine.invalidations.pending_count("o/r") == 1
+
+    github.issues[3]["body"] = body + "\nLatest."
+    github.issues[1]["state"] = "closed"
+    monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (created + timedelta(seconds=61)).timestamp())
+    second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[3]), 0), engine.config)
+
+    assert ("set", github.issues[3]["body"]) in analyzed
+    assert ("individual", 1) in analyzed
+    assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]

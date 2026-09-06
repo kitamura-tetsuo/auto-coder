@@ -2041,6 +2041,9 @@ class AutomationEngine:
             if inherited_ready:
                 assert authoritative_set is not None
                 parent_snapshot, child_snapshots = authoritative_set
+                if self._defer_initial_issue_stabilization(repo_name, parent_snapshot):
+                    result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
+                    return result
                 decomposition_validator = self._get_decomposition_validator(repo_name)
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
                 decomposition_decision = decomposition_job.result()
