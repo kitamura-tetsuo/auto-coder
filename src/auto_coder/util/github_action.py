@@ -900,13 +900,15 @@ def get_detailed_checks_from_history(
 def _extract_http_status_code(exc: Exception) -> Optional[int]:
     """Extract a structured HTTP status code from an exception, if any.
 
-    Prefers a status attribute the exception (or its nested `.response`,
-    as on `httpx.HTTPStatusError`) carries directly. Only falls back to
-    matching an explicit "NNN <Reason Phrase>" status line in the
-    exception's string form (the format httpx and urllib use, e.g.
-    "404 Not Found") rather than any digit sequence: a message can also
-    embed unrelated numbers, such as a request URL path segment, and a
-    bare digit match would misattribute those to the HTTP status.
+    Only trusts a status code obtained from a genuine attribute the
+    exception carries directly, or from a nested `.response` object (as on
+    `httpx.HTTPStatusError`, whose `.response.status_code` reflects a
+    completed HTTP round trip). This deliberately never inspects the
+    exception's free-form string form: a transport-level failure (a broken
+    connection, a malformed response) can produce diagnostic text that
+    incidentally contains a misleading "NNN <Reason>"-shaped substring
+    (e.g. a corrupted header value, or a URL path segment), which is not
+    evidence of any actual HTTP status and must not be treated as one.
     """
     for attr in ("status_code", "code", "status"):
         value = getattr(exc, attr, None)
@@ -917,9 +919,6 @@ def _extract_http_status_code(exc: Exception) -> Optional[int]:
         value = getattr(response, "status_code", None)
         if isinstance(value, int):
             return value
-    match = re.search(r"\b([1-5]\d{2}) [A-Z][A-Za-z]", str(exc))
-    if match:
-        return int(match.group(1))
     return None
 
 

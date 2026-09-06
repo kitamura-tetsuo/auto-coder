@@ -50,8 +50,13 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         workflow_id = "ci.yml"
         ref = "feature-branch"
 
-        # Mock create_workflow_dispatch to raise 422 first, then succeed
-        mock_api.actions.create_workflow_dispatch.side_effect = [Exception("422 Unprocessable Entity"), None]  # First call fails  # Second call succeeds
+        # Mock create_workflow_dispatch to raise 422 first, then succeed. The
+        # exception must carry a structured status_code: classification never
+        # infers a status from free-form exception text (see
+        # _extract_http_status_code).
+        rejection = Exception("422 Unprocessable Entity")
+        rejection.status_code = 422
+        mock_api.actions.create_workflow_dispatch.side_effect = [rejection, None]  # First call fails  # Second call succeeds
 
         # Mock get_content to return file without workflow_dispatch
         import base64
@@ -98,8 +103,12 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         workflow_id = "ci.yml"
         ref = "feature-branch"
 
-        # Mock create_workflow_dispatch to raise 422 first, then succeed
-        mock_api.actions.create_workflow_dispatch.side_effect = [Exception("422 Unprocessable Entity"), None]  # First call fails  # Second call succeeds
+        # Mock create_workflow_dispatch to raise 422 first, then succeed. The
+        # exception must carry a structured status_code: classification never
+        # infers a status from free-form exception text.
+        rejection = Exception("422 Unprocessable Entity")
+        rejection.status_code = 422
+        mock_api.actions.create_workflow_dispatch.side_effect = [rejection, None]  # First call fails  # Second call succeeds
 
         # Mock get_content to return file with duplicate workflow_dispatch
         import base64
@@ -132,7 +141,9 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
 
-        mock_api.actions.create_workflow_dispatch.side_effect = Exception("404 Not Found")
+        rejection = Exception("404 Not Found")
+        rejection.status_code = 404
+        mock_api.actions.create_workflow_dispatch.side_effect = rejection
 
         result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
 
@@ -152,6 +163,44 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_ignores_misleading_status_text_in_transport_error(self, mock_gh_client_cls, mock_get_ghapi):
+        """A transport-level exception (no structured HTTP status) must never be
+        classified from its free-form text, even when that text happens to
+        embed a misleading 'NNN <Reason>'-shaped substring (e.g. from a
+        corrupted response header) that looks like an HTTP status line."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        transport_error = ConnectionError("illegal header line: bytearray(b'X-Error: 404 Not Found\\x00')")
+        mock_api.actions.create_workflow_dispatch.side_effect = transport_error
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_misleading_422_text_does_not_trigger_fallback(self, mock_gh_client_cls, mock_get_ghapi):
+        """A transport-level exception whose message merely contains '422' text
+        (no structured status) must not enter the workflow-file repair
+        fallback or resend the dispatch."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        transport_error = ConnectionError("illegal header line: bytearray(b'X-Error: 422 Unprocessable Entity\\x00')")
+        mock_api.actions.create_workflow_dispatch.side_effect = transport_error
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+        mock_api.repos.get_content.assert_not_called()
+        mock_api.repos.create_or_update_file_contents.assert_not_called()
+        self.assertEqual(mock_api.actions.create_workflow_dispatch.call_count, 1)
 
 
 class TestTriggerWorkflowDispatchRealHttpAdapter(unittest.TestCase):
