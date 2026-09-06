@@ -23,6 +23,7 @@ services:
     stdin_open: true
     tty: true
     restart: unless-stopped
+    stop_grace_period: 30m
 
 volumes:
   tailscale-data:

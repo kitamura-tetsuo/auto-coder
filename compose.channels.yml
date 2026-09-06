@@ -13,6 +13,7 @@ services:
       - ./runtime/workspaces/release:/workspace
       - ./runtime/routing:/routing
     restart: unless-stopped
+    stop_grace_period: 30m
 
   beta:
     image: ${AUTO_CODER_IMAGE}@${BETA_DIGEST}
@@ -28,3 +29,4 @@ services:
       - ./runtime/workspaces/beta:/workspace
       - ./runtime/routing:/routing
     restart: unless-stopped
+    stop_grace_period: 30m
