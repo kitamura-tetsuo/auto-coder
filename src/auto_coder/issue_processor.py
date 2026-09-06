@@ -855,7 +855,10 @@ def handle_stale_jules_issue_sessions(
                 issue_data["title"] = str(authorized_issue.get("title") or "")
                 issue_data["body"] = str(authorized_issue.get("body") or "")
 
-                replacement_execution_id = implementation_slots.start_execution(owner)
+                replacement_execution_id = implementation_slots.start_execution(
+                    owner,
+                    github_client=github_client if isinstance(github_client, GitHubClient) else None,
+                )
                 if replacement_execution_id is None:
                     logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: implementation capacity is occupied")
                     continue

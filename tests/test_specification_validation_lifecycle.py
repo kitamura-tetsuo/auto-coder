@@ -290,6 +290,7 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
             "state": state,
             "labels": [{"name": label} for label in labels],
             "user": {"login": f"user-{author}", "id": author},
+            "updated_at": "2024-01-01T00:00:00Z",
         }
 
     issues = {

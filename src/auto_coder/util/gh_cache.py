@@ -2303,9 +2303,17 @@ class GitHubClient:
         parent = response.json()
         if isinstance(parent, dict) and isinstance(parent.get("parent"), dict):
             parent = parent["parent"]
-        if not isinstance(parent, dict) or not isinstance(parent.get("number"), int):
+        if not isinstance(parent, dict) or isinstance(parent.get("number"), bool) or not isinstance(parent.get("number"), int):
             raise RuntimeError("GitHub parent-Issue response was ambiguous")
         return parent["number"]
+
+    def get_issue_hierarchy_generation_strict(self, repo_name: str, issue_number: int) -> str:
+        """Return the cache-bypassing Issue revision guarding hierarchy reads."""
+        snapshot = self.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        updated_at = snapshot.get("updated_at")
+        if not isinstance(updated_at, str) or not updated_at:
+            raise RuntimeError("GitHub Issue hierarchy generation was ambiguous")
+        return updated_at
 
     def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get all sub-issues (open and closed) using GitHub REST API."""
@@ -2352,8 +2360,9 @@ class GitHubClient:
                 for item in payload:
                     if not isinstance(item, dict) or not isinstance(item.get("number"), int):
                         raise ValueError(f"GitHub returned an invalid direct child for {repo_name}#{issue_number}")
-                    if item["number"] != issue_number:
-                        items.append(item)
+                    if item["number"] == issue_number:
+                        raise ValueError(f"GitHub returned self-referential direct-child membership for {repo_name}#{issue_number}")
+                    items.append(item)
                 if len(payload) < 100:
                     break
                 page += 1

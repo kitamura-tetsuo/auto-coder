@@ -29,7 +29,13 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
-from .implementation_slots import ImplementationOwner, ImplementationOwnerResolutionError, ImplementationSlotRepository
+from .implementation_slots import (
+    ImplementationHierarchyConflict,
+    ImplementationHierarchyUnavailable,
+    ImplementationOwner,
+    ImplementationOwnerResolutionError,
+    ImplementationSlotRepository,
+)
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -2465,30 +2471,40 @@ class AutomationEngine:
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
-            if not inherited_execution:
-                execution_id = slots.start_execution(
-                    owner,
-                    implementation_pr=implementation_pr,
-                    bypass_capacity=explicit_only,
-                    bypass_active_execution=explicit_only and force and candidate.type == "pr",
-                    allow_urgent_emergency=urgent_issue,
-                )
-            if execution_id is None and not explicit_only:
-                slots.reconcile(self.github)
-                try:
-                    generation_is_current = issue_generation_is_current()
-                except Exception as exc:
-                    result.error = f"Cannot confirm Issue generation during capacity reconciliation: {exc}"
-                    result.refill_retry_required = True
-                    return result
-                if not generation_is_current:
-                    result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
-                    return result
-                execution_id = slots.start_execution(
-                    owner,
-                    implementation_pr=implementation_pr,
-                    allow_urgent_emergency=urgent_issue,
-                )
+            try:
+                if not inherited_execution:
+                    execution_id = slots.start_execution(
+                        owner,
+                        implementation_pr=implementation_pr,
+                        bypass_capacity=explicit_only,
+                        bypass_active_execution=explicit_only and force and candidate.type == "pr",
+                        allow_urgent_emergency=urgent_issue,
+                        github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
+                    )
+                if execution_id is None and not explicit_only:
+                    slots.reconcile(self.github)
+                    try:
+                        generation_is_current = issue_generation_is_current()
+                    except Exception as exc:
+                        result.error = f"Cannot confirm Issue generation during capacity reconciliation: {exc}"
+                        result.refill_retry_required = True
+                        return result
+                    if not generation_is_current:
+                        result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
+                        return result
+                    execution_id = slots.start_execution(
+                        owner,
+                        implementation_pr=implementation_pr,
+                        allow_urgent_emergency=urgent_issue,
+                        github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
+                    )
+            except ImplementationHierarchyConflict as exc:
+                result.actions = [f"Deferred - direct parent/child implementation conflict ({exc})"]
+                return result
+            except ImplementationHierarchyUnavailable as exc:
+                result.error = f"Cannot establish authoritative hierarchy for implementation admission: {exc}"
+                result.refill_retry_required = True
+                return result
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
             result.actions = [f"Deferred - {reason} ({owner.key})"]
