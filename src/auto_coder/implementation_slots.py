@@ -325,8 +325,10 @@ class ImplementationSlotRepository:
                 established = record.get("admission_established", False)
                 if not isinstance(established, bool):
                     raise ImplementationHierarchyUnavailable(f"Interrupted hierarchy admission for {owner.key} has invalid establishment state")
-                if established:
-                    established_record = copy.deepcopy(record)
+                # Every pre-existing logical owner is authoritative lifecycle
+                # ownership. The establishment marker describes admission
+                # progress; it never licenses this attempt to retire the record.
+                established_record = copy.deepcopy(record)
                 if owner.kind != "issue" or github_client is None:
                     raise ImplementationHierarchyUnavailable(f"Interrupted hierarchy admission for {owner.key} requires authoritative GitHub evidence")
                 admission_hierarchy = self._parse_stored_hierarchy(record)
@@ -433,6 +435,7 @@ class ImplementationSlotRepository:
             confirmed_parent = parent_reader(self.repo_name, issue_number)
             confirmed_children_payload = child_reader(self.repo_name, issue_number)
             final_parent = parent_reader(self.repo_name, issue_number)
+            final_children_payload = child_reader(self.repo_name, issue_number)
         except Exception as exc:
             raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
         if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
@@ -445,12 +448,15 @@ class ImplementationSlotRepository:
             raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
         if final_parent != confirmed_parent:
             raise ImplementationHierarchyUnavailable(f"Direct parent changed during final hierarchy confirmation for issue:{issue_number}")
-        if parent == issue_number or not isinstance(children_payload, list) or not isinstance(confirmed_children_payload, list):
+        if parent == issue_number or not isinstance(children_payload, list) or not isinstance(confirmed_children_payload, list) or not isinstance(final_children_payload, list):
             raise ImplementationHierarchyUnavailable("GitHub returned contradictory direct hierarchy evidence")
         children = self._parse_direct_children(issue_number, children_payload)
         confirmed_children = self._parse_direct_children(issue_number, confirmed_children_payload)
         if confirmed_children != children:
             raise ImplementationHierarchyUnavailable(f"Direct children changed while reading hierarchy for issue:{issue_number}")
+        final_children = self._parse_direct_children(issue_number, final_children_payload)
+        if final_children != confirmed_children:
+            raise ImplementationHierarchyUnavailable(f"Direct children changed during final hierarchy confirmation for issue:{issue_number}")
         return parent, children
 
     @staticmethod

@@ -4,7 +4,9 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Event
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -35,23 +37,23 @@ class TestAutomationEngine:
             def __init__(self):
                 self.token = "token"
                 self.hierarchy_reads = 0
-                self.child_reads = 0
-                self.parent = None
+                self.parent_reads = 0
+                self.children = []
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                return self.parent if number == 2 else None
+                if number == 2:
+                    self.parent_reads += 1
+                    if self.parent_reads == 9:
+                        self.children.append(1)
+                return None
 
             def get_direct_sub_issues_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                if number == 2:
-                    self.child_reads += 1
-                    if self.child_reads == 6:
-                        self.parent = 1
-                return []
+                return [{"number": child} for child in self.children] if number == 2 else []
 
         github = StrictGitHub()
         slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
@@ -59,7 +61,7 @@ class TestAutomationEngine:
         parent_execution = slots.start_execution(parent, github_client=github)
         assert parent_execution is not None
         slots.finish_execution(parent, parent_execution)
-        github.child_reads = 0
+        github.parent_reads = 0
         restarted = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = restarted
@@ -119,23 +121,23 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             def __init__(self):
                 self.token = "token"
                 self.hierarchy_reads = 0
-                self.child_reads = 0
-                self.parent = None
+                self.parent_reads = 0
+                self.children = []
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                return self.parent if number == 2 else None
+                if number == 2:
+                    self.parent_reads += 1
+                    if self.parent_reads == 3:
+                        self.children.append(1)
+                return None
 
             def get_direct_sub_issues_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                if number == 2:
-                    self.child_reads += 1
-                    if self.child_reads == 2:
-                        self.parent = 1
-                return []
+                return [{"number": child} for child in self.children] if number == 2 else []
 
         github = StrictGitHub()
         restarted = ImplementationSlotRepository("owner/repo", 3, storage_path)
@@ -148,7 +150,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
         assert result.error and "final hierarchy confirmation" in result.error
-        assert restarted.active_owners() == (ImplementationOwner("issue", 1),)
+        assert restarted.active_owners() == (ImplementationOwner("issue", 1), ImplementationOwner("issue", 2))
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
         downstream.assert_not_called()
@@ -212,6 +214,68 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         github.fail_children = False
         with pytest.raises(ImplementationHierarchyConflict, match="issue:2"):
             restarted.start_execution(ImplementationOwner("issue", 1), github_client=github)
+
+    def test_forced_retry_failure_preserves_unmarked_owner_while_first_pr_dispatch_runs(self, tmp_path):
+        """REQ-004: a present owner is authoritative before later lifecycle hooks."""
+
+        class StrictGitHub(GitHubClient):
+            def __init__(self):
+                self.token = "token"
+                self.fail_children = False
+
+            def get_issue_strict(self, _repo, number):
+                return {"number": number, "title": "Child", "body": ""}
+
+            def get_parent_issue_number_strict(self, _repo, number):
+                return 1 if number == 2 else None
+
+            def get_direct_sub_issues_strict(self, _repo, number):
+                if self.fail_children and number == 2:
+                    raise RuntimeError("hierarchy unavailable")
+                return [{"number": 2}] if number == 1 else []
+
+        github = StrictGitHub()
+        storage_path = tmp_path / "live-unmarked-owner.json"
+        first_slots = ImplementationSlotRepository("owner/repo", 3, storage_path)
+        first_engine = AutomationEngine(github, config=AutomationConfig())
+        first_engine.implementation_slots = first_slots
+        entered = Event()
+        release = Event()
+
+        def hold_downstream(*_args, **_kwargs):
+            entered.set()
+            assert release.wait(10)
+            return CandidateProcessingResult(type="pr", number=20, title="First", success=True, actions=["dispatched"])
+
+        first_engine._process_single_candidate_reserved = hold_downstream
+        candidate = Candidate(type="pr", data={"number": 20, "title": "First", "body": "Fixes #2", "labels": []}, priority=0)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first = executor.submit(first_engine._process_single_candidate_unified, "owner/repo", candidate, first_engine.config)
+            assert entered.wait(10)
+            child = ImplementationOwner("issue", 2)
+            before = json.loads(storage_path.read_text(encoding="utf-8"))[child.key]
+            assert before.get("admission_established") is not True
+            original_executions = tuple(value["id"] for value in before["executions"])
+
+            github.fail_children = True
+            retry_slots = ImplementationSlotRepository("owner/repo", 3, storage_path)
+            retry_engine = AutomationEngine(github, config=AutomationConfig())
+            retry_engine.implementation_slots = retry_slots
+            retry_downstream = Mock()
+            retry_engine._process_single_candidate_reserved = retry_downstream
+            retry = retry_engine._process_single_candidate_unified("owner/repo", candidate, retry_engine.config, explicit_only=True, force=True)
+
+            after = json.loads(storage_path.read_text(encoding="utf-8"))[child.key]
+            assert retry.error and "hierarchy unavailable" in retry.error
+            assert after == before
+            assert after["implementation_prs"] == [20]
+            assert retry_slots.active_execution_ids(child) == original_executions
+            retry_downstream.assert_not_called()
+            github.fail_children = False
+            with pytest.raises(ImplementationHierarchyConflict, match="issue:2"):
+                retry_slots.start_execution(ImplementationOwner("issue", 1), github_client=github)
+            release.set()
+            assert first.result(timeout=10).actions == ["dispatched"]
 
     @patch("auto_coder.automation_engine.check_and_start_recurrent_jules_tasks")
     def test_recurrent_jules_step_receives_instance_slot_repository(self, start_recurrent, tmp_path):
