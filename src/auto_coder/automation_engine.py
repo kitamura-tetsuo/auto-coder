@@ -2241,7 +2241,7 @@ class AutomationEngine:
                     return result
                 decomposition_validator = self._get_decomposition_validator(repo_name)
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-                decomposition_decision = decomposition_job.result()
+                decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_decision.verdict == "ERROR":
                     result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                     result.actions = ["Deferred - decomposition validation error"]
@@ -2260,8 +2260,8 @@ class AutomationEngine:
                     if side_effect_error:
                         result.error += f"; GitHub side effect failed: {side_effect_error}"
                     return result
-                for eager_job in eager_child_jobs.values():
-                    if eager_job.result().verdict == "ERROR":
+                for eager_decision in eager_child_decisions.values():
+                    if eager_decision.verdict == "ERROR":
                         result.error = "Individual validation failed; parent readiness was preserved for retry"
                         result.actions = ["Deferred - child specification validation error"]
                         return result

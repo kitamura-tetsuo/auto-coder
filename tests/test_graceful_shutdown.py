@@ -342,6 +342,78 @@ def test_parent_routing_snapshot_failure_cannot_abandon_validation_batch(monkeyp
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
+def test_refill_inherited_validation_error_joins_running_child(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    object.__setattr__(config, "validation_concurrency", 2)
+    github = MagicMock()
+    parent = {"number": 1, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    child = {"number": 22, "state": "open", "title": "Child", "body": ""}
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_issue_dispatch_snapshot_strict.return_value = child
+    engine = AutomationEngine(github, config)
+    decomposition_started = threading.Event()
+    child_started = threading.Event()
+    release_decomposition = threading.Event()
+    release_child = threading.Event()
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda *_args: True)
+    monkeypatch.setattr(engine, "_reconcile_validation_snapshot", lambda _repo, _number, snapshot: snapshot)
+    monkeypatch.setattr(engine, "_get_authoritative_parent_number", lambda *_args: 1)
+    monkeypatch.setattr(engine, "_fetch_authoritative_decomposition_set", lambda *_args: (parent, [child]))
+    monkeypatch.setattr(engine, "_defer_initial_issue_stabilization", lambda *_args: False)
+    monkeypatch.setattr(engine, "_get_decomposition_validator", lambda *_args: MagicMock())
+
+    def decomposition():
+        decomposition_started.set()
+        assert release_decomposition.wait(5)
+        return SimpleNamespace(verdict="ERROR")
+
+    def individual():
+        child_started.set()
+        assert release_child.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    monkeypatch.setattr(
+        engine,
+        "_schedule_parent_validations",
+        lambda *_args: (
+            engine.validation_scheduler.submit("decomposition:refill", decomposition),
+            {22: engine.validation_scheduler.submit("individual:refill", individual)},
+        ),
+    )
+
+    async def scenario():
+        refill = asyncio.create_task(
+            engine._run_local_critical(
+                "capacity refill issue #22",
+                engine._process_single_candidate_unified,
+                "owner/repo",
+                Candidate(type="issue", data=child, priority=0, issue_number=22),
+                config,
+                False,
+                False,
+                False,
+                False,
+                False,
+                True,
+                1,
+            )
+        )
+        assert await asyncio.to_thread(decomposition_started.wait, 2)
+        assert await asyncio.to_thread(child_started.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        refill.cancel()
+        release_decomposition.set()
+        await asyncio.sleep(0.05)
+        assert not refill.done()
+        assert list(engine._critical_operations.values()) == ["capacity refill issue #22"]
+        release_child.set()
+        result = await refill
+        assert result.actions == ["Deferred - decomposition validation error"]
+
+    asyncio.run(scenario())
+
+
 def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
@@ -672,6 +744,59 @@ def test_remote_cloud_ownership_survives_graceful_stop_and_restart(monkeypatch, 
         second = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), backend_name="codex-cloud-luna")
         restarted_client.start_task.assert_not_called()
         assert second == ["Codex Cloud task 'remote-task' already running for issue #1777 attempt 0; skipped duplicate dispatch"]
+
+
+def test_initial_cloud_launch_rechecks_drain_after_prompt_context(monkeypatch, tmp_path):
+    from auto_coder.cloud_run import CloudRunRepository
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    client = MagicMock()
+    client.start_task.return_value = "task-after-restart"
+    client.task_urls = {}
+    issue = {"number": 1778, "title": "Cloud", "body": "", "labels": []}
+
+    def context_lookup(**_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return "context"
+
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", context_lookup)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.codex_cloud_client.CodexCloudClient", lambda **_kwargs: client)
+    monkeypatch.setattr("auto_coder.issue_processor.CloudManager", MagicMock())
+
+    async def scenario():
+        launch = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 issue #1778",
+                _process_issue_codex_cloud_mode,
+                "owner/repo",
+                issue,
+                AutomationConfig(),
+                MagicMock(),
+                "codex-cloud-luna",
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        launch.cancel()
+        release.set()
+        actions = await launch
+        assert actions == ["Deferred Codex Cloud task for issue #1778: graceful shutdown is draining"]
+
+    asyncio.run(scenario())
+    client.start_task.assert_not_called()
+    assert CloudRunRepository("owner/repo").get(1778, 0) is None
+
+    # Restart has a fresh RUNNING admission context and no false durable run,
+    # so the same production dispatcher can launch the still-eligible Issue.
+    actions = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), backend_name="codex-cloud-luna")
+    assert actions == ["Started Codex Cloud task 'task-after-restart' for issue #1778"]
+    client.start_task.assert_called_once()
 
 
 def test_container_entrypoint_and_compose_grace_preserve_sigterm_delivery():
