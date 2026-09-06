@@ -262,6 +262,10 @@ class AutomationEngine:
         authoritative_children = []
         for number in sorted(confirmed_numbers):
             child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+            final_declaration = parse_parent_declaration(child.get("body")) if isinstance(child, dict) else None
+            if final_declaration is not None and final_declaration.status is not ParentDeclarationStatus.ABSENT:
+                child = self._reconcile_parent_issue(repo_name, number, child)
+                reconciled_declarations.add(number)
             native_parent = self.github.get_parent_issue_details_strict(repo_name, number) if number in reconciled_declarations else {"number": parent_number}
             if not isinstance(child, dict) or child.get("number") != number or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
                 raise ParentOperationalError(f"native parent for child #{number} is not #{parent_number}")
@@ -439,6 +443,8 @@ class AutomationEngine:
             return
         if not is_implementation_ready(authoritative_set[0]):
             return
+        if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
+            return
         decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
         # Do not acknowledge the durable invalidation until every missing
         # identity has either persisted reusable evidence or returned ERROR.
@@ -453,6 +459,11 @@ class AutomationEngine:
         current = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         if not isinstance(current, dict) or current.get("number") != issue_number or not self._is_open_issue(current):
             return None
+        if isinstance(self.github, GitHubClient) and parse_parent_declaration(current.get("body")).status is not ParentDeclarationStatus.ABSENT:
+            try:
+                current = self._reconcile_parent_issue(repo_name, issue_number, current)
+            except (ParentSpecificationError, ParentOperationalError):
+                return None
 
         direct_children = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
         if not isinstance(direct_children, list):
@@ -462,6 +473,8 @@ class AutomationEngine:
         # sequential candidate workflow.
         if direct_children:
             if is_implementation_ready(current):
+                if self._defer_initial_issue_stabilization(repo_name, current):
+                    return None
                 authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
                 if authoritative_set is None:
                     return None
@@ -487,6 +500,8 @@ class AutomationEngine:
             # its own label is never a fallback after the parent is withdrawn.
             if not is_implementation_ready(authoritative_set[0]):
                 return None
+            if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
+                return None
             decomposition_validator = self._get_decomposition_validator(repo_name)
             decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
             decomposition_decision = decomposition_job.result()
@@ -501,6 +516,8 @@ class AutomationEngine:
                 return None
 
         if not is_implementation_ready(current) and decomposition_decision is None:
+            return None
+        if decomposition_decision is None and self._defer_initial_issue_stabilization(repo_name, current):
             return None
         snapshot = current
         title = str(snapshot.get("title") or "")
@@ -526,7 +543,11 @@ class AutomationEngine:
                     lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
                 )
             else:
-                validator.apply_blocked(self.github, decision)
+                validator.apply_blocked(
+                    self.github,
+                    decision,
+                    lambda: self._standalone_validation_is_current(repo_name, decision),
+                )
             return None
         if decision.verdict != "READY":
             return None
@@ -2002,6 +2023,11 @@ class AutomationEngine:
                     if side_effect_error:
                         result.error += f"; GitHub side effect failed: {side_effect_error}"
                     return result
+                for eager_job in eager_child_jobs.values():
+                    if eager_job.result().verdict == "ERROR":
+                        result.error = "Individual validation failed; parent readiness was preserved for retry"
+                        result.actions = ["Deferred - child specification validation error"]
+                        return result
                 open_predecessors = sorted(int(child["number"]) for child in child_snapshots if child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number)
                 if open_predecessors:
                     result.actions = [f"Deferred - earlier sibling(s) remain open: {open_predecessors}"]

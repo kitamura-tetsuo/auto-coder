@@ -262,3 +262,95 @@ def test_ambiguous_422_is_operational_and_preserves_submission(monkeypatch):
     assert child["labels"] == [{"name": "implementation-ready"}]
     github.remove_labels.assert_not_called()
     github.add_comment_to_issue.assert_not_called()
+
+
+def test_child_trigger_defers_new_parent_and_later_uses_latest_identity(tmp_path: Path, monkeypatch):
+    body = "## Requirements\n- REQ-001: Initial."
+    created = datetime.now(timezone.utc)
+    issues = {1: graph_issue(1, body, ready=True, created_at=created.isoformat()), 2: graph_issue(2, body)}
+    github = GraphGitHub(issues, {2: 1}, {1: [2]})
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle("o/r", "provider/model", tmp_path / "sets.json", lambda parent, _children: analyzed.append(parent.body) or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", lambda *_args: SpecificationAnalysisResult("READY"))
+
+    engine._validate_submitted_parent_generation_for_child("o/r", 2, dict(issues[2]))
+    assert analyzed == []
+    assert engine.invalidations.pending_count("o/r") == 1
+
+    issues[1]["body"] = body + "\nLatest."
+    monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (created + timedelta(seconds=61)).timestamp())
+    engine._validate_submitted_parent_generation_for_child("o/r", 2, dict(issues[2]))
+    assert analyzed == [issues[1]["body"]]
+
+
+@pytest.mark.parametrize("late_declaration", ["Parent-Issue: #3", "Parent-Issue: #abc"])
+def test_final_child_snapshot_is_reconciled_before_analyzers(tmp_path: Path, late_declaration: str):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+
+    class MutatingGraph(GraphGitHub):
+        child_reads = 0
+
+        def get_issue_dispatch_snapshot_strict(self, repo, number):
+            snapshot = super().get_issue_dispatch_snapshot_strict(repo, number)
+            if number == 2:
+                self.child_reads += 1
+                if self.child_reads >= 2:
+                    snapshot["body"] += "\n" + late_declaration
+                    self.issues[2]["body"] = snapshot["body"]
+            return snapshot
+
+    github = MutatingGraph(
+        {1: graph_issue(1, body, ready=True), 2: graph_issue(2, body, state="closed"), 3: graph_issue(3, body)},
+        {2: 1},
+        {1: [2]},
+    )
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle("o/r", "provider/model", tmp_path / "sets.json", lambda *_args: analyzed.append("set") or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", lambda *_args: analyzed.append("child") or SpecificationAnalysisResult("READY"))
+
+    result = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
+
+    assert result.error is not None
+    assert analyzed == []
+    assert github.parents == {2: 1}
+
+
+def test_jules_replacement_reconciles_current_declaration_before_validation(tmp_path: Path):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+    child = graph_issue(2, body + "\nParent-Issue: #3", ready=True)
+    github = GraphGitHub({2: child, 3: graph_issue(3, body)}, {}, {})
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", lambda *_args: analyzed.append("individual") or SpecificationAnalysisResult("READY"))
+
+    authorized = engine._authorize_stale_jules_dispatch("o/r", 2, dict(child))
+
+    assert authorized is None
+    assert github.events == ["linked"]
+    assert github.parents == {2: 3}
+    assert analyzed == []
+
+
+def test_jules_standalone_blocked_completion_cannot_mutate_new_parent_set(tmp_path: Path):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+    github = GraphGitHub({1: graph_issue(1, body, ready=True), 2: graph_issue(2, body, state="closed")}, {}, {})
+
+    def block_and_add_child(*_args):
+        github.parents[2] = 1
+        github.children[1] = [2]
+        from src.auto_coder.specification_analyzer import SpecificationFinding
+
+        finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "Ambiguous.", "Clarify it.", "Two outcomes.", "Required outcome.")
+        return SpecificationAnalysisResult("BLOCKED", (finding,))
+
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", block_and_add_child)
+
+    authorized = engine._authorize_stale_jules_dispatch("o/r", 1, dict(github.issues[1]))
+
+    assert authorized is None
+    assert github.comments == []
+    assert github.removals == []
+    assert github.issues[1]["labels"] == [{"name": "implementation-ready"}]
