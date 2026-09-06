@@ -2436,6 +2436,41 @@ class GitHubClient:
             logger.warning(f"Failed to add issue #{sub_issue_number} as sub-issue of #{parent_issue_number}: {e}")
             return False
 
+    @retry_with_backoff()
+    def add_sub_issue_strict(
+        self,
+        repo_name: str,
+        parent_issue_number: int,
+        sub_issue_number: int,
+        sub_issue_id: int,
+    ) -> None:
+        """Materialize a native relationship without flattening API failures.
+
+        A 409/422 response is a definitive structural rejection. Other failures
+        remain HTTP errors so callers can retain retryable reconciliation work.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        with httpx.Client() as client:
+            response = client.post(
+                f"https://api.github.com/repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues",
+                headers=headers,
+                json={"sub_issue_id": sub_issue_id},
+                timeout=30,
+            )
+        if response.status_code in (200, 201):
+            self.clear_sub_issue_cache()
+            return
+        if response.status_code in (409, 422):
+            raise ValueError(f"GitHub rejected Parent-Issue relationship: {response.text}")
+        response.raise_for_status()
+        raise RuntimeError("GitHub returned an ambiguous Parent-Issue mutation response")
+
     def _fetch_sub_issues_data(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         """Fetch raw sub-issues data from REST API."""
         try:

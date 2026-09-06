@@ -35,6 +35,7 @@ from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context
 from .logger_config import get_logger
+from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
@@ -231,6 +232,57 @@ class AutomationEngine:
         number = parent.get("number") if isinstance(parent, dict) else None
         return number if isinstance(number, int) and not isinstance(number, bool) else None
 
+    def _reconcile_parent_issue(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Reconcile body metadata, then return a newly fetched native snapshot."""
+        declaration = parse_parent_declaration(snapshot.get("body"))
+        try:
+            native = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+        except Exception as exc:
+            raise ParentOperationalError(f"cannot read native parent: {exc}") from exc
+        native_number = native.get("number") if isinstance(native, dict) else None
+
+        if declaration.status is ParentDeclarationStatus.INVALID:
+            raise ParentSpecificationError(declaration.reason or "invalid Parent-Issue declaration")
+        if declaration.status is ParentDeclarationStatus.SUPPORTED:
+            declared = declaration.parent_number
+            assert declared is not None
+            if declared == issue_number:
+                raise ParentSpecificationError("an Issue cannot declare itself as its parent")
+            if isinstance(native_number, int) and native_number != declared:
+                raise ParentSpecificationError(f"Parent-Issue declaration #{declared} conflicts with native parent #{native_number}")
+            if native_number is None:
+                try:
+                    target = self.github.get_issue_dispatch_snapshot_strict(repo_name, declared)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        raise ParentSpecificationError(f"declared parent #{declared} does not exist") from exc
+                    raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
+                except Exception as exc:
+                    raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
+                if not isinstance(target, dict) or target.get("number") != declared or "pull_request" in target:
+                    raise ParentSpecificationError(f"declared parent #{declared} is not an Issue in {repo_name}")
+                child_id = snapshot.get("id")
+                if not isinstance(child_id, int) or isinstance(child_id, bool):
+                    raise ParentOperationalError("authoritative child snapshot omitted its database ID")
+                try:
+                    self.github.add_sub_issue_strict(repo_name, declared, issue_number, child_id)
+                except ValueError as exc:
+                    raise ParentSpecificationError(str(exc)) from exc
+                except Exception as exc:
+                    raise ParentOperationalError(f"cannot materialize Parent-Issue relationship: {exc}") from exc
+
+        try:
+            refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            refreshed_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+        except Exception as exc:
+            raise ParentOperationalError(f"cannot re-fetch reconciled relationship: {exc}") from exc
+        if not isinstance(refreshed, dict) or refreshed.get("number") != issue_number or "pull_request" in refreshed:
+            raise ParentOperationalError("GitHub returned an ambiguous reconciled Issue snapshot")
+        refreshed_number = refreshed_parent.get("number") if isinstance(refreshed_parent, dict) else None
+        if declaration.status is ParentDeclarationStatus.SUPPORTED and refreshed_number != declaration.parent_number:
+            raise ParentOperationalError("GitHub did not confirm the materialized Parent-Issue relationship")
+        return refreshed
+
     def _schedule_parent_validations(
         self,
         repo_name: str,
@@ -295,6 +347,14 @@ class AutomationEngine:
         before closed-state and implementation-owner filtering so those concerns
         cannot consume the invalidation without validating the changed set.
         """
+        declaration = parse_parent_declaration(snapshot.get("body"))
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+        # This eager hook exists to discover a submitted identity. An unrelated
+        # non-ready leaf has none, so leave its full reconciliation to the common
+        # dispatch path rather than adding redundant authoritative reads.
+        if parent_number is None and declaration.status is ParentDeclarationStatus.ABSENT:
+            return
+        snapshot = self._reconcile_parent_issue(repo_name, issue_number, snapshot)
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
         if parent_number is None:
             return
@@ -636,6 +696,8 @@ class AutomationEngine:
                         raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
                         continue
+                    if isinstance(self.github, GitHubClient) and isinstance(snapshot.get("id"), int) and parse_parent_declaration(snapshot.get("body")).status is not ParentDeclarationStatus.ABSENT:
+                        snapshot = await asyncio.to_thread(self._reconcile_parent_issue, repo_name, observed.number, snapshot)
                     issue_data = self.github.get_issue_details(snapshot)
                     if not isinstance(issue_data, dict) or issue_data.get("number") != observed.number:
                         raise RuntimeError(f"GitHub returned invalid Issue details for #{observed.number}")
@@ -644,7 +706,12 @@ class AutomationEngine:
                 for issue_data in open_issue_snapshots:
                     number = issue_data["number"]
                     native_parent = await asyncio.to_thread(self.github.get_parent_issue_number_strict, repo_name, number) if isinstance(self.github, GitHubClient) else issue_data.get("parent_issue_number")
-                    parent = native_parent if isinstance(native_parent, int) else parse_parent_issue_number(str(issue_data.get("body") or ""), current_issue_number=number)
+                    parent = native_parent if isinstance(native_parent, int) else None
+                    # Minimal adapters and legacy synthetic fixtures do not
+                    # expose the database ID needed by GitHub's mutation API.
+                    # Production snapshots always do and were reconciled above.
+                    if parent is None and not isinstance(issue_data.get("id"), int):
+                        parent = parse_parent_issue_number(str(issue_data.get("body") or ""), current_issue_number=number)
                     if parent is not None:
                         metadata_children.setdefault(parent, []).append(number)
                 for issue_data in open_issue_snapshots:
@@ -1525,8 +1592,6 @@ class AutomationEngine:
             return False
         if isinstance(self.github, GitHubClient):
             parent = self.github.get_parent_issue_number_strict(repo_name, number)
-            if parent is None:
-                parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number)
             siblings = self.github.get_open_sub_issues_strict(repo_name, parent) if parent is not None else []
         else:
             parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number) or candidate.data.get("parent_issue_number")
@@ -1590,6 +1655,30 @@ class AutomationEngine:
             if not self._is_issue_author_allowed(candidate.data):
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
+            declaration = parse_parent_declaration(candidate.data.get("body"))
+            # GitHubClient is the supported production adapter. Simple test and
+            # integration adapters may not expose the strict relationship API.
+            if isinstance(self.github, GitHubClient) and declaration.status is not ParentDeclarationStatus.ABSENT:
+                try:
+                    refreshed = self._reconcile_parent_issue(repo_name, item_number, candidate.data)
+                    candidate = Candidate(
+                        type=candidate.type,
+                        data={**candidate.data, **refreshed},
+                        priority=candidate.priority,
+                        issue_number=candidate.issue_number,
+                        branch_name=candidate.branch_name,
+                        related_issues=candidate.related_issues,
+                        invalidation_generation=candidate.invalidation_generation,
+                    )
+                except ParentSpecificationError as exc:
+                    result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                    result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                    return result
+                except ParentOperationalError as exc:
+                    result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                    result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
+                    result.refill_retry_required = True
+                    return result
             # A submitted parent represents its whole direct-child contract, not
             # a standalone coding target. Route only the first open child; the
             # existing discovery ordering continues to serialize later siblings.
