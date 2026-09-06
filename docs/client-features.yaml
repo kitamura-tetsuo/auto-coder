@@ -25,6 +25,18 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Implementation-ready Issue dispatch gate
 
+This gate is the implementation-ready specification quality contract from
+Issue #1730.  It is one shared production boundary rather than an optional
+planning phase: standalone submissions require a current individual `READY`,
+and parent submissions require both a current decomposition `READY` and a
+current individual `READY` for the sequentially selected direct child.  No
+parent Requirement is inherited by a child.  `BLOCKED` withdraws the relevant
+submission and requires an explicit resubmission, whereas operational `ERROR`
+preserves it for retry.  These checks cover daemon, explicit/urgent, local, and
+cloud dispatch and precede implementation ownership and capacity admission.
+They do not create `plan.md`/`tasks.md`, allocate implementation slots, relax
+quota or routing policy, or permit sibling implementation in parallel.
+
 Before classifying or snapshotting any readiness submission, Auto-Coder examines
 every line-form `Parent-Issue`, `Parent_Issue`, or `Parent Issue` declaration,
 rejects malformed, ambiguous, self-referential, contradictory, missing, PR, and
