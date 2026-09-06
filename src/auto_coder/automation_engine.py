@@ -288,6 +288,30 @@ class AutomationEngine:
         # attempt must restart through the ordered set-before-child workflow.
         return False
 
+    def _validate_submitted_parent_generation_for_child(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
+        """Materialize validation evidence triggered by one authoritative child change.
+
+        Webhooks invalidate only the edited Issue.  Resolve its live relationship
+        before closed-state and implementation-owner filtering so those concerns
+        cannot consume the invalidation without validating the changed set.
+        """
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+        if parent_number is None:
+            return
+        authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+        if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
+            return
+        if not is_implementation_ready(authoritative_set[0]):
+            return
+        decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+        # Do not acknowledge the durable invalidation until every missing
+        # identity has either persisted reusable evidence or returned ERROR.
+        if decomposition_job.result().verdict == "ERROR":
+            raise RuntimeError("decomposition validation failed while processing child invalidation")
+        for job in child_jobs.values():
+            if job.result().verdict == "ERROR":
+                raise RuntimeError("individual validation failed while processing child invalidation")
+
     def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Apply set, ordering, and Issue authorization to daemon replacement work."""
         current = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
@@ -694,6 +718,14 @@ class AutomationEngine:
                             continue
                         authoritative_candidate.invalidation_generation = candidate.invalidation_generation
                         candidate = authoritative_candidate
+
+                        if candidate.type == "issue":
+                            await asyncio.to_thread(
+                                self._validate_submitted_parent_generation_for_child,
+                                repo_name,
+                                int(item_number),
+                                candidate.data,
+                            )
 
                     self.active_workers[worker_id] = candidate
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
