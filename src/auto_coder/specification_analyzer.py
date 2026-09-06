@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from .backend_manager import BackendManager, run_llm_prompt
 from .prompt_loader import render_prompt
@@ -46,6 +48,27 @@ class SpecificationAnalysisResult:
     @property
     def is_ready(self) -> bool:
         return self.verdict == "READY"
+
+
+@dataclass(frozen=True)
+class IndividualReviewEvidence:
+    """Durable, non-normative evidence used only for remediation selection."""
+
+    baseline: str
+    prior_applied_outcomes: tuple[str, ...] = ()
+
+
+_REVIEW_EVIDENCE: ContextVar[Optional[IndividualReviewEvidence]] = ContextVar("individual_review_evidence", default=None)
+
+
+@contextmanager
+def individual_review_evidence(evidence: IndividualReviewEvidence) -> Iterator[None]:
+    """Make lifecycle evidence available without changing analyzer call sites."""
+    token = _REVIEW_EVIDENCE.set(evidence)
+    try:
+        yield
+    finally:
+        _REVIEW_EVIDENCE.reset(token)
 
 
 def _error(message: str) -> SpecificationAnalysisResult:
@@ -131,6 +154,7 @@ def analyze_issue_specification(
     parent_context: Optional[str] = None,
     backend_manager: Optional[BackendManager] = None,
     prompt_runner: Optional[Callable[[str], str]] = None,
+    review_evidence: Optional[IndividualReviewEvidence] = None,
 ) -> SpecificationAnalysisResult:
     """Adversarially decide whether an Issue is an independent contract.
 
@@ -140,6 +164,7 @@ def analyze_issue_specification(
     if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
         return _error(manifest.error or "A valid explicit normative Requirement manifest is required")
 
+    review_evidence = review_evidence or _REVIEW_EVIDENCE.get()
     requirements = json.dumps(
         [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
         ensure_ascii=False,
@@ -152,6 +177,8 @@ def analyze_issue_specification(
         normative_manifest=requirements,
         issue_body=issue_body,
         parent_context=parent_context or "(No parent Issue context supplied.)",
+        durable_baseline=review_evidence.baseline if review_evidence else "(No earlier baseline is available.)",
+        prior_applied_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material review outcomes.)"),
     )
     try:
         if prompt_runner is not None:
