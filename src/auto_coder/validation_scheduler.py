@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Callable, Generic, TypeVar
 
@@ -42,7 +43,12 @@ class ValidationScheduler:
             existing = self._in_flight.get(identity_key)
             if existing is not None:
                 return ValidationJob(identity_key, existing)  # type: ignore[arg-type]
-            future: Future[T] = self._executor.submit(operation)
+            # Repository-specific backend selection is held in a ContextVar.
+            # ThreadPoolExecutor workers start with an empty context unless the
+            # submitting context is explicitly propagated, which would make the
+            # analyzer execute a different provider/model from its policy key.
+            context = copy_context()
+            future: Future[T] = self._executor.submit(context.run, operation)
             self._in_flight[identity_key] = future  # type: ignore[assignment]
 
         def retire(completed: Future[T]) -> None:

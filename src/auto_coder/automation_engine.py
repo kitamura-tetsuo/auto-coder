@@ -231,31 +231,6 @@ class AutomationEngine:
         number = parent.get("number") if isinstance(parent, dict) else None
         return number if isinstance(number, int) and not isinstance(number, bool) else None
 
-    def _decide_authoritative_decomposition(
-        self,
-        repo_name: str,
-        parent_number: int,
-        authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
-    ) -> tuple[DecompositionValidationLifecycle, DecompositionDecision]:
-        """Obtain the durable decision for one authoritative parent generation."""
-        parent, children = authoritative_set
-        validator = self._get_decomposition_validator(repo_name)
-        identity = validator.identity(parent, children)
-        parent_manifest = build_normative_issue_manifest(parent_number, str(parent.get("title") or ""), str(parent.get("body") or ""))
-        child_issues = [
-            DecompositionIssue(
-                build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
-                str(child.get("body") or ""),
-            )
-            for child in children
-        ]
-        decision = validator.decide(
-            identity,
-            DecompositionIssue(parent_manifest, str(parent.get("body") or "")),
-            child_issues,
-        )
-        return validator, decision
-
     def _schedule_parent_validations(
         self,
         repo_name: str,
@@ -300,7 +275,9 @@ class AutomationEngine:
         if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
             return False
         if is_implementation_ready(authoritative_set[0]):
-            validator, decision = self._decide_authoritative_decomposition(repo_name, parent_number, authoritative_set)
+            validator = self._get_decomposition_validator(repo_name)
+            decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
+            decision = decomposition_job.result()
             if decision.verdict == "BLOCKED":
                 validator.apply_blocked(
                     self.github,
@@ -328,7 +305,9 @@ class AutomationEngine:
                 authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
                 if authoritative_set is None:
                     return None
-                parent_validator, parent_decision = self._decide_authoritative_decomposition(repo_name, issue_number, authoritative_set)
+                parent_validator = self._get_decomposition_validator(repo_name)
+                decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
+                parent_decision = decomposition_job.result()
                 if parent_decision.verdict == "BLOCKED":
                     parent_validator.apply_blocked(
                         self.github,
@@ -344,17 +323,22 @@ class AutomationEngine:
             authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
             if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
                 return None
-            if is_implementation_ready(authoritative_set[0]):
-                decomposition_validator, decomposition_decision = self._decide_authoritative_decomposition(repo_name, parent_number, authoritative_set)
-                if decomposition_decision.verdict == "BLOCKED":
-                    decomposition_validator.apply_blocked(
-                        self.github,
-                        decomposition_decision,
-                        lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
-                    )
-                    return None
-                if decomposition_decision.verdict != "READY" or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in authoritative_set[1]):
-                    return None
+            # A native child is authorized only through a live submitted parent;
+            # its own label is never a fallback after the parent is withdrawn.
+            if not is_implementation_ready(authoritative_set[0]):
+                return None
+            decomposition_validator = self._get_decomposition_validator(repo_name)
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+            decomposition_decision = decomposition_job.result()
+            if decomposition_decision.verdict == "BLOCKED":
+                decomposition_validator.apply_blocked(
+                    self.github,
+                    decomposition_decision,
+                    lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                )
+                return None
+            if decomposition_decision.verdict != "READY" or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in authoritative_set[1]):
+                return None
 
         if not is_implementation_ready(current) and decomposition_decision is None:
             return None
@@ -365,7 +349,14 @@ class AutomationEngine:
         if manifest.error:
             return None
         validator = self._get_specification_validator(repo_name)
-        decision = validator.decide(manifest, title, body)
+        individual_identity = validator.identity(issue_number, title, body)
+        if parent_number is not None:
+            decision = child_jobs[issue_number].result()
+        else:
+            decision = self.validation_scheduler.submit(
+                f"individual:{individual_identity.key}",
+                lambda: validator.decide(manifest, title, body),
+            ).result()
         if decision.verdict == "BLOCKED":
             if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
                 validator.apply_inherited_blocked(
@@ -1586,31 +1577,26 @@ class AutomationEngine:
                     result.error = f"Cannot confirm parent readiness submission: {exc}"
                     return result
                 if is_implementation_ready(parent_snapshot):
+                    parent_submission_set = self._fetch_authoritative_decomposition_set(repo_name, item_number)
+                    if parent_submission_set is None:
+                        result.error = "Cannot fetch authoritative parent/child specification set"
+                        return result
+                    # Validation eligibility belongs to the submitted generation,
+                    # not to implementation eligibility. Submit the complete set
+                    # before closed-child filtering or retained-owner routing.
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set)
+                    _, authoritative_children = parent_submission_set
                     open_children = sorted(
-                        (child for child in direct_children if isinstance(child, dict) and child.get("state") == "open" and isinstance(child.get("number"), int)),
+                        (child for child in authoritative_children if child.get("state") == "open" and isinstance(child.get("number"), int)),
                         key=lambda child: int(child["number"]),
                     )
                     if not open_children:
-                        parent_submission_set = self._fetch_authoritative_decomposition_set(repo_name, item_number)
-                        if parent_submission_set is None:
-                            result.error = "Cannot fetch authoritative parent/child specification set"
-                            return result
-                        current_parent, current_children = parent_submission_set
                         parent_decomposition_validator = self._get_decomposition_validator(repo_name)
-                        identity = parent_decomposition_validator.identity(current_parent, current_children)
-                        parent_manifest = build_normative_issue_manifest(item_number, str(current_parent.get("title") or ""), str(current_parent.get("body") or ""))
-                        child_issues = [
-                            DecompositionIssue(
-                                build_normative_issue_manifest(int(member["number"]), str(member.get("title") or ""), str(member.get("body") or "")),
-                                str(member.get("body") or ""),
-                            )
-                            for member in current_children
-                        ]
-                        parent_decision = parent_decomposition_validator.decide(
-                            identity,
-                            DecompositionIssue(parent_manifest, str(current_parent.get("body") or "")),
-                            child_issues,
-                        )
+                        parent_decision = decomposition_job.result()
+                        # No implementation follows this path, but all direct-child
+                        # evidence is still part of the submitted validation work.
+                        for job in child_jobs.values():
+                            job.result()
                         if parent_decision.verdict == "BLOCKED":
                             side_effect_error = parent_decomposition_validator.apply_blocked(
                                 self.github,
