@@ -427,6 +427,14 @@ class AutomationEngine:
                         continue
                     candidate.priority = self._issue_refill_priority(candidate.data)
                     candidates.append(candidate)
+                metadata_children: Dict[int, List[int]] = {}
+                for candidate in candidates:
+                    number = candidate.issue_number or candidate.data.get("number")
+                    parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number)
+                    if isinstance(number, int) and parent is not None:
+                        metadata_children.setdefault(parent, []).append(number)
+                for candidate in candidates:
+                    candidate.data["refill_metadata_open_children"] = metadata_children
                 candidates.sort(key=lambda value: (-value.priority, value.data.get("created_at", ""), value.issue_number or 0))
             except Exception as exc:
                 logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
@@ -1265,6 +1273,9 @@ class AutomationEngine:
                 return False
             if issue_data.get("has_open_sub_issues"):
                 return True
+            metadata_children = issue_data.get("refill_metadata_open_children", {})
+            if isinstance(metadata_children, dict) and metadata_children.get(issue_number):
+                return True
             if isinstance(self.github, GitHubClient):
                 sub_issues = self.github.get_open_sub_issues_strict(repo_name, issue_number)
             else:
@@ -1292,9 +1303,11 @@ class AutomationEngine:
                 parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number)
             siblings = self.github.get_open_sub_issues_strict(repo_name, parent) if parent is not None else []
         else:
-            parent = candidate.data.get("parent_issue_number")
+            parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number) or candidate.data.get("parent_issue_number")
             siblings = self.github.get_open_sub_issues(repo_name, parent) if isinstance(parent, int) else []
-        return any(sibling < number for sibling in siblings if sibling != number)
+        metadata_children = candidate.data.get("refill_metadata_open_children", {})
+        fallback_siblings = metadata_children.get(parent, []) if isinstance(metadata_children, dict) and isinstance(parent, int) else []
+        return any(sibling < number for sibling in [*siblings, *fallback_siblings] if sibling != number)
 
     def _process_single_candidate_unified(
         self,
@@ -1485,6 +1498,10 @@ class AutomationEngine:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
+            # All subsequent admission checks must consume exactly the
+            # authoritative generation whose specification was authorized.
+            candidate.data.update(dispatch_snapshot)
+
             # Refill and direct dispatch share this last authoritative hierarchy
             # gate. Candidate collection metadata is not sufficient because a
             # child can open after enumeration and before slot admission.
@@ -1498,9 +1515,6 @@ class AutomationEngine:
                 result.actions = ["Skipped - unresolved Issue hierarchy dependency"]
                 return result
 
-            # The backend must receive exactly the authoritative generation that
-            # READY authorized, never the older candidate collection payload.
-            candidate.data.update(dispatch_snapshot)
             dispatch_labels = candidate.data.get("labels", []) or []
             dispatch_label_names = {label if isinstance(label, str) else label.get("name") for label in dispatch_labels if isinstance(label, (str, dict))}
             if config.CHECK_LABELS and not force and not advance_issue_attempt and "@auto-coder" in dispatch_label_names:
