@@ -52,7 +52,7 @@ from .git_commit import commit_and_push_changes, git_push, save_commit_failure_h
 from .git_info import get_commit_log
 from .github_app_reviewer import publish_adversarial_review, resolve_reviewer_app_identity
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
-from .label_manager import LabelManager, LabelOperationError
+from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
@@ -1925,8 +1925,9 @@ def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff:
     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
     body_text = pr_body[: config.MAX_PROMPT_SIZE]
-    # Extract PR labels for label-based prompt selection
-    pr_labels_list = pr_data.get("labels", []) or []
+    # Extract PR labels for label-based prompt selection, excluding the
+    # retired "@auto-coder" legacy label (FTR-1792).
+    pr_labels_list = filter_legacy_auto_coder_label(pr_data.get("labels", []) or [])
 
     result: str = render_prompt(
         "pr.action",

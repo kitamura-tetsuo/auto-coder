@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Dict, Generator, Iterable, List, Optional, Union
 
 from github.GithubException import GithubException
 
@@ -19,6 +19,76 @@ from .logger_config import get_logger
 from .util.gh_cache import GitHubClient
 
 logger = get_logger(__name__)
+
+# The exact, raw legacy processing-lock label. Once @auto-coder is retired as
+# a lifecycle lock, it must still be treated as semantically inert wherever
+# labels are turned into LLM prompt content or semantic PR-label decisions
+# (FTR-1792). This is intentionally a literal constant, not
+# AutomationConfig.AUTO_CODER_LABEL: the filter must keep suppressing the
+# exact historical label text even if that config field is ever repurposed.
+LEGACY_AUTO_CODER_LABEL = "@auto-coder"
+
+
+def _raw_label_name(label: Any) -> Optional[str]:
+    """Extract a label name from a raw GitHub label (string or {"name": ...} dict).
+
+    Returns None for anything else, matching the historical behavior of the
+    call sites this replaces (which silently skipped non-str/non-dict entries).
+    """
+    if isinstance(label, str):
+        return label
+    if isinstance(label, dict):
+        return label.get("name", "")
+    return None
+
+
+def filter_legacy_auto_coder_label(raw_labels: Optional[Iterable[Any]]) -> List[str]:
+    """Extract label names from raw entity labels, excluding the exact legacy label.
+
+    This is the shared choke point required by FTR-1792 ("Make legacy
+    @auto-coder labels semantically inert"): every consumer that turns entity
+    labels into an LLM prompt label list/variable, a label-to-prompt selector
+    input, or semantic PR-label resolution input must filter through this
+    function first -- before normalization, alias lookup, fuzzy matching,
+    priority ordering, or string rendering -- so the retired label can never
+    be reinterpreted (via a configured alias or fuzzy match) into another
+    semantic label or prompt choice. Labels are compared for an exact,
+    case-sensitive match against "@auto-coder"; every other label (including
+    near-misses like "auto-coder" or "@auto-coder-old") passes through
+    unchanged, in original order.
+
+    Accepts either raw GitHub label dicts (``{"name": "..."}``) or plain
+    label name strings, since callers use both shapes.
+    """
+    names: List[str] = []
+    for label in raw_labels or []:
+        name = _raw_label_name(label)
+        if name is None or name == LEGACY_AUTO_CODER_LABEL:
+            continue
+        names.append(name)
+    return names
+
+
+def remove_legacy_auto_coder_label(items: Optional[Iterable[Any]]) -> List[Any]:
+    """Remove exact "@auto-coder" entries from a list, preserving every other
+    entry's original value and type unchanged.
+
+    Some label-to-prompt selector inputs are not pure label-name strings --
+    ``prompt_loader._resolve_label_priority`` intentionally supports arbitrary
+    comparison keys (e.g. floats, bools) alongside label strings. Coercing
+    such entries to strings (as :func:`filter_legacy_auto_coder_label` does)
+    would corrupt them, so this variant only ever drops entries that are
+    themselves the exact retired label (as a string, or a raw label dict
+    named "@auto-coder") and leaves everything else untouched.
+    """
+    result: List[Any] = []
+    for item in items or []:
+        if isinstance(item, str) and item == LEGACY_AUTO_CODER_LABEL:
+            continue
+        if isinstance(item, dict) and item.get("name") == LEGACY_AUTO_CODER_LABEL:
+            continue
+        result.append(item)
+    return result
 
 
 def _calculate_levenshtein_distance(s1: str, s2: str) -> int:
@@ -172,6 +242,11 @@ def get_semantic_labels_from_issue(
     Returns:
         List of primary semantic labels detected (deduplicated)
     """
+    # REQ-003/REQ-004 (FTR-1792): strip the exact retired "@auto-coder" label
+    # before any normalization, alias lookup, or fuzzy matching so it can
+    # never be reinterpreted into a semantic label via a configured alias.
+    issue_labels = filter_legacy_auto_coder_label(issue_labels)
+
     detected_labels = []
 
     # Pre-normalize all issue labels once for efficiency

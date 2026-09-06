@@ -26,7 +26,7 @@ from .implementation_slots import ImplementationOwner, ImplementationSlotReposit
 from .issue_context import get_linked_issues_context, validate_issue_references
 from .jules_client import JulesClient
 from .jules_engine import get_session_pull_request, is_session_stopped, mark_session_stopped
-from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
+from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, filter_legacy_auto_coder_label, resolve_pr_labels_with_priority
 from .logger_config import get_gh_logger, get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
@@ -167,13 +167,9 @@ def _process_issue_jules_mode(
         jules_client = JulesClient()
 
         # Prepare the prompt for Jules
-        # Prepare the prompt for Jules
-        issue_labels_list = []
-        for label in issue_data.get("labels", []):
-            if isinstance(label, dict):
-                issue_labels_list.append(label.get("name", ""))
-            elif isinstance(label, str):
-                issue_labels_list.append(label)
+        # Extract issue labels, excluding the retired "@auto-coder" legacy
+        # label so it never reaches the LLM prompt (FTR-1792).
+        issue_labels_list = filter_legacy_auto_coder_label(issue_data.get("labels", []))
 
         action_prompt = render_prompt(
             "issue.action",
@@ -279,12 +275,9 @@ def _process_issue_claude_routine_mode(
 
         routine_client = ClaudeRoutineClient(backend_name=backend_name, repo_name=repo_name)
 
-        issue_labels_list = []
-        for label in issue_data.get("labels", []):
-            if isinstance(label, dict):
-                issue_labels_list.append(label.get("name", ""))
-            elif isinstance(label, str):
-                issue_labels_list.append(label)
+        # Extract issue labels, excluding the retired "@auto-coder" legacy
+        # label so it never reaches the LLM prompt (FTR-1792).
+        issue_labels_list = filter_legacy_auto_coder_label(issue_data.get("labels", []))
 
         action_prompt = render_prompt(
             "issue.action",
@@ -397,7 +390,9 @@ def _process_issue_codex_cloud_mode(
             label_context.keep_label()
         return [f"Codex Cloud task '{existing_run.task_id}' already running for issue #{issue_number} attempt {attempt}; skipped duplicate dispatch"]
 
-    issue_labels = [label.get("name", "") if isinstance(label, dict) else str(label) for label in issue_data.get("labels", [])]
+    # Extract issue labels, excluding the retired "@auto-coder" legacy label
+    # so it never reaches the LLM prompt (FTR-1792).
+    issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
     prompt = render_prompt(
         "issue.action",
         repo_name=repo_name,
@@ -1036,7 +1031,9 @@ def _create_pr_for_issue(
 
                 # Check if PR label copying is enabled
                 if config.PR_LABEL_COPYING_ENABLED:
-                    issue_labels = issue_data.get("labels", [])
+                    # Exclude the retired "@auto-coder" legacy label before it is
+                    # supplied to semantic PR-label resolution (FTR-1792).
+                    issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
 
                     # Extract and prioritize semantic labels from the issue
                     try:
@@ -1241,13 +1238,9 @@ def _apply_issue_actions_directly(
                     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
                 # Create a comprehensive prompt for LLM CLI
-                # Extract issue labels for label-based prompt selection
-                issue_labels_list = []
-                for label in issue_data.get("labels", []):
-                    if isinstance(label, dict):
-                        issue_labels_list.append(label.get("name", ""))
-                    elif isinstance(label, str):
-                        issue_labels_list.append(label)
+                # Extract issue labels for label-based prompt selection, excluding
+                # the retired "@auto-coder" legacy label (FTR-1792).
+                issue_labels_list = filter_legacy_auto_coder_label(issue_data.get("labels", []))
 
                 action_prompt = render_prompt(
                     "issue.action",

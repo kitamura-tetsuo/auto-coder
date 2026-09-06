@@ -256,10 +256,17 @@ class TestGetLabelSpecificPromptEdgeCases:
         assert result == "issue.first"
 
     def test_labels_with_special_chars(self):
-        """Test labels with various special characters."""
-        labels = ["@auto-coder", "type:bug", "area/core"]
-        mappings = {"@auto-coder": "issue.auto"}
-        priorities = ["@auto-coder"]
+        """Test labels with various special characters.
+
+        Note: this intentionally avoids the exact "@auto-coder" label as the
+        matching example. Per FTR-1792, that retired lifecycle-lock label is
+        semantically inert for label-to-prompt selection regardless of any
+        configured mapping -- see
+        TestLegacyAutoCoderLabelIsSemanticallyInertForPromptSelection below.
+        """
+        labels = ["@urgent!", "type:bug", "area/core"]
+        mappings = {"@urgent!": "issue.auto"}
+        priorities = ["@urgent!"]
 
         result = get_label_specific_prompt(labels, mappings, priorities)
         assert result == "issue.auto"
@@ -833,3 +840,17 @@ class TestMissingLinesCoverage:
 
         with pytest.raises(SystemExit):
             get_prompt_template("any.key", path=str(prompt_file))
+
+
+class TestLegacyAutoCoderLabelIsSemanticallyInertForPromptSelection:
+    """FTR-1792: unlike ordinary special-character labels, the exact retired
+    '@auto-coder' label must never resolve to a prompt template, even when a
+    mapping is explicitly configured for it."""
+
+    def test_configured_mapping_for_legacy_label_is_never_selected(self):
+        labels = ["@auto-coder", "type:bug", "area/core"]
+        mappings = {"@auto-coder": "issue.auto"}
+        priorities = ["@auto-coder"]
+
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result is None

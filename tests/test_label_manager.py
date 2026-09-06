@@ -607,6 +607,90 @@ class TestSemanticLabelFunctions:
         assert result == ["bug"]
 
 
+class TestLegacyAutoCoderLabelIsSemanticallyInert:
+    """FTR-1792: the exact retired '@auto-coder' label must not affect semantic
+    PR-label resolution (REQ-003/REQ-004/REQ-005/REQ-007, AS-005, AS-006)."""
+
+    def test_filter_strips_only_exact_legacy_label_from_strings(self):
+        from src.auto_coder.label_manager import filter_legacy_auto_coder_label
+
+        result = filter_legacy_auto_coder_label(["bug", "@auto-coder", "urgent"])
+        assert result == ["bug", "urgent"]
+
+    def test_filter_preserves_near_miss_labels(self):
+        """AS-002/AS-006: near-misses are not the retired label and must survive."""
+        from src.auto_coder.label_manager import filter_legacy_auto_coder_label
+
+        result = filter_legacy_auto_coder_label(["auto-coder", "@auto-coder-old", "@Auto-Coder"])
+        assert result == ["auto-coder", "@auto-coder-old", "@Auto-Coder"]
+
+    def test_filter_strips_exact_legacy_label_from_raw_dicts(self):
+        """Raw GitHub API/webhook label dicts must be filtered the same as name strings."""
+        from src.auto_coder.label_manager import filter_legacy_auto_coder_label
+
+        raw_labels = [{"name": "bug"}, {"name": "@auto-coder"}, {"name": "urgent"}]
+        assert filter_legacy_auto_coder_label(raw_labels) == ["bug", "urgent"]
+
+    def test_filter_handles_empty_and_none(self):
+        from src.auto_coder.label_manager import filter_legacy_auto_coder_label
+
+        assert filter_legacy_auto_coder_label([]) == []
+        assert filter_legacy_auto_coder_label(None) == []
+
+    def test_get_semantic_labels_ignores_exact_legacy_label(self):
+        """REQ-003/REQ-004: the retired label alone must never resolve to a semantic label."""
+        label_mappings = {"bug": ["bug", "bugfix"], "urgent": ["urgent"]}
+
+        assert get_semantic_labels_from_issue(["@auto-coder"], label_mappings) == []
+
+    def test_get_semantic_labels_identical_with_and_without_legacy_label(self):
+        """REQ-005/AS-006: adding/removing only '@auto-coder' must not change the result."""
+        label_mappings = {"bug": ["bug", "bugfix"], "urgent": ["urgent", "high-priority"]}
+
+        without_legacy = get_semantic_labels_from_issue(["bug", "urgent"], label_mappings)
+        with_legacy = get_semantic_labels_from_issue(["bug", "urgent", "@auto-coder"], label_mappings)
+        assert with_legacy == without_legacy
+
+    def test_get_semantic_labels_malicious_alias_cannot_reinterpret_legacy_label(self):
+        """AS-005: a configured alias mapping '@auto-coder' to a semantic label must
+        never let the retired label propagate that semantic label."""
+        malicious_mappings = {"urgent": ["urgent", "@auto-coder", "auto-coder"]}
+
+        # Only the exact retired label is present -> must resolve to nothing.
+        assert get_semantic_labels_from_issue(["@auto-coder"], malicious_mappings) == []
+        # A near-miss alias entry ("auto-coder") is untouched by this filter and
+        # may still legitimately match, since REQ-007 keeps other labels' alias
+        # semantics unchanged; only the exact retired label text is excluded.
+        assert get_semantic_labels_from_issue(["auto-coder"], malicious_mappings) == ["urgent"]
+
+    def test_resolve_pr_labels_with_priority_ignores_exact_legacy_label(self):
+        """REQ-003 applied to the resolve_pr_labels_with_priority entry point."""
+        config = AutomationConfig()
+        config.PR_LABEL_MAPPINGS = {"urgent": ["urgent"], "bug": ["bug"]}
+        config.PR_LABEL_PRIORITIES = ["urgent", "bug"]
+
+        assert resolve_pr_labels_with_priority(["@auto-coder"], config) == []
+
+    def test_resolve_pr_labels_with_priority_identical_with_and_without_legacy_label(self):
+        """REQ-005/AS-006 at the resolve_pr_labels_with_priority entry point."""
+        config = AutomationConfig()
+        config.PR_LABEL_MAPPINGS = {"urgent": ["urgent"], "bug": ["bug"]}
+        config.PR_LABEL_PRIORITIES = ["urgent", "bug"]
+
+        without_legacy = resolve_pr_labels_with_priority(["bug", "urgent"], config)
+        with_legacy = resolve_pr_labels_with_priority(["bug", "urgent", "@auto-coder"], config)
+        assert with_legacy == without_legacy
+
+    def test_resolve_pr_labels_with_priority_malicious_alias_cannot_reinterpret_legacy_label(self):
+        """AS-005 at the resolve_pr_labels_with_priority entry point used by
+        _create_pr_for_issue to propagate semantic labels from issues to PRs."""
+        config = AutomationConfig()
+        config.PR_LABEL_MAPPINGS = {"urgent": ["urgent", "@auto-coder"]}
+        config.PR_LABEL_PRIORITIES = ["urgent"]
+
+        assert resolve_pr_labels_with_priority(["@auto-coder"], config) == []
+
+
 class TestFuzzyMatching:
     """Test fuzzy matching functionality for label detection."""
 

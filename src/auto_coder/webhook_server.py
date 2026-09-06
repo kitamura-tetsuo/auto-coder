@@ -11,9 +11,28 @@ from pydantic import BaseModel
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
 from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, issue_stabilization_deadline
+from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
+
+# Webhook actions whose payload carries the single label that was added/removed.
+_LABEL_CHANGE_ACTIONS = {"labeled", "unlabeled"}
+
+
+def _is_legacy_auto_coder_label_change(event_type: Optional[str], action: Optional[str], payload: Dict[str, Any]) -> bool:
+    """Detect a labeled/unlabeled webhook delivery for the exact retired "@auto-coder" label.
+
+    REQ-001/REQ-002 (FTR-1792): such deliveries must not create, enqueue, or
+    advance a durable invalidation, regardless of who made the change, while
+    every other label change (including near-misses like "auto-coder" or
+    "@auto-coder-old") must continue through the normal invalidation and
+    delivery-deduplication path unaffected.
+    """
+    if event_type not in ("issues", "pull_request") or action not in _LABEL_CHANGE_ACTIONS:
+        return False
+    label = payload.get("label")
+    return isinstance(label, Mapping) and label.get("name") == LEGACY_AUTO_CODER_LABEL
 
 
 class SentryWebhookPayload(BaseModel):
@@ -113,7 +132,7 @@ async def process_github_payload(
         "pull_request_review_thread": {"resolved", "unresolved"},
         "issue_comment": {"created", "edited", "deleted"},
     }
-    if event_type in entity_actions and action in entity_actions[event_type]:
+    if event_type in entity_actions and action in entity_actions[event_type] and not _is_legacy_auto_coder_label_change(event_type, action, payload):
         if event_type == "issues":
             entity, entity_type = payload.get("issue"), "issue"
         elif event_type == "issue_comment":
@@ -126,6 +145,8 @@ async def process_github_payload(
             identities.add((entity_type, number))
         if event_type == "pull_request" and action == "closed":
             engine.notify_pr_merged_or_closed()
+    elif event_type in entity_actions and action in entity_actions[event_type]:
+        logger.info(f"Ignoring {event_type} {action} webhook for the retired '{LEGACY_AUTO_CODER_LABEL}' label: no invalidation created")
 
     completion_events = {("workflow_run", "completed"), ("workflow_job", "completed"), ("check_run", "completed"), ("check_suite", "completed")}
     if (event_type, action) in completion_events or event_type == "status":

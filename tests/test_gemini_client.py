@@ -734,3 +734,41 @@ class TestGeminiClient:
         assert called_cmd[0] == "agy"
         assert "--dangerously-skip-permissions" not in called_cmd
         assert "--force-model" not in called_cmd
+
+
+class TestGeminiPrAnalysisPromptIgnoresLegacyAutoCoderLabel:
+    """FTR-1792: the label text supplied for the gemini.pr_analysis prompt's
+    '$labels' variable must never include the exact retired '@auto-coder'
+    label, so it can never be interpolated into that LLM prompt."""
+
+    def _render(self, labels):
+        pr_data = {
+            "title": "Test PR",
+            "body": "Test body",
+            "labels": labels,
+            "head_branch": "feature",
+            "base_branch": "main",
+            "additions": 1,
+            "deletions": 1,
+            "changed_files": 1,
+            "draft": False,
+            "mergeable": True,
+        }
+        # _create_pr_analysis_prompt does not read `self`, so it can be called
+        # unbound to avoid constructing a fully-initialized GeminiClient.
+        return GeminiClient._create_pr_analysis_prompt(None, pr_data)
+
+    def test_legacy_label_excluded_from_rendered_prompt(self):
+        prompt = self._render(["bug", "@auto-coder"])
+        assert "@auto-coder" not in prompt
+
+    def test_labels_kwarg_supplied_to_render_prompt_excludes_legacy_label(self):
+        """Verify the filtered value at the actual input boundary: the `labels`
+        text handed to render_prompt for the '$labels' template variable."""
+        with patch("src.auto_coder.gemini_client.render_prompt") as mock_render_prompt:
+            mock_render_prompt.return_value = "rendered"
+            self._render(["bug", "@auto-coder", "urgent"])
+        assert mock_render_prompt.call_args.kwargs["labels"] == "bug, urgent"
+
+    def test_prompt_identical_with_and_without_legacy_label(self):
+        assert self._render(["bug", "urgent"]) == self._render(["bug", "urgent", "@auto-coder"])
