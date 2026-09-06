@@ -30,6 +30,7 @@ from .label_manager import LabelManager, LabelManagerContext, LabelOperationErro
 from .logger_config import get_gh_logger, get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
+from .shutdown_context import new_work_allowed
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
@@ -187,6 +188,9 @@ def _process_issue_jules_mode(
             is_jules=True,
         )
 
+        if not new_work_allowed():
+            return [f"Deferred Jules session for issue #{issue_number}: graceful shutdown is draining"]
+
         logger.info(f"Starting Jules session for issue #{issue_number}")
 
         # Determine base branch (default to main)
@@ -294,6 +298,9 @@ def _process_issue_claude_routine_mode(
             commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
             is_jules=True,
         )
+
+        if not new_work_allowed():
+            return [f"Deferred Claude Routine session for issue #{issue_number}: graceful shutdown is draining"]
 
         logger.info(f"Starting Claude Routine session for issue #{issue_number}")
 
@@ -403,6 +410,9 @@ def _process_issue_codex_cloud_mode(
         commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
         is_jules=True,
     )
+
+    if not new_work_allowed():
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: graceful shutdown is draining"]
 
     client = CodexCloudClient(backend_name=backend_name, repo_name=repo_name)
     task_id = client.start_task(
@@ -839,6 +849,9 @@ def handle_stale_jules_issue_sessions(
                 authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
                 if authorized_issue is None:
                     continue
+                if not new_work_allowed():
+                    logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: graceful shutdown is draining")
+                    continue
                 issue_data["title"] = str(authorized_issue.get("title") or "")
                 issue_data["body"] = str(authorized_issue.get("body") or "")
 
@@ -1270,6 +1283,10 @@ def _apply_issue_actions_directly(
                     from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
 
                     backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
+
+                if not new_work_allowed():
+                    actions.append(f"Deferred local implementation for issue #{issue_number}: graceful shutdown is draining")
+                    return actions
 
                 response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
 

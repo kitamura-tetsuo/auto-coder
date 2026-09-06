@@ -1,11 +1,15 @@
+import tempfile
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
 from src.auto_coder.pr_processor import _active_monitors, _handle_pr_merge
+from src.auto_coder.util.github_action import WorkflowDispatchResult
 
 
 def _client():
@@ -18,12 +22,21 @@ class TestPRMonitorDeduplication:
     """Test cases for PR monitor deduplication logic."""
 
     def setup_method(self):
-        """Reset active monitors before each test."""
+        """Reset active monitors and use an isolated dispatch claim store."""
         # We need to access the module-level variable.
         # Since we imported it, we might be looking at a copy if it was just 'from ... import _active_monitors'
         # but sets are mutable so it should be fine if we clear it.
         # Better to patch it or clear it directly.
         _active_monitors.clear()
+
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._claim_store = DispatchClaimStore(db_path=Path(self._tmp_dir.name) / "dispatch_claims.db")
+        self._claim_store_patcher = patch("src.auto_coder.pr_processor.get_dispatch_claim_store", return_value=self._claim_store)
+        self._claim_store_patcher.start()
+
+    def teardown_method(self):
+        self._claim_store_patcher.stop()
+        self._tmp_dir.cleanup()
 
     @patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
     @patch("src.auto_coder.pr_processor._get_mergeable_state")
@@ -56,7 +69,7 @@ class TestPRMonitorDeduplication:
         # Mock status to return NO checks found (triggering the logic we want to test)
         mock_check_status.return_value = MagicMock(ids=[], error=None)
 
-        mock_trigger.return_value = True
+        mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
         # LabelManager mock
         mock_lm_instance = MagicMock()

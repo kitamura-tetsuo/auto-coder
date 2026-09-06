@@ -26,6 +26,7 @@ except ImportError:
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
+from ..dispatch_claim_store import DispatchOutcome
 from ..logger_config import get_logger
 from ..security_utils import redact_string
 from ..test_log_utils import generate_merged_playwright_report
@@ -896,7 +897,65 @@ def get_detailed_checks_from_history(
         )
 
 
-def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> bool:
+def _extract_http_status_code(exc: Exception) -> Optional[int]:
+    """Extract a structured HTTP status code from an exception, if any.
+
+    Only trusts a status code obtained from a genuine attribute the
+    exception carries directly, or from a nested `.response` object (as on
+    `httpx.HTTPStatusError`, whose `.response.status_code` reflects a
+    completed HTTP round trip). This deliberately never inspects the
+    exception's free-form string form: a transport-level failure (a broken
+    connection, a malformed response) can produce diagnostic text that
+    incidentally contains a misleading "NNN <Reason>"-shaped substring
+    (e.g. a corrupted header value, or a URL path segment), which is not
+    evidence of any actual HTTP status and must not be treated as one.
+    """
+    for attr in ("status_code", "code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        value = getattr(response, "status_code", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _classify_dispatch_exception(exc: Exception) -> DispatchOutcome:
+    """Classify a workflow_dispatch failure per REQ-005.
+
+    Only a proven, completed HTTP round trip carrying a 4xx client-error
+    status is a definite rejection: it means GitHub received and rejected
+    the request before accepting it. Anything else (timeouts, connection
+    resets, 5xx, or an exception we cannot attribute to a specific HTTP
+    status) is indeterminate, since we cannot disprove that GitHub accepted
+    the request before the response was lost.
+    """
+    code = _extract_http_status_code(exc)
+    if isinstance(code, int) and 400 <= code < 500:
+        return DispatchOutcome.REJECTED
+    return DispatchOutcome.INDETERMINATE
+
+
+@dataclass(frozen=True)
+class WorkflowDispatchResult:
+    """Result of a `trigger_workflow_dispatch` call.
+
+    Preserves the three observable outcome classes required by REQ-005
+    (accepted, definitely rejected, indeterminate) instead of collapsing
+    them into a boolean. `bool(result)` is True only for ACCEPTED, so
+    existing truthy/falsy call sites keep working unchanged.
+    """
+
+    outcome: DispatchOutcome
+    error: Optional[str] = None
+
+    def __bool__(self) -> bool:
+        return self.outcome == DispatchOutcome.ACCEPTED
+
+
+def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> WorkflowDispatchResult:
     """Trigger a GitHub Actions workflow via workflow_dispatch.
 
     Args:
@@ -905,7 +964,8 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
         ref: Git reference (branch or tag) to run the workflow on
 
     Returns:
-        True if triggered successfully, False otherwise
+        A WorkflowDispatchResult carrying the observable outcome class
+        (ACCEPTED, REJECTED, or INDETERMINATE). It is truthy iff ACCEPTED.
     """
     try:
         logger.info(f"Triggering workflow '{workflow_id}' on '{ref}' for {repo_name}")
@@ -919,14 +979,14 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
         api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
 
         logger.info(f"Successfully triggered workflow '{workflow_id}'")
-        return True
+        return WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
     except Exception as e:
         # Fallback for 422 error (missing workflow_dispatch trigger)
         import time
 
         try:
-            if "422" in str(e):
+            if _extract_http_status_code(e) == 422:
                 logger.warning(f"Failed to trigger {workflow_id} with 422. Attempting to add workflow_dispatch trigger...")
 
                 # Get the file content
@@ -983,20 +1043,31 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
 
                         logger.info(f"Updated {workflow_id} on {ref}. Retrying trigger...")
                         time.sleep(2)  # Wait for propagation
-                        api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
+                        try:
+                            api.actions.create_workflow_dispatch(owner, repo, workflow_id, ref=ref)
+                        except Exception as retry_dispatch_e:
+                            # This is itself a completed (or attempted) dispatch call, so
+                            # its own outcome is what determines the final classification.
+                            logger.error(f"Retry of workflow_dispatch for '{workflow_id}' failed: {retry_dispatch_e}")
+                            return WorkflowDispatchResult(outcome=_classify_dispatch_exception(retry_dispatch_e), error=str(retry_dispatch_e))
                         logger.info(f"Successfully triggered workflow '{workflow_id}' after fallback")
-                        return True
+                        return WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
                     else:
                         logger.warning(f"workflow_dispatch already present in {workflow_id}, 422 might be due to other reasons.")
 
                 except Exception as inner_e:
+                    # The fallback's own file-repair steps (fetching/updating the
+                    # workflow file) failed before a retried dispatch call could be
+                    # attempted. No further dispatch call was made, so the original
+                    # exception `e` is still the last (and only) dispatch attempt's
+                    # outcome for this identity.
                     logger.error(f"Failed to apply fallback for {workflow_id}: {inner_e}")
 
         except Exception as retry_e:
             logger.error(f"Fallback retry failed: {retry_e}")
 
         logger.error(f"Error triggering workflow '{workflow_id}': {e}")
-        return False
+        return WorkflowDispatchResult(outcome=_classify_dispatch_exception(e), error=str(e))
 
 
 def get_github_actions_logs_from_url(url: str, config: Optional[AutomationConfig] = None, failed_checks: Optional[List[Dict[str, Any]]] = None) -> str:

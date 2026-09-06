@@ -1,6 +1,10 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import httpx
+
+from auto_coder.dispatch_claim_store import DispatchOutcome
+from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_action import trigger_workflow_dispatch
 
 
@@ -46,8 +50,13 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         workflow_id = "ci.yml"
         ref = "feature-branch"
 
-        # Mock create_workflow_dispatch to raise 422 first, then succeed
-        mock_api.actions.create_workflow_dispatch.side_effect = [Exception("422 Unprocessable Entity"), None]  # First call fails  # Second call succeeds
+        # Mock create_workflow_dispatch to raise 422 first, then succeed. The
+        # exception must carry a structured status_code: classification never
+        # infers a status from free-form exception text (see
+        # _extract_http_status_code).
+        rejection = Exception("422 Unprocessable Entity")
+        rejection.status_code = 422
+        mock_api.actions.create_workflow_dispatch.side_effect = [rejection, None]  # First call fails  # Second call succeeds
 
         # Mock get_content to return file without workflow_dispatch
         import base64
@@ -94,8 +103,12 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         workflow_id = "ci.yml"
         ref = "feature-branch"
 
-        # Mock create_workflow_dispatch to raise 422 first, then succeed
-        mock_api.actions.create_workflow_dispatch.side_effect = [Exception("422 Unprocessable Entity"), None]  # First call fails  # Second call succeeds
+        # Mock create_workflow_dispatch to raise 422 first, then succeed. The
+        # exception must carry a structured status_code: classification never
+        # infers a status from free-form exception text.
+        rejection = Exception("422 Unprocessable Entity")
+        rejection.status_code = 422
+        mock_api.actions.create_workflow_dispatch.side_effect = [rejection, None]  # First call fails  # Second call succeeds
 
         # Mock get_content to return file with duplicate workflow_dispatch
         import base64
@@ -120,6 +133,119 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         # Verify content has only one workflow_dispatch
         new_content_decoded = base64.b64decode(call_kwargs["content"]).decode("utf-8")
         self.assertEqual(new_content_decoded.count("workflow_dispatch:"), 1)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_definite_rejection(self, mock_gh_client_cls, mock_get_ghapi):
+        """A completed 4xx response (not a 422) is a definite rejection (REQ-005)."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        rejection = Exception("404 Not Found")
+        rejection.status_code = 404
+        mock_api.actions.create_workflow_dispatch.side_effect = rejection
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.REJECTED)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_indeterminate_on_transport_error(self, mock_gh_client_cls, mock_get_ghapi):
+        """A transport-level failure (no HTTP status) is indeterminate, not rejected (REQ-005)."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        mock_api.actions.create_workflow_dispatch.side_effect = ConnectionResetError("connection reset by peer")
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_ignores_misleading_status_text_in_transport_error(self, mock_gh_client_cls, mock_get_ghapi):
+        """A transport-level exception (no structured HTTP status) must never be
+        classified from its free-form text, even when that text happens to
+        embed a misleading 'NNN <Reason>'-shaped substring (e.g. from a
+        corrupted response header) that looks like an HTTP status line."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        transport_error = ConnectionError("illegal header line: bytearray(b'X-Error: 404 Not Found\\x00')")
+        mock_api.actions.create_workflow_dispatch.side_effect = transport_error
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_misleading_422_text_does_not_trigger_fallback(self, mock_gh_client_cls, mock_get_ghapi):
+        """A transport-level exception whose message merely contains '422' text
+        (no structured status) must not enter the workflow-file repair
+        fallback or resend the dispatch."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        transport_error = ConnectionError("illegal header line: bytearray(b'X-Error: 422 Unprocessable Entity\\x00')")
+        mock_api.actions.create_workflow_dispatch.side_effect = transport_error
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+        mock_api.repos.get_content.assert_not_called()
+        mock_api.repos.create_or_update_file_contents.assert_not_called()
+        self.assertEqual(mock_api.actions.create_workflow_dispatch.call_count, 1)
+
+
+class TestTriggerWorkflowDispatchRealHttpAdapter(unittest.TestCase):
+    """Drives the real CachedGhApi/httpx boundary so classification is exercised
+    against genuine httpx.HTTPStatusError objects rather than plain Exception
+    strings, and against a request URL that itself embeds digits that could be
+    mistaken for an HTTP status by a naive string search."""
+
+    def _run_with_mock_transport(self, handler, repo_name, workflow_id="ci.yml", ref="main"):
+        def _fake_get_caching_client():
+            return httpx.Client(transport=httpx.MockTransport(handler))
+
+        with (
+            patch("auto_coder.util.gh_cache.get_caching_client", side_effect=_fake_get_caching_client),
+            patch("auto_coder.util.github_action.GitHubClient") as mock_gh_client_cls,
+            patch("auto_coder.util.github_action.get_ghapi_client", side_effect=get_ghapi_client),
+        ):
+            mock_gh_client_cls.get_instance.return_value.token = "test-token"
+            return trigger_workflow_dispatch(repo_name, workflow_id, ref)
+
+    def test_503_with_numeric_repo_name_is_indeterminate_not_rejected(self):
+        """A 503 response must classify as INDETERMINATE even though the request
+        URL embeds a repo path segment ('404') that a naive digit search over
+        the exception string could misattribute as the HTTP status."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertIn("/repos/owner/404/actions/workflows/ci.yml/dispatches", str(request.url))
+            return httpx.Response(503, json={"message": "Service Unavailable"}, request=request)
+
+        result = self._run_with_mock_transport(handler, "owner/404")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+    def test_genuine_404_is_still_a_definite_rejection(self):
+        """A real 404 HTTPStatusError from the adapter is still classified REJECTED,
+        so the fix for the 503 misclassification does not blur real rejections."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"message": "Not Found"}, request=request)
+
+        result = self._run_with_mock_transport(handler, "owner/repo")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.REJECTED)
 
 
 if __name__ == "__main__":

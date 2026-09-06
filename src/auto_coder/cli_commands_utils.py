@@ -10,7 +10,7 @@ from .auth_utils import get_auth_status, get_github_token
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_ui import Spinner
-from .git_utils import get_current_repo_name, is_git_repository, migrate_pr_branches
+from .git_utils import get_current_repo_name, is_git_repository, migrate_pr_branches, parse_github_repo_from_url
 from .logger_config import setup_logger
 from .util.gh_cache import GitHubClient
 from .util.github_action import get_github_actions_logs_from_url
@@ -39,19 +39,31 @@ def get_github_token_or_fail(provided_token: Optional[str]) -> str:
     raise click.ClickException("GitHub token is required. Please either:\n" "1. Set GITHUB_TOKEN environment variable, or\n" "2. Login with gh CLI: 'gh auth login', or\n" "3. Use --github-token option")
 
 
-def get_repo_or_detect(repo: Optional[str]) -> str:
-    """Get repository name from parameter or auto-detect from current directory."""
+def get_repo_or_detect(repo: Optional[str], fallback_url: Optional[str] = None) -> str:
+    """Get repository name from parameter, fallback URL, or auto-detect from current directory."""
     if repo:
         return repo
 
-    # Try to auto-detect repository
+    # Try to auto-detect repository from current directory
     detected_repo = get_current_repo_name()
     if detected_repo:
         click.echo(f"Auto-detected repository: {detected_repo}")
         return detected_repo
 
+    # Try to extract repository from fallback URL (e.g., from --only URL option)
+    if fallback_url:
+        url_repo = parse_github_repo_from_url(fallback_url)
+        if url_repo:
+            click.echo(f"Detected repository from URL: {url_repo}")
+            return url_repo
+
     # If not in a git repository or can't detect, show helpful error
     if not is_git_repository():
+        from .utils import CommandExecutor
+
+        check_res = CommandExecutor.run_command(["git", "rev-parse", "--is-inside-work-tree"], stream_output=False)
+        if "detected dubious ownership in repository" in check_res.stderr:
+            raise click.ClickException("Git detected dubious ownership in this repository directory.\n" "Please run: git config --global --add safe.directory '*'\n" "or specify --repo option.")
         raise click.ClickException("Not in a Git repository. Please specify --repo option or run from within a Git repository.")
     else:
         raise click.ClickException("Could not auto-detect GitHub repository. Please specify --repo option.")

@@ -6,8 +6,10 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
@@ -48,6 +50,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
+from .shutdown_context import install_admission_check, reset_admission_check
 from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
@@ -57,7 +60,7 @@ from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubI
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
-from .validation_scheduler import ValidationJob, ValidationScheduler
+from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
 logger = get_logger(__name__)
 
@@ -66,6 +69,15 @@ MAINTENANCE_INTERVAL_SECONDS = 60
 CAPACITY_STATE_CHECK_INTERVAL_SECONDS = 1
 REFILL_RETRY_INTERVAL_SECONDS = 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
+
+
+class EngineLifecycle(str, Enum):
+    """Observable lifecycle of the long-running automation daemon."""
+
+    RUNNING = "running"
+    DRAINING = "draining"
+    STOPPED = "stopped"
+    FORCED = "forced"
 
 
 class AutomationEngine:
@@ -99,6 +111,11 @@ class AutomationEngine:
         self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         self._decomposition_validators: Dict[str, DecompositionValidationLifecycle] = {}
         self.validation_scheduler = ValidationScheduler(self.config.validation_concurrency)
+        self._lifecycle = EngineLifecycle.RUNNING
+        self._lifecycle_lock = threading.Lock()
+        self._shutdown_event: Optional[asyncio.Event] = None
+        self._force_stop_event: Optional[asyncio.Event] = None
+        self._critical_operations: Dict[asyncio.Task[Any], str] = {}
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -106,6 +123,90 @@ class AutomationEngine:
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
+
+    @property
+    def lifecycle(self) -> EngineLifecycle:
+        """Return the current daemon lifecycle state safely across worker threads."""
+        with self._lifecycle_lock:
+            return self._lifecycle
+
+    @property
+    def is_draining(self) -> bool:
+        return self.lifecycle is not EngineLifecycle.RUNNING
+
+    def request_graceful_shutdown(self, reason: str) -> bool:
+        """Stop admission and request a drain. Return true for the first request."""
+        with self._lifecycle_lock:
+            if self._lifecycle is not EngineLifecycle.RUNNING:
+                return False
+            self._lifecycle = EngineLifecycle.DRAINING
+        logger.warning(f"Graceful shutdown requested by {reason}; entering draining state")
+        operations = list(self._critical_operations.values())
+        logger.warning(f"Waiting for {len(operations)} local critical operation(s): {operations or ['none']}")
+        if self._loop is not None and self._shutdown_event is not None:
+            self._loop.call_soon_threadsafe(self._shutdown_event.set)
+        if self._wake_up_event is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(self._wake_up_event.set)
+        return True
+
+    def request_force_stop(self, reason: str) -> None:
+        """Abandon the graceful wait after an explicit second interrupt."""
+        with self._lifecycle_lock:
+            self._lifecycle = EngineLifecycle.FORCED
+        logger.error(f"Forced shutdown requested by {reason}; local work may require restart recovery")
+        if self._loop is not None and self._force_stop_event is not None:
+            self._loop.call_soon_threadsafe(self._force_stop_event.set)
+
+    async def _run_local_critical(self, description: str, function: Any, *args: Any) -> Any:
+        """Own synchronous work until its thread really returns, despite cancellation."""
+
+        async def run_in_thread() -> tuple[bool, Any]:
+            # Keep BaseException on the awaiting coroutine.  Letting a shielded
+            # child task finish with KeyboardInterrupt/SystemExit makes asyncio
+            # treat it as a loop-level termination before the caller can observe
+            # and handle the exception.
+            token = install_admission_check(lambda: not self.is_draining)
+            try:
+                try:
+                    return True, await asyncio.to_thread(function, *args)
+                except BaseException as exc:
+                    return False, exc
+            finally:
+                reset_admission_check(token)
+
+        task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
+        self._critical_operations[task] = description
+        try:
+            try:
+                completed, value = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # asyncio cancellation cannot stop a running executor thread. Keep
+                # ownership and its durable lifecycle until the real boundary.
+                if self.lifecycle is not EngineLifecycle.FORCED:
+                    completed, value = await asyncio.shield(task)
+                else:
+                    raise
+            if completed:
+                return value
+            raise value
+        finally:
+            if task.done():
+                self._critical_operations.pop(task, None)
+
+    async def _wait_for_local_critical_operations(self) -> None:
+        """Wait for the drain-start local work, unless force-stop is requested."""
+        while self._critical_operations:
+            pending = set(self._critical_operations)
+            logger.info(f"Draining local critical operations: {list(self._critical_operations.values())}")
+            force_wait = asyncio.create_task(self._force_stop_event.wait()) if self._force_stop_event is not None else None
+            waiters = pending | ({force_wait} if force_wait is not None else set())
+            done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            if force_wait is not None:
+                if force_wait in done:
+                    return
+                force_wait.cancel()
+                await asyncio.gather(force_wait, return_exceptions=True)
+            await asyncio.sleep(0)
 
     def _claim_jules_session_list_refresh(self) -> bool:
         """Claim the hourly full-list maintenance cycle when it is due."""
@@ -168,7 +269,8 @@ class AutomationEngine:
     async def check_and_start_recurrent_jules_tasks_async(self, repo_name: str) -> None:
         """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
         try:
-            await asyncio.to_thread(
+            await self._run_local_critical(
+                "recurrent provider scan",
                 check_and_start_recurrent_jules_tasks,
                 repo_name,
                 self._get_implementation_slots(repo_name),
@@ -395,6 +497,30 @@ class AutomationEngine:
             )
         return set_job, child_jobs
 
+    @staticmethod
+    def _join_parent_validations(
+        decomposition_job: ValidationJob[DecompositionDecision],
+        child_jobs: dict[int, ValidationJob[ValidationDecision]],
+    ) -> tuple[DecompositionDecision, dict[int, ValidationDecision]]:
+        """Join a submitted batch completely before propagating any failure."""
+        decomposition_decision: Optional[DecompositionDecision] = None
+        child_decisions: dict[int, ValidationDecision] = {}
+        first_error: Optional[BaseException] = None
+        try:
+            decomposition_decision = decomposition_job.result()
+        except BaseException as exc:
+            first_error = exc
+        for number, job in child_jobs.items():
+            try:
+                child_decisions[number] = job.result()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+        assert decomposition_decision is not None
+        return decomposition_decision, child_decisions
+
     def _standalone_relationship_is_current(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> bool:
         """Reject and, when blocked, apply a parent submission discovered late."""
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
@@ -407,8 +533,8 @@ class AutomationEngine:
             if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
                 return False
             validator = self._get_decomposition_validator(repo_name)
-            decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
-            decision = decomposition_job.result()
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+            decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
             if decision.verdict == "BLOCKED":
                 validator.apply_blocked(
                     self.github,
@@ -463,11 +589,19 @@ class AutomationEngine:
         decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
         # Do not acknowledge the durable invalidation until every missing
         # identity has either persisted reusable evidence or returned ERROR.
-        if decomposition_job.result().verdict == "ERROR":
-            raise RuntimeError("decomposition validation failed while processing child invalidation")
-        for job in child_jobs.values():
-            if job.result().verdict == "ERROR":
-                raise RuntimeError("individual validation failed while processing child invalidation")
+        failures: list[str] = []
+        try:
+            decomposition_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
+            if decomposition_decision.verdict == "ERROR":
+                failures.append("decomposition validation failed")
+            if any(decision.verdict == "ERROR" for decision in child_decisions.values()):
+                failures.append("individual validation failed")
+        except ValidationAdmissionDeferred:
+            failures.append("validation was deferred")
+        except Exception as exc:
+            failures.append(f"validation raised {type(exc).__name__}")
+        if failures:
+            raise RuntimeError(f"validation batch incomplete while processing child invalidation: {', '.join(failures)}")
 
     def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Apply set, ordering, and Issue authorization to daemon replacement work."""
@@ -494,8 +628,8 @@ class AutomationEngine:
                 if authoritative_set is None:
                     return None
                 parent_validator = self._get_decomposition_validator(repo_name)
-                decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
-                parent_decision = decomposition_job.result()
+                decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                 if parent_decision.verdict == "BLOCKED":
                     parent_validator.apply_blocked(
                         self.github,
@@ -507,6 +641,7 @@ class AutomationEngine:
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
         decomposition_validator: Optional[DecompositionValidationLifecycle] = None
         decomposition_decision: Optional[DecompositionDecision] = None
+        joined_child_decisions: dict[int, ValidationDecision] = {}
         if parent_number is not None:
             authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
             if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
@@ -519,7 +654,7 @@ class AutomationEngine:
                 return None
             decomposition_validator = self._get_decomposition_validator(repo_name)
             decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-            decomposition_decision = decomposition_job.result()
+            decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_decision.verdict == "BLOCKED":
                 decomposition_validator.apply_blocked(
                     self.github,
@@ -543,7 +678,7 @@ class AutomationEngine:
         validator = self._get_specification_validator(repo_name)
         individual_identity = validator.identity(issue_number, title, body)
         if parent_number is not None:
-            decision = child_jobs[issue_number].result()
+            decision = joined_child_decisions[issue_number]
         else:
             decision = self.validation_scheduler.submit(
                 f"individual:{individual_identity.key}",
@@ -597,21 +732,26 @@ class AutomationEngine:
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
         self.invalidations.recover(repo_name)
         await self._enqueue_pending_invalidations(repo_name)
-        # Discover open PR ownership before releasing startup reservations.
-        # A PR linked only by branch metadata has no Issue timeline event and
-        # may not have been recorded if the previous process stopped before its
-        # first candidate scan.
-        self._get_implementation_slots(repo_name).reconcile(self.github, discover_open_prs=True)
+        if not self.is_draining:
+            # Discover open PR ownership before releasing startup reservations.
+            # A PR linked only by branch metadata has no Issue timeline event and
+            # may not have been recorded if the previous process stopped before its
+            # first candidate scan.
+            self._get_implementation_slots(repo_name).reconcile(self.github, discover_open_prs=True)
 
-        # Webhooks are not a durable event log. Recover work missed while this
-        # process was offline before claiming steady-state correctness.
-        await self._reconcile_open_github_entities(repo_name)
+            # Webhooks are not a durable event log. Recover work missed while this
+            # process was offline before claiming steady-state correctness.
+            await self._reconcile_open_github_entities(repo_name)
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
 
         # Record resource usage and unhandled asyncio errors for the whole run
         self._loop = asyncio.get_running_loop()
+        self._shutdown_event = asyncio.Event()
+        self._force_stop_event = asyncio.Event()
+        if self.is_draining:
+            self._shutdown_event.set()
         self._wake_up_event = asyncio.Event()
         self._pr_merged_or_closed = False
         install_asyncio_diagnostics(self._loop)
@@ -627,36 +767,52 @@ class AutomationEngine:
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
 
-        async def wait_for_core_loops() -> None:
-            await asyncio.gather(producer_task, *workers)
-
-        core_task = asyncio.create_task(wait_for_core_loops(), name="core-loops")
+        all_loop_tasks = [producer_task, invalidation_task, *workers]
+        if capacity_task is not None:
+            all_loop_tasks.append(capacity_task)
+        shutdown_wait = asyncio.create_task(self._shutdown_event.wait(), name="graceful-shutdown-request")
         try:
-            # The invalidation consumer is a companion to the producer/workers,
-            # not a reason to keep an otherwise stopped engine alive forever.
-            companion_tasks = {invalidation_task} | ({capacity_task} if capacity_task is not None else set())
-            done, _ = await asyncio.wait({core_task, *companion_tasks}, return_when=asyncio.FIRST_COMPLETED)
-            if core_task in done:
-                for task in companion_tasks:
+            done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
+            if shutdown_wait in done:
+                # Admission stopped synchronously when the lifecycle changed.
+                # Cancel loop waiters, but shielded synchronous operations retain
+                # ownership and make their callers wait for the true boundary.
+                for task in all_loop_tasks:
                     task.cancel()
-                await asyncio.gather(*companion_tasks, return_exceptions=True)
-                await core_task
-            else:
-                core_task.cancel()
-                for task in companion_tasks:
-                    task.cancel()
-                await asyncio.gather(core_task, *companion_tasks, return_exceptions=True)
-                for task in done:
-                    task.result()
-            # Reaching this point means every loop returned on its own, which
-            # is the silent-stop case we want explained in the log.
-            logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
-            get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
-        except asyncio.CancelledError:
-            core_task.cancel()
-            for task in companion_tasks:
+                await self._wait_for_local_critical_operations()
+                await asyncio.gather(*all_loop_tasks, return_exceptions=True)
+                if self.lifecycle is EngineLifecycle.FORCED:
+                    logger.error("Automation engine force-stopped before its local drain completed")
+                    get_health_monitor().record_event("engine_stop", "forced", "")
+                else:
+                    with self._lifecycle_lock:
+                        self._lifecycle = EngineLifecycle.STOPPED
+                    logger.info("Automation engine graceful drain completed")
+                    get_health_monitor().record_event("engine_stop", "gracefully drained", "")
+                return
+
+            shutdown_wait.cancel()
+            await asyncio.gather(shutdown_wait, return_exceptions=True)
+            core_loops_exited = producer_task.done() and all(worker.done() for worker in workers)
+            for task in all_loop_tasks:
                 task.cancel()
-            await asyncio.gather(core_task, *companion_tasks, return_exceptions=True)
+            await asyncio.gather(*all_loop_tasks, return_exceptions=True)
+            for completed_task in done:
+                if completed_task in all_loop_tasks and not completed_task.cancelled():
+                    completed_task.result()
+            if core_loops_exited:
+                # Producer and workers returning together is the historical
+                # silent-stop boundary. Companion loops are deliberately
+                # cancelled because they otherwise wait indefinitely.
+                logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
+                get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
+            else:
+                logger.warning("Automation engine stopped: an orchestration loop exited unexpectedly")
+                get_health_monitor().record_event("engine_stop", "engine task exited", f"workers={concurrency}")
+        except asyncio.CancelledError:
+            for task in all_loop_tasks:
+                task.cancel()
+            await asyncio.gather(*all_loop_tasks, return_exceptions=True)
             logger.info("Automation engine stopped")
             get_health_monitor().record_event("engine_stop", "cancelled", "")
             raise
@@ -665,6 +821,7 @@ class AutomationEngine:
             get_health_monitor().record_event("engine_stop", f"unhandled error: {type(e).__name__}: {e}", "")
             raise
         finally:
+            shutdown_wait.cancel()
             get_health_monitor().log_snapshot(reason="engine_stop")
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
@@ -701,7 +858,7 @@ class AutomationEngine:
         get_trace_logger().log("System", "Producer started", details={"repo_name": repo_name})
 
         # Check closed branch once at start (as per original run method)
-        if not await asyncio.to_thread(self._check_and_handle_closed_branch, repo_name):
+        if not await self._run_local_critical("startup closed-branch reconciliation", self._check_and_handle_closed_branch, repo_name):
             logger.info("Closed item handled on startup, continuing to producer loop")
             get_health_monitor().record_event("producer_startup", "closed item handled on startup", repo_name)
 
@@ -712,7 +869,9 @@ class AutomationEngine:
                 iteration += 1
                 heartbeat("producer:check-updates", f"iteration {iteration}")
                 # Check updates
-                await asyncio.to_thread(check_for_updates_and_restart)
+                await self._run_local_critical("update check", check_for_updates_and_restart)
+                if self.is_draining:
+                    return
 
                 if not skip_jules_sessions and self._claim_jules_session_list_refresh():
                     # All list-dependent maintenance shares this cycle's fresh listing.
@@ -720,13 +879,20 @@ class AutomationEngine:
 
                     # Resume sessions
                     heartbeat("producer:jules-sessions", f"iteration {iteration}")
-                    await asyncio.to_thread(check_and_resume_or_archive_sessions, repo_name)
+                    await self._run_local_critical("remote session reconciliation", check_and_resume_or_archive_sessions, repo_name)
+                    if self.is_draining:
+                        return
 
                     # Take issues away from Jules sessions that timed out without creating a PR
-                    await asyncio.to_thread(self.handle_stale_jules_issue_sessions, repo_name)
+                    await self._run_local_critical("stale remote session reconciliation", self.handle_stale_jules_issue_sessions, repo_name)
+
+                    if self.is_draining:
+                        return
 
                     # Check and start recurrent Jules tasks
                     await self.check_and_start_recurrent_jules_tasks_async(repo_name)
+                    if self.is_draining:
+                        return
                 elif skip_jules_sessions:
                     logger.info("Resumed loop early after PR merge/close; skipping Jules session enumeration")
                     skip_jules_sessions = False
@@ -735,11 +901,14 @@ class AutomationEngine:
                 try:
                     logger.info("Pulling latest changes for monitored repository...")
                     heartbeat("producer:git-pull", f"iteration {iteration}")
-                    pull_res = await asyncio.to_thread(git_pull)
+                    pull_res = await self._run_local_critical("repository update", git_pull)
                     if not pull_res.success:
                         logger.warning(f"Failed to pull latest changes: {pull_res.stderr}")
                 except Exception as e:
                     logger.warning(f"Failed to pull monitored repository: {e}")
+
+                if self.is_draining:
+                    return
 
                 heartbeat("producer:maintenance-sleep", f"{MAINTENANCE_INTERVAL_SECONDS}s")
                 woken_early = await self._sleep_or_wake(MAINTENANCE_INTERVAL_SECONDS)
@@ -844,7 +1013,14 @@ class AutomationEngine:
                 # The common dispatch path repeats strict readiness, contract,
                 # hierarchy, ownership, authorization, duplicate and atomic
                 # capacity admission checks immediately before implementation.
-                result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+                if self.is_draining:
+                    return True
+                result = await self._run_local_critical(
+                    f"capacity refill issue #{candidate.issue_number}",
+                    self._process_single_candidate,
+                    repo_name,
+                    candidate,
+                )
                 retry_required = retry_required or result.refill_retry_required
             return not retry_required
 
@@ -880,6 +1056,12 @@ class AutomationEngine:
             while True:
                 heartbeat(f"worker-{worker_id}:idle", f"queue={self.queue.qsize()}")
                 candidate = await self.queue.get()
+                if self.is_draining:
+                    # Durable queued ownership remains recoverable by recover()
+                    # on the next run; shutdown never executes it merely to
+                    # empty this process's in-memory queue.
+                    self.queue.task_done()
+                    return
                 item_number = candidate.data.get("number", "N/A")
                 decision_completed = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
@@ -899,12 +1081,15 @@ class AutomationEngine:
                         candidate = authoritative_candidate
 
                         if candidate.type == "issue":
-                            await asyncio.to_thread(
+                            await self._run_local_critical(
+                                f"worker {worker_id} submitted-parent validation for issue #{item_number}",
                                 self._validate_submitted_parent_generation_for_child,
                                 repo_name,
                                 int(item_number),
                                 candidate.data,
                             )
+                            if self.is_draining:
+                                return
 
                     self.active_workers[worker_id] = candidate
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
@@ -926,7 +1111,12 @@ class AutomationEngine:
                     get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
 
                     # Process candidate
-                    result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+                    result = await self._run_local_critical(
+                        f"worker {worker_id} {candidate.type} #{item_number}",
+                        self._process_single_candidate,
+                        repo_name,
+                        candidate,
+                    )
                     decision_completed = not bool(result.error)
 
                     if result.error:
@@ -962,6 +1152,9 @@ class AutomationEngine:
                     self.queue.task_done()
                     if decision_completed:
                         await self._enqueue_pending_invalidations(repo_name)
+                if self.is_draining:
+                    logger.info(f"Worker {worker_id} reached its graceful drain checkpoint")
+                    return
 
     async def invalidate_entity(
         self,
@@ -975,7 +1168,7 @@ class AutomationEngine:
     ) -> bool:
         """Durably mark an entity dirty and arrange an authoritative reevaluation."""
         accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id, event_type, action, not_before)
-        if accepted:
+        if accepted and not self.is_draining:
             await self._enqueue_pending_invalidations(repo_name)
             if self._invalidation_wake_event is not None:
                 self._invalidation_wake_event.set()
@@ -983,8 +1176,10 @@ class AutomationEngine:
 
     async def _enqueue_pending_invalidations(self, repo_name: str) -> None:
         """Claim durable identities, fetch authoritative state, and queue decisions."""
+        if self.is_draining:
+            return
         async with self._invalidation_drain_lock:
-            while claim := await asyncio.to_thread(self.invalidations.claim, repo_name):
+            while not self.is_draining and (claim := await asyncio.to_thread(self.invalidations.claim, repo_name)):
                 # Only stable identity crosses the durable-to-memory boundary.
                 # Authoritative state is fetched after a worker marks this claim
                 # processing, so notifications received before that point coalesce.
@@ -1054,6 +1249,8 @@ class AutomationEngine:
             )
 
         status = {
+            "lifecycle": self.lifecycle.value,
+            "local_critical_operations": list(self._critical_operations.values()),
             "startup_reconciliation": {
                 "complete": self.startup_reconciled,
                 "error": self.startup_reconciliation_error,
@@ -1836,6 +2033,7 @@ class AutomationEngine:
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
                     decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set)
+                    parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
                         (child for child in authoritative_children if child.get("state") == "open" and isinstance(child.get("number"), int)),
@@ -1843,11 +2041,6 @@ class AutomationEngine:
                     )
                     if not open_children:
                         parent_decomposition_validator = self._get_decomposition_validator(repo_name)
-                        parent_decision = decomposition_job.result()
-                        # No implementation follows this path, but all direct-child
-                        # evidence is still part of the submitted validation work.
-                        for job in child_jobs.values():
-                            job.result()
                         if parent_decision.verdict == "BLOCKED":
                             side_effect_error = parent_decomposition_validator.apply_blocked(
                                 self.github,
@@ -2054,7 +2247,7 @@ class AutomationEngine:
                     return result
                 decomposition_validator = self._get_decomposition_validator(repo_name)
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-                decomposition_decision = decomposition_job.result()
+                decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_decision.verdict == "ERROR":
                     result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                     result.actions = ["Deferred - decomposition validation error"]
@@ -2073,8 +2266,8 @@ class AutomationEngine:
                     if side_effect_error:
                         result.error += f"; GitHub side effect failed: {side_effect_error}"
                     return result
-                for eager_job in eager_child_jobs.values():
-                    if eager_job.result().verdict == "ERROR":
+                for eager_decision in eager_child_decisions.values():
+                    if eager_decision.verdict == "ERROR":
                         result.error = "Individual validation failed; parent readiness was preserved for retry"
                         result.actions = ["Deferred - child specification validation error"]
                         return result
@@ -2217,6 +2410,14 @@ class AutomationEngine:
                 result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                 return result
 
+        # Validation and other authorization work above belongs to the already
+        # started critical operation and may publish its decision. A drain that
+        # arrived while it ran must stop before implementation ownership or any
+        # local/cloud provider dispatch is started.
+        if self.is_draining:
+            result.actions = ["Deferred - graceful shutdown began before implementation dispatch"]
+            return result
+
         slots = self._get_implementation_slots(repo_name)
         try:
             owner = slots.resolve_owner(candidate.type, candidate.data, self.github)
@@ -2263,6 +2464,9 @@ class AutomationEngine:
                 return result
             if not generation_is_current:
                 result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
+                return result
+            if self.is_draining:
+                result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
                 return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
@@ -2359,6 +2563,10 @@ class AutomationEngine:
             actions=[],
             error=None,
         )
+
+        if self.is_draining:
+            result.actions = ["Deferred - graceful shutdown began before reserved dispatch"]
+            return result
 
         try:
             # Get item number and type
