@@ -232,6 +232,56 @@ class SpecificationValidationLifecycle:
             self.store.save(current_decision)
         return None
 
+    def apply_inherited_blocked(
+        self,
+        github: object,
+        decision: ValidationDecision,
+        parent_number: int,
+        set_is_current: Callable[[], bool],
+    ) -> Optional[str]:
+        """Withdraw a parent submission for one current blocked child."""
+        issue_number = decision.identity.issue_number
+        with self.store.locked(decision.identity.key):
+            failures: list[str] = []
+            current = self.store.get(decision.identity)
+            if current is None or current.verdict != "BLOCKED":
+                return "durable child BLOCKED decision is unavailable"
+
+            def still_current() -> bool:
+                snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                return isinstance(snapshot, dict) and self.identity(issue_number, str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) == decision.identity and set_is_current()
+
+            if not still_current():
+                return None
+            if not current.findings_published:
+                marker = f"{FINDINGS_MARKER_PREFIX}:{current.identity.key}"
+                try:
+                    comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    failures.append(f"findings lookup failed: {exc}")
+                    comments = None
+                if not still_current():
+                    return "; ".join(failures) or None
+                if comments is not None:
+                    published = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
+                    if not published:
+                        try:
+                            github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current))  # type: ignore[attr-defined]
+                            published = True
+                        except Exception as exc:
+                            failures.append(f"findings publication failed: {exc}")
+                    if published:
+                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed)
+                        self.store.save(current)
+            if not still_current():
+                return "; ".join(failures) or None
+            try:
+                github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
+                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True))
+            except Exception as exc:
+                failures.append(f"readiness withdrawal failed: {exc}")
+        return "; ".join(failures) or None
+
     @staticmethod
     def findings_comment(decision: ValidationDecision) -> str:
         lines = [f"<!-- {FINDINGS_MARKER_PREFIX}:{decision.identity.key} -->", "## Auto-Coder specification validation", "", "Implementation is blocked by material specification defects:"]

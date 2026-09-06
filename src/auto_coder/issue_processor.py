@@ -782,8 +782,19 @@ def handle_stale_jules_issue_sessions(
             except Exception as e:
                 logger.warning(f"Skipping stale Jules session {session_id}: could not read authoritative readiness for issue #{issue_number}: {e}")
                 continue
-            if not isinstance(current_issue, dict) or current_issue.get("number") != issue_number or "pull_request" in current_issue or not is_implementation_ready(current_issue):
-                logger.info(f"Skipping stale Jules session {session_id}: issue #{issue_number} is not implementation-ready")
+            inherited_submission = False
+            if isinstance(current_issue, dict) and authorize_dispatch is not None and not is_implementation_ready(current_issue):
+                inherited_submission = isinstance(current_issue.get("parent_issue_number"), int) or bool(current_issue.get("parent_issue_url"))
+                if not inherited_submission:
+                    try:
+                        parent_reader = getattr(github_client, "get_parent_issue_details_strict", None)
+                        parent = parent_reader(repo_name, issue_number) if callable(parent_reader) else None
+                        inherited_submission = isinstance(parent, dict) and isinstance(parent.get("number"), int)
+                    except Exception as e:
+                        logger.warning(f"Skipping stale Jules session {session_id}: could not establish inherited readiness for issue #{issue_number}: {e}")
+                        continue
+            if not isinstance(current_issue, dict) or current_issue.get("number") != issue_number or "pull_request" in current_issue or str(current_issue.get("state") or "open").lower() != "open" or (not is_implementation_ready(current_issue) and not inherited_submission):
+                logger.info(f"Skipping stale Jules session {session_id}: issue #{issue_number} is not eligible for replacement authorization")
                 continue
 
             issue = github_client.get_issue(repo_name, issue_number)

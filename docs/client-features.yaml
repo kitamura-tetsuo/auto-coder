@@ -49,6 +49,26 @@ an edit after label removal is not silently resubmitted; a user must explicitly
 add `implementation-ready` again. Validator `ERROR` preserves the label and
 publishes no specification-defect claim so a later attempt can retry.
 
+When the submitted Issue has direct children, its `implementation-ready` label
+submits the exact parent/direct-child specification set instead of authorizing a
+standalone parent implementation. Auto-Coder binds decomposition decisions to
+the repository and parent, stable direct-child membership, exact parent and child
+title/body digests, and the effective decomposition prompt, result contract, and
+provider/model route. Closed children remain generation members, so completing a
+sibling does not invalidate a reusable durable `READY` decision.
+
+Set validation is coalesced and runs before child validation or implementation
+capacity. A current set `BLOCKED` result removes readiness from the parent and
+publishes one identity-marked set summary only after a fresh generation check;
+`ERROR` preserves the submission and is retried. Once the set is `READY`, the
+first eligible child in the existing sequential sibling order receives its own
+exact-generation specification validation without requiring or receiving a
+child `implementation-ready` label. Child `BLOCKED` similarly withdraws only a
+still-current parent submission, while child `ERROR` preserves it. Immediately
+before ownership and dispatch, both the live parent set and child identities are
+re-fetched, and parent-label withdrawal, membership edits, or specification edits
+fail closed.
+
 ## Adversarial implementation-readiness analysis
 
 Auto-Coder exposes a provider-independent semantic analysis operation for an
