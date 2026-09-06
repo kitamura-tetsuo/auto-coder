@@ -230,6 +230,7 @@ class AutomationConfig:
             get_jules_wait_timeout_hours_from_config,
             get_max_concurrent_implementations_from_config,
             get_pr_allowlist_from_config,
+            get_validation_concurrency_from_config,
         )
 
         effective_repo = repo_name if repo_name is not None else get_active_repo_name()
@@ -242,6 +243,9 @@ class AutomationConfig:
         implementation_limit = get_max_concurrent_implementations_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_CONCURRENT_IMPLEMENTATIONS", implementation_limit)
         object.__setattr__(self, "max_concurrent_implementations", implementation_limit)
+        validation_limit = get_validation_concurrency_from_config(repo_name=effective_repo)
+        object.__setattr__(self, "VALIDATION_CONCURRENCY", validation_limit)
+        object.__setattr__(self, "validation_concurrency", validation_limit)
 
         configured_max_adv_reviews = max_adversarial_validations if max_adversarial_validations is not None else max_adversarial_reviews if max_adversarial_reviews is not None else get_adversarial_validation_max_reviews_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATIONS", configured_max_adv_reviews)
@@ -740,6 +744,8 @@ class AutomationConfig:
     # Durable logical implementation ownership (independent of workers)
     MAX_CONCURRENT_IMPLEMENTATIONS: int = 1
     max_concurrent_implementations: int = 1
+    VALIDATION_CONCURRENCY: int = 2
+    validation_concurrency: int = 2
 
     # Priority order for semantic labels (highest to lowest priority)
     # Labels not in this list will be added after these (if space permits)

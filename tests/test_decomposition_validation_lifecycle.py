@@ -145,7 +145,8 @@ def test_parent_submission_reaches_set_then_child_validation_before_dispatch(tmp
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", parent, 0, issue_number=10), engine.config)
 
     assert result.success is True
-    assert order == ["set", "child", "dispatch"]
+    assert set(order[:2]) == {"set", "child"}
+    assert order[-1] == "dispatch"
     github.remove_labels.assert_not_called()
     assert child["labels"] == []
 
@@ -171,7 +172,8 @@ def test_explicit_parent_adapter_preserves_membership_and_never_dispatches_paren
     ):
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized, 0, issue_number=10), engine.config)
     assert result.success
-    assert order == ["set", "individual:11", "dispatch:11"]
+    assert set(order[:-1]) == {"set", "individual:11", "individual:12"}
+    assert order[-1] == "dispatch:11"
 
 
 def test_labeled_child_cannot_bypass_current_set_block(tmp_path):
@@ -187,7 +189,7 @@ def test_labeled_child_cannot_bypass_current_set_block(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized, 0, issue_number=11), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
-    individual.assert_not_called()
+    individual.assert_called_once()
     dispatch.assert_not_called()
 
 
@@ -203,7 +205,7 @@ def test_stale_candidate_without_parent_hint_obeys_live_set_block(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", candidate, 0, issue_number=11), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
-    individual.assert_not_called()
+    individual.assert_called_once()
     dispatch.assert_not_called()
 
 
@@ -217,7 +219,7 @@ def test_parent_routing_labeled_child_cannot_bypass_current_set_block(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, parent), 0, issue_number=10), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
-    individual.assert_not_called()
+    individual.assert_called_once()
     dispatch.assert_not_called()
 
 
@@ -241,7 +243,8 @@ def test_stale_empty_parent_membership_hint_cannot_authorize_standalone_dispatch
     ):
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized_before_child_addition, 0, issue_number=10), engine.config)
     assert result.success
-    assert events == ["set", "individual:11", "dispatch:11"]
+    assert set(events[:2]) == {"set", "individual:11"}
+    assert events[-1] == "dispatch:11"
 
 
 def test_child_added_during_individual_validation_invalidates_standalone_parent(tmp_path):
@@ -280,7 +283,8 @@ def test_child_added_during_individual_validation_invalidates_standalone_parent(
     ):
         second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert second.success
-    assert events == ["individual:10", "set", "individual:11"]
+    assert events[0] == "individual:10"
+    assert set(events[1:]) == {"set", "individual:11"}
 
 
 def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_path):
@@ -336,7 +340,10 @@ def test_explicit_later_sibling_waits_after_set_validation(tmp_path):
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, later), 0, issue_number=12), engine.config)
     assert order == ["set"]
     assert result.actions == ["Deferred - earlier sibling(s) remain open: [11]"]
-    child_analysis.assert_not_called()
+    # Eager validation is independent of implementation ordering. At least the
+    # earlier child may already execute; queued sibling completion is covered by
+    # the scheduler production-path regression.
+    assert 11 in {call.args[0].issue_number for call in child_analysis.call_args_list}
     dispatch.assert_not_called()
 
 

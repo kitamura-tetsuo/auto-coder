@@ -57,8 +57,11 @@ title/body digests, and the effective decomposition prompt, result contract, and
 provider/model route. Closed children remain generation members, so completing a
 sibling does not invalidate a reusable durable `READY` decision.
 
-Set validation is coalesced and runs before child validation or implementation
-capacity. A current set `BLOCKED` result removes readiness from the parent and
+Set and direct-child validation jobs are eagerly coalesced by exact identity and run
+concurrently under one configurable positive `process_issues.validation_concurrency`
+bound (default 2), independently of implementation capacity. Standalone validation
+uses the same global bound. Validation completion order never changes sequential
+sibling implementation order. A current set `BLOCKED` result removes readiness from the parent and
 publishes one identity-marked set summary only after a fresh generation check;
 `ERROR` preserves the submission and is retried. Once the set is `READY`, the
 first eligible child in the existing sequential sibling order receives its own

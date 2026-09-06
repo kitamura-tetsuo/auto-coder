@@ -1683,6 +1683,24 @@ def get_process_issues_empty_sleep_time_from_config(
     )
 
 
+def get_validation_concurrency_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
+    """Get the one global semantic-validation concurrency bound."""
+    value = _get_config_value(
+        section="process_issues",
+        key="validation_concurrency",
+        default=2,
+        config_path=config_path,
+        value_type=int,
+        repo_name=repo_name,
+    )
+    if type(value) is not int or value < 1:
+        raise ValueError("[process_issues].validation_concurrency must be a positive integer")
+    return value
+
+
 def get_max_concurrent_implementations_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,

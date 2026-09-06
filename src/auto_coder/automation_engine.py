@@ -8,6 +8,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -40,7 +41,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
-from .specification_validation_lifecycle import SpecificationValidationLifecycle, configured_provider_identity
+from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -49,6 +50,7 @@ from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_c
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
+from .validation_scheduler import ValidationJob, ValidationScheduler
 
 logger = get_logger(__name__)
 
@@ -89,6 +91,7 @@ class AutomationEngine:
         self.implementation_slots: Optional[ImplementationSlotRepository] = None
         self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         self._decomposition_validators: Dict[str, DecompositionValidationLifecycle] = {}
+        self.validation_scheduler = ValidationScheduler(self.config.validation_concurrency)
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -253,6 +256,41 @@ class AutomationEngine:
         )
         return validator, decision
 
+    def _schedule_parent_validations(
+        self,
+        repo_name: str,
+        authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
+    ) -> tuple[ValidationJob[DecompositionDecision], dict[int, ValidationJob[ValidationDecision]]]:
+        """Eagerly submit a stable parent generation under the shared bound."""
+        parent, children = authoritative_set
+        decomposition = self._get_decomposition_validator(repo_name)
+        set_identity = decomposition.identity(parent, children)
+        parent_manifest = build_normative_issue_manifest(int(parent["number"]), str(parent.get("title") or ""), str(parent.get("body") or ""))
+        child_inputs = [
+            DecompositionIssue(
+                build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
+                str(child.get("body") or ""),
+            )
+            for child in children
+        ]
+        set_job = self.validation_scheduler.submit(
+            f"decomposition:{set_identity.key}",
+            lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
+        )
+        individual = self._get_specification_validator(repo_name)
+        child_jobs: dict[int, ValidationJob[ValidationDecision]] = {}
+        for child in children:
+            number = int(child["number"])
+            title = str(child.get("title") or "")
+            body = str(child.get("body") or "")
+            manifest = build_normative_issue_manifest(number, title, body)
+            identity = individual.identity(number, title, body)
+            child_jobs[number] = self.validation_scheduler.submit(
+                f"individual:{identity.key}",
+                partial(individual.decide, manifest, title, body),
+            )
+        return set_job, child_jobs
+
     def _standalone_relationship_is_current(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> bool:
         """Reject and, when blocked, apply a parent submission discovered late."""
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
@@ -290,11 +328,11 @@ class AutomationEngine:
                 authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
                 if authoritative_set is None:
                     return None
-                decomposition_validator, decomposition_decision = self._decide_authoritative_decomposition(repo_name, issue_number, authoritative_set)
-                if decomposition_decision.verdict == "BLOCKED":
-                    decomposition_validator.apply_blocked(
+                parent_validator, parent_decision = self._decide_authoritative_decomposition(repo_name, issue_number, authoritative_set)
+                if parent_decision.verdict == "BLOCKED":
+                    parent_validator.apply_blocked(
                         self.github,
-                        decomposition_decision,
+                        parent_decision,
                         lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
                     )
             return None
@@ -1695,20 +1733,8 @@ class AutomationEngine:
                 assert authoritative_set is not None
                 parent_snapshot, child_snapshots = authoritative_set
                 decomposition_validator = self._get_decomposition_validator(repo_name)
-                set_identity = decomposition_validator.identity(parent_snapshot, child_snapshots)
-                parent_manifest = build_normative_issue_manifest(int(parent_snapshot["number"]), str(parent_snapshot.get("title") or ""), str(parent_snapshot.get("body") or ""))
-                child_issues = [
-                    DecompositionIssue(
-                        build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
-                        str(child.get("body") or ""),
-                    )
-                    for child in child_snapshots
-                ]
-                decomposition_decision = decomposition_validator.decide(
-                    set_identity,
-                    DecompositionIssue(parent_manifest, str(parent_snapshot.get("body") or "")),
-                    child_issues,
-                )
+                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                decomposition_decision = decomposition_job.result()
                 if decomposition_decision.verdict == "ERROR":
                     result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                     result.actions = ["Deferred - decomposition validation error"]
@@ -1766,7 +1792,16 @@ class AutomationEngine:
             # body, repository, Issue and validator policy. It deliberately runs
             # before implementation ownership/capacity is consulted.
             validator = self._get_specification_validator(repo_name)
-            decision = validator.decide(contract, current_title, current_body)
+            if inherited_ready:
+                # This job was submitted alongside decomposition validation, so
+                # READY completion order cannot bypass either authorization gate.
+                decision = eager_child_jobs[item_number].result()
+            else:
+                individual_identity = validator.identity(item_number, current_title, current_body)
+                decision = self.validation_scheduler.submit(
+                    f"individual:{individual_identity.key}",
+                    lambda: validator.decide(contract, current_title, current_body),
+                ).result()
             if decision.verdict == "ERROR":
                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                 result.actions = ["Deferred - specification validation error"]
