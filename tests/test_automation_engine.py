@@ -1,6 +1,9 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
@@ -72,6 +75,74 @@ class TestAutomationEngine:
 
         assert result.actions and "direct parent/child implementation conflict" in result.actions[0]
         assert restarted.active_owners() == (parent,)
+        assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
+        assert github.hierarchy_reads > 0
+        downstream.assert_not_called()
+
+    def test_interrupted_provisional_pr_owner_fails_closed_after_restart(self, tmp_path):
+        """A crash during admission cannot turn pending ownership into dispatch authority."""
+        storage_path = tmp_path / "interrupted-slots.json"
+        marker_path = tmp_path / "post-write-read"
+        ImplementationSlotRepository("owner/repo", 3, storage_path).reserve(ImplementationOwner("issue", 1))
+        script = """
+import time
+from pathlib import Path
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+
+class BlockingRepository(ImplementationSlotRepository):
+    def __init__(self, storage, marker):
+        super().__init__("owner/repo", 3, storage)
+        self.marker = marker
+        self.reads = 0
+
+    def _read_issue_hierarchy(self, github_client, issue_number):
+        self.reads += 1
+        if self.reads == 3:
+            self.marker.write_text("pending", encoding="ascii")
+            while True:
+                time.sleep(1)
+        return None, ()
+
+BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[2])).start_execution(
+    ImplementationOwner("issue", 2), github_client=object()
+)
+"""
+        process = subprocess.Popen([sys.executable, "-c", script, str(storage_path), str(marker_path)])
+        deadline = time.monotonic() + 10
+        while not marker_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker_path.exists()
+        process.kill()
+        process.wait(timeout=5)
+
+        class StrictGitHub(GitHubClient):
+            def __init__(self):
+                self.token = "token"
+                self.hierarchy_reads = 0
+
+            def get_issue_strict(self, _repo, number):
+                return {"number": number, "title": "Child", "body": ""}
+
+            def get_parent_issue_number_strict(self, _repo, number):
+                self.hierarchy_reads += 1
+                return 1 if number == 2 else None
+
+            def get_direct_sub_issues_strict(self, _repo, _number):
+                self.hierarchy_reads += 1
+                return []
+
+        github = StrictGitHub()
+        restarted = ImplementationSlotRepository("owner/repo", 3, storage_path)
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = restarted
+        downstream = Mock()
+        engine._process_single_candidate_reserved = downstream
+        candidate = Candidate(type="pr", data={"number": 51, "title": "Child", "body": "Fixes #2", "labels": []}, priority=0)
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.actions and "direct parent/child implementation conflict" in result.actions[0]
+        assert restarted.active_owners() == (ImplementationOwner("issue", 1),)
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
         downstream.assert_not_called()

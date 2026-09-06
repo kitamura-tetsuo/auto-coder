@@ -320,6 +320,22 @@ class ImplementationSlotRepository:
                 # returns early below.
                 self._write(owners)
             record = owners.get(owner.key)
+            if record is not None and record.get("admission_pending", False):
+                if owner.kind != "issue" or github_client is None:
+                    raise ImplementationHierarchyUnavailable(f"Interrupted hierarchy admission for {owner.key} requires authoritative GitHub evidence")
+                stored_hierarchy = self._parse_stored_hierarchy(record)
+                try:
+                    current_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
+                    self._raise_hierarchy_conflict(owner, owners, current_hierarchy)
+                    if current_hierarchy != stored_hierarchy:
+                        raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed after interrupted admission of {owner.key}")
+                except (ImplementationHierarchyConflict, ImplementationHierarchyUnavailable):
+                    owners.pop(owner.key, None)
+                    self._write(owners)
+                    raise
+                record["admission_pending"] = False
+                record.pop("admission_hierarchy", None)
+                self._write(owners)
             if record is None:
                 if owner.kind == "issue":
                     if github_client is not None:
@@ -327,12 +343,7 @@ class ImplementationSlotRepository:
                         second_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
                         if first_hierarchy != second_hierarchy:
                             raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while admitting issue:{owner.number}")
-                        related = set(second_hierarchy[1])
-                        if second_hierarchy[0] is not None:
-                            related.add(second_hierarchy[0])
-                        conflicts = sorted(number for number in related if f"issue:{number}" in owners)
-                        if conflicts:
-                            raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
+                        self._raise_hierarchy_conflict(owner, owners, second_hierarchy)
                         admission_hierarchy = second_hierarchy
                 normal_usage, emergency_in_use = self._capacity_usage(owners)
                 use_emergency = False
@@ -348,6 +359,12 @@ class ImplementationSlotRepository:
                     "executions": [],
                     "emergency": use_emergency,
                 }
+                if admission_hierarchy is not None:
+                    record["admission_pending"] = True
+                    record["admission_hierarchy"] = {
+                        "parent": admission_hierarchy[0],
+                        "children": list(admission_hierarchy[1]),
+                    }
                 owners[owner.key] = record
                 created_owner = True
             executions = record.setdefault("executions", [])
@@ -368,22 +385,48 @@ class ImplementationSlotRepository:
             if created_owner and admission_hierarchy is not None:
                 try:
                     committed_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
-                    related = set(committed_hierarchy[1])
-                    if committed_hierarchy[0] is not None:
-                        related.add(committed_hierarchy[0])
-                    conflicts = sorted(number for number in related if number != owner.number and f"issue:{number}" in owners)
-                    if conflicts:
-                        raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
+                    self._raise_hierarchy_conflict(owner, owners, committed_hierarchy)
                     if committed_hierarchy != admission_hierarchy:
                         raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while committing issue:{owner.number}")
                 except (ImplementationHierarchyConflict, ImplementationHierarchyUnavailable):
                     owners.pop(owner.key, None)
                     self._write(owners)
                     raise
+                record["admission_pending"] = False
+                record.pop("admission_hierarchy", None)
+                self._write(owners)
         active = getattr(self._execution_context, "owners", {})
         active[owner.key] = execution_id
         self._execution_context.owners = active
         return execution_id
+
+    @staticmethod
+    def _parse_stored_hierarchy(record: Dict[str, object]) -> tuple[Optional[int], tuple[int, ...]]:
+        evidence = record.get("admission_hierarchy")
+        if not isinstance(evidence, dict):
+            raise ImplementationHierarchyUnavailable("Interrupted admission has no valid durable hierarchy evidence")
+        parent = evidence.get("parent")
+        children = evidence.get("children")
+        if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
+            raise ImplementationHierarchyUnavailable("Interrupted admission has an invalid durable parent identity")
+        if not isinstance(children, list) or any(isinstance(number, bool) or not isinstance(number, int) for number in children):
+            raise ImplementationHierarchyUnavailable("Interrupted admission has invalid durable child membership")
+        if len(children) != len(set(children)):
+            raise ImplementationHierarchyUnavailable("Interrupted admission has duplicate durable child membership")
+        return parent, tuple(children)
+
+    @staticmethod
+    def _raise_hierarchy_conflict(
+        owner: ImplementationOwner,
+        owners: Dict[str, Dict[str, object]],
+        hierarchy: tuple[Optional[int], tuple[int, ...]],
+    ) -> None:
+        related = set(hierarchy[1])
+        if hierarchy[0] is not None:
+            related.add(hierarchy[0])
+        conflicts = sorted(number for number in related if number != owner.number and f"issue:{number}" in owners)
+        if conflicts:
+            raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
 
     def _read_issue_hierarchy(self, github_client: Any, issue_number: int) -> tuple[Optional[int], tuple[int, ...]]:
         """Read and strictly validate cache-bypassing direct hierarchy evidence."""
