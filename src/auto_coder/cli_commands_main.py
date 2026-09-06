@@ -36,6 +36,64 @@ def _disable_uvicorn_signal_capture(server: Any) -> None:
     setattr(server, "capture_signals", lambda: nullcontext())
 
 
+async def _run_process_issues_daemon(
+    automation_engine: AutomationEngine,
+    repo_name: str,
+    enable_webhook: bool,
+    host: str,
+    port: int,
+    log_level: str,
+    github_webhook_secret: Optional[str],
+    sentry_webhook_secret: Optional[str],
+) -> None:
+    """Run the production signal, webhook, and engine orchestration."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    signal_counts = {signal.SIGINT: 0, signal.SIGTERM: 0}
+
+    def handle_shutdown_signal(received: signal.Signals) -> None:
+        signal_counts[received] += 1
+        if received is signal.SIGINT and signal_counts[received] > 1:
+            automation_engine.request_force_stop("second SIGINT")
+            _force_exit_after_second_sigint()
+            return
+        automation_engine.request_graceful_shutdown(received.name)
+
+    installed_signals = []
+    for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(shutdown_signal, handle_shutdown_signal, shutdown_signal)
+            installed_signals.append(shutdown_signal)
+        except (NotImplementedError, RuntimeError):
+            logger.warning(f"Could not install asyncio handler for {shutdown_signal.name}")
+
+    try:
+        if enable_webhook:
+            import uvicorn
+
+            from .webhook_server import create_app
+
+            app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
+            uvicorn_config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
+            server = uvicorn.Server(uvicorn_config)
+            _disable_uvicorn_signal_capture(server)
+            logger.info(f"Starting FastAPI server on {host}:{port}")
+            engine_task = asyncio.create_task(automation_engine.start_automation(repo_name), name="automation-engine")
+            server_task = asyncio.create_task(server.serve(), name="webhook-server")
+            done, _ = await asyncio.wait({engine_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
+            if server_task in done and not engine_task.done():
+                automation_engine.request_graceful_shutdown("webhook server exit")
+            await engine_task
+            server.should_exit = True
+            await server_task
+        else:
+            await automation_engine.start_automation(repo_name)
+    finally:
+        for shutdown_signal in installed_signals:
+            loop.remove_signal_handler(shutdown_signal)
+
+
 @click.command()
 @click.option(
     "--repo",
@@ -398,54 +456,19 @@ def process_issues(
     # Run automation
     import asyncio
 
-    import uvicorn
-
-    from .webhook_server import create_app
-
-    async def run_all() -> None:
-        loop = asyncio.get_running_loop()
-        signal_counts = {signal.SIGINT: 0, signal.SIGTERM: 0}
-
-        def handle_shutdown_signal(received: signal.Signals) -> None:
-            signal_counts[received] += 1
-            if received is signal.SIGINT and signal_counts[received] > 1:
-                automation_engine.request_force_stop("second SIGINT")
-                _force_exit_after_second_sigint()
-                return
-            automation_engine.request_graceful_shutdown(received.name)
-
-        installed_signals = []
-        for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(shutdown_signal, handle_shutdown_signal, shutdown_signal)
-                installed_signals.append(shutdown_signal)
-            except (NotImplementedError, RuntimeError):
-                logger.warning(f"Could not install asyncio handler for {shutdown_signal.name}")
-
-        if enable_webhook:
-            app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
-            uvicorn_config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
-            server = uvicorn.Server(uvicorn_config)
-            # Auto-Coder owns SIGINT/SIGTERM so uvicorn cannot cancel the engine
-            # before its local critical-operation drain reaches a checkpoint.
-            _disable_uvicorn_signal_capture(server)
-            logger.info(f"Starting FastAPI server on {host}:{port}")
-            engine_task = asyncio.create_task(automation_engine.start_automation(repo_name), name="automation-engine")
-            server_task = asyncio.create_task(server.serve(), name="webhook-server")
-            done, _ = await asyncio.wait({engine_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
-            if server_task in done and not engine_task.done():
-                automation_engine.request_graceful_shutdown("webhook server exit")
-            await engine_task
-            server.should_exit = True
-            await server_task
-        else:
-            await automation_engine.start_automation(repo_name)
-
-        for shutdown_signal in installed_signals:
-            loop.remove_signal_handler(shutdown_signal)
-
     try:
-        asyncio.run(run_all())
+        asyncio.run(
+            _run_process_issues_daemon(
+                automation_engine,
+                repo_name,
+                enable_webhook,
+                host,
+                port,
+                log_level,
+                github_webhook_secret,
+                sentry_webhook_secret,
+            )
+        )
         if automation_engine.lifecycle.value == "stopped":
             logger.info("process-issues shutdown completed after graceful drain")
             get_health_monitor().record_event("cli_exit", "gracefully drained", repo_name)

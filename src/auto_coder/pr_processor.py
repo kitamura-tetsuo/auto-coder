@@ -5828,6 +5828,9 @@ def _apply_github_actions_fix(
         )
 
         # Use LLM backend manager to run the prompt
+        if not new_work_allowed():
+            actions.append(f"Deferred GitHub Actions repair for PR #{pr_number}: graceful shutdown is draining")
+            return actions
         logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
         response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
 

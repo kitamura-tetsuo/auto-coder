@@ -54,7 +54,7 @@ from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubI
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
-from .validation_scheduler import ValidationJob, ValidationScheduler
+from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
 logger = get_logger(__name__)
 
@@ -559,11 +559,27 @@ class AutomationEngine:
         decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
         # Do not acknowledge the durable invalidation until every missing
         # identity has either persisted reusable evidence or returned ERROR.
-        if decomposition_job.result().verdict == "ERROR":
-            raise RuntimeError("decomposition validation failed while processing child invalidation")
+        failures: list[str] = []
+        try:
+            if decomposition_job.result().verdict == "ERROR":
+                failures.append("decomposition validation failed")
+        except ValidationAdmissionDeferred:
+            failures.append("decomposition validation was deferred")
+        except Exception as exc:
+            failures.append(f"decomposition validation raised {type(exc).__name__}")
+        # Always join every job in this eagerly submitted batch. An early ERROR
+        # determines the outcome, but cannot release durable worker ownership
+        # while a sibling validator is still able to persist evidence.
         for job in child_jobs.values():
-            if job.result().verdict == "ERROR":
-                raise RuntimeError("individual validation failed while processing child invalidation")
+            try:
+                if job.result().verdict == "ERROR":
+                    failures.append("individual validation failed")
+            except ValidationAdmissionDeferred:
+                failures.append("individual validation was deferred")
+            except Exception as exc:
+                failures.append(f"individual validation raised {type(exc).__name__}")
+        if failures:
+            raise RuntimeError(f"validation batch incomplete while processing child invalidation: {', '.join(failures)}")
 
     def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Apply set, ordering, and Issue authorization to daemon replacement work."""

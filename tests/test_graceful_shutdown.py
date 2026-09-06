@@ -1,15 +1,19 @@
 import asyncio
+import os
 import signal
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+from auto_coder.pr_processor import _apply_github_actions_fix
 
 
 def test_worker_drain_owns_real_to_thread_operation_until_durable_completion(monkeypatch, tmp_path):
@@ -107,6 +111,112 @@ def test_child_parent_validation_remains_owned_through_worker_drain(monkeypatch,
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
+def test_parent_validation_error_joins_running_sibling_before_releasing_claim(monkeypatch, tmp_path):
+    """An early batch ERROR cannot outlive production worker ownership."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    object.__setattr__(config, "validation_concurrency", 2)
+    engine = AutomationEngine(MagicMock(), config)
+    decomposition_started = threading.Event()
+    child_started = threading.Event()
+    release_decomposition = threading.Event()
+    release_child = threading.Event()
+    candidate = Candidate(type="issue", data={"number": 22, "state": "open"}, priority=0, issue_number=22)
+    parent = {"number": 1, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    child = {"number": 22, "state": "open"}
+    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args: candidate)
+    monkeypatch.setattr(engine, "_get_authoritative_parent_number", lambda *_args: 1)
+    monkeypatch.setattr(engine, "_reconcile_parent_issue", lambda _repo, _number, snapshot: snapshot)
+    monkeypatch.setattr(engine, "_fetch_authoritative_decomposition_set", lambda *_args: (parent, [child]))
+    monkeypatch.setattr(engine, "_defer_initial_issue_stabilization", lambda *_args: False)
+
+    def decomposition():
+        decomposition_started.set()
+        assert release_decomposition.wait(5)
+        return SimpleNamespace(verdict="ERROR")
+
+    def individual():
+        child_started.set()
+        assert release_child.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    def schedule(*_args):
+        return (
+            engine.validation_scheduler.submit("decomposition:test", decomposition),
+            {22: engine.validation_scheduler.submit("individual:test", individual)},
+        )
+
+    monkeypatch.setattr(engine, "_schedule_parent_validations", schedule)
+
+    async def scenario():
+        assert await engine.invalidate_entity("owner/repo", "issue", 22, "batch-delivery")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        assert await asyncio.to_thread(decomposition_started.wait, 2)
+        assert await asyncio.to_thread(child_started.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        worker.cancel()
+        release_decomposition.set()
+        await asyncio.sleep(0.05)
+        assert not worker.done()
+        assert engine.invalidations.claim("owner/repo") is None
+        assert engine._critical_operations
+        release_child.set()
+        await worker
+
+    asyncio.run(scenario())
+    assert engine.invalidations.pending_count("owner/repo") == 1
+
+
+def test_queued_child_validation_is_not_started_during_drain(monkeypatch, tmp_path):
+    """The production worker leaves executor-backlogged validation for restart."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    object.__setattr__(config, "validation_concurrency", 1)
+    engine = AutomationEngine(MagicMock(), config)
+    decomposition_started = threading.Event()
+    release_decomposition = threading.Event()
+    child_calls = 0
+    candidate = Candidate(type="issue", data={"number": 22, "state": "open"}, priority=0, issue_number=22)
+    parent = {"number": 1, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    child = {"number": 22, "state": "open"}
+    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args: candidate)
+    monkeypatch.setattr(engine, "_get_authoritative_parent_number", lambda *_args: 1)
+    monkeypatch.setattr(engine, "_reconcile_parent_issue", lambda _repo, _number, snapshot: snapshot)
+    monkeypatch.setattr(engine, "_fetch_authoritative_decomposition_set", lambda *_args: (parent, [child]))
+    monkeypatch.setattr(engine, "_defer_initial_issue_stabilization", lambda *_args: False)
+
+    def decomposition():
+        decomposition_started.set()
+        assert release_decomposition.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    def individual():
+        nonlocal child_calls
+        child_calls += 1
+        return SimpleNamespace(verdict="READY")
+
+    def schedule(*_args):
+        return (
+            engine.validation_scheduler.submit("decomposition:queued", decomposition),
+            {22: engine.validation_scheduler.submit("individual:queued", individual)},
+        )
+
+    monkeypatch.setattr(engine, "_schedule_parent_validations", schedule)
+
+    async def scenario():
+        assert await engine.invalidate_entity("owner/repo", "issue", 22, "queued-delivery")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        assert await asyncio.to_thread(decomposition_started.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        worker.cancel()
+        release_decomposition.set()
+        await worker
+
+    asyncio.run(scenario())
+    assert child_calls == 0
+    assert engine.invalidations.pending_count("owner/repo") == 1
+
+
 def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
@@ -138,6 +248,49 @@ def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp
 
     asyncio.run(scenario())
     assert updates == 1
+
+
+def test_initial_pr_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    llm_calls = 0
+
+    def context_lookup(**_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return "context"
+
+    def run_llm(*_args, **_kwargs):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "fixed"
+
+    monkeypatch.setattr("auto_coder.pr_processor.get_commit_log", context_lookup)
+    monkeypatch.setattr("auto_coder.pr_processor.get_linked_issues_context", lambda *_args: "")
+    monkeypatch.setattr("auto_coder.pr_processor.run_llm_prompt", run_llm)
+
+    async def scenario():
+        repair = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 pr #88",
+                _apply_github_actions_fix,
+                "owner/repo",
+                {"number": 88, "title": "Repair", "body": ""},
+                AutomationConfig(),
+                "failed",
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        repair.cancel()
+        release.set()
+        actions = await repair
+        assert actions == ["Deferred GitHub Actions repair for PR #88: graceful shutdown is draining"]
+
+    asyncio.run(scenario())
+    assert llm_calls == 0
 
 
 def test_recurrent_provider_scan_is_owned_and_cannot_launch_during_drain(monkeypatch, tmp_path):
@@ -202,6 +355,50 @@ def test_process_issues_disables_real_uvicorn_signal_capture(monkeypatch):
         pass
 
     assert captured == []
+
+
+@pytest.mark.parametrize("shutdown_signal", [signal.SIGINT, signal.SIGTERM])
+def test_production_webhook_orchestration_drains_one_real_os_signal(monkeypatch, tmp_path, shutdown_signal):
+    from fastapi import FastAPI
+
+    from auto_coder.cli_commands_main import _run_process_issues_daemon
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    graceful_requests = []
+    original_request = engine.request_graceful_shutdown
+
+    def blocking_operation():
+        entered.set()
+        assert release.wait(5)
+
+    async def start_automation(_repo):
+        await engine._run_local_critical("signal regression validation", blocking_operation)
+
+    def request(reason):
+        graceful_requests.append(reason)
+        return original_request(reason)
+
+    monkeypatch.setattr(engine, "start_automation", start_automation)
+    monkeypatch.setattr(engine, "request_graceful_shutdown", request)
+    monkeypatch.setattr(engine, "request_force_stop", MagicMock(side_effect=AssertionError("one signal forced shutdown")))
+    monkeypatch.setattr("auto_coder.webhook_server.create_app", lambda *_args: FastAPI())
+
+    async def scenario():
+        daemon = asyncio.create_task(_run_process_issues_daemon(engine, "owner/repo", True, "127.0.0.1", 0, "critical", None, None))
+        assert await asyncio.to_thread(entered.wait, 2)
+        os.kill(os.getpid(), shutdown_signal)
+        await asyncio.sleep(0.1)
+        assert not daemon.done()
+        assert list(engine._critical_operations.values()) == ["signal regression validation"]
+        assert graceful_requests == [signal.Signals(shutdown_signal).name]
+        release.set()
+        await daemon
+
+    asyncio.run(scenario())
+    engine.request_force_stop.assert_not_called()
 
 
 def test_remote_cloud_ownership_survives_graceful_stop_and_restart(monkeypatch, tmp_path):
