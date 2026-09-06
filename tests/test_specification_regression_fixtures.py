@@ -1,11 +1,11 @@
 import hashlib
 import json
-import pathlib
+from pathlib import Path
 
-from auto_coder.requirement_contract import build_normative_issue_manifest
+from src.auto_coder.requirement_contract import build_normative_issue_manifest
 
 
-FIXTURE_DIR = pathlib.Path(__file__).parent / "fixtures" / "specification_regressions"
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "specification_regressions"
 
 
 def test_outliner_5290_fixture_preserves_provenance_and_review_oracle() -> None:
