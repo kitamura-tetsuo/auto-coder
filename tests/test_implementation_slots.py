@@ -202,6 +202,88 @@ def test_production_readers_detect_reparenting_during_final_child_lookup(tmp_pat
     assert slots.active_owners() == (ImplementationOwner("issue", 1),)
 
 
+def test_production_readers_detect_child_attachment_during_final_parent_confirmation(tmp_path):
+    """REQ-007: refreshing after the provisional write catches stale children."""
+    children = []
+    parent_reads = 0
+
+    def get(url, **_kwargs):
+        nonlocal parent_reads
+        if url.endswith("/parent"):
+            parent_reads += 1
+            response = HierarchyHttpResponse(404, {})
+            if parent_reads == 4:
+                children.append(1)
+            return response
+        return HierarchyHttpResponse(200, [{"number": number} for number in children])
+
+    client_context = MagicMock()
+    client_context.__enter__.return_value.get.side_effect = get
+    github = object.__new__(GitHubClient)
+    github.token = "token"
+    slots = repository(tmp_path, limit=3)
+    slots.reserve(ImplementationOwner("issue", 1))
+
+    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+        with pytest.raises(ImplementationHierarchyConflict, match="issue:1"):
+            slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
+
+    assert slots.active_owners() == (ImplementationOwner("issue", 1),)
+
+
+def test_production_readers_rollback_reparenting_after_provisional_owner_write(tmp_path):
+    """REQ-007: a relationship changed at the write boundary cannot dispatch."""
+    path = tmp_path / "post-write-slots.json"
+    ImplementationSlotRepository("owner/repo", 3, path).reserve(ImplementationOwner("issue", 1))
+    authoritative_parent = {"number": None}
+
+    class ReparentAfterWriteRepository(ImplementationSlotRepository):
+        def _write(self, owners):
+            super()._write(owners)
+            if "issue:2" in owners and authoritative_parent["number"] is None:
+                authoritative_parent["number"] = 1
+
+    def get(url, **_kwargs):
+        if url.endswith("/parent"):
+            number = authoritative_parent["number"]
+            return HierarchyHttpResponse(404, {}) if number is None else HierarchyHttpResponse(200, {"number": number})
+        return HierarchyHttpResponse(200, [])
+
+    client_context = MagicMock()
+    client_context.__enter__.return_value.get.side_effect = get
+    github = object.__new__(GitHubClient)
+    github.token = "token"
+    slots = ReparentAfterWriteRepository("owner/repo", 3, path)
+
+    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+        with pytest.raises(ImplementationHierarchyConflict, match="issue:1"):
+            slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
+
+    assert slots.active_owners() == (ImplementationOwner("issue", 1),)
+
+
+def test_production_parent_reader_rejects_boolean_confirmation_identity(tmp_path):
+    """REQ-006: bool must not compare as an authoritative integer parent."""
+    parent_payloads = iter(({"number": 1}, {"number": True}))
+
+    def get(url, **_kwargs):
+        if url.endswith("/parent"):
+            return HierarchyHttpResponse(200, next(parent_payloads))
+        return HierarchyHttpResponse(200, [])
+
+    client_context = MagicMock()
+    client_context.__enter__.return_value.get.side_effect = get
+    github = object.__new__(GitHubClient)
+    github.token = "token"
+    slots = repository(tmp_path)
+
+    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+        with pytest.raises(ImplementationHierarchyUnavailable, match="ambiguous"):
+            slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
+
+    assert slots.active_owners() == ()
+
+
 def execution_process(storage_path, owner_kind="issue", owner_number=100, force=False, lifetime=60):
     """Start an execution through the production repository API in another process."""
     script = """

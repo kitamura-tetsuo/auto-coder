@@ -26,23 +26,30 @@ class TestAutomationEngine:
         assert engine.github == mock_github_client
 
     def test_pr_resolved_issue_owner_obeys_durable_parent_child_admission(self, tmp_path):
-        """A PR-to-Issue owner cannot bypass the production hierarchy boundary."""
+        """A PR-to-Issue owner reparented at commit cannot reach dispatch."""
 
         class StrictGitHub(GitHubClient):
             def __init__(self):
                 self.token = "token"
                 self.hierarchy_reads = 0
+                self.child_parent = None
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                return 1 if number == 2 else None
+                return self.child_parent if number == 2 else None
 
             def get_direct_sub_issues_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                return [{"number": 2}] if number == 1 else []
+                return []
+
+        class ReparentAfterWriteRepository(ImplementationSlotRepository):
+            def _write(self, owners):
+                super()._write(owners)
+                if "issue:2" in owners:
+                    github.child_parent = 1
 
         github = StrictGitHub()
         slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
@@ -50,7 +57,7 @@ class TestAutomationEngine:
         parent_execution = slots.start_execution(parent, github_client=github)
         assert parent_execution is not None
         slots.finish_execution(parent, parent_execution)
-        restarted = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
+        restarted = ReparentAfterWriteRepository("owner/repo", 3, tmp_path / "slots.json")
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = restarted
         downstream = Mock()

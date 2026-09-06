@@ -312,6 +312,8 @@ class ImplementationSlotRepository:
         process_identity = self._current_process_identity()
         with self._state_lock():
             owners = self._read()
+            admission_hierarchy: Optional[tuple[Optional[int], tuple[int, ...]]] = None
+            created_owner = False
             reclaimed = self._remove_stale_executions(owners)
             if reclaimed:
                 # Persist cleanup even when capacity or duplicate admission
@@ -331,6 +333,7 @@ class ImplementationSlotRepository:
                         conflicts = sorted(number for number in related if f"issue:{number}" in owners)
                         if conflicts:
                             raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
+                        admission_hierarchy = second_hierarchy
                 normal_usage, emergency_in_use = self._capacity_usage(owners)
                 use_emergency = False
                 if normal_usage >= self.max_implementations and not bypass_capacity:
@@ -346,6 +349,7 @@ class ImplementationSlotRepository:
                     "emergency": use_emergency,
                 }
                 owners[owner.key] = record
+                created_owner = True
             executions = record.setdefault("executions", [])
             if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
                 raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
@@ -361,6 +365,21 @@ class ImplementationSlotRepository:
                 execution.update({"boot_id": process_identity.boot_id, "process_start_ticks": process_identity.start_ticks})
             executions.append(execution)
             self._write(owners)
+            if created_owner and admission_hierarchy is not None:
+                try:
+                    committed_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
+                    related = set(committed_hierarchy[1])
+                    if committed_hierarchy[0] is not None:
+                        related.add(committed_hierarchy[0])
+                    conflicts = sorted(number for number in related if number != owner.number and f"issue:{number}" in owners)
+                    if conflicts:
+                        raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
+                    if committed_hierarchy != admission_hierarchy:
+                        raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while committing issue:{owner.number}")
+                except (ImplementationHierarchyConflict, ImplementationHierarchyUnavailable):
+                    owners.pop(owner.key, None)
+                    self._write(owners)
+                    raise
         active = getattr(self._execution_context, "owners", {})
         active[owner.key] = execution_id
         self._execution_context.owners = active
@@ -378,10 +397,12 @@ class ImplementationSlotRepository:
             confirmed_parent = parent_reader(self.repo_name, issue_number)
         except Exception as exc:
             raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
-        if confirmed_parent != parent:
-            raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
         if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
             raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct parent identity")
+        if confirmed_parent is not None and (isinstance(confirmed_parent, bool) or not isinstance(confirmed_parent, int)):
+            raise ImplementationHierarchyUnavailable("GitHub returned an invalid confirmed direct parent identity")
+        if confirmed_parent != parent:
+            raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
         if parent == issue_number or not isinstance(children_payload, list):
             raise ImplementationHierarchyUnavailable("GitHub returned contradictory direct hierarchy evidence")
         children: list[int] = []

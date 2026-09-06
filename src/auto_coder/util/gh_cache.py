@@ -2303,7 +2303,7 @@ class GitHubClient:
         parent = response.json()
         if isinstance(parent, dict) and isinstance(parent.get("parent"), dict):
             parent = parent["parent"]
-        if not isinstance(parent, dict) or not isinstance(parent.get("number"), int):
+        if not isinstance(parent, dict) or isinstance(parent.get("number"), bool) or not isinstance(parent.get("number"), int):
             raise RuntimeError("GitHub parent-Issue response was ambiguous")
         return parent["number"]
 
