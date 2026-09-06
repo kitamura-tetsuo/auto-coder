@@ -2352,8 +2352,9 @@ class GitHubClient:
                 for item in payload:
                     if not isinstance(item, dict) or not isinstance(item.get("number"), int):
                         raise ValueError(f"GitHub returned an invalid direct child for {repo_name}#{issue_number}")
-                    if item["number"] != issue_number:
-                        items.append(item)
+                    if item["number"] == issue_number:
+                        raise ValueError(f"GitHub returned self-referential direct-child membership for {repo_name}#{issue_number}")
+                    items.append(item)
                 if len(payload) < 100:
                     break
                 page += 1

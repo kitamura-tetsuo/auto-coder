@@ -319,17 +319,18 @@ class ImplementationSlotRepository:
                 self._write(owners)
             record = owners.get(owner.key)
             if record is None:
-                if owner.kind == "issue" and github_client is not None:
-                    first_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
-                    second_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
-                    if first_hierarchy != second_hierarchy:
-                        raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while admitting issue:{owner.number}")
-                    related = set(second_hierarchy[1])
-                    if second_hierarchy[0] is not None:
-                        related.add(second_hierarchy[0])
-                    conflicts = sorted(number for number in related if f"issue:{number}" in owners)
-                    if conflicts:
-                        raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
+                if owner.kind == "issue":
+                    if github_client is not None:
+                        first_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
+                        second_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
+                        if first_hierarchy != second_hierarchy:
+                            raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while admitting issue:{owner.number}")
+                        related = set(second_hierarchy[1])
+                        if second_hierarchy[0] is not None:
+                            related.add(second_hierarchy[0])
+                        conflicts = sorted(number for number in related if f"issue:{number}" in owners)
+                        if conflicts:
+                            raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
                 normal_usage, emergency_in_use = self._capacity_usage(owners)
                 use_emergency = False
                 if normal_usage >= self.max_implementations and not bypass_capacity:
@@ -374,8 +375,11 @@ class ImplementationSlotRepository:
         try:
             parent = parent_reader(self.repo_name, issue_number)
             children_payload = child_reader(self.repo_name, issue_number)
+            confirmed_parent = parent_reader(self.repo_name, issue_number)
         except Exception as exc:
             raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
+        if confirmed_parent != parent:
+            raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
         if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
             raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct parent identity")
         if parent == issue_number or not isinstance(children_payload, list):

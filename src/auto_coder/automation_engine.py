@@ -2275,7 +2275,7 @@ class AutomationEngine:
                         bypass_capacity=explicit_only,
                         bypass_active_execution=explicit_only and force and candidate.type == "pr",
                         allow_urgent_emergency=urgent_issue,
-                        github_client=self.github if candidate.type == "issue" and isinstance(self.github, GitHubClient) else None,
+                        github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
                     )
                 if execution_id is None and not explicit_only:
                     slots.reconcile(self.github)
@@ -2292,7 +2292,7 @@ class AutomationEngine:
                         owner,
                         implementation_pr=implementation_pr,
                         allow_urgent_emergency=urgent_issue,
-                        github_client=self.github if candidate.type == "issue" and isinstance(self.github, GitHubClient) else None,
+                        github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
                     )
             except ImplementationHierarchyConflict as exc:
                 result.actions = [f"Deferred - direct parent/child implementation conflict ({exc})"]

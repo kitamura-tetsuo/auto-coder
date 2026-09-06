@@ -25,6 +25,50 @@ class TestAutomationEngine:
 
         assert engine.github == mock_github_client
 
+    def test_pr_resolved_issue_owner_obeys_durable_parent_child_admission(self, tmp_path):
+        """A PR-to-Issue owner cannot bypass the production hierarchy boundary."""
+
+        class StrictGitHub(GitHubClient):
+            def __init__(self):
+                self.token = "token"
+                self.hierarchy_reads = 0
+
+            def get_issue_strict(self, _repo, number):
+                return {"number": number, "title": "Child", "body": ""}
+
+            def get_parent_issue_number_strict(self, _repo, number):
+                self.hierarchy_reads += 1
+                return 1 if number == 2 else None
+
+            def get_direct_sub_issues_strict(self, _repo, number):
+                self.hierarchy_reads += 1
+                return [{"number": 2}] if number == 1 else []
+
+        github = StrictGitHub()
+        slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
+        parent = ImplementationOwner("issue", 1)
+        parent_execution = slots.start_execution(parent, github_client=github)
+        assert parent_execution is not None
+        slots.finish_execution(parent, parent_execution)
+        restarted = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = restarted
+        downstream = Mock()
+        engine._process_single_candidate_reserved = downstream
+        candidate = Candidate(
+            type="pr",
+            data={"number": 50, "title": "Child implementation", "body": "Fixes #2", "labels": []},
+            priority=0,
+        )
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+        assert result.actions and "direct parent/child implementation conflict" in result.actions[0]
+        assert restarted.active_owners() == (parent,)
+        assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
+        assert github.hierarchy_reads > 0
+        downstream.assert_not_called()
+
     @patch("auto_coder.automation_engine.check_and_start_recurrent_jules_tasks")
     def test_recurrent_jules_step_receives_instance_slot_repository(self, start_recurrent, tmp_path):
         engine = AutomationEngine(Mock(), config=AutomationConfig())
