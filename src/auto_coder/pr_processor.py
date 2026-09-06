@@ -72,6 +72,7 @@ from .review_thread_validation import (
 )
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
+from .shutdown_context import new_work_allowed
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -2791,6 +2792,9 @@ def _handle_pr_merge(
                     elif val_result.needs_fix:
                         actions.append(f"Adversarial validation failed for PR #{pr_number}: {len(val_result.findings)} specification violation(s) found")
                         logger.warning(f"PR #{pr_number} failed adversarial validation: {val_result.summary}")
+                        if not new_work_allowed():
+                            actions.append(f"Deferred adversarial correction feedback for PR #{pr_number}: graceful shutdown is draining")
+                            return actions
                         actions.extend(
                             _send_adversarial_validation_feedback_to_cloud_task(
                                 repo_name,
@@ -2807,6 +2811,9 @@ def _handle_pr_merge(
                     elif val_result.needs_tests:
                         actions.append(f"Adversarial validation requested focused regression protection for PR #{pr_number}: {len(val_result.open_test_oracle_gaps)} material test-oracle gap(s)")
                         logger.warning(f"PR #{pr_number} has material test-oracle gaps: {val_result.summary}")
+                        if not new_work_allowed():
+                            actions.append(f"Deferred adversarial test feedback for PR #{pr_number}: graceful shutdown is draining")
+                            return actions
                         actions.extend(
                             _send_adversarial_validation_feedback_to_cloud_task(
                                 repo_name,
@@ -4989,6 +4996,8 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 ) -> List[str]:
     """Send actionable findings only to the owning provider task."""
     pr_number = pr_data["number"]
+    if not new_work_allowed():
+        return [f"Deferred adversarial correction feedback for PR #{pr_number}: graceful shutdown is draining"]
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
     source_validation_report = validation_report
 
@@ -5594,6 +5603,9 @@ def _fix_pr_issues_with_github_actions_testing(
             attempt = 0
 
             while not test_result.get("success") and 1 <= len(failed_tests) <= 3 and attempt < attempts_limit:
+                if not new_work_allowed():
+                    actions.append(f"Deferred another repair attempt for PR #{pr_number}: graceful shutdown is draining")
+                    break
                 attempt += 1
 
                 # Check if PR is closed
@@ -5737,6 +5749,9 @@ def _fix_pr_issues_with_local_testing(
                         actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
                         break
                     else:
+                        if not new_work_allowed():
+                            actions.append(f"Deferred another repair attempt for PR #{pr_number}: graceful shutdown is draining")
+                            break
                         local_fix_actions, llm_response = _apply_local_test_fix(
                             repo_name,
                             pr_data,
@@ -5857,6 +5872,8 @@ def _apply_local_test_fix(
         Tuple of (actions_list, llm_response)
     """
     actions = []
+    if not new_work_allowed():
+        return [f"Deferred local repair for PR #{pr_data['number']}: graceful shutdown is draining"], ""
     llm_response = ""
     with ProgressStage(f"Local test fix"):
         pr_number = pr_data["number"]

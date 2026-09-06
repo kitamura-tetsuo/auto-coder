@@ -839,6 +839,11 @@ def handle_stale_jules_issue_sessions(
                 authorized_issue = authorize_dispatch(repo_name, issue_number, current_issue)
                 if authorized_issue is None:
                     continue
+                from .shutdown_context import new_work_allowed
+
+                if not new_work_allowed():
+                    logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: graceful shutdown is draining")
+                    continue
                 issue_data["title"] = str(authorized_issue.get("title") or "")
                 issue_data["body"] = str(authorized_issue.get("body") or "")
 

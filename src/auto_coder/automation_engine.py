@@ -44,6 +44,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
+from .shutdown_context import install_admission_check, reset_admission_check
 from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
@@ -158,10 +159,14 @@ class AutomationEngine:
             # child task finish with KeyboardInterrupt/SystemExit makes asyncio
             # treat it as a loop-level termination before the caller can observe
             # and handle the exception.
+            token = install_admission_check(lambda: not self.is_draining)
             try:
-                return True, await asyncio.to_thread(function, *args)
-            except BaseException as exc:
-                return False, exc
+                try:
+                    return True, await asyncio.to_thread(function, *args)
+                except BaseException as exc:
+                    return False, exc
+            finally:
+                reset_admission_check(token)
 
         task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
         self._critical_operations[task] = description
@@ -258,7 +263,8 @@ class AutomationEngine:
     async def check_and_start_recurrent_jules_tasks_async(self, repo_name: str) -> None:
         """Scan .auto-coder/prompts/*.md files and start recurrent Jules tasks if not already running."""
         try:
-            await asyncio.to_thread(
+            await self._run_local_critical(
+                "recurrent provider scan",
                 check_and_start_recurrent_jules_tasks,
                 repo_name,
                 self._get_implementation_slots(repo_name),
@@ -846,6 +852,8 @@ class AutomationEngine:
 
                     # Check and start recurrent Jules tasks
                     await self.check_and_start_recurrent_jules_tasks_async(repo_name)
+                    if self.is_draining:
+                        return
                 elif skip_jules_sessions:
                     logger.info("Resumed loop early after PR merge/close; skipping Jules session enumeration")
                     skip_jules_sessions = False
@@ -859,6 +867,9 @@ class AutomationEngine:
                         logger.warning(f"Failed to pull latest changes: {pull_res.stderr}")
                 except Exception as e:
                     logger.warning(f"Failed to pull monitored repository: {e}")
+
+                if self.is_draining:
+                    return
 
                 heartbeat("producer:maintenance-sleep", f"{MAINTENANCE_INTERVAL_SECONDS}s")
                 woken_early = await self._sleep_or_wake(MAINTENANCE_INTERVAL_SECONDS)
@@ -1031,12 +1042,15 @@ class AutomationEngine:
                         candidate = authoritative_candidate
 
                         if candidate.type == "issue":
-                            await asyncio.to_thread(
+                            await self._run_local_critical(
+                                f"worker {worker_id} submitted-parent validation for issue #{item_number}",
                                 self._validate_submitted_parent_generation_for_child,
                                 repo_name,
                                 int(item_number),
                                 candidate.data,
                             )
+                            if self.is_draining:
+                                return
 
                     self.active_workers[worker_id] = candidate
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
@@ -2416,6 +2430,9 @@ class AutomationEngine:
             if not generation_is_current:
                 result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
                 return result
+            if self.is_draining:
+                result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
+                return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
@@ -2501,6 +2518,10 @@ class AutomationEngine:
             actions=[],
             error=None,
         )
+
+        if self.is_draining:
+            result.actions = ["Deferred - graceful shutdown began before reserved dispatch"]
+            return result
 
         try:
             # Get item number and type

@@ -3,6 +3,7 @@
 import os
 import re
 import signal
+from contextlib import nullcontext
 from typing import Any, Dict, Optional
 
 import click
@@ -26,6 +27,13 @@ logger = get_logger(__name__)
 def _force_exit_after_second_sigint() -> None:
     """Exit without asyncio's executor drain; this is the explicit unsafe path."""
     os._exit(130)
+
+
+def _disable_uvicorn_signal_capture(server: Any) -> None:
+    """Leave SIGINT/SIGTERM exclusively owned by process-issues."""
+    # Uvicorn 0.29+ captures and replays signals in ``serve`` itself. Disabling
+    # only its removed legacy install_signal_handlers hook is insufficient.
+    setattr(server, "capture_signals", lambda: nullcontext())
 
 
 @click.command()
@@ -420,7 +428,7 @@ def process_issues(
             server = uvicorn.Server(uvicorn_config)
             # Auto-Coder owns SIGINT/SIGTERM so uvicorn cannot cancel the engine
             # before its local critical-operation drain reaches a checkpoint.
-            setattr(server, "install_signal_handlers", lambda: None)
+            _disable_uvicorn_signal_capture(server)
             logger.info(f"Starting FastAPI server on {host}:{port}")
             engine_task = asyncio.create_task(automation_engine.start_automation(repo_name), name="automation-engine")
             server_task = asyncio.create_task(server.serve(), name="webhook-server")
