@@ -860,6 +860,7 @@ class CandidateProcessingResult:
     actions: List[str] = field(default_factory=list)
     error: Optional[str] = None
     outcome: "PRProcessingOutcome" = field(default_factory=lambda: PRProcessingOutcome.SUCCESS)
+    refill_retry_required: bool = False
 
 
 class PRProcessingOutcome(str, Enum):

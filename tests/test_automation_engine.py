@@ -509,6 +509,8 @@ class TestAutomationEngine:
         github = GitHubClient.get_instance(token="test-token")
         github.get_open_prs_json = Mock(return_value=[])
         github.get_linked_prs = Mock(return_value=[])
+        github.get_open_sub_issues_strict = Mock(return_value=[])
+        github.get_parent_issue_number_strict = Mock(return_value=None)
         github.get_issue_comments_strict = Mock(return_value=[])
         github.add_comment_to_issue = Mock()
         engine = AutomationEngine(github, config=AutomationConfig())

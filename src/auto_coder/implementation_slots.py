@@ -265,6 +265,23 @@ class ImplementationSlotRepository:
             self._write(owners)
             return True
 
+    def available_normal_slots(self) -> int:
+        """Return normal capacity from the current cross-process state."""
+        with self._state_lock():
+            normal_usage, _ = self._capacity_usage(self._read())
+        return max(0, self.max_implementations - normal_usage)
+
+    def normal_capacity_snapshot(self) -> tuple[int, tuple[int, int]]:
+        """Return capacity and an identity that changes on every state replacement."""
+        with self._state_lock():
+            normal_usage, _ = self._capacity_usage(self._read())
+            try:
+                state = self.storage_path.stat()
+                identity = (state.st_ino, state.st_mtime_ns)
+            except FileNotFoundError:
+                identity = (0, 0)
+        return max(0, self.max_implementations - normal_usage), identity
+
     def start_execution(
         self,
         owner: ImplementationOwner,
