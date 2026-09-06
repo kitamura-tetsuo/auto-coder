@@ -511,3 +511,128 @@ class TestPRLabelCopyingIntegration:
                     assert f"Successfully created PR for issue #{issue_number}" in result
                     # Verify resolve was called
                     assert mock_resolve.called
+
+    def test_create_pr_ignores_legacy_auto_coder_label_alone(self, config_with_pr_label_copying, mock_github_client_for_pr):
+        """FTR-1792 AS-001..AS-007: an issue carrying only the retired '@auto-coder'
+        label must propagate no semantic labels to its PR, and the legacy label
+        itself must never be mutated on GitHub by this code path."""
+        repo_name = "owner/repo"
+        issue_number = 321
+        issue_data = {
+            "number": issue_number,
+            "title": "Legacy label only",
+            "body": "Test body",
+            "labels": ["@auto-coder"],
+        }
+        pr_number = 654
+        mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
+        mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {
+            "number": pr_number,
+            "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+        }
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                result = _create_pr_for_issue(
+                    repo_name,
+                    issue_data,
+                    f"issue-{issue_number}",
+                    "main",
+                    "Test response",
+                    mock_github_client_for_pr,
+                    config_with_pr_label_copying,
+                )
+
+        assert f"Successfully created PR for issue #{issue_number}" in result
+        # No semantic label was propagated, since '@auto-coder' resolves to nothing.
+        mock_github_client_for_pr.add_labels.assert_not_called()
+
+    def test_create_pr_malicious_alias_cannot_propagate_via_legacy_label(self, mock_github_client_for_pr):
+        """AS-005: even if PR_LABEL_MAPPINGS configures '@auto-coder' as an alias
+        for 'urgent', an issue carrying only the retired label must not have
+        'urgent' propagated to its PR."""
+        repo_name = "owner/repo"
+        issue_number = 654
+        issue_data = {
+            "number": issue_number,
+            "title": "Malicious alias probe",
+            "body": "Test body",
+            "labels": ["@auto-coder"],
+        }
+        pr_number = 987
+
+        config = AutomationConfig()
+        config.PR_LABEL_COPYING_ENABLED = True
+        config.PR_LABEL_MAX_COUNT = 3
+        config.PR_LABEL_MAPPINGS = {"urgent": ["urgent", "@auto-coder"]}
+        config.PR_LABEL_PRIORITIES = ["urgent"]
+
+        mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
+        mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+
+        mock_api = MagicMock()
+        mock_api.pulls.create.return_value = {
+            "number": pr_number,
+            "html_url": f"https://github.com/{repo_name}/pull/{pr_number}",
+        }
+        with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+            with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                result = _create_pr_for_issue(
+                    repo_name,
+                    issue_data,
+                    f"issue-{issue_number}",
+                    "main",
+                    "Test response",
+                    mock_github_client_for_pr,
+                    config,
+                )
+
+        assert f"Successfully created PR for issue #{issue_number}" in result
+        # The malicious alias must not let '@auto-coder' propagate 'urgent'.
+        mock_github_client_for_pr.add_labels.assert_not_called()
+
+    def test_create_pr_propagates_urgent_identically_with_and_without_legacy_label(self, mock_github_client_for_pr):
+        """REQ-005/AS-006: a genuinely urgent issue must still propagate 'urgent'
+        to its PR whether or not it also carries the retired '@auto-coder' label."""
+        config = AutomationConfig()
+        config.PR_LABEL_COPYING_ENABLED = True
+        config.PR_LABEL_MAX_COUNT = 3
+        config.PR_LABEL_MAPPINGS = {"urgent": ["urgent"]}
+        config.PR_LABEL_PRIORITIES = ["urgent"]
+
+        def create_pr(issue_number, labels):
+            issue_data = {
+                "number": issue_number,
+                "title": "Urgent issue",
+                "body": "Test body",
+                "labels": labels,
+            }
+            mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
+            mock_github_client_for_pr.find_pr_by_head_branch.return_value = None
+            mock_api = MagicMock()
+            mock_api.pulls.create.return_value = {
+                "number": issue_number + 1000,
+                "html_url": f"https://github.com/owner/repo/pull/{issue_number + 1000}",
+            }
+            with patch("src.auto_coder.issue_processor.get_ghapi_client", return_value=mock_api):
+                with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                    _create_pr_for_issue(
+                        "owner/repo",
+                        issue_data,
+                        f"issue-{issue_number}",
+                        "main",
+                        "Test response",
+                        mock_github_client_for_pr,
+                        config,
+                    )
+            calls = [call for call in mock_github_client_for_pr.add_labels.call_args_list]
+            mock_github_client_for_pr.add_labels.reset_mock()
+            return calls
+
+        without_legacy = create_pr(111, ["urgent"])
+        with_legacy = create_pr(112, ["urgent", "@auto-coder"])
+        without_legacy_labels = [call.args[2] for call in without_legacy]
+        with_legacy_labels = [call.args[2] for call in with_legacy]
+        assert without_legacy_labels == with_legacy_labels == [["urgent"]]

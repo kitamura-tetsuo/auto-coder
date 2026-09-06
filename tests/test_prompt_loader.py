@@ -621,6 +621,45 @@ def test_resolve_label_priority_no_priorities():
     assert result == "bug"  # Fallback to first applicable label
 
 
+# FTR-1792: the exact retired "@auto-coder" label must be semantically inert
+# for the label-to-prompt selector (REQ-003/REQ-004/REQ-005, AS-003/AS-004/AS-005).
+
+
+def test_resolve_label_priority_ignores_exact_legacy_label():
+    """The retired label alone must never resolve to a prompt template."""
+    result = _resolve_label_priority(["@auto-coder"], {"bug": "issue.bugfix"}, ["bug"])
+    assert result is None
+
+
+def test_resolve_label_priority_identical_with_and_without_legacy_label():
+    """REQ-005: adding/removing only '@auto-coder' must not change the resolved label."""
+    mappings = {"bug": "issue.bugfix", "feature": "issue.feature"}
+    priorities = ["feature", "bug"]
+
+    without_legacy = _resolve_label_priority(["bug", "feature"], mappings, priorities)
+    with_legacy = _resolve_label_priority(["bug", "feature", "@auto-coder"], mappings, priorities)
+    assert with_legacy == without_legacy
+
+
+def test_resolve_label_priority_malicious_alias_cannot_reinterpret_legacy_label():
+    """AS-005: a config mapping that directly keys off '@auto-coder' must never match
+    when the retired label is the only label present."""
+    malicious_mappings = {"@auto-coder": "issue.urgent", "bug": "issue.bugfix"}
+
+    result = _resolve_label_priority(["@auto-coder"], malicious_mappings, ["@auto-coder", "bug"])
+    assert result is None
+
+
+def test_get_prompt_for_labels_ignores_exact_legacy_label():
+    result = _get_prompt_for_labels(["@auto-coder"], {"bug": "issue.bugfix"}, ["bug"])
+    assert result is None
+
+
+def test_get_label_specific_prompt_ignores_exact_legacy_label():
+    result = get_label_specific_prompt(["@auto-coder"], {"bug": "issue.bugfix"}, ["bug"])
+    assert result is None
+
+
 # Tests for label-to-prompt mapping
 
 
@@ -755,6 +794,54 @@ def test_render_prompt_with_labels_priority(label_prompt_file):
 
     # Should use feature prompt (higher priority)
     assert "Feature prompt" in result
+
+
+def test_render_prompt_identical_with_and_without_legacy_label(label_prompt_file):
+    """AS-003/AS-004: the complete rendered prompt (template selection and text)
+    must be identical whether or not the entity also carries '@auto-coder'."""
+    clear_prompt_cache()
+    mappings = {"bug": "issue.bugfix", "feature": "issue.feature"}
+    priorities = ["feature", "bug"]
+
+    without_legacy = render_prompt(
+        "issue.action",
+        path=str(label_prompt_file),
+        labels=["bug"],
+        label_prompt_mappings=mappings,
+        label_priorities=priorities,
+    )
+    with_legacy = render_prompt(
+        "issue.action",
+        path=str(label_prompt_file),
+        labels=["bug", "@auto-coder"],
+        label_prompt_mappings=mappings,
+        label_priorities=priorities,
+    )
+    assert with_legacy == without_legacy == "Bug fix prompt"
+
+
+def test_render_prompt_legacy_label_alone_falls_back_to_default(label_prompt_file):
+    """AS-003: an entity carrying only the retired label renders the same as one
+    carrying no labels at all -- the legacy label selects nothing."""
+    clear_prompt_cache()
+    mappings = {"bug": "issue.bugfix"}
+    priorities = ["bug"]
+
+    with_only_legacy = render_prompt(
+        "issue.action",
+        path=str(label_prompt_file),
+        labels=["@auto-coder"],
+        label_prompt_mappings=mappings,
+        label_priorities=priorities,
+    )
+    no_labels = render_prompt(
+        "issue.action",
+        path=str(label_prompt_file),
+        labels=[],
+        label_prompt_mappings=mappings,
+        label_priorities=priorities,
+    )
+    assert with_only_legacy == no_labels == "Default issue action"
 
 
 def test_render_prompt_label_fallback_no_applicable(label_prompt_file):

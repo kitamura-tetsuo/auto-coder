@@ -148,6 +148,74 @@ def test_completed_check_paginates_commit_lookup_before_invalidating(mock_init_d
     assert [call.args[0] for call in get.call_args_list] == [first_url, second_url]
 
 
+@pytest.mark.parametrize("event_type,entity_key", [("issues", "issue"), ("pull_request", "pull_request")])
+@pytest.mark.parametrize("action", ["labeled", "unlabeled"])
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_exact_legacy_auto_coder_label_change_does_not_invalidate(mock_init_dashboard, event_type, entity_key, action):
+    """FTR-1792 AS-001: a labeled/unlabeled webhook for the exact retired
+    '@auto-coder' label must not create a durable invalidation."""
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": action,
+        entity_key: {"number": 42},
+        "label": {"name": "@auto-coder"},
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": event_type, "X-GitHub-Delivery": "legacy-label-delivery"},
+        )
+    assert response.status_code == 200
+    assert engine.invalidations == []
+
+
+@pytest.mark.parametrize("label_name", ["auto-coder", "@auto-coder-old", "@Auto-Coder"])
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_near_miss_label_changes_still_invalidate(mock_init_dashboard, label_name):
+    """FTR-1792 AS-002: only the exact '@auto-coder' text is suppressed; every
+    other label (including near-misses) continues through normal invalidation."""
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": "labeled",
+        "issue": {"number": 43},
+        "label": {"name": label_name},
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": f"delivery-{label_name}"},
+        )
+    assert response.status_code == 200
+    assert engine.invalidations == [("owner/repo", "issue", 43, f"delivery-{label_name}", "issues", "labeled")]
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_legacy_label_removal_also_suppressed(mock_init_dashboard):
+    """AS-001 covers both labeled and unlabeled actions for the exact retired label."""
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": "unlabeled",
+        "pull_request": {"number": 44},
+        "label": {"name": "@auto-coder"},
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "legacy-unlabel-delivery"},
+        )
+    assert response.status_code == 200
+    assert engine.invalidations == []
+
+
 @patch("src.auto_coder.webhook_server.init_dashboard")
 def test_irrelevant_action_and_wrong_repository_do_not_invalidate(mock_init_dashboard):
     engine = MockEngine()

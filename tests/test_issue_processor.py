@@ -136,6 +136,86 @@ def test_missing_work_branch_created_with_correct_base():
     assert first_kwargs.get("base_branch") == config.MAIN_BRANCH, "Work branch should be created from MAIN_BRANCH when no parent issue"
 
 
+def _capture_action_prompt_for_issue(issue_number, raw_labels, config=None):
+    """Run the production `_apply_issue_actions_directly` path and capture the
+    exact `action_prompt` text handed to the LLM CLI, for FTR-1792 regression
+    tests that compare it across issue label variants (AS-003)."""
+    repo_name = "owner/repo"
+    issue_data = {"number": issue_number, "title": "Test Issue", "body": "Test body", "labels": raw_labels}
+    config = config or AutomationConfig()
+
+    @contextmanager
+    def fake_branch_context(*args, **kwargs):
+        yield
+
+    @contextmanager
+    def fake_label_manager(*_args, **_kwargs):
+        yield True
+
+    captured_prompts = []
+
+    class RecordingLLM:
+        def _run_llm_cli(self, prompt, *_args, **_kwargs):
+            captured_prompts.append(prompt)
+            return None
+
+    with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        mock_cmd.run_command.side_effect = [
+            _cmd_result(success=True, stdout="main", returncode=0),
+            _cmd_result(success=True, stdout=f"issue-{issue_number}", returncode=0),
+        ]
+        with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
+                with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        github_client = MagicMock()
+                        github_client.get_parent_issue_details.return_value = None
+                        github_client.get_all_sub_issues.return_value = []
+
+                        with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=RecordingLLM()):
+                            _apply_issue_actions_directly(repo_name, issue_data, config, github_client)
+
+    assert captured_prompts, "action_prompt was never rendered/sent to the LLM"
+    return captured_prompts[0]
+
+
+class TestIssueActionPromptIgnoresLegacyAutoCoderLabel:
+    """FTR-1792 AS-003: the production Issue action prompt (issue_labels text
+    variable, label-based template selection, and full rendered text) must be
+    identical whether or not the issue also carries the exact retired
+    '@auto-coder' label."""
+
+    @pytest.mark.parametrize(
+        "meaningful_labels",
+        [
+            [],
+            ["bug"],
+            ["urgent", "difficult"],
+            ["enhancement", "documentation"],
+        ],
+    )
+    def test_prompt_identical_with_and_without_legacy_label(self, meaningful_labels):
+        without_legacy = _capture_action_prompt_for_issue(101, list(meaningful_labels))
+        with_legacy = _capture_action_prompt_for_issue(101, list(meaningful_labels) + ["@auto-coder"])
+        assert with_legacy == without_legacy
+
+    def test_prompt_never_shows_legacy_label_in_issue_labels_text(self):
+        prompt = _capture_action_prompt_for_issue(103, ["bug", "@auto-coder"])
+        assert "@auto-coder" not in prompt
+        assert "Labels: bug" in prompt or "bug" in prompt
+
+    def test_malicious_alias_cannot_reinterpret_legacy_label_into_prompt_choice(self):
+        """AS-005 applied to the issue-side label-to-prompt selector."""
+        config = AutomationConfig()
+        config.label_prompt_mappings = dict(config.label_prompt_mappings)
+        config.label_prompt_mappings["@auto-coder"] = "issue.urgent"
+        config.label_priorities = ["@auto-coder"] + list(config.label_priorities)
+
+        prompt = _capture_action_prompt_for_issue(104, ["@auto-coder"], config=config)
+        no_labels_prompt = _capture_action_prompt_for_issue(104, [], config=config)
+        assert prompt == no_labels_prompt
+
+
 class TestPRMessageGeneration:
     """Tests for PR message generation with various response formats."""
 

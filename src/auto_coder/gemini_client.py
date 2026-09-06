@@ -17,6 +17,7 @@ except Exception:  # Avoid runtime dependency
     genai: Any = None  # type: ignore # Replaced via patch in tests
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .label_manager import filter_legacy_auto_coder_label
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
@@ -286,7 +287,7 @@ class GeminiClient(LLMClientBase):
             "gemini.pr_analysis",
             title=pr_data.get("title", ""),
             body=pr_data.get("body", ""),
-            labels=", ".join(pr_data.get("labels", [])),
+            labels=", ".join(filter_legacy_auto_coder_label(pr_data.get("labels", []))),
             head_branch=pr_data.get("head_branch", ""),
             base_branch=pr_data.get("base_branch", ""),
             additions=pr_data.get("additions", 0),

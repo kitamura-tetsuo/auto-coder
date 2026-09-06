@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .label_manager import remove_legacy_auto_coder_label
 from .logger_config import get_logger, log_calls
 
 logger = get_logger(__name__)
@@ -97,6 +98,13 @@ def _resolve_label_priority(
     Returns:
         The highest priority label that has a prompt mapping, or None if no applicable labels
     """
+    # REQ-003/REQ-004 (FTR-1792): strip the exact retired "@auto-coder" label
+    # before matching against mappings/priorities so a configured alias or
+    # normalization cannot turn it into a prompt-template choice. Non-label
+    # comparison keys (floats, bools, etc.) that this resolver also supports
+    # must survive untouched, so a type-preserving filter is used here.
+    issue_labels = remove_legacy_auto_coder_label(issue_labels)
+
     # Handle case where label_prompt_mappings is not a dict
     if not isinstance(label_prompt_mappings, dict):
         # If it's a list, convert to dict where each element maps to itself

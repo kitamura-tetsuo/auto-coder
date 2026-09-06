@@ -270,6 +270,61 @@ def test_create_pr_analysis_prompt_empty_labels():
     assert "PR #666: No labels PR" in prompt
 
 
+def _render_pr_prompt(labels, config=None):
+    repo_name = "owner/repo"
+    pr_data = {
+        "number": 888,
+        "title": "Legacy label regression PR",
+        "body": "Verifying the retired @auto-coder label stays inert",
+        "user": {"login": "testuser"},
+        "state": "open",
+        "draft": False,
+        "mergeable": True,
+        "labels": labels,
+    }
+    pr_diff = "diff --git a/test.py"
+    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+        mock_commit_log.return_value = "commit log"
+        return _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config or AutomationConfig())
+
+
+class TestPrAnalysisPromptIgnoresLegacyAutoCoderLabel:
+    """FTR-1792 AS-004/AS-006: the production PR action prompt must be byte-identical
+    whether or not the PR also carries the exact retired '@auto-coder' label."""
+
+    @pytest.mark.parametrize(
+        "meaningful_labels",
+        [
+            ["bug"],
+            ["urgent", "security"],
+            ["breaking-change", "api-change"],
+            ["enhancement", "feature"],
+            [],
+        ],
+    )
+    def test_prompt_identical_with_and_without_legacy_label(self, meaningful_labels):
+        without_legacy = _render_pr_prompt(list(meaningful_labels))
+        with_legacy = _render_pr_prompt(list(meaningful_labels) + ["@auto-coder"])
+        assert with_legacy == without_legacy
+
+    def test_prompt_with_only_legacy_label_matches_no_labels(self):
+        only_legacy = _render_pr_prompt(["@auto-coder"])
+        no_labels = _render_pr_prompt([])
+        assert only_legacy == no_labels
+
+    def test_malicious_alias_cannot_reinterpret_legacy_label_into_prompt_choice(self):
+        """AS-005: a config alias mapping '@auto-coder' directly to a PR prompt
+        template must never select that template when it is the only label."""
+        config = AutomationConfig()
+        config.pr_label_prompt_mappings = dict(config.pr_label_prompt_mappings)
+        config.pr_label_prompt_mappings["@auto-coder"] = "pr.urgent"
+        config.label_priorities = ["@auto-coder"] + list(config.label_priorities)
+
+        prompt = _render_pr_prompt(["@auto-coder"], config=config)
+        assert "URGENT PR REQUIREMENTS" not in prompt
+        assert "Repository: owner/repo" in prompt
+
+
 def test_create_pr_analysis_prompt_with_multiple_labels_uses_highest_priority():
     """Test that PR prompt uses the highest priority label when multiple are present."""
     repo_name = "owner/repo"
