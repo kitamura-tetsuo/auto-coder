@@ -1151,6 +1151,12 @@ class GitHubClient:
         if hasattr(updated_at, "isoformat"):
             updated_at = updated_at.isoformat()
 
+        parent_issue_number = get(issue, "parent_issue_number")
+        if not isinstance(parent_issue_number, int):
+            parent_issue_url = get(issue, "parent_issue_url")
+            match = re.search(r"/issues/(\d+)$", parent_issue_url) if isinstance(parent_issue_url, str) else None
+            parent_issue_number = int(match.group(1)) if match else None
+
         return {
             "id": get(issue, "id"),
             "number": get(issue, "number"),
@@ -1168,7 +1174,7 @@ class GitHubClient:
             "sub_issues_summary": get(issue, "sub_issues_summary"),
             "has_open_sub_issues": bool(get(issue, "has_open_sub_issues", False)),
             "open_sub_issue_numbers": list(get(issue, "open_sub_issue_numbers") or []),
-            "parent_issue_number": get(issue, "parent_issue_number"),
+            "parent_issue_number": parent_issue_number,
         }
 
     def get_pr_details(self, pr: Any) -> Dict[str, Any]:

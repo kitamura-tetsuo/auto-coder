@@ -175,17 +175,95 @@ def test_explicit_parent_adapter_preserves_membership_and_never_dispatches_paren
 def test_labeled_child_cannot_bypass_current_set_block(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     child = issue(11, "Child", CHILD_BODY, ready=True)
-    child["parent_issue_number"] = 10
+    child["parent_issue_url"] = "https://api.github.com/repos/owner/repo/issues/10"
     github = relationship_github(parent, [child])
     individual = Mock(return_value=SpecificationAnalysisResult("READY"))
     engine = configured_engine(tmp_path, github, lambda *_args: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)), individual)
     normalized = GitHubClient.get_issue_details(github, child)
+    assert normalized["parent_issue_number"] == 10
     github.remove_labels.side_effect = RuntimeError("label unavailable")
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized, 0, issue_number=11), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
     individual.assert_not_called()
     dispatch.assert_not_called()
+
+
+def test_parent_routing_labeled_child_cannot_bypass_current_set_block(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    parent["sub_issues_summary"] = {"total": 1}
+    child = issue(11, "Child", CHILD_BODY, ready=True)
+    github = relationship_github(parent, [child])
+    individual = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = configured_engine(tmp_path, github, lambda *_args: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)), individual)
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, parent), 0, issue_number=10), engine.config)
+    assert "blocked parent/child decomposition" in result.actions[0]
+    individual.assert_not_called()
+    dispatch.assert_not_called()
+
+
+def test_stale_empty_parent_membership_hint_cannot_authorize_standalone_dispatch(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    parent["sub_issues_summary"] = {"total": 0}
+    child = issue(11, "Child", CHILD_BODY)
+    normalized_before_child_addition = GitHubClient.get_issue_details(MagicMock(), parent)
+    github = relationship_github(parent, [child])
+    events = []
+    engine = configured_engine(
+        tmp_path,
+        github,
+        lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"),
+        lambda manifest, _body: events.append(f"individual:{manifest.issue_number}") or SpecificationAnalysisResult("READY"),
+    )
+    with patch.object(
+        engine,
+        "_process_single_candidate_reserved",
+        side_effect=lambda _repo, candidate, *_args, **_kwargs: events.append(f"dispatch:{candidate.data['number']}") or CandidateProcessingResult("issue", candidate.data["number"], candidate.data["title"], True, ["dispatched"], None),
+    ):
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized_before_child_addition, 0, issue_number=10), engine.config)
+    assert result.success
+    assert events == ["set", "individual:11", "dispatch:11"]
+
+
+def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    parent.update(
+        {
+            "assignees": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "html_url": "https://github.com/owner/repo/issues/10",
+            "user": {"login": "author", "id": 1},
+            "comments": 0,
+        }
+    )
+    child = issue(11, "Child", CHILD_BODY, state="closed")
+    api = MagicMock()
+    api.issues.list_for_repo.return_value = [parent]
+    GitHubClient.reset_singleton()
+    github = GitHubClient.get_instance("token")
+    github.get_linked_prs = Mock(return_value=[])
+    github.get_open_sub_issues = Mock(return_value=[])
+    with patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api):
+        normalized = github.get_open_issues_json("owner/repo")
+    assert normalized[0]["has_open_sub_issues"] is False
+    github.get_direct_sub_issues_strict = Mock(return_value=[child])
+    snapshots = {10: parent, 11: child}
+    github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(snapshots[number]))
+    events = []
+    engine = configured_engine(
+        tmp_path,
+        github,
+        lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"),
+        lambda *_args: events.append("individual") or SpecificationAnalysisResult("READY"),
+    )
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized[0], 0, issue_number=10), engine.config)
+    assert result.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert events == ["set"]
+    dispatch.assert_not_called()
+    GitHubClient.reset_singleton()
 
 
 def test_explicit_later_sibling_waits_after_set_validation(tmp_path):
@@ -203,6 +281,29 @@ def test_explicit_later_sibling_waits_after_set_validation(tmp_path):
     assert result.actions == ["Deferred - earlier sibling(s) remain open: [11]"]
     child_analysis.assert_not_called()
     dispatch.assert_not_called()
+
+
+def test_reopened_predecessor_is_rechecked_before_later_sibling_admission(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    first = issue(11, "First", CHILD_BODY, state="closed")
+    later = issue(12, "Later", CHILD_BODY)
+    later["parent_issue_number"] = 10
+    github = relationship_github(parent, [first, later])
+    set_analysis = Mock(return_value=DecompositionAnalysisResult("READY"))
+
+    def analyze_child(*_args):
+        first["state"] = "open"
+        return SpecificationAnalysisResult("READY")
+
+    engine = configured_engine(tmp_path, github, set_analysis, analyze_child)
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, later), 0, issue_number=12), engine.config)
+    assert result.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
+    dispatch.assert_not_called()
+    identity = engine._decomposition_validators["owner/repo"].identity(parent, [first, later])
+    persisted = engine._decomposition_validators["owner/repo"].store.get(identity)
+    assert persisted is not None and persisted.verdict == "READY"
+    set_analysis.assert_called_once()
 
 
 def test_set_blocked_comment_failure_still_withdraws_parent(tmp_path):

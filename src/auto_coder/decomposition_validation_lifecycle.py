@@ -151,7 +151,10 @@ class DecompositionValidationLifecycle:
 
     def identity(self, parent: dict[str, object], children: Sequence[dict[str, object]]) -> DecompositionIdentity:
         def member(snapshot: dict[str, object]) -> SetMemberIdentity:
-            number = int(snapshot["number"])
+            raw_number = snapshot.get("number")
+            if not isinstance(raw_number, int) or isinstance(raw_number, bool):
+                raise ValueError("Decomposition member is missing a valid Issue number")
+            number = raw_number
             stable_id = snapshot.get("id")
             # GitHub's repository-qualified Issue number is itself stable. The
             # database id is preferred when present and the number is retained

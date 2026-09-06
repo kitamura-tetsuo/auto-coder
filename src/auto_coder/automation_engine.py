@@ -1288,11 +1288,12 @@ class AutomationEngine:
             # A submitted parent represents its whole direct-child contract, not
             # a standalone coding target. Route only the first open child; the
             # existing discovery ordering continues to serialize later siblings.
-            sub_issue_summary = candidate.data.get("sub_issues_summary")
-            has_child_membership_hint = bool(candidate.data.get("has_open_sub_issues")) or bool(candidate.data.get("open_sub_issue_numbers")) or (isinstance(sub_issue_summary, dict) and int(sub_issue_summary.get("total") or 0) > 0)
             try:
                 direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
-                direct_children = direct_child_reader(repo_name, item_number) if has_child_membership_hint and callable(direct_child_reader) else []
+                # Candidate hints can be stale and daemon normalization only
+                # describes open children. Complete authoritative membership is
+                # therefore consulted before any Issue can be treated standalone.
+                direct_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
             except Exception as exc:
                 result.error = f"Cannot determine authoritative direct-child membership: {exc}"
                 return result
@@ -1308,9 +1309,41 @@ class AutomationEngine:
                         key=lambda child: int(child["number"]),
                     )
                     if not open_children:
+                        parent_submission_set = self._fetch_authoritative_decomposition_set(repo_name, item_number)
+                        if parent_submission_set is None:
+                            result.error = "Cannot fetch authoritative parent/child specification set"
+                            return result
+                        current_parent, current_children = parent_submission_set
+                        parent_decomposition_validator = self._get_decomposition_validator(repo_name)
+                        identity = parent_decomposition_validator.identity(current_parent, current_children)
+                        parent_manifest = build_normative_issue_manifest(item_number, str(current_parent.get("title") or ""), str(current_parent.get("body") or ""))
+                        child_issues = [
+                            DecompositionIssue(
+                                build_normative_issue_manifest(int(member["number"]), str(member.get("title") or ""), str(member.get("body") or "")),
+                                str(member.get("body") or ""),
+                            )
+                            for member in current_children
+                        ]
+                        parent_decision = parent_decomposition_validator.decide(
+                            identity,
+                            DecompositionIssue(parent_manifest, str(current_parent.get("body") or "")),
+                            child_issues,
+                        )
+                        if parent_decision.verdict == "BLOCKED":
+                            side_effect_error = parent_decomposition_validator.apply_blocked(
+                                self.github,
+                                parent_decision,
+                                lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                            )
+                            result.error = "Parent/child decomposition validation found material defects"
+                            if side_effect_error:
+                                result.error += f"; GitHub side effect failed: {side_effect_error}"
+                        elif parent_decision.verdict == "ERROR":
+                            result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                         result.actions = ["Skipped - submitted parent has no open child eligible for sequential implementation"]
                         return result
                     child = self.github.get_issue_dispatch_snapshot_strict(repo_name, int(open_children[0]["number"]))
+                    child["parent_issue_number"] = item_number
                     return self._process_single_candidate_unified(
                         repo_name,
                         Candidate(type="issue", data=child, priority=candidate.priority, issue_number=int(child["number"])),
@@ -1531,7 +1564,13 @@ class AutomationEngine:
             submission_current = is_implementation_ready(dispatch_snapshot)
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
-                submission_current = latest_set is not None and is_implementation_ready(latest_set[0]) and decomposition_validator.identity(*latest_set) == decomposition_decision.identity and item_number in {child.get("number") for child in latest_set[1]}
+                submission_current = (
+                    latest_set is not None
+                    and is_implementation_ready(latest_set[0])
+                    and decomposition_validator.identity(*latest_set) == decomposition_decision.identity
+                    and item_number in {child.get("number") for child in latest_set[1]}
+                    and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in latest_set[1])
+                )
             if not submission_current or dispatch_identity != decision.identity:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
@@ -1563,7 +1602,12 @@ class AutomationEngine:
                 return False
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
                 current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
-                return current_set is not None and is_implementation_ready(current_set[0]) and decomposition_validator.identity(*current_set) == decomposition_decision.identity
+                return (
+                    current_set is not None
+                    and is_implementation_ready(current_set[0])
+                    and decomposition_validator.identity(*current_set) == decomposition_decision.identity
+                    and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in current_set[1])
+                )
             return is_implementation_ready(latest)
 
         # Try to reuse an existing owner before reconciliation.  In particular,

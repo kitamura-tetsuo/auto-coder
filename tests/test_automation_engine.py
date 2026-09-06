@@ -503,8 +503,12 @@ class TestAutomationEngine:
             def json(self):
                 return {"number": 1684, "body": authoritative["body"], "labels": [{"name": "implementation-ready"}]}
 
+        class MembershipResponse(Response):
+            def json(self):
+                return []
+
         client_context = MagicMock()
-        client_context.__enter__.return_value.get.return_value = Response()
+        client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: MembershipResponse() if url.endswith("/sub_issues") else Response()
         GitHubClient.reset_singleton()
         github = GitHubClient.get_instance(token="test-token")
         github.get_open_prs_json = Mock(return_value=[])
