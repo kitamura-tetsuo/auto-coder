@@ -1281,6 +1281,10 @@ def _apply_issue_actions_directly(
 
                     backend_manager = create_high_score_cloud_backend_manager() or create_high_score_backend_manager()
 
+                if not new_work_allowed():
+                    actions.append(f"Deferred local implementation for issue #{issue_number}: graceful shutdown is draining")
+                    return actions
+
                 response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
 
                 # Parse the response

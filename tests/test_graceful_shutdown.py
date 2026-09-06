@@ -12,7 +12,7 @@ import yaml
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
-from auto_coder.issue_processor import _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
+from auto_coder.issue_processor import _apply_issue_actions_directly, _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
 from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
 
 
@@ -488,6 +488,55 @@ def test_initial_pr_repair_rechecks_drain_after_context_acquisition(monkeypatch,
 
     asyncio.run(scenario())
     assert llm_calls == 0
+
+
+def test_local_issue_implementation_rechecks_drain_after_prompt_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    manager = MagicMock()
+    github = MagicMock()
+    github.get_all_sub_issues.return_value = []
+    github.get_parent_issue_details.return_value = None
+    command_result = MagicMock(success=True, stdout="main", returncode=1)
+
+    def context_lookup(**_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return "context"
+
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", context_lookup)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_branch", lambda: "main")
+    monkeypatch.setattr("auto_coder.issue_processor.cmd.run_command", lambda *_args, **_kwargs: command_result)
+    label_context = MagicMock()
+    label_context.__enter__.return_value = True
+    branch_context = MagicMock()
+    monkeypatch.setattr("auto_coder.issue_processor.LabelManager", lambda *_args, **_kwargs: label_context)
+    monkeypatch.setattr("auto_coder.issue_processor.BranchManager", lambda *_args, **_kwargs: branch_context)
+
+    async def scenario():
+        implementation = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 issue #91",
+                _apply_issue_actions_directly,
+                "owner/repo",
+                {"number": 91, "title": "Implement", "body": "", "labels": []},
+                AutomationConfig(),
+                github,
+                manager,
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        implementation.cancel()
+        release.set()
+        actions = await implementation
+        assert actions == ["Deferred local implementation for issue #91: graceful shutdown is draining"]
+
+    asyncio.run(scenario())
+    manager._run_llm_cli.assert_not_called()
 
 
 def test_local_test_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):
