@@ -421,20 +421,30 @@ class AutomationEngine:
             try:
                 entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
                 candidates: List[Candidate] = []
+                open_issue_snapshots: List[Dict[str, Any]] = []
                 for observed in entities.issues:
-                    candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, "issue", observed.number, True)
-                    if candidate is None:
+                    snapshot = await asyncio.to_thread(self.github.get_issue_dispatch_snapshot_strict, repo_name, observed.number)
+                    if not isinstance(snapshot, dict) or snapshot.get("number") != observed.number:
+                        raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
+                    if "pull_request" in snapshot or not self._is_open_issue(snapshot):
                         continue
-                    candidate.priority = self._issue_refill_priority(candidate.data)
-                    candidates.append(candidate)
+                    issue_data = self.github.get_issue_details(snapshot)
+                    if not isinstance(issue_data, dict) or issue_data.get("number") != observed.number:
+                        raise RuntimeError(f"GitHub returned invalid Issue details for #{observed.number}")
+                    open_issue_snapshots.append(issue_data)
                 metadata_children: Dict[int, List[int]] = {}
-                for candidate in candidates:
-                    number = candidate.issue_number or candidate.data.get("number")
-                    parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number)
-                    if isinstance(number, int) and parent is not None:
+                for issue_data in open_issue_snapshots:
+                    number = issue_data["number"]
+                    native_parent = await asyncio.to_thread(self.github.get_parent_issue_number_strict, repo_name, number) if isinstance(self.github, GitHubClient) else issue_data.get("parent_issue_number")
+                    parent = native_parent if isinstance(native_parent, int) else parse_parent_issue_number(str(issue_data.get("body") or ""), current_issue_number=number)
+                    if parent is not None:
                         metadata_children.setdefault(parent, []).append(number)
-                for candidate in candidates:
+                for issue_data in open_issue_snapshots:
+                    if not self._is_issue_author_allowed(issue_data):
+                        continue
+                    candidate = Candidate(type="issue", data=issue_data, priority=self._issue_refill_priority(issue_data), issue_number=issue_data["number"])
                     candidate.data["refill_metadata_open_children"] = metadata_children
+                    candidates.append(candidate)
                 candidates.sort(key=lambda value: (-value.priority, value.data.get("created_at", ""), value.issue_number or 0))
             except Exception as exc:
                 logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")

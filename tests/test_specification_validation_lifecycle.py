@@ -13,7 +13,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
-from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
+from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
 BODY = "## Requirements\n- REQ-001: Return the current value."
 FINDING = SpecificationFinding("material_ambiguity", ("REQ-001",), "The current value is undefined.", "Define its source.", "", "")
@@ -271,6 +271,52 @@ def test_hierarchy_uses_newly_authorized_parent_metadata(tmp_path):
     assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
     engine._process_single_candidate_reserved.assert_not_called()
     assert engine.implementation_slots.active_owners() == ()
+
+
+@pytest.mark.parametrize(
+    "child_state,child_author,native_parent,expected_dispatch",
+    [
+        ("open", 999, None, 30),
+        ("closed", 1, None, 10),
+        ("open", 1, 11, 10),
+    ],
+)
+def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, child_state, child_author, native_parent, expected_dispatch):
+    def issue(number, title, labels, body=BODY, state="open", author=1):
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "state": state,
+            "labels": [{"name": label} for label in labels],
+            "user": {"login": f"user-{author}", "id": author},
+        }
+
+    issues = {
+        10: issue(10, "Parent", ["implementation-ready", "breaking-change"]),
+        20: issue(20, "Child", ["implementation-ready"], "Parent-Issue: #10\n\n" + BODY, child_state, child_author),
+        30: issue(30, "Fallback", ["implementation-ready"]),
+    }
+    GitHubClient.reset_singleton()
+    github = GitHubClient.get_instance(token="test-token")
+    github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number in issues]))
+    github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
+    github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
+    github.get_open_sub_issues_strict = Mock(return_value=[])
+    github.get_item_type_strict = Mock(return_value="issue")
+    github.try_add_labels = Mock(return_value=True)
+    github.get_issue = Mock(side_effect=lambda _repo, number: issues[number])
+    config = AutomationConfig()
+    config.ISSUE_ALLOWLIST = [1]
+    engine = AutomationEngine(github, config=config)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / f"graph-{child_state}-{child_author}-{native_parent}.json")
+    engine._specification_validators["owner/repo"] = lifecycle(tmp_path, "READY", policy=f"graph-{child_state}-{child_author}-{native_parent}")
+    dispatched = []
+    engine._process_single_candidate_reserved = Mock(side_effect=lambda _repo, candidate, *_args, **_kwargs: dispatched.append(candidate.data["number"]) or CandidateProcessingResult("issue", candidate.data["number"], success=True))
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert dispatched == [expected_dispatch]
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", expected_dispatch),)
 
 
 def test_production_blocked_gate_generation_checks_and_deduplicates_effects(tmp_path):
