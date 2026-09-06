@@ -312,6 +312,7 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     github.get_direct_sub_issues_strict = Mock(return_value=[child])
     snapshots = {10: parent, 11: child}
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(snapshots[number]))
+    github.get_parent_issue_details_strict = Mock(side_effect=lambda _repo, number: dict(parent) if number == 11 else None)
     events = []
     engine = configured_engine(
         tmp_path,

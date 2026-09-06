@@ -231,7 +231,6 @@ class AutomationEngine:
             if not isinstance(members, list):
                 return None
             member_numbers: set[int] = set()
-            reconciled_declarations: set[int] = set()
             for member in members:
                 number = member.get("number") if isinstance(member, dict) else None
                 if not isinstance(number, int) or isinstance(number, bool):
@@ -242,7 +241,6 @@ class AutomationEngine:
                     return None
                 if isinstance(self.github, GitHubClient) and parse_parent_declaration(child.get("body")).status is not ParentDeclarationStatus.ABSENT:
                     self._reconcile_parent_issue(repo_name, number, child)
-                    reconciled_declarations.add(number)
             confirmed = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
             confirmed_numbers: set[int] = set()
             for member in confirmed:
@@ -259,14 +257,12 @@ class AutomationEngine:
             raise ParentOperationalError("native direct-child membership did not stabilize")
 
         parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+        parent = self._reconcile_parent_issue(repo_name, parent_number, parent)
         authoritative_children = []
         for number in sorted(confirmed_numbers):
             child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-            final_declaration = parse_parent_declaration(child.get("body")) if isinstance(child, dict) else None
-            if final_declaration is not None and final_declaration.status is not ParentDeclarationStatus.ABSENT:
-                child = self._reconcile_parent_issue(repo_name, number, child)
-                reconciled_declarations.add(number)
-            native_parent = self.github.get_parent_issue_details_strict(repo_name, number) if number in reconciled_declarations else {"number": parent_number}
+            child = self._reconcile_parent_issue(repo_name, number, child)
+            native_parent = self.github.get_parent_issue_details_strict(repo_name, number)
             if not isinstance(child, dict) or child.get("number") != number or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
                 raise ParentOperationalError(f"native parent for child #{number} is not #{parent_number}")
             authoritative_children.append(child)
@@ -297,55 +293,60 @@ class AutomationEngine:
         return True
 
     def _reconcile_parent_issue(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Dict[str, Any]:
-        """Reconcile body metadata, then return a newly fetched native snapshot."""
-        declaration = parse_parent_declaration(snapshot.get("body"))
-        try:
-            native = self.github.get_parent_issue_details_strict(repo_name, issue_number)
-        except Exception as exc:
-            raise ParentOperationalError(f"cannot read native parent: {exc}") from exc
-        native_number = native.get("number") if isinstance(native, dict) else None
+        """Reconcile metadata and return only a snapshot bearing that declaration."""
+        current = snapshot
+        for _attempt in range(5):
+            declaration = parse_parent_declaration(current.get("body"))
+            try:
+                native = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+            except Exception as exc:
+                raise ParentOperationalError(f"cannot read native parent: {exc}") from exc
+            native_number = native.get("number") if isinstance(native, dict) else None
 
-        if declaration.status is ParentDeclarationStatus.INVALID:
-            raise ParentSpecificationError(declaration.reason or "invalid Parent-Issue declaration")
-        if declaration.status is ParentDeclarationStatus.SUPPORTED:
-            declared = declaration.parent_number
-            assert declared is not None
-            if declared == issue_number:
-                raise ParentSpecificationError("an Issue cannot declare itself as its parent")
-            if isinstance(native_number, int) and native_number != declared:
-                raise ParentSpecificationError(f"Parent-Issue declaration #{declared} conflicts with native parent #{native_number}")
-            if native_number is None:
-                try:
-                    target = self.github.get_issue_dispatch_snapshot_strict(repo_name, declared)
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 404:
-                        raise ParentSpecificationError(f"declared parent #{declared} does not exist") from exc
-                    raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
-                except Exception as exc:
-                    raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
-                if not isinstance(target, dict) or target.get("number") != declared or "pull_request" in target:
-                    raise ParentSpecificationError(f"declared parent #{declared} is not an Issue in {repo_name}")
-                child_id = snapshot.get("id")
-                if not isinstance(child_id, int) or isinstance(child_id, bool):
-                    raise ParentOperationalError("authoritative child snapshot omitted its database ID")
-                try:
-                    self.github.add_sub_issue_strict(repo_name, declared, issue_number, child_id)
-                except InvalidSubIssueRelationshipError as exc:
-                    raise ParentSpecificationError(str(exc)) from exc
-                except Exception as exc:
-                    raise ParentOperationalError(f"cannot materialize Parent-Issue relationship: {exc}") from exc
+            if declaration.status is ParentDeclarationStatus.INVALID:
+                raise ParentSpecificationError(declaration.reason or "invalid Parent-Issue declaration")
+            if declaration.status is ParentDeclarationStatus.SUPPORTED:
+                declared = declaration.parent_number
+                assert declared is not None
+                if declared == issue_number:
+                    raise ParentSpecificationError("an Issue cannot declare itself as its parent")
+                if isinstance(native_number, int) and native_number != declared:
+                    raise ParentSpecificationError(f"Parent-Issue declaration #{declared} conflicts with native parent #{native_number}")
+                if native_number is None:
+                    try:
+                        target = self.github.get_issue_dispatch_snapshot_strict(repo_name, declared)
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code == 404:
+                            raise ParentSpecificationError(f"declared parent #{declared} does not exist") from exc
+                        raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
+                    except Exception as exc:
+                        raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
+                    if not isinstance(target, dict) or target.get("number") != declared or "pull_request" in target:
+                        raise ParentSpecificationError(f"declared parent #{declared} is not an Issue in {repo_name}")
+                    child_id = current.get("id")
+                    if not isinstance(child_id, int) or isinstance(child_id, bool):
+                        raise ParentOperationalError("authoritative child snapshot omitted its database ID")
+                    try:
+                        self.github.add_sub_issue_strict(repo_name, declared, issue_number, child_id)
+                    except InvalidSubIssueRelationshipError as exc:
+                        raise ParentSpecificationError(str(exc)) from exc
+                    except Exception as exc:
+                        raise ParentOperationalError(f"cannot materialize Parent-Issue relationship: {exc}") from exc
 
-        try:
-            refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
-            refreshed_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
-        except Exception as exc:
-            raise ParentOperationalError(f"cannot re-fetch reconciled relationship: {exc}") from exc
-        if not isinstance(refreshed, dict) or refreshed.get("number") != issue_number or "pull_request" in refreshed:
-            raise ParentOperationalError("GitHub returned an ambiguous reconciled Issue snapshot")
-        refreshed_number = refreshed_parent.get("number") if isinstance(refreshed_parent, dict) else None
-        if declaration.status is ParentDeclarationStatus.SUPPORTED and refreshed_number != declaration.parent_number:
-            raise ParentOperationalError("GitHub did not confirm the materialized Parent-Issue relationship")
-        return refreshed
+            try:
+                refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+                refreshed_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+            except Exception as exc:
+                raise ParentOperationalError(f"cannot re-fetch reconciled relationship: {exc}") from exc
+            if not isinstance(refreshed, dict) or refreshed.get("number") != issue_number or "pull_request" in refreshed:
+                raise ParentOperationalError("GitHub returned an ambiguous reconciled Issue snapshot")
+            refreshed_number = refreshed_parent.get("number") if isinstance(refreshed_parent, dict) else None
+            if declaration.status is ParentDeclarationStatus.SUPPORTED and refreshed_number != declaration.parent_number:
+                raise ParentOperationalError("GitHub did not confirm the materialized Parent-Issue relationship")
+            if parse_parent_declaration(refreshed.get("body")) == declaration:
+                return refreshed
+            current = refreshed
+        raise ParentOperationalError("Parent-Issue declaration did not stabilize during reconciliation")
 
     def _schedule_parent_validations(
         self,

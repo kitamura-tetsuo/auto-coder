@@ -317,6 +317,68 @@ def test_final_child_snapshot_is_reconciled_before_analyzers(tmp_path: Path, lat
     assert github.parents == {2: 1}
 
 
+@pytest.mark.parametrize("replacement", ["Parent-Issue: #3", "Parent-Issue: #abc"])
+def test_reconciliation_rechecks_the_snapshot_it_returns(tmp_path: Path, replacement: str):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+
+    class ReconciliationRaceGraph(GraphGitHub):
+        child_reads = 0
+
+        def get_issue_dispatch_snapshot_strict(self, repo, number):
+            snapshot = super().get_issue_dispatch_snapshot_strict(repo, number)
+            if number == 2:
+                self.child_reads += 1
+                if self.child_reads == 2:
+                    snapshot["body"] += "\nParent-Issue: #1"
+                    self.issues[2]["body"] = snapshot["body"]
+                elif self.child_reads >= 3:
+                    snapshot["body"] = body + "\n" + replacement
+                    self.issues[2]["body"] = snapshot["body"]
+            return snapshot
+
+    github = ReconciliationRaceGraph(
+        {1: graph_issue(1, body, ready=True), 2: graph_issue(2, body, state="closed"), 3: graph_issue(3, body)},
+        {2: 1},
+        {1: [2]},
+    )
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle("o/r", "provider/model", tmp_path / "sets.json", lambda *_args: analyzed.append("set") or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", lambda *_args: analyzed.append("child") or SpecificationAnalysisResult("READY"))
+
+    result = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
+
+    assert result.error is not None
+    assert analyzed == []
+
+
+def test_final_parent_snapshot_is_reconciled_before_decomposition(tmp_path: Path):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+
+    class ParentRaceGraph(GraphGitHub):
+        parent_reads = 0
+
+        def get_issue_dispatch_snapshot_strict(self, repo, number):
+            snapshot = super().get_issue_dispatch_snapshot_strict(repo, number)
+            if number == 1:
+                self.parent_reads += 1
+                if self.parent_reads >= 4:
+                    snapshot["body"] = body + "\nParent-Issue: #abc"
+                    self.issues[1]["body"] = snapshot["body"]
+            return snapshot
+
+    github = ParentRaceGraph({1: graph_issue(1, body, ready=True), 2: graph_issue(2, body, state="closed")}, {2: 1}, {1: [2]})
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle("o/r", "provider/model", tmp_path / "sets.json", lambda *_args: analyzed.append("set") or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", lambda *_args: analyzed.append("child") or SpecificationAnalysisResult("READY"))
+
+    result = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
+
+    assert result.error is not None
+    assert analyzed == []
+
+
 def test_jules_replacement_reconciles_current_declaration_before_validation(tmp_path: Path):
     body = "## Requirements\n- REQ-001: Preserve the graph."
     child = graph_issue(2, body + "\nParent-Issue: #3", ready=True)
