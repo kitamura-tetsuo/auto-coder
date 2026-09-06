@@ -2260,6 +2260,49 @@ class GitHubClient:
             logger.error(f"Failed to get open sub-issues for #{issue_number}: {e}")
             return []
 
+    @retry_with_backoff()
+    def get_open_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[int]:
+        """Return current open children without caches or failure flattening."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues?per_page=100"
+        children: List[int] = []
+        with httpx.Client() as client:
+            while url:
+                response = client.get(url, headers=headers, timeout=30)
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise RuntimeError("GitHub sub-issues response was not a list")
+                for child in page:
+                    if not isinstance(child, dict) or not isinstance(child.get("number"), int) or not isinstance(child.get("state"), str):
+                        raise RuntimeError("GitHub sub-issues response contained an invalid Issue")
+                    if child["state"].lower() == "open" and child["number"] != issue_number:
+                        children.append(child["number"])
+                url = response.links.get("next", {}).get("url")
+        return sorted(set(children))
+
+    @retry_with_backoff()
+    def get_parent_issue_number_strict(self, repo_name: str, issue_number: int) -> Optional[int]:
+        """Return the current native parent identity without cached evidence."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        with httpx.Client() as client:
+            response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        parent = response.json()
+        if isinstance(parent, dict) and isinstance(parent.get("parent"), dict):
+            parent = parent["parent"]
+        if not isinstance(parent, dict) or not isinstance(parent.get("number"), int):
+            raise RuntimeError("GitHub parent-Issue response was ambiguous")
+        return parent["number"]
+
     def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get all sub-issues (open and closed) using GitHub REST API."""
         try:

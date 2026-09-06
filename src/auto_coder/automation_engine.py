@@ -45,7 +45,7 @@ from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, parse_parent_issue_url_number, resolve_authoritative_item_type
+from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
@@ -54,6 +54,8 @@ logger = get_logger(__name__)
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_SECONDS = 60
+CAPACITY_STATE_CHECK_INTERVAL_SECONDS = 1
+REFILL_RETRY_INTERVAL_SECONDS = 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
 
 
@@ -74,6 +76,7 @@ class AutomationEngine:
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self._invalidation_drain_lock = asyncio.Lock()
         self._invalidation_wake_event: Optional[asyncio.Event] = None
+        self._refill_lock = asyncio.Lock()
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_attempted = False
@@ -265,6 +268,8 @@ class AutomationEngine:
         # Maintenance and GitHub work have independent scheduling paths.
         producer_task = asyncio.create_task(self._producer_loop(repo_name), name="producer")
         invalidation_task = asyncio.create_task(self._invalidation_loop(repo_name), name="github-invalidations")
+        slot_repository = self._get_implementation_slots(repo_name)
+        capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
 
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
@@ -276,23 +281,29 @@ class AutomationEngine:
         try:
             # The invalidation consumer is a companion to the producer/workers,
             # not a reason to keep an otherwise stopped engine alive forever.
-            done, _ = await asyncio.wait({core_task, invalidation_task}, return_when=asyncio.FIRST_COMPLETED)
+            companion_tasks = {invalidation_task} | ({capacity_task} if capacity_task is not None else set())
+            done, _ = await asyncio.wait({core_task, *companion_tasks}, return_when=asyncio.FIRST_COMPLETED)
             if core_task in done:
-                invalidation_task.cancel()
-                await asyncio.gather(invalidation_task, return_exceptions=True)
+                for task in companion_tasks:
+                    task.cancel()
+                await asyncio.gather(*companion_tasks, return_exceptions=True)
                 await core_task
             else:
                 core_task.cancel()
-                await asyncio.gather(core_task, return_exceptions=True)
-                await invalidation_task
+                for task in companion_tasks:
+                    task.cancel()
+                await asyncio.gather(core_task, *companion_tasks, return_exceptions=True)
+                for task in done:
+                    task.result()
             # Reaching this point means every loop returned on its own, which
             # is the silent-stop case we want explained in the log.
             logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
             get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
         except asyncio.CancelledError:
             core_task.cancel()
-            invalidation_task.cancel()
-            await asyncio.gather(core_task, invalidation_task, return_exceptions=True)
+            for task in companion_tasks:
+                task.cancel()
+            await asyncio.gather(core_task, *companion_tasks, return_exceptions=True)
             logger.info("Automation engine stopped")
             get_health_monitor().record_event("engine_stop", "cancelled", "")
             raise
@@ -407,6 +418,98 @@ class AutomationEngine:
                     await asyncio.wait_for(self._invalidation_wake_event.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
+
+    @staticmethod
+    def _issue_refill_priority(issue: Dict[str, Any]) -> int:
+        """Apply the configured candidate scan's Issue priority semantics."""
+        labels = issue.get("labels", []) or []
+        names = {label if isinstance(label, str) else label.get("name") for label in labels if isinstance(label, (str, dict))}
+        if names.intersection({"breaking-change", "breaking", "api-change", "deprecation", "version-major"}):
+            return 7
+        return 3 if "urgent" in names else 0
+
+    @staticmethod
+    def _is_open_issue(issue: Dict[str, Any]) -> bool:
+        """Return whether an authoritative Issue snapshot is currently open."""
+        # Legacy GitHub adapters omit state for successfully fetched open
+        # Issues; an explicit closed state is nevertheless authoritative.
+        return str(issue.get("state") or "open").lower() == "open"
+
+    async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
+        """Evaluate one level-triggered refill obligation from fresh GitHub state.
+
+        Returning false keeps the obligation pending. Candidate rejection is a
+        completed evaluation, while an incomplete enumeration is not.
+        """
+        async with self._refill_lock:
+            slots = self._get_implementation_slots(repo_name)
+            if await asyncio.to_thread(slots.available_normal_slots) == 0:
+                return True
+            try:
+                entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+                candidates: List[Candidate] = []
+                open_issue_snapshots: List[Dict[str, Any]] = []
+                for observed in entities.issues:
+                    snapshot = await asyncio.to_thread(self.github.get_issue_dispatch_snapshot_strict, repo_name, observed.number)
+                    if not isinstance(snapshot, dict) or snapshot.get("number") != observed.number:
+                        raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
+                    if "pull_request" in snapshot or not self._is_open_issue(snapshot):
+                        continue
+                    issue_data = self.github.get_issue_details(snapshot)
+                    if not isinstance(issue_data, dict) or issue_data.get("number") != observed.number:
+                        raise RuntimeError(f"GitHub returned invalid Issue details for #{observed.number}")
+                    open_issue_snapshots.append(issue_data)
+                metadata_children: Dict[int, List[int]] = {}
+                for issue_data in open_issue_snapshots:
+                    number = issue_data["number"]
+                    native_parent = await asyncio.to_thread(self.github.get_parent_issue_number_strict, repo_name, number) if isinstance(self.github, GitHubClient) else issue_data.get("parent_issue_number")
+                    parent = native_parent if isinstance(native_parent, int) else parse_parent_issue_number(str(issue_data.get("body") or ""), current_issue_number=number)
+                    if parent is not None:
+                        metadata_children.setdefault(parent, []).append(number)
+                for issue_data in open_issue_snapshots:
+                    if not self._is_issue_author_allowed(issue_data):
+                        continue
+                    candidate = Candidate(type="issue", data=issue_data, priority=self._issue_refill_priority(issue_data), issue_number=issue_data["number"])
+                    candidate.data["refill_metadata_open_children"] = metadata_children
+                    candidates.append(candidate)
+                candidates.sort(key=lambda value: (-value.priority, value.data.get("created_at", ""), value.issue_number or 0))
+            except Exception as exc:
+                logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
+                return False
+
+            retry_required = False
+            for candidate in candidates:
+                if await asyncio.to_thread(slots.available_normal_slots) == 0:
+                    break
+                # The common dispatch path repeats strict readiness, contract,
+                # hierarchy, ownership, authorization, duplicate and atomic
+                # capacity admission checks immediately before implementation.
+                result = await asyncio.to_thread(self._process_single_candidate, repo_name, candidate)
+                retry_required = retry_required or result.refill_retry_required
+            return not retry_required
+
+    async def _capacity_refill_loop(self, repo_name: str) -> None:
+        """Observe shared slot state and service capacity transitions without GitHub polling."""
+        slots = self._get_implementation_slots(repo_name)
+        previous_count, previous_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+        refill_pending = False
+        while True:
+            available_count, identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+            if available_count > 0 and (previous_count == 0 or identity != previous_identity):
+                refill_pending = True
+                logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
+            previous_count, previous_identity = available_count, identity
+            if refill_pending and available_count > 0:
+                refill_pending = not await self._refill_normal_implementation_slots(repo_name)
+                current_count, current_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+                # Dispatch may run long enough for another process to fill and
+                # release a slot between samples. Atomic state replacement is
+                # the durable evidence that this transition needs a fresh pass.
+                if current_count > 0 and current_identity != previous_identity:
+                    refill_pending = True
+                previous_count, previous_identity = current_count, current_identity
+            delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
+            await asyncio.sleep(delay)
 
     async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
         """Worker loop that processes candidates from the queue."""
@@ -1141,19 +1244,7 @@ class AutomationEngine:
                 # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
                 # - 3: Urgent
                 # - 0: Regular issues
-                issue_priority = 0
-                # Check for breaking-change related labels (highest priority)
-                breaking_change_labels = [
-                    "breaking-change",
-                    "breaking",
-                    "api-change",
-                    "deprecation",
-                    "version-major",
-                ]
-                if any(label in labels for label in breaking_change_labels):
-                    issue_priority = 7
-                elif "urgent" in labels:
-                    issue_priority = 3
+                issue_priority = self._issue_refill_priority(issue_data)
 
                 candidates.append(
                     Candidate(
@@ -1206,9 +1297,9 @@ class AutomationEngine:
         return is_author_allowlisted(author_id, allowlist)
 
     def _has_open_sub_issues(self, repo_name: str, candidate: Candidate) -> bool:
-        """Fail-safe helper to check if target issue has unresolved sub-issues.
+        """Check if target issue has unresolved sub-issues.
         - candidate is expected to be an element from _get_candidates (type: issue)
-        - Returns False on exception to avoid skip suppression
+        Lookup failures propagate so dispatch fails closed.
         """
         try:
             if candidate.type != "issue":
@@ -1219,8 +1310,15 @@ class AutomationEngine:
                 return False
             if issue_data.get("has_open_sub_issues"):
                 return True
-            sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
-            if sub_issues:
+            metadata_children = issue_data.get("refill_metadata_open_children", {})
+            if isinstance(metadata_children, dict) and metadata_children.get(issue_number):
+                return True
+            if isinstance(self.github, GitHubClient):
+                sub_issues = self.github.get_open_sub_issues_strict(repo_name, issue_number)
+            else:
+                lookup = getattr(self.github, "get_open_sub_issues", None)
+                sub_issues = lookup(repo_name, issue_number) if callable(lookup) else []
+            if isinstance(sub_issues, list) and sub_issues:
                 return True
             if self.open_issues_snapshot:
                 fallback_children = [other["number"] for other in self.open_issues_snapshot if isinstance(other.get("number"), int) and other.get("parent_issue_number") == issue_number and other.get("number") != issue_number]
@@ -1229,7 +1327,24 @@ class AutomationEngine:
             return False
         except Exception as e:
             logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
+            raise
+
+    def _has_elder_open_sibling(self, repo_name: str, candidate: Candidate) -> bool:
+        """Check current native parent membership and elder siblings."""
+        number = candidate.issue_number or candidate.data.get("number")
+        if candidate.type != "issue" or not isinstance(number, int):
             return False
+        if isinstance(self.github, GitHubClient):
+            parent = self.github.get_parent_issue_number_strict(repo_name, number)
+            if parent is None:
+                parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number)
+            siblings = self.github.get_open_sub_issues_strict(repo_name, parent) if parent is not None else []
+        else:
+            parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number) or candidate.data.get("parent_issue_number")
+            siblings = self.github.get_open_sub_issues(repo_name, parent) if isinstance(parent, int) else []
+        metadata_children = candidate.data.get("refill_metadata_open_children", {})
+        fallback_siblings = metadata_children.get(parent, []) if isinstance(metadata_children, dict) and isinstance(parent, int) else []
+        return any(sibling < number for sibling in [*siblings, *fallback_siblings] if sibling != number)
 
     def _process_single_candidate_unified(
         self,
@@ -1402,6 +1517,7 @@ class AutomationEngine:
                 current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
                 result.error = str(exc)
+                result.refill_retry_required = True
                 return result
             if not isinstance(current_issue, dict) or current_issue.get("number") != item_number:
                 result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub returned an ambiguous item snapshot"
@@ -1451,7 +1567,7 @@ class AutomationEngine:
             # allow a subsequently removed readiness label to start work. Keep
             # this before slot resolution and every implementation ownership side
             # effect; explicit/forced processing therefore cannot bypass it.
-            if not independently_ready and not inherited_ready:
+            if not self._is_open_issue(current_issue) or (not independently_ready and not inherited_ready):
                 logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
                 result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
@@ -1535,6 +1651,7 @@ class AutomationEngine:
             if decision.verdict == "ERROR":
                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                 result.actions = ["Deferred - specification validation error"]
+                result.refill_retry_required = True
                 return result
             if decision.verdict == "BLOCKED":
                 try:
@@ -1565,13 +1682,14 @@ class AutomationEngine:
                 dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             except Exception as exc:
                 result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                result.refill_retry_required = True
                 return result
             dispatch_identity = validator.identity(
                 item_number,
                 str(dispatch_snapshot.get("title") or ""),
                 str(dispatch_snapshot.get("body") or ""),
             )
-            submission_current = is_implementation_ready(dispatch_snapshot)
+            submission_current = self._is_open_issue(dispatch_snapshot) and is_implementation_ready(dispatch_snapshot)
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 submission_current = (
@@ -1592,9 +1710,28 @@ class AutomationEngine:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
-            # The backend must receive exactly the authoritative generation that
-            # READY authorized, never the older candidate collection payload.
+            # All subsequent admission checks must consume exactly the
+            # authoritative generation whose specification was authorized.
             candidate.data.update(dispatch_snapshot)
+
+            # Refill and direct dispatch share this last authoritative hierarchy
+            # gate. Candidate collection metadata is not sufficient because a
+            # child can open after enumeration and before slot admission.
+            try:
+                hierarchy_blocked = self._has_open_sub_issues(repo_name, candidate) or self._has_elder_open_sibling(repo_name, candidate)
+            except Exception as exc:
+                result.error = f"Cannot establish current Issue hierarchy before dispatch: {exc}"
+                result.refill_retry_required = True
+                return result
+            if hierarchy_blocked:
+                result.actions = ["Skipped - unresolved Issue hierarchy dependency"]
+                return result
+
+            dispatch_labels = candidate.data.get("labels", []) or []
+            dispatch_label_names = {label if isinstance(label, str) else label.get("name") for label in dispatch_labels if isinstance(label, (str, dict))}
+            if config.CHECK_LABELS and not force and not advance_issue_attempt and "@auto-coder" in dispatch_label_names:
+                result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
+                return result
 
         slots = self._get_implementation_slots(repo_name)
         try:
@@ -1614,7 +1751,7 @@ class AutomationEngine:
             if candidate.type != "issue":
                 return True
             latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-            child_current = isinstance(latest, dict) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
+            child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
             if not child_current:
                 return False
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
@@ -1634,11 +1771,18 @@ class AutomationEngine:
         # Issue owner still exists.  Reconciling first could release that owner
         # when the closed Issue has no timeline relationship for the PR.
         with repository_dispatch_authority(repo_name):
-            if not issue_generation_is_current():
+            try:
+                generation_is_current = issue_generation_is_current()
+            except Exception as exc:
+                result.error = f"Cannot confirm Issue generation before ownership admission: {exc}"
+                result.refill_retry_required = True
+                return result
+            if not generation_is_current:
                 result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
                 return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
+            owner_existed_before_admission = owner in slots.active_owners()
             if not inherited_execution:
                 execution_id = slots.start_execution(
                     owner,
@@ -1649,7 +1793,13 @@ class AutomationEngine:
                 )
             if execution_id is None and not explicit_only:
                 slots.reconcile(self.github)
-                if not issue_generation_is_current():
+                try:
+                    generation_is_current = issue_generation_is_current()
+                except Exception as exc:
+                    result.error = f"Cannot confirm Issue generation during capacity reconciliation: {exc}"
+                    result.refill_retry_required = True
+                    return result
+                if not generation_is_current:
                     result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
                     return result
                 execution_id = slots.start_execution(
@@ -1692,6 +1842,8 @@ class AutomationEngine:
         finally:
             if not inherited_execution:
                 slots.finish_execution(owner, execution_id)
+                if not owner_existed_before_admission and result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]:
+                    slots.release_unbound_idle_owner(owner)
                 slots.reconcile(self.github)
         return result
 

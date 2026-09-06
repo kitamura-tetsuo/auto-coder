@@ -1,5 +1,6 @@
 """Generation-bound Issue specification validation lifecycle regressions."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
 from unittest.mock import Mock, call, patch
@@ -12,6 +13,7 @@ from auto_coder.implementation_slots import ImplementationOwner, ImplementationS
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
 BODY = "## Requirements\n- REQ-001: Return the current value."
 FINDING = SpecificationFinding("material_ambiguity", ("REQ-001",), "The current value is undefined.", "Define its source.", "", "")
@@ -89,6 +91,9 @@ class GitHubFlow:
         assert item_type == "issue"
         self.removals += 1
 
+    def get_open_sub_issues(self, _repo, _number):
+        return []
+
 
 def snapshot(title="Title", body=BODY, ready=True):
     return {"number": 1728, "title": title, "body": body, "labels": [{"name": "implementation-ready"}] if ready else []}
@@ -110,6 +115,209 @@ def test_production_dispatch_gate_rejects_stale_ready_before_slot(tmp_path):
     assert result.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
     engine._process_single_candidate_reserved.assert_not_called()
     assert not (tmp_path / "slots.json").exists()
+
+
+def test_production_dispatch_rejects_closed_ready_issue_before_slot(tmp_path):
+    closed = {**snapshot(), "state": "closed"}
+    github = GitHubFlow([closed])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Skipped - missing implementation-ready label"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+def test_processing_label_rejection_releases_newly_admitted_owner(tmp_path):
+    labeled = snapshot()
+    labeled["labels"].append("@auto-coder")
+    github = GitHubFlow([labeled, labeled, labeled])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    engine.config.CHECK_LABELS = True
+    candidate.data["labels"] = labeled["labels"]
+
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+    assert result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+def test_pre_admission_authoritative_failure_requests_refill_retry(tmp_path):
+    github = GitHubFlow([snapshot(), snapshot()])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    original = github.get_issue_dispatch_snapshot_strict
+    calls = 0
+
+    def fail_pre_admission(repo, number):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("temporary pre-admission outage")
+        return original(repo, number)
+
+    github.get_issue_dispatch_snapshot_strict = fail_pre_admission
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.refill_retry_required is True
+    assert "temporary pre-admission outage" in (result.error or "")
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+def test_open_child_rejects_parent_before_ownership(tmp_path):
+    github = GitHubFlow([snapshot(), snapshot()])
+    github.get_open_sub_issues = Mock(return_value=[1729])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+def test_real_refill_continues_from_parent_with_open_child_to_eligible_issue(tmp_path):
+    github = Mock()
+    issues = {
+        20: {**snapshot(title="Parent"), "number": 20, "state": "open", "labels": [{"name": "implementation-ready"}, {"name": "urgent"}]},
+        30: {**snapshot(title="Leaf"), "number": 30, "state": "open"},
+    }
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(20), OpenGitHubIssue(30)])
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(issues[number])
+    github.get_issue_details.side_effect = lambda issue: issue
+    github.get_open_sub_issues.side_effect = lambda _repo, number: [21] if number == 20 else []
+    github.get_item_type_strict.return_value = "issue"
+    github.try_add_labels.return_value = True
+    github.get_issue.side_effect = lambda _repo, number: issues[number]
+    engine = AutomationEngine(github, config=AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine._specification_validators["owner/repo"] = lifecycle(tmp_path, "READY")
+    dispatched = []
+    engine._process_single_candidate_reserved = Mock(side_effect=lambda _repo, candidate, *_args, **_kwargs: dispatched.append(candidate.data["number"]) or CandidateProcessingResult("issue", candidate.data["number"], success=True))
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert dispatched == [30]
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 30),)
+
+
+def test_elder_sibling_rejects_leaf_before_ownership(tmp_path):
+    child = snapshot()
+    github = GitHubFlow([child, child])
+    github.get_open_sub_issues = Mock(side_effect=lambda _repo, number: [19, 1728] if number == 10 else [])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    candidate.data["parent_issue_number"] = 10
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+def test_specification_error_keeps_real_refill_pending_then_admits(tmp_path):
+    github = Mock()
+    issue = {**snapshot(), "state": "open"}
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(1728)])
+    github.get_issue_dispatch_snapshot_strict.return_value = issue
+    github.get_issue_details.side_effect = lambda value: value
+    github.get_open_sub_issues.return_value = []
+    github.get_item_type_strict.return_value = "issue"
+    github.try_add_labels.return_value = True
+    github.get_issue.return_value = issue
+    decisions = Mock(side_effect=[SpecificationAnalysisResult("ERROR", error="outage"), SpecificationAnalysisResult("READY")])
+    engine = AutomationEngine(github, config=AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "retry.json", decisions)
+    dispatched = Mock(return_value=CandidateProcessingResult("issue", 1728, success=True))
+    engine._process_single_candidate_reserved = dispatched
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is False
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    dispatched.assert_called_once()
+
+
+def test_refill_builds_metadata_hierarchy_and_continues_past_younger_sibling(tmp_path):
+    github = Mock()
+    issues = {
+        10: {**snapshot(title="Parent"), "number": 10, "state": "open", "labels": ["implementation-ready", "breaking-change"]},
+        19: {**snapshot(title="Elder", ready=False), "number": 19, "body": "Parent-Issue: #10\n\n" + BODY, "state": "open"},
+        20: {**snapshot(title="Younger"), "number": 20, "body": "Parent-Issue: #10\n\n" + BODY, "state": "open", "labels": ["implementation-ready", "urgent"]},
+        30: {**snapshot(title="Eligible"), "number": 30, "state": "open"},
+    }
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number in issues])
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(issues[number])
+    github.get_issue_details.side_effect = lambda issue: issue
+    github.get_open_sub_issues.return_value = []
+    github.get_item_type_strict.return_value = "issue"
+    github.get_issue_comments_strict.return_value = []
+    github.try_add_labels.return_value = True
+    github.get_issue.side_effect = lambda _repo, number: issues[number]
+    engine = AutomationEngine(github, config=AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "metadata-slots.json")
+    engine._specification_validators["owner/repo"] = lifecycle(tmp_path, "READY", policy="metadata-validator")
+    dispatched = []
+    engine._process_single_candidate_reserved = Mock(side_effect=lambda _repo, candidate, *_args, **_kwargs: dispatched.append(candidate.data["number"]) or CandidateProcessingResult("issue", candidate.data["number"], success=True))
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert dispatched == [30]
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 30),)
+
+
+def test_hierarchy_uses_newly_authorized_parent_metadata(tmp_path):
+    old = {**snapshot(), "body": "Parent-Issue: #10\n\n" + BODY}
+    current = {**snapshot(), "body": "Parent-Issue: #11\n\n" + BODY}
+    github = GitHubFlow([current, current, current])
+    github.get_open_sub_issues = Mock(return_value=[])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    candidate.data.update(old)
+    candidate.data["refill_metadata_open_children"] = {11: [19, 20]}
+
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+
+
+@pytest.mark.parametrize(
+    "child_state,child_author,native_parent,expected_dispatch",
+    [
+        ("open", 999, None, 30),
+        ("closed", 1, None, 10),
+        ("open", 1, 11, 10),
+    ],
+)
+def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, child_state, child_author, native_parent, expected_dispatch):
+    def issue(number, title, labels, body=BODY, state="open", author=1):
+        return {
+            "number": number,
+            "title": title,
+            "body": body,
+            "state": state,
+            "labels": [{"name": label} for label in labels],
+            "user": {"login": f"user-{author}", "id": author},
+        }
+
+    issues = {
+        10: issue(10, "Parent", ["implementation-ready", "breaking-change"]),
+        20: issue(20, "Child", ["implementation-ready"], "Parent-Issue: #10\n\n" + BODY, child_state, child_author),
+        30: issue(30, "Fallback", ["implementation-ready"]),
+    }
+    GitHubClient.reset_singleton()
+    github = GitHubClient.get_instance(token="test-token")
+    github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number in issues]))
+    github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
+    github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
+    github.get_direct_sub_issues_strict = Mock(return_value=[])
+    github.get_open_sub_issues_strict = Mock(return_value=[])
+    github.get_item_type_strict = Mock(return_value="issue")
+    github.try_add_labels = Mock(return_value=True)
+    github.get_issue = Mock(side_effect=lambda _repo, number: issues[number])
+    config = AutomationConfig()
+    config.ISSUE_ALLOWLIST = [1]
+    engine = AutomationEngine(github, config=config)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / f"graph-{child_state}-{child_author}-{native_parent}.json")
+    engine._specification_validators["owner/repo"] = lifecycle(tmp_path, "READY", policy=f"graph-{child_state}-{child_author}-{native_parent}")
+    dispatched = []
+    engine._process_single_candidate_reserved = Mock(side_effect=lambda _repo, candidate, *_args, **_kwargs: dispatched.append(candidate.data["number"]) or CandidateProcessingResult("issue", candidate.data["number"], success=True))
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert dispatched == [expected_dispatch]
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", expected_dispatch),)
 
 
 def test_production_blocked_gate_generation_checks_and_deduplicates_effects(tmp_path):
