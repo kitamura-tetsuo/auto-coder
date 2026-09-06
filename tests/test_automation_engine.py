@@ -37,23 +37,23 @@ class TestAutomationEngine:
             def __init__(self):
                 self.token = "token"
                 self.hierarchy_reads = 0
-                self.parent_reads = 0
-                self.children = []
+                self.child_reads = 0
+                self.parent = None
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                if number == 2:
-                    self.parent_reads += 1
-                    if self.parent_reads == 9:
-                        self.children.append(1)
-                return None
+                return self.parent if number == 2 else None
 
             def get_direct_sub_issues_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                return [{"number": child} for child in self.children] if number == 2 else []
+                if number == 2:
+                    self.child_reads += 1
+                    if self.child_reads == 9:
+                        self.parent = 1
+                return []
 
         github = StrictGitHub()
         slots = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
@@ -61,7 +61,7 @@ class TestAutomationEngine:
         parent_execution = slots.start_execution(parent, github_client=github)
         assert parent_execution is not None
         slots.finish_execution(parent, parent_execution)
-        github.parent_reads = 0
+        github.child_reads = 0
         restarted = ImplementationSlotRepository("owner/repo", 3, tmp_path / "slots.json")
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = restarted
@@ -75,7 +75,7 @@ class TestAutomationEngine:
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        assert result.error and "final hierarchy confirmation" in result.error
+        assert result.error and "after final child confirmation" in result.error
         assert restarted.active_owners() == (parent,)
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
@@ -121,23 +121,23 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             def __init__(self):
                 self.token = "token"
                 self.hierarchy_reads = 0
-                self.parent_reads = 0
-                self.children = []
+                self.child_reads = 0
+                self.parent = None
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                if number == 2:
-                    self.parent_reads += 1
-                    if self.parent_reads == 3:
-                        self.children.append(1)
-                return None
+                return self.parent if number == 2 else None
 
             def get_direct_sub_issues_strict(self, _repo, number):
                 self.hierarchy_reads += 1
-                return [{"number": child} for child in self.children] if number == 2 else []
+                if number == 2:
+                    self.child_reads += 1
+                    if self.child_reads == 3:
+                        self.parent = 1
+                return []
 
         github = StrictGitHub()
         restarted = ImplementationSlotRepository("owner/repo", 3, storage_path)
@@ -149,7 +149,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        assert result.error and "final hierarchy confirmation" in result.error
+        assert result.error and "after final child confirmation" in result.error
         assert restarted.active_owners() == (ImplementationOwner("issue", 1), ImplementationOwner("issue", 2))
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
