@@ -14,8 +14,9 @@ def _manifest():
     )
 
 
-def _response(verdict="READY", findings=None):
-    return json.dumps({"verdict": verdict, "findings": findings or []})
+def _response(verdict="READY", findings=None, remediation=None):
+    remediation = remediation or ("EDIT_IN_PLACE" if verdict == "BLOCKED" else "NONE")
+    return json.dumps({"verdict": verdict, "remediation": remediation, "findings": findings or []})
 
 
 def _finding(category="hidden_requirement", requirement_ids=None):
@@ -69,6 +70,17 @@ def test_false_success_requires_written_counterexample_and_boundary():
     assert result.verdict == "BLOCKED"
     assert result.findings[0].requirement_ids == ("REQ-001",)
     assert result.findings[0].counterexample.startswith("Ordinary --only")
+
+
+@pytest.mark.parametrize(
+    ("verdict", "remediation"),
+    [("READY", "EDIT_IN_PLACE"), ("ERROR", "REISSUE_REQUIRED"), ("BLOCKED", "NONE"), ("BLOCKED", "UNKNOWN")],
+)
+def test_invalid_verdict_remediation_combinations_fail_closed(verdict, remediation):
+    findings = [_finding()] if verdict == "BLOCKED" else []
+    result = parse_specification_analysis_response(_response(verdict, findings, remediation), _manifest())
+    assert result.verdict == "ERROR"
+    assert result.remediation == "NONE"
 
 
 @pytest.mark.parametrize(

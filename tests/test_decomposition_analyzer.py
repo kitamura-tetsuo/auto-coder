@@ -46,8 +46,9 @@ def _finding(category="missing_requirement_ownership", issue_number=1730, requir
     }
 
 
-def _response(verdict="READY", findings=None):
-    return json.dumps({"verdict": verdict, "findings": findings or []})
+def _response(verdict="READY", findings=None, remediation=None):
+    remediation = remediation or ("EDIT_IN_PLACE" if verdict == "BLOCKED" else "NONE")
+    return json.dumps({"verdict": verdict, "remediation": remediation, "findings": findings or []})
 
 
 def test_authoritative_manifest_origin_reaches_complete_set_analysis_unchanged():
@@ -104,6 +105,13 @@ def test_every_stable_blocked_category_is_preserved(category):
     assert result.findings[0].category == category
     assert result.findings[0].affected_issues[0].issue_number == 1730
     assert result.findings[0].affected_issues[0].requirement_ids == ("REQ-001",)
+
+
+def test_reissue_required_is_preserved_as_blocked_remediation():
+    parent, children = _set()
+    result = parse_decomposition_analysis_response(_response("BLOCKED", [_finding()], "REISSUE_REQUIRED"), parent, children)
+    assert result.verdict == "BLOCKED"
+    assert result.remediation == "REISSUE_REQUIRED"
 
 
 @pytest.mark.parametrize(

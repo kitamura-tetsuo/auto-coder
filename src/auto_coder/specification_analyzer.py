@@ -41,6 +41,7 @@ class SpecificationAnalysisResult:
     verdict: str
     findings: tuple[SpecificationFinding, ...] = ()
     error: Optional[str] = None
+    remediation: str = "NONE"
 
     @property
     def is_ready(self) -> bool:
@@ -68,12 +69,17 @@ def parse_specification_analysis_response(response: str, manifest: NormativeIssu
     except (json.JSONDecodeError, TypeError, ValueError):
         return _error("Specification analyzer returned unparsable JSON")
 
-    if not isinstance(payload, dict) or set(payload) != {"verdict", "findings"}:
+    if not isinstance(payload, dict) or set(payload) != {"verdict", "remediation", "findings"}:
         return _error("Specification analyzer output does not match the required top-level schema")
     verdict = payload["verdict"]
+    remediation = payload["remediation"]
     raw_findings = payload["findings"]
     if not isinstance(verdict, str) or verdict not in {"READY", "BLOCKED", "ERROR"} or not isinstance(raw_findings, list):
         return _error("Specification analyzer output contains an invalid verdict or findings value")
+    if remediation not in {"NONE", "EDIT_IN_PLACE", "REISSUE_REQUIRED"}:
+        return _error("Specification analyzer output contains an invalid remediation")
+    if (verdict in {"READY", "ERROR"} and remediation != "NONE") or (verdict == "BLOCKED" and remediation not in {"EDIT_IN_PLACE", "REISSUE_REQUIRED"}):
+        return _error("Specification analyzer verdict contradicts its remediation")
     if verdict == "ERROR":
         if raw_findings:
             return _error("An ERROR verdict cannot contain findings")
@@ -116,7 +122,7 @@ def parse_specification_analysis_response(response: str, manifest: NormativeIssu
 
     if (verdict == "READY" and findings) or (verdict == "BLOCKED" and not findings):
         return _error("Specification analyzer verdict contradicts its findings")
-    return SpecificationAnalysisResult(verdict=verdict, findings=tuple(findings))
+    return SpecificationAnalysisResult(verdict=verdict, findings=tuple(findings), remediation=remediation)
 
 
 def analyze_issue_specification(
