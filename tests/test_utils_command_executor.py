@@ -196,3 +196,58 @@ def test_strip_ansi_sequences_removes_csi_and_osc():
 def test_strip_ansi_sequences_keeps_plain_text():
     assert utils.strip_ansi_sequences("plain text") == "plain text"
     assert utils.strip_ansi_sequences("") == ""
+
+
+def test_run_command_auto_resolves_git_dubious_ownership(monkeypatch):
+    """CommandExecutor should auto-configure safe.directory and retry when git detects dubious ownership."""
+    streaming_calls = []
+
+    def mock_streaming(*args, **kwargs):
+        streaming_calls.append((args, kwargs))
+        if len(streaming_calls) == 1:
+            return (
+                128,
+                "",
+                "fatal: detected dubious ownership in repository at '/test/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /test/repo\n",
+            )
+        return (0, "main\n", "")
+
+    subprocess_calls = []
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        subprocess_calls.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(utils.CommandExecutor, "_run_with_streaming", mock_streaming)
+    monkeypatch.setattr(utils.subprocess, "run", mock_subprocess_run)
+
+    result = utils.CommandExecutor.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], stream_output=False)
+
+    assert result.success is True
+    assert result.returncode == 0
+    assert result.stdout == "main\n"
+    assert len(streaming_calls) == 2
+    assert ["git", "config", "--global", "--add", "safe.directory", "/test/repo"] in subprocess_calls
+
+
+def test_run_command_git_dubious_ownership_subprocess_failure(monkeypatch):
+    """CommandExecutor should handle errors gracefully if configuring safe.directory raises."""
+    mock_streaming = MagicMock(
+        return_value=(
+            128,
+            "",
+            "fatal: detected dubious ownership in repository at '/test/repo'\n",
+        )
+    )
+
+    def mock_subprocess_run(*args, **kwargs):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(utils.CommandExecutor, "_run_with_streaming", mock_streaming)
+    monkeypatch.setattr(utils.subprocess, "run", mock_subprocess_run)
+
+    result = utils.CommandExecutor.run_command(["git", "status"], stream_output=False)
+
+    assert result.success is False
+    assert result.returncode == 128
+    assert "dubious ownership" in result.stderr

@@ -106,8 +106,8 @@ def process_issues(
     parent_context = click.get_current_context().parent
     operator_force = bool(parent_context and parent_context.params.get("force"))
 
-    # Get repository name (from parameter or auto-detect)
-    repo_name = get_repo_or_detect(repo)
+    # Get repository name (from parameter, auto-detect, or --only URL)
+    repo_name = get_repo_or_detect(repo, fallback_url=only_target)
     from .deployment_channel import validate_repository_ownership
 
     validate_repository_ownership(repo_name)

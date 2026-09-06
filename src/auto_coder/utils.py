@@ -706,6 +706,31 @@ class CommandExecutor:
                     use_pty=use_pty,
                 )
 
+            # Auto-resolve git dubious ownership in container / multi-user environments
+            if return_code != 0 and cmd and cmd[0] == "git" and "detected dubious ownership in repository" in stderr:
+                dubious_match = re.search(r"detected dubious ownership in repository at '([^']+)'", stderr)
+                dubious_path = dubious_match.group(1) if dubious_match else (cwd or os.getcwd())
+                logger.warning(f"Git detected dubious ownership for '{dubious_path}'. Adding to safe.directory and retrying.")
+                try:
+                    subprocess.run(
+                        ["git", "config", "--global", "--add", "safe.directory", dubious_path],
+                        check=False,
+                        timeout=10,
+                    )
+                    return_code, stdout, stderr = cls._run_with_streaming(
+                        cmd,
+                        timeout,
+                        cwd,
+                        effective_env,
+                        on_stream,
+                        dot_format,
+                        idle_timeout=idle_timeout,
+                        log_output=should_stream,
+                        use_pty=use_pty,
+                    )
+                except Exception as ex:
+                    logger.debug(f"Failed to auto-configure safe.directory: {ex}")
+
             success = return_code == 0
 
             return CommandResult(success=success, stdout=stdout, stderr=stderr, returncode=return_code)
