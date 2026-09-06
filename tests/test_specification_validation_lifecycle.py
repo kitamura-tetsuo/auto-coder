@@ -406,7 +406,7 @@ def test_concurrent_force_and_ordinary_paths_cannot_both_dispatch(tmp_path):
     assert second_result.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
 
 
-def test_changed_generation_revalidation_defers_until_live_implementation_finishes(tmp_path):
+def test_changed_generation_revalidates_while_live_implementation_remains_owned(tmp_path):
     state = {1728: snapshot(body=BODY + " A")}
     validation_b_started = Event()
 
@@ -419,7 +419,7 @@ def test_changed_generation_revalidation_defers_until_live_implementation_finish
     def analyze(_manifest, body):
         if body.endswith(" B"):
             validation_b_started.set()
-            assert ImplementationOwner("issue", 1728) not in engine.implementation_slots.active_owners()
+            assert ImplementationOwner("issue", 1728) in engine.implementation_slots.active_owners()
             return SpecificationAnalysisResult("BLOCKED", (FINDING,))
         return SpecificationAnalysisResult("READY")
 
@@ -438,21 +438,14 @@ def test_changed_generation_revalidation_defers_until_live_implementation_finish
         running = pool.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config)
         assert entered.wait(5)
         state[1728] = snapshot(body=BODY + " B")
-        deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-        assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
-        assert not validation_b_started.is_set()
+        revalidated = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        assert revalidated.actions == ["Rejected - blocked specification"]
+        assert validation_b_started.is_set()
         owner = ImplementationOwner("issue", 1728)
         assert engine.implementation_slots.active_execution_ids(owner)
         release.set()
         assert running.result(timeout=5).success is True
-
-    engine._process_single_candidate_reserved = Mock()
-    blocked = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert validation_b_started.is_set()
-    assert blocked.actions == ["Rejected - blocked specification"]
-    engine._process_single_candidate_reserved.assert_not_called()
     assert engine.implementation_slots.active_execution_ids(owner) == ()
-    assert owner not in engine.implementation_slots.active_owners()
 
 
 def test_resubmitted_unchanged_blocked_generation_removes_label_again_after_restart(tmp_path):
@@ -531,7 +524,7 @@ def test_supported_alias_provider_change_invalidates_production_policy(monkeypat
     assert '"provider":"claude"' in claude_identity
 
 
-def test_async_logical_owner_defers_changed_generation_validation(tmp_path):
+def test_async_logical_owner_allows_changed_generation_validation(tmp_path):
     """A remote implementation owner remains authoritative after launch execution returns."""
     state = {"body": BODY + " A"}
     analyzed = []
@@ -571,7 +564,7 @@ def test_async_logical_owner_defers_changed_generation_validation(tmp_path):
     state["body"] = BODY + " B"
     deferred = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
-    assert analyzed == [BODY + " A"]
+    assert analyzed == [BODY + " A", BODY + " B"]
     assert owner in engine.implementation_slots.active_owners()
 
 

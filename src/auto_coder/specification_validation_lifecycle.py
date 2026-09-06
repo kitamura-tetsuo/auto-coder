@@ -185,7 +185,12 @@ class SpecificationValidationLifecycle:
                 self.store.save(decision)
             return decision
 
-    def apply_blocked(self, github: object, decision: ValidationDecision) -> Optional[str]:
+    def apply_blocked(
+        self,
+        github: object,
+        decision: ValidationDecision,
+        submission_is_current: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
         """Apply idempotent effects only while BLOCKED evidence is authoritative."""
         issue_number = decision.identity.issue_number
         expected_identity = decision.identity
@@ -199,7 +204,9 @@ class SpecificationValidationLifecycle:
                 if not isinstance(snapshot, dict) or not is_implementation_ready(snapshot):
                     return None
                 identity = self.identity(issue_number, str(snapshot.get("title") or ""), str(snapshot.get("body") or ""))
-                return snapshot if identity == expected_identity else None
+                if identity != expected_identity or (submission_is_current is not None and not submission_is_current()):
+                    return None
+                return snapshot
 
             # A changed/withdrawn submission must not receive stale effects. It is
             # not an operational failure: the old generation simply remains blocked.

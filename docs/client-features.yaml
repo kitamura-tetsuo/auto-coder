@@ -25,6 +25,19 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 ## Implementation-ready Issue dispatch gate
 
+Before classifying or snapshotting any readiness submission, Auto-Coder examines
+every line-form `Parent-Issue`, `Parent_Issue`, or `Parent Issue` declaration,
+rejects malformed, ambiguous, self-referential, contradictory, missing, PR, and
+structurally rejected targets, and materializes one valid same-repository target
+as the native GitHub parent. Transport, authorization, rate-limit, and service
+failures remain retryable operational failures. The Issue and its native graph
+are fetched again after reconciliation; body metadata is never used as a second
+parenthood oracle by validation or implementation. Every authoritative direct
+child, including closed children, is reconciled before a parent-set identity is
+created. Explicit processing observes the same creation-anchored one-minute
+stabilization window as webhook and startup recovery, and changed identities can
+be validated while existing implementation ownership remains intact.
+
 An Issue can enter implementation only while its current authoritative GitHub
 snapshot contains the `implementation-ready` label. Auto-Coder checks this
 cache-bypassing snapshot at the shared pre-dispatch boundary before reserving an
