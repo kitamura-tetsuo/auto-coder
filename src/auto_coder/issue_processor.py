@@ -67,7 +67,6 @@ def _take_issue_actions(
     config: AutomationConfig,
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
-    check_labels: Optional[bool] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation.
@@ -75,9 +74,6 @@ def _take_issue_actions(
     Args:
         backend_manager: Backend manager used for the implementation run.
             Defaults to the current LLM backend manager.
-        check_labels: Whether an existing @auto-coder label blocks processing.
-            Defaults to ``config.CHECK_LABELS``. Pass False when this run already
-            owns the label and must keep it in place.
     """
     actions = []
     issue_number = issue_data["number"]
@@ -108,7 +104,6 @@ def _take_issue_actions(
                 config,
                 github_client,
                 backend_manager=backend_manager,
-                check_labels=check_labels,
             )
         else:
             action_results = _apply_issue_actions_directly(
@@ -117,7 +112,6 @@ def _take_issue_actions(
                 config,
                 github_client,
                 backend_manager=backend_manager,
-                check_labels=check_labels,
                 implementation_slots=implementation_slots,
             )
         actions.extend(action_results)
@@ -212,13 +206,6 @@ def _process_issue_jules_mode(
             github_client.add_comment_to_issue(repo_name, issue_number, comment_body)
             actions.append(f"Commented on issue #{issue_number} with Jules session ID")
             logger.info(f"Added comment with session ID to issue #{issue_number}")
-
-            # Add @auto-coder label
-            try:
-                github_client.add_labels(repo_name, issue_number, ["@auto-coder"])
-                logger.info(f"Added @auto-coder label to issue #{issue_number}")
-            except Exception as e:
-                logger.warning(f"Failed to add @auto-coder label to issue #{issue_number}: {e}")
 
         except Exception as e:
             logger.warning(f"Failed to add comment to issue #{issue_number}: {e}")
@@ -324,12 +311,6 @@ def _process_issue_claude_routine_mode(
             actions.append(f"Commented on issue #{issue_number} with Claude Routine session ID")
             logger.info(f"Added comment with session ID to issue #{issue_number}")
 
-            try:
-                github_client.add_labels(repo_name, issue_number, ["@auto-coder"])
-                logger.info(f"Added @auto-coder label to issue #{issue_number}")
-            except Exception as e:
-                logger.warning(f"Failed to add @auto-coder label to issue #{issue_number}: {e}")
-
         except Exception as e:
             logger.warning(f"Failed to add comment to issue #{issue_number}: {e}")
             actions.append(f"Warning: Could not comment on issue #{issue_number}")
@@ -432,8 +413,6 @@ def _process_issue_codex_cloud_mode(
     if task_url:
         comment += f"\n\n{task_url}"
     github_client.add_comment_to_issue(repo_name, issue_number, comment)
-    github_client.add_labels(repo_name, issue_number, ["@auto-coder"])
-
     if label_context:
         label_context.keep_label()
 
@@ -534,7 +513,6 @@ def _process_issue_high_score_cloud(
         config,
         github_client,
         backend_manager=backend_manager,
-        check_labels=False,
         implementation_slots=implementation_slots,
     )
 
@@ -633,7 +611,6 @@ def _process_issue_cloud_backend(
         config,
         github_client,
         backend_manager=backend_manager,
-        check_labels=False,
         implementation_slots=implementation_slots,
     )
 
@@ -885,8 +862,6 @@ def handle_stale_jules_issue_sessions(
 
                     # The @auto-coder label the Jules run left on the issue is kept so no other
                     # instance picks the issue up while the fallback is working on it. Passing
-                    # check_labels=False makes the label gate let this run through instead of
-                    # skipping the issue it already owns.
                     result.actions.extend(
                         _take_issue_actions(
                             repo_name,
@@ -894,7 +869,6 @@ def handle_stale_jules_issue_sessions(
                             config,
                             github_client,
                             backend_manager=backend_manager,
-                            check_labels=False,
                             implementation_slots=implementation_slots,
                         )
                     )
@@ -1101,7 +1075,6 @@ def _apply_issue_actions_directly(
     config: AutomationConfig,
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
-    check_labels: Optional[bool] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly.
@@ -1109,9 +1082,6 @@ def _apply_issue_actions_directly(
     Args:
         backend_manager: Backend manager used for the implementation run.
             Defaults to the current LLM backend manager.
-        check_labels: Whether an existing @auto-coder label blocks processing.
-            Defaults to ``config.CHECK_LABELS``. Pass False when this run already
-            owns the label and must keep it in place.
     """
     issue_number = issue_data.get("number", "unknown")
     actions: List[str] = []
@@ -1222,7 +1192,6 @@ def _apply_issue_actions_directly(
             issue_number,
             item_type="issue",
             config=config,
-            check_labels=config.CHECK_LABELS if check_labels is None else check_labels,
             known_labels=issue_data.get("labels"),
         ) as should_process:
             if not should_process:

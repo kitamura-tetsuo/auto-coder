@@ -6,6 +6,7 @@ A Jules session that works on an issue for longer than
 implemented by the backend_with_high_score backend instead.
 """
 
+import inspect
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -154,9 +155,8 @@ class TestHandleStaleJulesIssueSessions:
         increment.assert_called_once_with("owner/repo", 42)
         assert "Incremented attempt for issue #42 to 3" in result.actions
 
-        # The @auto-coder label stays on the issue so no other instance picks it up,
-        # and the label gate must not skip the fallback run because of it
-        assert take_actions.call_args.kwargs["check_labels"] is False
+        # Durable ownership, rather than a GitHub label override, admits fallback work.
+        assert "check_labels" not in take_actions.call_args.kwargs
         github_client.remove_labels.assert_not_called()
 
         # The issue gets a comment explaining the hand-over
@@ -437,62 +437,14 @@ class TestAutomationEngineHook:
             assert engine.handle_stale_jules_issue_sessions("owner/repo") == []
 
 
-class TestLabelGateOverride:
+class TestRetiredLabelGate:
     """The fallback run keeps the label it inherited and is not blocked by it."""
 
-    def _cmd_result(self, success=True, stdout="", stderr="", returncode=0):
-        result = MagicMock()
-        result.success = success
-        result.stdout = stdout
-        result.stderr = stderr
-        result.returncode = returncode
-        return result
-
-    def _run_with_label_manager(self, check_labels):
-        from contextlib import contextmanager
-
+    def test_processing_scope_has_no_label_gate_configuration(self):
+        """The production origin cannot pass a retired label-gate override."""
         from src.auto_coder.issue_processor import _apply_issue_actions_directly
 
-        captured = {}
-
-        @contextmanager
-        def fake_label_manager(*args, **kwargs):
-            captured.update(kwargs)
-            yield False  # stop right after the label gate
-
-        @contextmanager
-        def fake_branch_context(*_args, **_kwargs):
-            yield
-
-        github_client = MagicMock()
-        github_client.get_parent_issue_details.return_value = None
-        github_client.get_all_sub_issues.return_value = []
-
-        with (
-            patch("src.auto_coder.issue_processor.cmd") as mock_cmd,
-            patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager),
-            patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context),
-            patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"),
-            patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2),
-        ):
-            mock_cmd.run_command.return_value = self._cmd_result(success=True)
-            _apply_issue_actions_directly(
-                "owner/repo",
-                {"number": 4636, "title": "Test Issue"},
-                AutomationConfig(),
-                github_client,
-                check_labels=check_labels,
-            )
-
-        return captured
-
-    def test_check_labels_override_reaches_label_manager(self):
-        """check_labels=False lets the run through the gate it already owns."""
-        assert self._run_with_label_manager(check_labels=False)["check_labels"] is False
-
-    def test_check_labels_defaults_to_config(self):
-        """Without an override the configured behaviour is unchanged."""
-        assert self._run_with_label_manager(check_labels=None)["check_labels"] == AutomationConfig().CHECK_LABELS
+        assert "check_labels" not in inspect.signature(_apply_issue_actions_directly).parameters
 
 
 def test_daemon_stale_session_stops_old_generation_but_starts_no_replacement_on_error(config, tmp_path):

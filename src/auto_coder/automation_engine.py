@@ -1533,7 +1533,6 @@ class AutomationEngine:
                     pr_number,
                     item_type="pr",
                     skip_label_add=True,
-                    check_labels=self.config.CHECK_LABELS,
                     known_labels=pr_data.get("labels"),
                 ) as should_process:
                     if not should_process:
@@ -1758,7 +1757,6 @@ class AutomationEngine:
                     number,
                     item_type="issue",
                     skip_label_add=True,
-                    check_labels=self.config.CHECK_LABELS,
                     known_labels=labels,
                 ) as should_process:
                     if not should_process:
@@ -2404,12 +2402,6 @@ class AutomationEngine:
                 result.actions = ["Skipped - unresolved Issue hierarchy dependency"]
                 return result
 
-            dispatch_labels = candidate.data.get("labels", []) or []
-            dispatch_label_names = {label if isinstance(label, str) else label.get("name") for label in dispatch_labels if isinstance(label, (str, dict))}
-            if config.CHECK_LABELS and not force and not advance_issue_attempt and "@auto-coder" in dispatch_label_names:
-                result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
-                return result
-
         # Validation and other authorization work above belongs to the already
         # started critical operation and may publish its decision. A drain that
         # arrived while it ran must stop before implementation ownership or any
@@ -2652,7 +2644,6 @@ class AutomationEngine:
                 # A replacement attempt continues the Issue's existing logical
                 # ownership. Its retained @auto-coder label belongs to this
                 # lifecycle, not another worker, so it must not reject the handoff.
-                check_labels=config.CHECK_LABELS and not force_adversarial_validation and not advance_issue_attempt,
                 known_labels=candidate.data.get("labels") if candidate.data else None,
             ) as should_process:
                 if not should_process:

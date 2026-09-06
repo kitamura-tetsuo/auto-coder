@@ -392,9 +392,9 @@ class TestUnlockAndRetryLinkedIssue:
 
         result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
 
-        github_client.remove_labels.assert_called_once_with("owner/repo", 4636, [config.AUTO_CODER_LABEL], item_type="issue")
+        github_client.remove_labels.assert_not_called()
         assert result.issue_numbers == [4636]
-        assert any(f"Removed {config.AUTO_CODER_LABEL} label from issue #4636" in action for action in result.actions)
+        assert not any("Removed @auto-coder" in action for action in result.actions)
 
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_close_keeps_issue_label_when_labels_disabled(self, mock_increment):

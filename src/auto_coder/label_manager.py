@@ -6,26 +6,16 @@ consistent error handling and logging.
 """
 
 import re
-import threading
-import time
-from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Dict, Generator, Iterable, List, Optional, Union
-
-from github.GithubException import GithubException
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from .automation_config import AutomationConfig
-from .logger_config import get_logger
-from .util.gh_cache import GitHubClient
-
-logger = get_logger(__name__)
 
 # The exact, raw legacy processing-lock label. Once @auto-coder is retired as
 # a lifecycle lock, it must still be treated as semantically inert wherever
 # labels are turned into LLM prompt content or semantic PR-label decisions
 # (FTR-1792). This is intentionally a literal constant, not
-# AutomationConfig.AUTO_CODER_LABEL: the filter must keep suppressing the
-# exact historical label text even if that config field is ever repurposed.
+# The filter must always suppress the exact historical label text.
 LEGACY_AUTO_CODER_LABEL = "@auto-coder"
 
 
@@ -339,26 +329,13 @@ def resolve_pr_labels_with_priority(
 
 
 class LabelOperationError(Exception):
-    """Exception raised when label operations fail."""
-
-    pass
+    """Retained for errors from semantic label operations."""
 
 
 class LabelManagerContext:
-    """Context object returned by LabelManager.__enter__.
+    """Context object shared with asynchronous provider dispatch helpers."""
 
-    This class maintains backward compatibility by implementing __bool__,
-    while also providing a keep_label() method to allow retaining the label.
-
-    Usage:
-        with LabelManager(...) as context:
-            if not context:
-                return
-            # Process
-            context.keep_label()  # Keep the label on exit
-    """
-
-    def __init__(self, label_manager: "LabelManager", should_process: bool):
+    def __init__(self, label_manager: "LabelManager", should_process: bool = True):
         """Initialize the context object.
 
         Args:
@@ -367,73 +344,28 @@ class LabelManagerContext:
         """
         self._label_manager = label_manager
         self._should_process = should_process
-        self._keep_label_on_exit = False
 
     def __bool__(self) -> bool:
-        """Return whether processing should continue (backward compatibility)."""
+        """Return whether durable lifecycle admission allows processing."""
         return self._should_process
 
     def keep_label(self) -> None:
-        """Set flag to keep the label on exit instead of removing it."""
-        self._keep_label_on_exit = True
+        """Retain processing context state for asynchronous work."""
 
     def remove_label(self) -> None:
-        """Explicitly remove the label."""
-        self._label_manager.remove_label()
+        """End the processing context without mutating GitHub labels."""
 
     def _should_remove_label(self) -> bool:
-        """Check if the label should be removed on exit.
-
-        Returns:
-            True if label should be removed, False otherwise
-        """
-        return not self._keep_label_on_exit
+        """Historical labels are never removed by a processing scope."""
+        return False
 
 
 class LabelManager:
-    _active_items: set[tuple[int, Union[int, str]]] = set()
+    """Side-effect-free processing scope.
 
-    """Context manager for unified @auto-coder label operations.
-
-    This context manager automatically handles adding, verifying, and removing
-    the @auto-coder label for issues and PRs, providing a clean API that ensures
-    proper resource cleanup even when exceptions occur.
-
-    Usage:
-        with LabelManager(github_client, repo_name, item_number, item_type="issue") as should_process:
-            if not should_process:
-                # Label was already present, another instance is processing
-                return
-
-            # Process the issue/PR
-            perform_work()
-
-    The context manager will:
-    1. Check if @auto-coder label exists on entry
-    2. Add the label if it doesn't exist (returns True to continue)
-    3. Return False if label already exists (another instance is processing)
-    4. Verify the label was successfully added
-    5. Automatically remove the label on exit (normal or exceptional)
-    6. Handle errors gracefully with retry logic
-
-    Args:
-        github_client: GitHub client instance
-        repo_name: Repository name (owner/repo)
-        item_number: Issue or PR number
-        item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
-        label_name: Name of the label to manage, defaults to '@auto-coder'
-        config: AutomationConfig instance
-        max_retries: Maximum number of retries for label operations, defaults to 3
-        retry_delay: Delay in seconds between retries, defaults to 1.0
-
-    Returns:
-        bool: True if label was successfully added and processing should continue,
-              False if label already exists (another instance is processing)
-        In skip_label_add mode: True if label does not exist (should process),
-              False if label exists (should not process)
-
-    Raises:
-        LabelOperationError: If label operations fail after all retries
+    Durable admission repositories now own lifecycle exclusion.  This small scope
+    remains while processor call sites use its context object for asynchronous
+    session bookkeeping; it deliberately never reads or writes GitHub labels.
     """
 
     def __init__(
@@ -442,301 +374,20 @@ class LabelManager:
         repo_name: str,
         item_number: Union[int, str],
         item_type: str = "issue",
-        label_name: str = "@auto-coder",
-        config: Optional[AutomationConfig] = None,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
+        config: Optional[Any] = None,
         skip_label_add: bool = False,
-        check_labels: bool = True,
         known_labels: Optional[List[Any]] = None,
     ):
-        """Initialize LabelManager context manager.
-
-        Args:
-            github_client: GitHub client instance
-            repo_name: Repository name (owner/repo)
-            item_number: Issue or PR number
-            item_type: Type of item ('issue' or 'pr')
-            label_name: Name of the label to manage
-            config: AutomationConfig instance
-            max_retries: Maximum number of retries for label operations
-            retry_delay: Delay in seconds between retries
-            skip_label_add: When True, only check for existing labels without adding.
-            check_labels: When False, skip the existing label check to bypass label verification.
-            known_labels: Optional list of known labels to avoid API calls for existence check.
-        Returns True if label does not exist (should process), False if label exists (should not process).
-        """
-        self.github_client = github_client
-        self.repo_name = repo_name
-        self.item_number = item_number
-        self.item_type = item_type
-        self.label_name = label_name
-        self.config = config
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        self.skip_label_add = skip_label_add
-        self.check_labels = check_labels
-
-        # Normalize known_labels to a list of strings
-        self.known_labels: Optional[List[str]] = None
-        if known_labels is not None:
-            self.known_labels = []
-            for label in known_labels:
-                if isinstance(label, str):
-                    self.known_labels.append(label)
-                elif isinstance(label, dict) and "name" in label:
-                    self.known_labels.append(label["name"])
-                elif hasattr(label, "name"):
-                    self.known_labels.append(label.name)
-
-        self._lock = threading.Lock()
-        self._label_added = False
-        self._reentered = False
-        self._context: Optional[LabelManagerContext] = None
+        """Create an admitted, label-independent processing scope."""
+        self._context = LabelManagerContext(self)
 
     def __enter__(self) -> LabelManagerContext:
-        """Enter the context manager - add label and return context object.
-
-        Returns:
-            LabelManagerContext: Context object with __bool__ for backward compatibility
-                                and keep_label() method for retaining the label.
-        """
-        # Reentrancy detection - check if this (thread, item) combination is already active
-        ident = threading.get_ident()
-        item_key = (ident, self.item_number)
-        if item_key in LabelManager._active_items:
-            self._reentered = True
-            logger.debug(f">>> Should process. Already active for this item in this thread for {self.item_type} #{self.item_number}")
-            # Create context with should_process=True for reentrancy
-            self._context = LabelManagerContext(self, True)
-            return self._context
-        else:
-            self._reentered = False
-            LabelManager._active_items.add(item_key)
-            logger.debug(f">>> Entering context (first time for this item in this thread) for {self.item_type} #{self.item_number}")
-
-        # Use lock to ensure thread-safe operations
-        with self._lock:
-            # Check if labels are disabled
-            if self._is_labels_disabled():
-                logger.debug(f"Labels disabled - proceeding without label management for {self.item_type} #{self.item_number}")
-                # In check-only mode, always return True when labels are disabled
-                if self.skip_label_add:
-                    self._context = LabelManagerContext(self, True)
-                    return self._context
-                self._context = LabelManagerContext(self, True)
-                return self._context
-
-            # Check-only mode: only verify label existence without adding
-            if self.skip_label_add:
-                logger.debug(f"Check-only mode: verifying if '{self.label_name}' label exists on {self.item_type} #{self.item_number}")
-                # Use helper that fails-open (returns True to continue on errors)
-                should_process = self._check_label_exists()
-                self._context = LabelManagerContext(self, should_process)
-                return self._context
-
-            # Normal mode: add label with retry logic
-            # When check_labels=False (WIP mode), skip pre-check and proceed
-            if self.check_labels:
-                # First, pre-check if the label already exists to avoid redundant edits
-                try:
-                    should_process = self._check_label_exists()
-                    if not should_process:
-                        logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label already exists")
-                        self._context = LabelManagerContext(self, False)
-                        return self._context
-                except Exception:
-                    # _check_label_exists() is defensive and should not raise, but guard anyway
-                    pass
-            else:
-                logger.debug(f"check_labels=False - skipping existing label check for {self.item_type} #{self.item_number}")
-
-            # Try to add the label with retry logic
-            for attempt in range(self.max_retries):
-                try:
-                    # Use the generic method for adding labels
-                    result = self.github_client.try_add_labels(
-                        self.repo_name,
-                        int(self.item_number),
-                        [self.label_name],
-                        item_type=self.item_type,
-                    )
-                    if result:
-                        self._label_added = True
-                        self._context = LabelManagerContext(self, True)
-                        return self._context
-                    elif not self.check_labels:
-                        # Explicitly requested work (--only / WIP resume): the label must not
-                        # gate processing. It is left untouched because this run does not own it.
-                        logger.info(f"Processing {self.item_type} #{self.item_number} despite the existing '{self.label_name}' label (check_labels=False)")
-                        self._context = LabelManagerContext(self, True)
-                        return self._context
-                    else:
-                        logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance")
-                        self._context = LabelManagerContext(self, False)
-                        return self._context
-
-                except Exception as e:
-                    if attempt < self.max_retries - 1:
-                        logger.warning(f"Failed to add '{self.label_name}' label to {self.item_type} #{self.item_number} " f"(attempt {attempt + 1}/{self.max_retries}): {e}. Retrying in {self.retry_delay}s...")
-                        time.sleep(self.retry_delay)
-                    else:
-                        logger.error(f"Failed to add '{self.label_name}' label to {self.item_type} #{self.item_number} " f"after {self.max_retries} attempts: {e}")
-                        # On error, allow processing to continue
-                        self._context = LabelManagerContext(self, True)
-                        return self._context
-
-            # Should not reach here, but just in case
-            self._context = LabelManagerContext(self, True)
-            return self._context
+        """Enter the processing scope without consulting GitHub labels."""
+        return self._context
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Exit the context manager - remove label if it was added and not retained.
-
-        Args:
-            exc_type: Exception type (if any)
-            exc_val: Exception value (if any)
-            exc_tb: Exception traceback (if any)
-        """
-        # Reentrancy detection - skip exit if this is a reentrant call
-        ident = threading.get_ident()
-        item_key = (ident, self.item_number)
-        if self._reentered:
-            logger.debug(f">>> Skipping exit (reentrant) for {self.item_type} #{self.item_number}")
-            return
-
-        logger.debug(f">>> Exiting context for {self.item_type} #{self.item_number}")
-        # Always clean up thread tracking
-        LabelManager._active_items.discard(item_key)
-
-        # In check-only mode, never remove labels
-        if self.skip_label_add:
-            logger.debug(f"Check-only mode: skipping label removal for {self.item_type} #{self.item_number}")
-            return
-
-        # Check if the context has the keep_label flag set
-        if hasattr(self, "_context") and self._context and not self._context._should_remove_label():
-            logger.debug(f"Keeping '{self.label_name}' label on exit as requested for {self.item_type} #{self.item_number}")
-            return
-
-        # Use lock to ensure thread-safe operations
-        with self._lock:
-            # Only remove label if we added it and labels are not disabled
-            if not self._label_added or self._is_labels_disabled():
-                return
-
-            self._remove_label_internal()
+        """Exit the processing scope without mutating GitHub labels."""
+        return None
 
     def remove_label(self) -> None:
-        """Explicitly remove the managed label."""
-        with self._lock:
-            self._remove_label_internal()
-
-    def _remove_label_internal(self) -> None:
-        """Internal helper to remove label with retry logic."""
-        # Remove the label with retry logic
-        for attempt in range(self.max_retries):
-            try:
-                # Respect the item type ("issue" vs "pr") so logs and GitHub API paths are consistent
-                self.github_client.remove_labels(
-                    self.repo_name,
-                    self.item_number,
-                    [self.label_name],
-                    self.item_type,
-                )
-                logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
-                return
-
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    logger.warning(f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} " f"(attempt {attempt + 1}/{self.max_retries}): {e}. Retrying in {self.retry_delay}s...")
-                    time.sleep(self.retry_delay)
-                else:
-                    logger.error(f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} " f"after {self.max_retries} attempts: {e}")
-                    # Log but don't raise - we don't want to break the cleanup process
-                    return
-
-    def _check_label_exists(self) -> bool:
-        """Check whether the target label exists and decide if processing should continue.
-
-        Returns:
-            True: proceed with processing (label does NOT exist or check failed)
-            False: skip processing (label already exists)
-        """
-        try:
-            # Optimization: Use known_labels if provided to avoid API calls
-            if self.known_labels is not None:
-                if self.label_name in self.known_labels:
-                    logger.debug(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label (checked via known_labels) - skipping")
-                    return False
-                else:
-                    logger.debug(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label (checked via known_labels) - will process")
-                    return True
-
-            # Prefer dedicated has_label() when using a real GitHubClient instance or a mock with has_label
-            # Check if client is a GitHubClient instance OR has a callable has_label method
-            if isinstance(self.github_client, GitHubClient) or (hasattr(self.github_client, "has_label") and callable(getattr(self.github_client, "has_label", None))):
-                exists = self.github_client.has_label(
-                    self.repo_name,
-                    int(self.item_number),
-                    self.label_name,
-                    self.item_type,
-                )
-                # In tests, a Mock(spec=GitHubClient) may return a Mock here; only trust booleans
-                if isinstance(exists, bool):
-                    if exists:
-                        logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
-                        return False
-                    else:
-                        logger.info(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label - will process")
-                        return True
-                # Fall through to fallback path if result is not boolean
-
-            # Fallback when using a mocked client (spec=GitHubClient) or when has_label is unavailable.
-            # Use object-based detail getters that tests commonly patch (get_pr_details / get_issue_details).
-            if self.item_type.lower() == "pr":
-                pr_labels: list[str] = []
-                try:
-                    # Use get_pull_request direct method locally on client
-                    pr_obj = self.github_client.get_pull_request(self.repo_name, int(self.item_number))
-                    pr_details = self.github_client.get_pr_details(pr_obj)
-                    if isinstance(pr_details, dict):
-                        pr_labels = pr_details.get("labels", []) or []
-                except Exception:
-                    # Ignore and keep labels as empty list
-                    pass
-
-                return self.label_name not in pr_labels
-
-            # Issue path
-            issue_labels: list[str] = []
-            try:
-                issue_obj = self.github_client.get_issue(self.repo_name, int(self.item_number))
-                issue_details = self.github_client.get_issue_details(issue_obj)
-                if isinstance(issue_details, dict):
-                    issue_labels = issue_details.get("labels", []) or []
-            except Exception:
-                # Ignore and keep labels as empty list
-                pass
-
-            return self.label_name not in issue_labels
-
-        except Exception as e:
-            # Fail-open: on errors, allow processing to continue
-            logger.warning(f"Label existence check failed for {self.item_type} #{self.item_number}: {e}. Proceeding.")
-            return True
-
-    def _is_labels_disabled(self) -> bool:
-        """Check if label operations are disabled.
-
-        Returns:
-            True if labels are disabled, False otherwise
-        """
-        # Check if github_client has disable_labels attribute and if it's set
-        if hasattr(self.github_client, "disable_labels") and self.github_client.disable_labels:
-            return True
-
-        if self.config and self.config.DISABLE_LABELS:
-            return True
-
-        return False
+        """Do nothing: historical processing labels are intentionally untouched."""

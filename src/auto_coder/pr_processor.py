@@ -639,7 +639,6 @@ def process_pull_request(
             pr_number,
             item_type="pr",
             skip_label_add=not force_adversarial_validation,
-            check_labels=config.CHECK_LABELS and not force_adversarial_validation,
             known_labels=pr_data.get("labels"),
         ) as should_process:
             if not should_process:
@@ -1055,9 +1054,6 @@ def _retry_linked_issue_after_cloud_reissue_failure(
         logger.error(f"Failed to increment attempt for issue #{issue_number}: {exc}")
         actions.append(f"Failed to increment attempt for issue #{issue_number}: {exc}")
 
-    if _release_issue_processing_label(github_client, repo_name, issue_number, config):
-        actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
-
 
 def _reject_unsafe_codex_cloud_pr(
     github_client: Any,
@@ -1233,10 +1229,6 @@ def _close_empty_pr(
                 logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
                 result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
 
-            # Release the @auto-coder label so the issue can be picked up for the next attempt
-            if _release_issue_processing_label(github_client, repo_name, issue_number, config):
-                result.actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
-
             result.issue_numbers.append(issue_number)
 
     except Exception as e:
@@ -1355,48 +1347,12 @@ def _close_stale_jules_pr(
                 logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
                 result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
 
-            # The dead Jules run kept the @auto-coder label on the issue to mark it as
-            # being worked on. Release it, otherwise the issue is never processed again.
-            if _release_issue_processing_label(github_client, repo_name, issue_number, config):
-                result.actions.append(f"Removed {config.AUTO_CODER_LABEL} label from issue #{issue_number}")
-
             result.issue_numbers.append(issue_number)
 
     except Exception as e:
         logger.error(f"Error handling stale Jules PR #{pr_number}: {e}")
 
     return result
-
-
-def _release_issue_processing_label(
-    github_client: Any,
-    repo_name: str,
-    issue_number: int,
-    config: AutomationConfig,
-) -> bool:
-    """Remove the @auto-coder label an aborted run left behind on an issue.
-
-    Args:
-        github_client: GitHub client instance
-        repo_name: Repository name (owner/repo)
-        issue_number: Issue to unlock
-        config: Automation configuration
-
-    Returns:
-        True if the label was removed, False otherwise
-    """
-    label = config.AUTO_CODER_LABEL
-    if not label or config.DISABLE_LABELS:
-        return False
-
-    try:
-        client = github_client or GitHubClient.get_instance()
-        client.remove_labels(repo_name, issue_number, [label], item_type="issue")
-        logger.info(f"Removed '{label}' label from issue #{issue_number} so it can be processed again")
-        return True
-    except Exception as e:
-        logger.warning(f"Failed to remove '{label}' label from issue #{issue_number}: {e}")
-        return False
 
 
 def _get_mergeable_state(
@@ -1601,7 +1557,6 @@ def _process_pr_for_merge(
         pr_data["number"],
         item_type="pr",
         config=config,
-        check_labels=config.CHECK_LABELS,
         known_labels=pr_data.get("labels"),
     ) as should_process:
         if not should_process:
@@ -1643,7 +1598,7 @@ def _process_pr_for_fixes(
         return processed_pr
 
     # Use LabelManager context manager to handle @auto-coder label automatically
-    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config, check_labels=config.CHECK_LABELS) as should_process:
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
         if not should_process:
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
@@ -2931,7 +2886,6 @@ def _handle_pr_merge(
 
                         related_issues = github_client.search_issues(query)
 
-                        count = 0
                         for issue in related_issues:
                             # Skip the current PR (which is closed now effectively, or about to be)
                             if issue.number == pr_number:
@@ -2942,17 +2896,7 @@ def _handle_pr_merge(
                             # GitHubClient.search_issues returns list(self.github.search_issues(...))
                             # which are Issue objects.
 
-                            # Remove @auto-coder label
-                            if config.AUTO_CODER_LABEL:
-                                try:
-                                    github_client.remove_labels(repo_name, issue.number, [config.AUTO_CODER_LABEL], item_type="pr")
-                                    actions.append(f"Removed {config.AUTO_CODER_LABEL} label from related PR #{issue.number} (Session ID: {session_id})")
-                                    count += 1
-                                except Exception as e:
-                                    logger.error(f"Failed to remove label from related PR #{issue.number}: {e}")
-
-                        if count > 0:
-                            actions.append(f"Cleaned up {count} related PR(s) for session {session_id}")
+                            # Historical processing labels are deliberately left untouched.
 
                 except Exception as e:
                     logger.error(f"Error cleaning up related PRs for PR #{pr_number}: {e}")
@@ -2970,8 +2914,6 @@ def _handle_pr_merge(
 
         # Codex Cloud owns corrective work for its PRs regardless of the local
         # checkout state. Resolve this execution origin before inspecting the
-        # branch: CHECK_LABELS=False is used by WIP resumption and --only
-        # processing, and must not turn cloud-originated work into local repair.
         if _is_codex_pr(pr_data):
             actions.append(f"PR #{pr_number} is a Codex-created PR, sending continuation request to Codex Cloud")
             feedback_result = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
@@ -2984,19 +2926,14 @@ def _handle_pr_merge(
 
         # Check if we are already on the PR branch before checkout.
         #
-        # In WIP-resumption mode (CHECK_LABELS=False), assume we are already on the PR branch
-        # to avoid unnecessary git calls and to keep label-handling deterministic.
         pr_branch_name = pr_data.get("head", {}).get("ref", "")
-        if not config.CHECK_LABELS:
-            already_on_pr_branch = True
-        else:
-            current_branch_res = cmd.run_command(
-                ["git", "branch", "--show-current"],
-                timeout=60,
-                stream_output=False,
-            )
-            current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
-            already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
+        current_branch_res = cmd.run_command(
+            ["git", "branch", "--show-current"],
+            timeout=60,
+            stream_output=False,
+        )
+        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
+        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
 
         # Check if this is a Jules PR.
         #
