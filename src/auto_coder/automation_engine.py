@@ -47,7 +47,7 @@ from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
+from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubIssueRelationshipError, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
@@ -204,19 +204,67 @@ class AutomationEngine:
         return validator
 
     def _fetch_authoritative_decomposition_set(self, repo_name: str, parent_number: int) -> Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]]:
-        """Fetch one parent and its complete direct membership without caches."""
+        """Reconcile every member, then fetch one stable native direct-child set."""
         parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
-        children = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
-        if not isinstance(parent, dict) or parent.get("number") != parent_number or not isinstance(children, list):
+        if not isinstance(parent, dict) or parent.get("number") != parent_number or "pull_request" in parent:
             return None
-        authoritative_children: List[Dict[str, Any]] = []
-        for member in children:
-            number = member.get("number") if isinstance(member, dict) else None
-            if not isinstance(number, int) or isinstance(number, bool):
+        if not isinstance(self.github, GitHubClient):
+            members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+            if not isinstance(members, list):
                 return None
+            authoritative_children = []
+            for member in members:
+                number = member.get("number") if isinstance(member, dict) else None
+                if not isinstance(number, int) or isinstance(number, bool):
+                    return None
+                child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                if not isinstance(child, dict) or child.get("number") != number or "pull_request" in child:
+                    return None
+                authoritative_children.append(child)
+            return parent, authoritative_children
+        if isinstance(self.github, GitHubClient) and parse_parent_declaration(parent.get("body")).status is not ParentDeclarationStatus.ABSENT:
+            parent = self._reconcile_parent_issue(repo_name, parent_number, parent)
+
+        previous_members: Optional[set[int]] = None
+        for _attempt in range(5):
+            members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+            if not isinstance(members, list):
+                return None
+            member_numbers: set[int] = set()
+            reconciled_declarations: set[int] = set()
+            for member in members:
+                number = member.get("number") if isinstance(member, dict) else None
+                if not isinstance(number, int) or isinstance(number, bool):
+                    return None
+                member_numbers.add(number)
+                child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                if not isinstance(child, dict) or child.get("number") != number or "pull_request" in child:
+                    return None
+                if isinstance(self.github, GitHubClient) and parse_parent_declaration(child.get("body")).status is not ParentDeclarationStatus.ABSENT:
+                    self._reconcile_parent_issue(repo_name, number, child)
+                    reconciled_declarations.add(number)
+            confirmed = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+            confirmed_numbers: set[int] = set()
+            for member in confirmed:
+                confirmed_number = member.get("number") if isinstance(member, dict) else None
+                if not isinstance(confirmed_number, int) or isinstance(confirmed_number, bool):
+                    return None
+                confirmed_numbers.add(confirmed_number)
+            if len(confirmed_numbers) != len(confirmed):
+                return None
+            if confirmed_numbers == member_numbers and (previous_members is None or previous_members == member_numbers):
+                break
+            previous_members = member_numbers
+        else:
+            raise ParentOperationalError("native direct-child membership did not stabilize")
+
+        parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+        authoritative_children = []
+        for number in sorted(confirmed_numbers):
             child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-            if not isinstance(child, dict) or child.get("number") != number or "pull_request" in child:
-                return None
+            native_parent = self.github.get_parent_issue_details_strict(repo_name, number) if number in reconciled_declarations else {"number": parent_number}
+            if not isinstance(child, dict) or child.get("number") != number or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
+                raise ParentOperationalError(f"native parent for child #{number} is not #{parent_number}")
             authoritative_children.append(child)
         return parent, authoritative_children
 
@@ -231,6 +279,18 @@ class AutomationEngine:
         parent = parent_reader(repo_name, issue_number) if callable(parent_reader) else None
         number = parent.get("number") if isinstance(parent, dict) else None
         return number if isinstance(number, int) and not isinstance(number, bool) else None
+
+    def _defer_initial_issue_stabilization(self, repo_name: str, snapshot: Dict[str, Any]) -> bool:
+        """Persist creation-anchored reevaluation and report whether it is deferred."""
+        created_at = snapshot.get("created_at")
+        number = snapshot.get("number")
+        if not isinstance(created_at, str) or not isinstance(number, int):
+            return False
+        deadline = issue_stabilization_deadline(created_at)
+        if deadline is None or deadline <= time.time():
+            return False
+        self.invalidations.invalidate(EntityIdentity(repo_name, "issue", number), not_before=deadline)
+        return True
 
     def _reconcile_parent_issue(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """Reconcile body metadata, then return a newly fetched native snapshot."""
@@ -266,7 +326,7 @@ class AutomationEngine:
                     raise ParentOperationalError("authoritative child snapshot omitted its database ID")
                 try:
                     self.github.add_sub_issue_strict(repo_name, declared, issue_number, child_id)
-                except ValueError as exc:
+                except InvalidSubIssueRelationshipError as exc:
                     raise ParentSpecificationError(str(exc)) from exc
                 except Exception as exc:
                     raise ParentOperationalError(f"cannot materialize Parent-Issue relationship: {exc}") from exc
@@ -339,6 +399,22 @@ class AutomationEngine:
         # Even READY was obtained after individual validation started, so this
         # attempt must restart through the ordered set-before-child workflow.
         return False
+
+    def _standalone_validation_is_current(self, repo_name: str, decision: ValidationDecision) -> bool:
+        """Verify that an individual identity is still the required standalone identity."""
+        snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, decision.identity.issue_number)
+        if not isinstance(snapshot, dict) or not self._is_open_issue(snapshot) or not is_implementation_ready(snapshot):
+            return False
+        if isinstance(self.github, GitHubClient):
+            snapshot = self._reconcile_parent_issue(repo_name, decision.identity.issue_number, snapshot)
+        validator = self._get_specification_validator(repo_name)
+        if validator.identity(decision.identity.issue_number, str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) != decision.identity:
+            return False
+        if self._get_authoritative_parent_number(repo_name, decision.identity.issue_number, snapshot) is not None:
+            return False
+        child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+        children = child_reader(repo_name, decision.identity.issue_number) if callable(child_reader) else []
+        return isinstance(children, list) and not children
 
     def _validate_submitted_parent_generation_for_child(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
         """Materialize validation evidence triggered by one authoritative child change.
@@ -1652,15 +1728,20 @@ class AutomationEngine:
             logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
             return result
         if candidate.type == "issue":
+            collected_candidate = candidate
             if not self._is_issue_author_allowed(candidate.data):
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 return result
-            declaration = parse_parent_declaration(candidate.data.get("body"))
-            # GitHubClient is the supported production adapter. Simple test and
-            # integration adapters may not expose the strict relationship API.
-            if isinstance(self.github, GitHubClient) and declaration.status is not ParentDeclarationStatus.ABSENT:
+            if isinstance(self.github, GitHubClient):
                 try:
-                    refreshed = self._reconcile_parent_issue(repo_name, item_number, candidate.data)
+                    observed = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                    if not isinstance(observed, dict) or observed.get("number") != item_number or "pull_request" in observed:
+                        result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub returned an ambiguous item snapshot"
+                        return result
+                    refreshed = self._reconcile_parent_issue(repo_name, item_number, observed) if parse_parent_declaration(observed.get("body")).status is not ParentDeclarationStatus.ABSENT else observed
+                    refreshed_manifest = build_normative_issue_manifest(item_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
+                    if refreshed_manifest.error is None:
+                        collected_candidate.data.update(refreshed)
                     candidate = Candidate(
                         type=candidate.type,
                         data={**candidate.data, **refreshed},
@@ -1698,7 +1779,20 @@ class AutomationEngine:
                     result.error = f"Cannot confirm parent readiness submission: {exc}"
                     return result
                 if is_implementation_ready(parent_snapshot):
-                    parent_submission_set = self._fetch_authoritative_decomposition_set(repo_name, item_number)
+                    if self._defer_initial_issue_stabilization(repo_name, parent_snapshot):
+                        result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
+                        return result
+                    try:
+                        parent_submission_set = self._fetch_authoritative_decomposition_set(repo_name, item_number)
+                    except ParentSpecificationError as exc:
+                        result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                        result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                        return result
+                    except ParentOperationalError as exc:
+                        result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                        result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
+                        result.refill_retry_required = True
+                        return result
                     if parent_submission_set is None:
                         result.error = "Cannot fetch authoritative parent/child specification set"
                         return result
@@ -1746,6 +1840,26 @@ class AutomationEngine:
                     )
                 result.actions = [f"Skipped - parent submission is missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
+
+            live_parent_number = authoritative_parent_number or self._get_authoritative_parent_number(repo_name, item_number, candidate.data)
+            if isinstance(self.github, GitHubClient) and isinstance(live_parent_number, int):
+                try:
+                    live_parent_set = self._fetch_authoritative_decomposition_set(repo_name, live_parent_number)
+                except Exception as exc:
+                    result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
+                    return result
+                if live_parent_set is None or item_number not in {child.get("number") for child in live_parent_set[1]}:
+                    result.actions = ["Skipped - child is no longer in the authoritative parent set"]
+                    return result
+                if not is_implementation_ready(live_parent_set[0]):
+                    result.actions = [f"Skipped - authoritative parent is missing {IMPLEMENTATION_READY_LABEL} label"]
+                    return result
+                if self._defer_initial_issue_stabilization(repo_name, live_parent_set[0]):
+                    result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
+                    return result
+            elif is_implementation_ready(candidate.data) and self._defer_initial_issue_stabilization(repo_name, candidate.data):
+                result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
+                return result
             if not generation_serialized:
                 # One owner lock spans validation, final verification, admission,
                 # and implementation. A changed generation therefore waits for
@@ -1755,6 +1869,34 @@ class AutomationEngine:
                 slots = self._get_implementation_slots(repo_name)
                 retained_async_owner = slots.has_provider_sessions(owner)
                 if (slots.active_execution_ids(owner) or retained_async_owner) and not continue_execution:
+                    owned_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                    owned_parent = self._get_authoritative_parent_number(repo_name, item_number, owned_snapshot)
+                    owned_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+                    owned_children = owned_child_reader(repo_name, item_number) if callable(owned_child_reader) else []
+                    if is_implementation_ready(owned_snapshot) and owned_parent is None and isinstance(owned_children, list) and not owned_children:
+                        owned_title = str(owned_snapshot.get("title") or "")
+                        owned_body = str(owned_snapshot.get("body") or "")
+                        owned_manifest = build_normative_issue_manifest(item_number, owned_title, owned_body)
+                        if owned_manifest.error is None:
+                            owned_validator = self._get_specification_validator(repo_name)
+                            owned_identity = owned_validator.identity(item_number, owned_title, owned_body)
+                            owned_decision = self.validation_scheduler.submit(
+                                f"individual:{owned_identity.key}",
+                                lambda: owned_validator.decide(owned_manifest, owned_title, owned_body),
+                            ).result()
+                            if owned_decision.verdict == "ERROR":
+                                result.error = "Specification validation failed; implementation-ready was preserved for retry"
+                                result.refill_retry_required = True
+                                return result
+                            if owned_decision.verdict == "BLOCKED":
+                                owned_validator.apply_blocked(
+                                    self.github,
+                                    owned_decision,
+                                    lambda: self._standalone_validation_is_current(repo_name, owned_decision),
+                                )
+                                result.error = "Specification validation found material defects"
+                                result.actions = ["Rejected - blocked specification"]
+                                return result
                     result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                     return result
                 with slots.serialize(owner):
@@ -1924,7 +2066,11 @@ class AutomationEngine:
                             lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
                         )
                     else:
-                        side_effect_error = validator.apply_blocked(self.github, decision)
+                        side_effect_error = validator.apply_blocked(
+                            self.github,
+                            decision,
+                            lambda: self._standalone_validation_is_current(repo_name, decision),
+                        )
                 except Exception as exc:
                     side_effect_error = str(exc)
                 if side_effect_error:
@@ -1974,6 +2120,7 @@ class AutomationEngine:
             # All subsequent admission checks must consume exactly the
             # authoritative generation whose specification was authorized.
             candidate.data.update(dispatch_snapshot)
+            collected_candidate.data.update(dispatch_snapshot)
 
             # Refill and direct dispatch share this last authoritative hierarchy
             # gate. Candidate collection metadata is not sufficient because a

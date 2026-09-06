@@ -25,6 +25,10 @@ logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
 
 
+class InvalidSubIssueRelationshipError(ValueError):
+    """GitHub definitively rejected the requested native Issue hierarchy."""
+
+
 def parse_parent_issue_url_number(parent_issue_url: object) -> Optional[int]:
     """Return the stable Issue number encoded by a native parent URL."""
     match = re.search(r"/issues/(\d+)$", parent_issue_url) if isinstance(parent_issue_url, str) else None
@@ -2466,8 +2470,17 @@ class GitHubClient:
         if response.status_code in (200, 201):
             self.clear_sub_issue_cache()
             return
-        if response.status_code in (409, 422):
-            raise ValueError(f"GitHub rejected Parent-Issue relationship: {response.text}")
+        rejection = response.text.lower()
+        structural_markers = (
+            "cycle",
+            "hierarchy",
+            "already has a parent",
+            "maximum depth",
+            "cannot be a sub-issue",
+            "cannot add issue",
+        )
+        if response.status_code in (409, 422) and any(marker in rejection for marker in structural_markers):
+            raise InvalidSubIssueRelationshipError(f"GitHub rejected Parent-Issue relationship: {response.text}")
         response.raise_for_status()
         raise RuntimeError("GitHub returned an ambiguous Parent-Issue mutation response")
 
