@@ -11,7 +11,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.implementation_slots import ImplementationHierarchyConflict, ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
@@ -152,6 +152,66 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
         downstream.assert_not_called()
+
+    @pytest.mark.parametrize("keep_execution_live", [False, True])
+    def test_failed_retry_preserves_established_issue_owner_lifecycle(self, tmp_path, keep_execution_live):
+        """A retry hierarchy failure cannot retire established lifecycle ownership."""
+
+        class StrictGitHub(GitHubClient):
+            def __init__(self):
+                self.token = "token"
+                self.fail_children = False
+
+            def get_issue_strict(self, _repo, number):
+                return {"number": number, "title": "Child", "body": ""}
+
+            def get_parent_issue_number_strict(self, _repo, number):
+                return 1 if number == 2 else None
+
+            def get_direct_sub_issues_strict(self, _repo, number):
+                if self.fail_children and number == 2:
+                    raise RuntimeError("hierarchy unavailable")
+                return [{"number": 2}] if number == 1 else []
+
+        github = StrictGitHub()
+        storage_path = tmp_path / f"established-{keep_execution_live}.json"
+        slots = ImplementationSlotRepository("owner/repo", 3, storage_path)
+        child = ImplementationOwner("issue", 2)
+        original_execution = slots.start_execution(child, github_client=github)
+        assert original_execution is not None
+        assert slots.record_implementation_pr(child, 20)
+        assert slots.record_provider_session(child, "provider-task")
+        if not keep_execution_live:
+            slots.finish_execution(child, original_execution)
+
+        restarted = ImplementationSlotRepository("owner/repo", 3, storage_path)
+        before = json.loads(storage_path.read_text(encoding="utf-8"))[child.key]
+        github.fail_children = True
+        engine = AutomationEngine(github, config=AutomationConfig())
+        engine.implementation_slots = restarted
+        downstream = Mock()
+        engine._process_single_candidate_reserved = downstream
+        candidate = Candidate(type="pr", data={"number": 20, "title": "Retry", "body": "Fixes #2", "labels": []}, priority=0)
+
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            candidate,
+            engine.config,
+            explicit_only=keep_execution_live,
+            force=keep_execution_live,
+        )
+
+        after = json.loads(storage_path.read_text(encoding="utf-8"))[child.key]
+        assert result.error and "hierarchy unavailable" in result.error
+        assert after == before
+        assert after["implementation_prs"] == [20]
+        assert after["provider_sessions"] == ["provider-task"]
+        assert restarted.active_execution_ids(child) == ((original_execution,) if keep_execution_live else ())
+        downstream.assert_not_called()
+
+        github.fail_children = False
+        with pytest.raises(ImplementationHierarchyConflict, match="issue:2"):
+            restarted.start_execution(ImplementationOwner("issue", 1), github_client=github)
 
     @patch("auto_coder.automation_engine.check_and_start_recurrent_jules_tasks")
     def test_recurrent_jules_step_receives_instance_slot_repository(self, start_recurrent, tmp_path):

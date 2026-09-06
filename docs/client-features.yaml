@@ -35,7 +35,10 @@ validation outcomes. Hierarchy-guarded records retain their pending marker and
 admission evidence for their lifetime. Every later execution admission, including
 restart recovery, writes its execution before a final hierarchy refresh and must
 discard the guarded owner on conflict or changed evidence before it can return to
-implementation dispatch. Unrelated Issues and siblings retain existing concurrency.
+implementation dispatch. Once an admission has succeeded, later failed execution
+attempts restore that established owner, including its executions, PRs, and provider
+sessions; only the failed attempt is discarded. Unrelated Issues and siblings retain
+existing concurrency.
 
 ## Implementation-ready Issue dispatch gate
 

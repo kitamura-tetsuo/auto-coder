@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import io
 import json
@@ -319,7 +320,13 @@ class ImplementationSlotRepository:
                 # returns early below.
                 self._write(owners)
             record = owners.get(owner.key)
+            established_record: Optional[Dict[str, object]] = None
             if record is not None and record.get("admission_pending", False):
+                established = record.get("admission_established", False)
+                if not isinstance(established, bool):
+                    raise ImplementationHierarchyUnavailable(f"Interrupted hierarchy admission for {owner.key} has invalid establishment state")
+                if established:
+                    established_record = copy.deepcopy(record)
                 if owner.kind != "issue" or github_client is None:
                     raise ImplementationHierarchyUnavailable(f"Interrupted hierarchy admission for {owner.key} requires authoritative GitHub evidence")
                 admission_hierarchy = self._parse_stored_hierarchy(record)
@@ -375,9 +382,15 @@ class ImplementationSlotRepository:
                     if committed_hierarchy != admission_hierarchy:
                         raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while committing issue:{owner.number}")
                 except (ImplementationHierarchyConflict, ImplementationHierarchyUnavailable):
-                    owners.pop(owner.key, None)
+                    if established_record is None:
+                        owners.pop(owner.key, None)
+                    else:
+                        owners[owner.key] = established_record
                     self._write(owners)
                     raise
+                if not record.get("admission_established", False):
+                    record["admission_established"] = True
+                    self._write(owners)
         active = getattr(self._execution_context, "owners", {})
         active[owner.key] = execution_id
         self._execution_context.owners = active
