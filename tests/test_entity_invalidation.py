@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
+from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
+from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
+from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from src.auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
 
@@ -434,7 +439,9 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
     get = MagicMock(side_effect=[response([issue]), response([])])
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.Client.get", MagicMock(return_value=response(issue)))
-    engine = AutomationEngine(GitHubClient("token"), AutomationConfig())
+    github = GitHubClient("token")
+    github.get_parent_issue_details_strict = MagicMock(return_value=None)
+    engine = AutomationEngine(github, AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
     monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
@@ -658,6 +665,7 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
         "comments": 0,
     }
     github.get_issue_dispatch_snapshot_strict = MagicMock(return_value=strict_snapshot)
+    github.get_parent_issue_details_strict = MagicMock(return_value=None)
     github.get_issue = MagicMock(side_effect=RuntimeError("second request unavailable"))
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
@@ -673,6 +681,182 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_issue.assert_not_called()
     assert processed[0]["body"] == "Current body"
     assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+@pytest.mark.parametrize("child_state", ["open", "closed"])
+def test_child_edit_webhook_validates_submitted_generation_before_eligibility_filter(tmp_path: Path, monkeypatch, child_state: str):
+    """A child-only webhook reaches set validation despite ownership or closure."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    body = "## Requirements\n- REQ-001: Preserve the edited behavior."
+    parent = {"id": 100, "number": 10, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}], "user": {"id": 1}}
+    child = {
+        "id": 110,
+        "number": 11,
+        "title": "Edited child",
+        "body": body + "\nEdited.",
+        "state": child_state,
+        "labels": [],
+        "user": {"id": 1},
+        "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
+    }
+    github = MagicMock()
+    snapshots = {10: parent, 11: child}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue_details.side_effect = lambda value: dict(value)
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if number == 11 else None
+    events = []
+    engine = AutomationEngine(github, AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    engine._decomposition_validators["owner/repo"] = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json", lambda manifest, _body: events.append(f"child:{manifest.issue_number}") or SpecificationAnalysisResult("READY"))
+    owner = ImplementationOwner("issue", 11)
+    if child_state == "open":
+        execution_id = slots.start_execution(owner)
+        assert execution_id is not None
+        assert slots.record_provider_session(owner, "retained-session")
+        slots.finish_execution(owner, execution_id)
+
+    async def scenario() -> None:
+        await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", f"edited-{child_state}")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        for _ in range(300):
+            if engine.invalidations.pending_count("owner/repo") == 0:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        asyncio.run(scenario())
+
+    assert set(events) == {"set", "child:11"}
+    dispatch.assert_not_called()
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.has_provider_sessions(owner) is (child_state == "open")
+    assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp_path: Path, monkeypatch):
+    """A child ERROR is not evidence and cannot acknowledge its durable trigger."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    body = "## Requirements\n- REQ-001: Preserve the edited behavior."
+    parent = {"id": 100, "number": 10, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}], "user": {"id": 1}}
+    child = {
+        "id": 110,
+        "number": 11,
+        "title": "Edited child",
+        "body": body + "\nEdited.",
+        "state": "closed",
+        "labels": [],
+        "user": {"id": 1},
+        "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
+    }
+    github = MagicMock()
+    snapshots = {10: parent, 11: child}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue_details.side_effect = lambda value: dict(value)
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if number == 11 else None
+    set_calls = []
+    child_verdicts = iter(("ERROR", "READY"))
+    child_calls = []
+    engine = AutomationEngine(github, AutomationConfig())
+    decomposition = DecompositionValidationLifecycle(
+        "owner/repo",
+        "provider/model",
+        tmp_path / "sets.json",
+        lambda *_args: set_calls.append("set") or DecompositionAnalysisResult("READY"),
+    )
+
+    def analyze_child(manifest, _body):
+        child_calls.append(manifest.issue_number)
+        return SpecificationAnalysisResult(next(child_verdicts))
+
+    individual = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json", analyze_child)
+    engine._decomposition_validators["owner/repo"] = decomposition
+    engine._specification_validators["owner/repo"] = individual
+
+    async def run_attempt(expect_pending: bool) -> None:
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await asyncio.wait_for(engine.queue.join(), timeout=3)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        assert engine.invalidations.pending_count("owner/repo") == int(expect_pending)
+
+    async def scenario() -> None:
+        await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", "edited-error")
+        await run_attempt(expect_pending=True)
+
+        child_identity = individual.identity(11, child["title"], child["body"])
+        assert individual.store.get(child_identity) is None
+        assert set_calls == ["set"]
+        assert child_calls == [11]
+        assert parent["labels"] == [{"name": "implementation-ready"}]
+        github.remove_labels.assert_not_called()
+        github.add_comment_to_issue.assert_not_called()
+
+        await engine._enqueue_pending_invalidations("owner/repo")
+        await run_attempt(expect_pending=False)
+
+    asyncio.run(scenario())
+
+    assert set_calls == ["set"]
+    assert child_calls == [11, 11]
+    child_identity = individual.identity(11, child["title"], child["body"])
+    assert individual.store.get(child_identity) is not None
+    assert individual.store.get(child_identity).verdict == "READY"
+    assert parent["labels"] == [{"name": "implementation-ready"}]
+
+
+@pytest.mark.parametrize("child_state", ["open", "closed"])
+def test_explicit_child_processing_validates_submitted_generation_before_eligibility_filter(tmp_path: Path, child_state: str):
+    """The operator entry point validates a child's set before implementation filters."""
+    body = "## Requirements\n- REQ-001: Preserve the edited behavior."
+    parent = {"id": 100, "number": 10, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}], "user": {"id": 1}}
+    child = {
+        "id": 110,
+        "number": 11,
+        "title": "Edited child",
+        "body": body + "\nEdited.",
+        "state": child_state,
+        "labels": [],
+        "user": {"id": 1},
+        "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
+    }
+    github = MagicMock()
+    snapshots = {10: parent, 11: child}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue.return_value = child
+    github.get_issue_details.side_effect = lambda value: dict(value)
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if number == 11 else None
+    events = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._get_authoritative_item_type = MagicMock(return_value="issue")
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    engine._decomposition_validators["owner/repo"] = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json", lambda manifest, _body: events.append(f"child:{manifest.issue_number}") or SpecificationAnalysisResult("READY"))
+    owner = ImplementationOwner("issue", 11)
+    if child_state == "open":
+        execution_id = slots.start_execution(owner)
+        assert execution_id is not None
+        assert slots.record_provider_session(owner, "retained-session")
+        slots.finish_execution(owner, execution_id)
+
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine.process_single("owner/repo", "issue", 11, explicit_only=True)
+
+    assert set(events) == {"set", "child:11"}
+    dispatch.assert_not_called()
+    assert result["errors"] == []
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.has_provider_sessions(owner) is (child_state == "open")
 
 
 @pytest.mark.parametrize(

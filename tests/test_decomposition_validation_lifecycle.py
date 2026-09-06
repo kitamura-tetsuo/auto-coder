@@ -145,7 +145,8 @@ def test_parent_submission_reaches_set_then_child_validation_before_dispatch(tmp
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", parent, 0, issue_number=10), engine.config)
 
     assert result.success is True
-    assert order == ["set", "child", "dispatch"]
+    assert set(order[:2]) == {"set", "child"}
+    assert order[-1] == "dispatch"
     github.remove_labels.assert_not_called()
     assert child["labels"] == []
 
@@ -171,7 +172,8 @@ def test_explicit_parent_adapter_preserves_membership_and_never_dispatches_paren
     ):
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized, 0, issue_number=10), engine.config)
     assert result.success
-    assert order == ["set", "individual:11", "dispatch:11"]
+    assert set(order[:-1]) == {"set", "individual:11", "individual:12"}
+    assert order[-1] == "dispatch:11"
 
 
 def test_labeled_child_cannot_bypass_current_set_block(tmp_path):
@@ -187,7 +189,7 @@ def test_labeled_child_cannot_bypass_current_set_block(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized, 0, issue_number=11), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
-    individual.assert_not_called()
+    individual.assert_called_once()
     dispatch.assert_not_called()
 
 
@@ -203,7 +205,7 @@ def test_stale_candidate_without_parent_hint_obeys_live_set_block(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", candidate, 0, issue_number=11), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
-    individual.assert_not_called()
+    individual.assert_called_once()
     dispatch.assert_not_called()
 
 
@@ -217,7 +219,7 @@ def test_parent_routing_labeled_child_cannot_bypass_current_set_block(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, parent), 0, issue_number=10), engine.config)
     assert "blocked parent/child decomposition" in result.actions[0]
-    individual.assert_not_called()
+    individual.assert_called_once()
     dispatch.assert_not_called()
 
 
@@ -241,7 +243,8 @@ def test_stale_empty_parent_membership_hint_cannot_authorize_standalone_dispatch
     ):
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized_before_child_addition, 0, issue_number=10), engine.config)
     assert result.success
-    assert events == ["set", "individual:11", "dispatch:11"]
+    assert set(events[:2]) == {"set", "individual:11"}
+    assert events[-1] == "dispatch:11"
 
 
 def test_child_added_during_individual_validation_invalidates_standalone_parent(tmp_path):
@@ -280,7 +283,8 @@ def test_child_added_during_individual_validation_invalidates_standalone_parent(
     ):
         second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert second.success
-    assert events == ["individual:10", "set", "individual:11"]
+    assert events[0] == "individual:10"
+    assert set(events[1:]) == {"set", "individual:11"}
 
 
 def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_path):
@@ -318,7 +322,7 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized[0], 0, issue_number=10), engine.config)
     assert result.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
-    assert events == ["set"]
+    assert set(events) == {"set", "individual"}
     dispatch.assert_not_called()
     GitHubClient.reset_singleton()
 
@@ -336,7 +340,10 @@ def test_explicit_later_sibling_waits_after_set_validation(tmp_path):
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, later), 0, issue_number=12), engine.config)
     assert order == ["set"]
     assert result.actions == ["Deferred - earlier sibling(s) remain open: [11]"]
-    child_analysis.assert_not_called()
+    # Eager validation is independent of implementation ordering. At least the
+    # earlier child may already execute; queued sibling completion is covered by
+    # the scheduler production-path regression.
+    assert 11 in {call.args[0].issue_number for call in child_analysis.call_args_list}
     dispatch.assert_not_called()
 
 
@@ -639,11 +646,86 @@ def test_stale_jules_replacement_enforces_parent_set_and_sibling_transitions(tmp
         ):
             engine.handle_stale_jules_issue_sessions("owner/repo")
 
+        engine.validation_scheduler.shutdown()
         replacement.assert_not_called()
         increment.assert_not_called()
         assert slots.active_execution_ids(owner) == ()
-        if scenario in {"became-parent", "reopened-predecessor"}:
-            child_analysis.assert_not_called()
+        if scenario == "became-parent":
+            child_analysis.assert_called_once()
+        elif scenario == "reopened-predecessor":
+            assert child_analysis.call_count == 2
+
+
+def test_stale_jules_child_cannot_fallback_after_parent_readiness_withdrawal(tmp_path):
+    """A retained child label cannot bypass a withdrawn parent or sibling order."""
+    from auto_coder.implementation_slots import ImplementationOwner
+
+    parent = issue(10, "Parent", PARENT_BODY, ready=False)
+    first = issue(11, "First", CHILD_BODY)
+    target = issue(12, "Target", CHILD_BODY, ready=True)
+    github = relationship_github(parent, [first, target])
+    github.get_item_type_strict.return_value = "issue"
+    github.get_issue.return_value = dict(target)
+    github.get_issue_details.return_value = dict(target)
+    github.has_linked_pr.return_value = False
+    engine = configured_engine(
+        tmp_path,
+        github,
+        Mock(side_effect=AssertionError("withdrawn generation must not be analyzed")),
+        Mock(side_effect=AssertionError("child label must not become standalone authorization")),
+    )
+    assert engine.implementation_slots is not None
+    owner = ImplementationOwner("issue", 12)
+    engine.implementation_slots.record_provider_session(owner, "stale-session")
+    jules = MagicMock()
+    jules.get_session.return_value = {"state": "COMPLETED"}
+    jules.list_sessions.return_value = [{"name": "sessions/stale-session", "state": "IN_PROGRESS", "createTime": "2000-01-01T00:00:00Z", "outputs": {}}]
+    cloud = MagicMock()
+    cloud.get_issue_by_session.return_value = 12
+
+    with (
+        patch("auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("auto_coder.issue_processor.CloudManager", return_value=cloud),
+        patch("auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("auto_coder.issue_processor.increment_attempt") as increment,
+        patch("auto_coder.issue_processor._take_issue_actions") as replacement,
+    ):
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+
+    replacement.assert_not_called()
+    increment.assert_not_called()
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+
+
+def test_parent_generation_validates_despite_retained_first_child_owner(tmp_path):
+    """Implementation ownership cannot suppress eager generation validation."""
+    from auto_coder.implementation_slots import ImplementationOwner
+
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    first = issue(11, "First", CHILD_BODY)
+    second = issue(12, "Second", CHILD_BODY)
+    github = relationship_github(parent, [first, second])
+    events = []
+    engine = configured_engine(
+        tmp_path,
+        github,
+        lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"),
+        lambda manifest, _body: events.append(f"child:{manifest.issue_number}") or SpecificationAnalysisResult("READY"),
+    )
+    assert engine.implementation_slots is not None
+    owner = ImplementationOwner("issue", 11)
+    execution_id = engine.implementation_slots.start_execution(owner)
+    assert execution_id is not None
+    assert engine.implementation_slots.record_provider_session(owner, "active-session")
+    engine.implementation_slots.finish_execution(owner, execution_id)
+
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", parent, 0, issue_number=10), engine.config)
+
+    engine.validation_scheduler.shutdown()
+    assert result.actions == ["Deferred - implementation ownership already exists (issue:11)"]
+    assert set(events) == {"set", "child:11", "child:12"}
+    dispatch.assert_not_called()
 
 
 @pytest.mark.parametrize(
