@@ -13,7 +13,7 @@ from auto_coder.automation_config import AutomationConfig, Candidate, CandidateP
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
-from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback
+from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
 
 
 def test_worker_drain_owns_real_to_thread_operation_until_durable_completion(monkeypatch, tmp_path):
@@ -281,6 +281,67 @@ def test_stale_parent_authorization_joins_child_validation_during_drain(monkeypa
     asyncio.run(scenario())
 
 
+def test_parent_routing_snapshot_failure_cannot_abandon_validation_batch(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    object.__setattr__(config, "validation_concurrency", 2)
+    github = MagicMock()
+    parent = {"number": 1, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    child = {"number": 22, "state": "open"}
+    github.get_direct_sub_issues_strict.return_value = [child]
+    github.get_issue_dispatch_snapshot_strict.side_effect = [parent, RuntimeError("snapshot unavailable")]
+    engine = AutomationEngine(github, config)
+    candidate = Candidate(type="issue", data=parent.copy(), priority=0, issue_number=1)
+    decomposition_started = threading.Event()
+    child_started = threading.Event()
+    release_decomposition = threading.Event()
+    release_child = threading.Event()
+
+    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args: candidate)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args: None)
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda *_args: True)
+    monkeypatch.setattr(engine, "_defer_initial_issue_stabilization", lambda *_args: False)
+    monkeypatch.setattr(engine, "_fetch_authoritative_decomposition_set", lambda *_args: (parent, [child]))
+
+    def decomposition():
+        decomposition_started.set()
+        assert release_decomposition.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    def individual():
+        child_started.set()
+        assert release_child.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    monkeypatch.setattr(
+        engine,
+        "_schedule_parent_validations",
+        lambda *_args: (
+            engine.validation_scheduler.submit("decomposition:routing", decomposition),
+            {22: engine.validation_scheduler.submit("individual:routing", individual)},
+        ),
+    )
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, current: engine._process_single_candidate_unified(repo, current, config))
+
+    async def scenario():
+        assert await engine.invalidate_entity("owner/repo", "issue", 1, "parent-routing")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        assert await asyncio.to_thread(decomposition_started.wait, 2)
+        assert await asyncio.to_thread(child_started.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        worker.cancel()
+        release_decomposition.set()
+        await asyncio.sleep(0.05)
+        assert not worker.done()
+        assert engine.invalidations.claim("owner/repo") is None
+        assert engine._critical_operations
+        release_child.set()
+        await worker
+
+    asyncio.run(scenario())
+    assert engine.invalidations.pending_count("owner/repo") == 1
+
+
 def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
@@ -435,6 +496,43 @@ def test_cloud_ci_feedback_rechecks_drain_after_task_resolution(monkeypatch, tmp
 
     asyncio.run(scenario())
     client.continue_if_paused.assert_not_called()
+
+
+def test_jules_ci_feedback_rechecks_drain_after_log_acquisition(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    client = MagicMock()
+
+    def load_logs(*_args):
+        entered.set()
+        assert release.wait(5)
+        return "failed output"
+
+    monkeypatch.setattr("auto_coder.pr_processor._get_github_actions_logs", load_logs)
+    monkeypatch.setattr("auto_coder.jules_client.JulesClient", lambda: client)
+
+    async def scenario():
+        feedback = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 pr #90",
+                _send_jules_error_feedback,
+                "owner/repo",
+                {"number": 90, "title": "Repair", "body": "", "_jules_session_id": "session-90", "user": {}},
+                [{"name": "tests"}],
+                AutomationConfig(),
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        feedback.cancel()
+        release.set()
+        actions = await feedback
+        assert actions == ["Deferred Jules CI feedback for PR #90: graceful shutdown is draining"]
+
+    asyncio.run(scenario())
+    client.send_message.assert_not_called()
 
 
 def test_recurrent_provider_scan_is_owned_and_cannot_launch_during_drain(monkeypatch, tmp_path):

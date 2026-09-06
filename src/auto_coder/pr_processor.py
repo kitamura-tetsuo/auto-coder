@@ -4249,6 +4249,10 @@ PR Title: {pr_data.get('title', 'Unknown')}
 PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
 """
 
+        if not new_work_allowed():
+            actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: graceful shutdown is draining")
+            return actions
+
         # Import JulesClient here to avoid circular imports
         from .jules_client import JulesClient
 

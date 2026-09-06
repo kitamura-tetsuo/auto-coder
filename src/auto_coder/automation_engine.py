@@ -2027,6 +2027,7 @@ class AutomationEngine:
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
                     decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set)
+                    parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
                         (child for child in authoritative_children if child.get("state") == "open" and isinstance(child.get("number"), int)),
@@ -2034,11 +2035,6 @@ class AutomationEngine:
                     )
                     if not open_children:
                         parent_decomposition_validator = self._get_decomposition_validator(repo_name)
-                        parent_decision = decomposition_job.result()
-                        # No implementation follows this path, but all direct-child
-                        # evidence is still part of the submitted validation work.
-                        for job in child_jobs.values():
-                            job.result()
                         if parent_decision.verdict == "BLOCKED":
                             side_effect_error = parent_decomposition_validator.apply_blocked(
                                 self.github,
