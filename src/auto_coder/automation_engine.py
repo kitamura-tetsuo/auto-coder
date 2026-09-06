@@ -152,16 +152,32 @@ class AutomationEngine:
 
     async def _run_local_critical(self, description: str, function: Any, *args: Any) -> Any:
         """Own synchronous work until its thread really returns, despite cancellation."""
-        task = asyncio.create_task(asyncio.to_thread(function, *args), name=f"local-critical:{description}")
+
+        async def run_in_thread() -> tuple[bool, Any]:
+            # Keep BaseException on the awaiting coroutine.  Letting a shielded
+            # child task finish with KeyboardInterrupt/SystemExit makes asyncio
+            # treat it as a loop-level termination before the caller can observe
+            # and handle the exception.
+            try:
+                return True, await asyncio.to_thread(function, *args)
+            except BaseException as exc:
+                return False, exc
+
+        task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
         self._critical_operations[task] = description
         try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            # asyncio cancellation cannot stop a running executor thread. Keep
-            # ownership and its durable lifecycle until the real boundary.
-            if self.lifecycle is not EngineLifecycle.FORCED:
-                return await asyncio.shield(task)
-            raise
+            try:
+                completed, value = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # asyncio cancellation cannot stop a running executor thread. Keep
+                # ownership and its durable lifecycle until the real boundary.
+                if self.lifecycle is not EngineLifecycle.FORCED:
+                    completed, value = await asyncio.shield(task)
+                else:
+                    raise
+            if completed:
+                return value
+            raise value
         finally:
             if task.done():
                 self._critical_operations.pop(task, None)
@@ -732,13 +748,22 @@ class AutomationEngine:
 
             shutdown_wait.cancel()
             await asyncio.gather(shutdown_wait, return_exceptions=True)
+            core_loops_exited = producer_task.done() and all(worker.done() for worker in workers)
             for task in all_loop_tasks:
                 task.cancel()
             await asyncio.gather(*all_loop_tasks, return_exceptions=True)
             for completed_task in done:
-                completed_task.result()
-            logger.warning("Automation engine stopped: an orchestration loop exited unexpectedly")
-            get_health_monitor().record_event("engine_stop", "engine task exited", f"workers={concurrency}")
+                if completed_task in all_loop_tasks and not completed_task.cancelled():
+                    completed_task.result()
+            if core_loops_exited:
+                # Producer and workers returning together is the historical
+                # silent-stop boundary. Companion loops are deliberately
+                # cancelled because they otherwise wait indefinitely.
+                logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
+                get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
+            else:
+                logger.warning("Automation engine stopped: an orchestration loop exited unexpectedly")
+                get_health_monitor().record_event("engine_stop", "engine task exited", f"workers={concurrency}")
         except asyncio.CancelledError:
             for task in all_loop_tasks:
                 task.cancel()
