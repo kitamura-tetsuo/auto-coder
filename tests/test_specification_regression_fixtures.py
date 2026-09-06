@@ -4,7 +4,6 @@ from pathlib import Path
 
 from src.auto_coder.requirement_contract import build_normative_issue_manifest
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "specification_regressions"
 
 
