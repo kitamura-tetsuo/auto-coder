@@ -398,6 +398,8 @@ class AutomationEngine:
         if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
             return False
         if is_implementation_ready(authoritative_set[0]):
+            if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
+                return False
             validator = self._get_decomposition_validator(repo_name)
             decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
             decision = decomposition_job.result()

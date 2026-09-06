@@ -514,3 +514,45 @@ def test_late_marker_for_new_ready_parent_defers_until_latest_generation(tmp_pat
     assert ("set", github.issues[3]["body"]) in analyzed
     assert ("individual", 1) in analyzed
     assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+
+
+def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Path, monkeypatch):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+    created = datetime.now(timezone.utc)
+    github = GraphGitHub(
+        {
+            1: graph_issue(1, body, ready=True),
+            3: graph_issue(3, body, ready=True, created_at=created.isoformat()),
+        },
+        {},
+        {},
+    )
+    analyzed = []
+
+    def analyze_individual(manifest, _body):
+        analyzed.append(("individual", manifest.issue_number))
+        github.parents[1] = 3
+        github.children[3] = [1]
+        return SpecificationAnalysisResult("READY")
+
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", analyze_individual)
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle(
+        "o/r",
+        "provider/model",
+        tmp_path / "sets.json",
+        lambda parent, _children: analyzed.append(("set", parent.body)) or DecompositionAnalysisResult("READY"),
+    )
+
+    first = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
+    assert first.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
+    assert analyzed == [("individual", 1)]
+    assert engine.invalidations.pending_count("o/r") == 1
+
+    github.issues[3]["body"] = body + "\nLatest."
+    github.issues[1]["state"] = "closed"
+    monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (created + timedelta(seconds=61)).timestamp())
+    second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[3]), 0), engine.config)
+
+    assert analyzed == [("individual", 1), ("set", github.issues[3]["body"])]
+    assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
