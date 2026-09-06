@@ -2262,6 +2262,58 @@ class GitHubClient:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
 
+    def get_direct_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        """Return the complete cache-bypassing direct-child membership.
+
+        Closed children are deliberately retained because execution state is not
+        part of a submitted specification generation.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        items: List[Dict[str, Any]] = []
+        page = 1
+        with httpx.Client() as client:
+            while True:
+                response = client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
+                    headers=headers,
+                    params={"per_page": 100, "page": page},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError(f"GitHub returned ambiguous direct-child membership for {repo_name}#{issue_number}")
+                for item in payload:
+                    if not isinstance(item, dict) or not isinstance(item.get("number"), int):
+                        raise ValueError(f"GitHub returned an invalid direct child for {repo_name}#{issue_number}")
+                    if item["number"] != issue_number:
+                        items.append(item)
+                if len(payload) < 100:
+                    break
+                page += 1
+        return items
+
+    def get_parent_issue_details_strict(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
+        """Return a cache-bypassing native parent relationship."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        with httpx.Client() as client:
+            response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("parent"), dict):
+            payload = payload["parent"]
+        if not isinstance(payload, dict) or not isinstance(payload.get("number"), int):
+            raise ValueError(f"GitHub returned an ambiguous parent for {repo_name}#{issue_number}")
+        return payload
+
     def add_sub_issue(
         self,
         repo_name: str,
