@@ -11,7 +11,9 @@ import yaml
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
+from auto_coder.backend_manager import BackendManager
 from auto_coder.entity_invalidation import EntityIdentity
+from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.issue_processor import _apply_issue_actions_directly, _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
 from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
 
@@ -537,6 +539,65 @@ def test_local_issue_implementation_rechecks_drain_after_prompt_context(monkeypa
 
     asyncio.run(scenario())
     manager._run_llm_cli.assert_not_called()
+
+
+def test_local_issue_backend_fallback_is_not_started_during_drain(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    first = MagicMock(model_name="first-model")
+    second = MagicMock(model_name="second-model")
+
+    def first_attempt(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(5)
+        raise AutoCoderUsageLimitError("first backend exhausted")
+
+    first._run_llm_cli.side_effect = first_attempt
+    manager = BackendManager(
+        default_backend="first",
+        default_client=first,
+        factories={"first": lambda: first, "second": lambda: second},
+        order=["first", "second"],
+    )
+    github = MagicMock()
+    github.get_all_sub_issues.return_value = []
+    github.get_parent_issue_details.return_value = None
+    command_result = MagicMock(success=True, stdout="main", returncode=1)
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", lambda **_kwargs: "context")
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_branch", lambda: "main")
+    monkeypatch.setattr("auto_coder.issue_processor.cmd.run_command", lambda *_args, **_kwargs: command_result)
+    label_context = MagicMock()
+    label_context.__enter__.return_value = True
+    monkeypatch.setattr("auto_coder.issue_processor.LabelManager", lambda *_args, **_kwargs: label_context)
+    monkeypatch.setattr("auto_coder.issue_processor.BranchManager", lambda *_args, **_kwargs: MagicMock())
+    backend_config = MagicMock(usage_limit_retry_count=0, always_switch_after_execution=False)
+    monkeypatch.setattr("auto_coder.backend_manager.get_llm_config", lambda: MagicMock(get_backend_config=lambda _name: backend_config))
+
+    async def scenario():
+        implementation = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 issue #92",
+                _apply_issue_actions_directly,
+                "owner/repo",
+                {"number": 92, "title": "Implement", "body": "", "labels": []},
+                AutomationConfig(),
+                github,
+                manager,
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        implementation.cancel()
+        release.set()
+        assert await implementation == []
+
+    asyncio.run(scenario())
+    first._run_llm_cli.assert_called_once()
+    second._run_llm_cli.assert_not_called()
 
 
 def test_local_test_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):
