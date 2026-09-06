@@ -2,6 +2,8 @@
 
 import os
 import re
+import signal
+from contextlib import nullcontext
 from typing import Any, Dict, Optional
 
 import click
@@ -20,6 +22,76 @@ from .util.gh_cache import GitHubClient
 from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
+
+
+def _force_exit_after_second_sigint() -> None:
+    """Exit without asyncio's executor drain; this is the explicit unsafe path."""
+    os._exit(130)
+
+
+def _disable_uvicorn_signal_capture(server: Any) -> None:
+    """Leave SIGINT/SIGTERM exclusively owned by process-issues."""
+    # Uvicorn 0.29+ captures and replays signals in ``serve`` itself. Disabling
+    # only its removed legacy install_signal_handlers hook is insufficient.
+    setattr(server, "capture_signals", lambda: nullcontext())
+
+
+async def _run_process_issues_daemon(
+    automation_engine: AutomationEngine,
+    repo_name: str,
+    enable_webhook: bool,
+    host: str,
+    port: int,
+    log_level: str,
+    github_webhook_secret: Optional[str],
+    sentry_webhook_secret: Optional[str],
+) -> None:
+    """Run the production signal, webhook, and engine orchestration."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    signal_counts = {signal.SIGINT: 0, signal.SIGTERM: 0}
+
+    def handle_shutdown_signal(received: signal.Signals) -> None:
+        signal_counts[received] += 1
+        if received is signal.SIGINT and signal_counts[received] > 1:
+            automation_engine.request_force_stop("second SIGINT")
+            _force_exit_after_second_sigint()
+            return
+        automation_engine.request_graceful_shutdown(received.name)
+
+    installed_signals = []
+    for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(shutdown_signal, handle_shutdown_signal, shutdown_signal)
+            installed_signals.append(shutdown_signal)
+        except (NotImplementedError, RuntimeError):
+            logger.warning(f"Could not install asyncio handler for {shutdown_signal.name}")
+
+    try:
+        if enable_webhook:
+            import uvicorn
+
+            from .webhook_server import create_app
+
+            app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
+            uvicorn_config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
+            server = uvicorn.Server(uvicorn_config)
+            _disable_uvicorn_signal_capture(server)
+            logger.info(f"Starting FastAPI server on {host}:{port}")
+            engine_task = asyncio.create_task(automation_engine.start_automation(repo_name), name="automation-engine")
+            server_task = asyncio.create_task(server.serve(), name="webhook-server")
+            done, _ = await asyncio.wait({engine_task, server_task}, return_when=asyncio.FIRST_COMPLETED)
+            if server_task in done and not engine_task.done():
+                automation_engine.request_graceful_shutdown("webhook server exit")
+            await engine_task
+            server.should_exit = True
+            await server_task
+        else:
+            await automation_engine.start_automation(repo_name)
+    finally:
+        for shutdown_signal in installed_signals:
+            loop.remove_signal_handler(shutdown_signal)
 
 
 @click.command()
@@ -384,24 +456,28 @@ def process_issues(
     # Run automation
     import asyncio
 
-    import uvicorn
-
-    from .webhook_server import create_app
-
-    async def run_all():
-        if enable_webhook:
-            app = create_app(automation_engine, repo_name, github_webhook_secret, sentry_webhook_secret)
-            uvicorn_config = uvicorn.Config(app, host=host, port=port, log_level=log_level.lower())
-            server = uvicorn.Server(uvicorn_config)
-            logger.info(f"Starting FastAPI server on {host}:{port}")
-            await asyncio.gather(automation_engine.start_automation(repo_name), server.serve())
-        else:
-            await automation_engine.start_automation(repo_name)
-
     try:
-        asyncio.run(run_all())
-        logger.warning("Automation returned without being interrupted; process-issues is exiting")
-        get_health_monitor().record_event("cli_exit", "asyncio.run returned", repo_name)
+        asyncio.run(
+            _run_process_issues_daemon(
+                automation_engine,
+                repo_name,
+                enable_webhook,
+                host,
+                port,
+                log_level,
+                github_webhook_secret,
+                sentry_webhook_secret,
+            )
+        )
+        if automation_engine.lifecycle.value == "stopped":
+            logger.info("process-issues shutdown completed after graceful drain")
+            get_health_monitor().record_event("cli_exit", "gracefully drained", repo_name)
+        elif automation_engine.lifecycle.value == "forced":
+            logger.error("process-issues force-stopped before graceful drain completed")
+            get_health_monitor().record_event("cli_exit", "forced", repo_name)
+        else:
+            logger.warning("Automation returned without being interrupted; process-issues is exiting")
+            get_health_monitor().record_event("cli_exit", "asyncio.run returned", repo_name)
     except KeyboardInterrupt:
         logger.info("Stopped by user")
         get_health_monitor().record_event("cli_exit", "KeyboardInterrupt", repo_name)

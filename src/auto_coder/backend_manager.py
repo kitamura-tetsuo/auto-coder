@@ -20,6 +20,7 @@ from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
+from .shutdown_context import new_work_allowed
 
 logger = get_logger(__name__)
 
@@ -472,6 +473,10 @@ class BackendManager(LLMBackendManagerBase):
         retry_attempts: Dict[str, int] = {}
 
         while attempts < len(self._all_backends):
+            if not new_work_allowed():
+                if last_error is not None:
+                    raise last_error
+                raise AutoCoderRetryableBackendError("LLM execution deferred because graceful shutdown is draining")
             backend_name = self._current_backend_name()
             current_idx = self._current_idx
 
@@ -527,6 +532,8 @@ class BackendManager(LLMBackendManagerBase):
                     self._save_session_state(backend_name, None)
                     if hasattr(cli, "clear_last_session_id"):
                         cli.clear_last_session_id()
+                    if not new_work_allowed():
+                        raise
                     result = self._execute_backend_with_providers(
                         backend_name=backend_name,
                         cli=cli,
@@ -663,6 +670,8 @@ class BackendManager(LLMBackendManagerBase):
                     return out
                 except AutoCoderUsageLimitError as exc:
                     if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
+                        if not new_work_allowed():
+                            raise
                         rotated = self._provider_manager.advance_to_next_provider(backend_name)
                         if rotated:
                             provider_attempts += 1

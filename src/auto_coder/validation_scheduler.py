@@ -8,7 +8,13 @@ from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Callable, Generic, TypeVar
 
+from .shutdown_context import new_work_allowed
+
 T = TypeVar("T")
+
+
+class ValidationAdmissionDeferred(RuntimeError):
+    """A queued validation was intentionally left unstarted during drain."""
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,13 @@ class ValidationScheduler:
             # submitting context is explicitly propagated, which would make the
             # analyzer execute a different provider/model from its policy key.
             context = copy_context()
-            future: Future[T] = self._executor.submit(context.run, operation)
+
+            def run_if_admitted() -> T:
+                if not new_work_allowed():
+                    raise ValidationAdmissionDeferred("validation was queued when graceful draining began")
+                return operation()
+
+            future: Future[T] = self._executor.submit(context.run, run_if_admitted)
             self._in_flight[identity_key] = future  # type: ignore[assignment]
 
         def retire(completed: Future[T]) -> None:

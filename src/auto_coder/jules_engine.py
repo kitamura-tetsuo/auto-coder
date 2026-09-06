@@ -16,6 +16,7 @@ from dateutil import parser
 from .jules_client import JulesClient, JulesSessionRejectedError
 from .llm_backend_config import get_jules_session_expiration_days_from_config
 from .logger_config import get_logger
+from .shutdown_context import new_work_allowed
 from .util.gh_cache import GitHubClient
 
 if TYPE_CHECKING:
@@ -684,6 +685,9 @@ def check_and_start_recurrent_jules_tasks(
                     break
 
             if not is_running:
+                if not new_work_allowed():
+                    logger.info(f"Deferring recurrent Jules prompt {names}: graceful shutdown is draining")
+                    continue
                 logger.info(f"No active Jules session found for recurrent prompt: {names}. Starting a new Jules session...")
                 if implementation_slots is not None and terminal_owner:
                     implementation_slots.release(owner)
