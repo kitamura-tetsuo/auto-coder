@@ -45,7 +45,7 @@ from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, resolve_authoritative_item_type
+from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
@@ -1242,6 +1242,7 @@ class AutomationEngine:
         continue_execution: bool = False,
         advance_issue_attempt: bool = False,
         generation_serialized: bool = False,
+        authoritative_parent_number: Optional[int] = None,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1353,6 +1354,7 @@ class AutomationEngine:
                         force,
                         continue_execution,
                         advance_issue_attempt,
+                        authoritative_parent_number=item_number,
                     )
                 result.actions = [f"Skipped - parent submission is missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
@@ -1394,6 +1396,7 @@ class AutomationEngine:
                         continue_execution,
                         advance_issue_attempt,
                         generation_serialized=True,
+                        authoritative_parent_number=authoritative_parent_number,
                     )
             try:
                 current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
@@ -1412,26 +1415,33 @@ class AutomationEngine:
             decomposition_validator: Optional[DecompositionValidationLifecycle] = None
             authoritative_set: Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
             independently_ready = is_implementation_ready(current_issue)
-            # A normalized native-parent hint makes the set authoritative even
-            # when the child also has its own readiness label. This prevents an
-            # independently labeled child from bypassing a current set BLOCKED.
-            if not independently_ready or isinstance(candidate.data.get("parent_issue_number"), int):
+            live_parent_number = authoritative_parent_number or current_issue.get("parent_issue_number")
+            if not isinstance(live_parent_number, int):
+                live_parent_number = parse_parent_issue_url_number(current_issue.get("parent_issue_url"))
+            # Current authoritative relationship data, never the collected
+            # candidate hint, decides whether set authorization is mandatory.
+            parent_details: Optional[Dict[str, Any]]
+            if isinstance(live_parent_number, int):
+                parent_details = {"number": live_parent_number}
+            elif not independently_ready:
                 try:
                     parent_reader = getattr(self.github, "get_parent_issue_details_strict", None)
                     parent_details = parent_reader(repo_name, item_number) if callable(parent_reader) else None
                 except Exception as exc:
                     result.error = f"Cannot determine authoritative parent relationship: {exc}"
                     return result
-                if isinstance(parent_details, dict) and isinstance(parent_details.get("number"), int):
-                    inherited_parent_number = int(parent_details["number"])
-                    try:
-                        authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
-                    except Exception as exc:
-                        result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
-                        return result
-                    if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
-                        result.actions = ["Skipped - child is no longer in the authoritative parent set"]
-                        return result
+            else:
+                parent_details = None
+            if isinstance(parent_details, dict) and isinstance(parent_details.get("number"), int):
+                inherited_parent_number = int(parent_details["number"])
+                try:
+                    authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                except Exception as exc:
+                    result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
+                    return result
+                if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
+                    result.actions = ["Skipped - child is no longer in the authoritative parent set"]
+                    return result
 
             inherited_ready = authoritative_set is not None and is_implementation_ready(authoritative_set[0])
 
@@ -1571,6 +1581,13 @@ class AutomationEngine:
                     and item_number in {child.get("number") for child in latest_set[1]}
                     and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in latest_set[1])
                 )
+            elif submission_current:
+                # An Issue classified as standalone can become a parent without
+                # changing its own text or labels. Recheck membership before any
+                # ownership-facing operation and require a new set pass instead.
+                direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+                latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
+                submission_current = not (isinstance(latest_children, list) and latest_children)
             if not submission_current or dispatch_identity != decision.identity:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
@@ -1608,7 +1625,9 @@ class AutomationEngine:
                     and decomposition_validator.identity(*current_set) == decomposition_decision.identity
                     and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in current_set[1])
                 )
-            return is_implementation_ready(latest)
+            direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+            latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
+            return is_implementation_ready(latest) and not (isinstance(latest_children, list) and latest_children)
 
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its

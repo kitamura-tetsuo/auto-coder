@@ -189,6 +189,22 @@ def test_labeled_child_cannot_bypass_current_set_block(tmp_path):
     dispatch.assert_not_called()
 
 
+def test_stale_candidate_without_parent_hint_obeys_live_set_block(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    child = issue(11, "Child", CHILD_BODY, ready=True)
+    candidate = GitHubClient.get_issue_details(MagicMock(), child)
+    assert candidate["parent_issue_number"] is None
+    child["parent_issue_url"] = "https://api.github.com/repos/owner/repo/issues/10"
+    github = relationship_github(parent, [child])
+    individual = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = configured_engine(tmp_path, github, lambda *_args: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)), individual)
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", candidate, 0, issue_number=11), engine.config)
+    assert "blocked parent/child decomposition" in result.actions[0]
+    individual.assert_not_called()
+    dispatch.assert_not_called()
+
+
 def test_parent_routing_labeled_child_cannot_bypass_current_set_block(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     parent["sub_issues_summary"] = {"total": 1}
@@ -224,6 +240,45 @@ def test_stale_empty_parent_membership_hint_cannot_authorize_standalone_dispatch
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized_before_child_addition, 0, issue_number=10), engine.config)
     assert result.success
     assert events == ["set", "individual:11", "dispatch:11"]
+
+
+def test_child_added_during_individual_validation_invalidates_standalone_parent(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    child = issue(11, "Child", CHILD_BODY)
+    members = []
+    github = relationship_github(parent, members)
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(item) for item in members] if number == 10 else []
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(parent if number == 10 else child)
+    events = []
+
+    def analyze_individual(manifest, _body):
+        events.append(f"individual:{manifest.issue_number}")
+        if manifest.issue_number == 10:
+            child["parent_issue_url"] = "https://api.github.com/repos/owner/repo/issues/10"
+            members.append(child)
+        return SpecificationAnalysisResult("READY")
+
+    engine = configured_engine(
+        tmp_path,
+        github,
+        lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"),
+        analyze_individual,
+    )
+    candidate = Candidate("issue", GitHubClient.get_issue_details(github, parent), 0, issue_number=10)
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert first.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
+    dispatch.assert_not_called()
+    assert events == ["individual:10"]
+
+    with patch.object(
+        engine,
+        "_process_single_candidate_reserved",
+        return_value=CandidateProcessingResult("issue", 11, "Child", True, ["dispatched"], None),
+    ):
+        second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert second.success
+    assert events == ["individual:10", "set", "individual:11"]
 
 
 def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_path):

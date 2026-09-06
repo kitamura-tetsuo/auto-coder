@@ -25,6 +25,12 @@ logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
 
 
+def parse_parent_issue_url_number(parent_issue_url: object) -> Optional[int]:
+    """Return the stable Issue number encoded by a native parent URL."""
+    match = re.search(r"/issues/(\d+)$", parent_issue_url) if isinstance(parent_issue_url, str) else None
+    return int(match.group(1)) if match else None
+
+
 class ActionsSecretPermissionError(RuntimeError):
     """The dedicated credential cannot publish repository Actions secrets."""
 
@@ -1154,8 +1160,7 @@ class GitHubClient:
         parent_issue_number = get(issue, "parent_issue_number")
         if not isinstance(parent_issue_number, int):
             parent_issue_url = get(issue, "parent_issue_url")
-            match = re.search(r"/issues/(\d+)$", parent_issue_url) if isinstance(parent_issue_url, str) else None
-            parent_issue_number = int(match.group(1)) if match else None
+            parent_issue_number = parse_parent_issue_url_number(parent_issue_url)
 
         return {
             "id": get(issue, "id"),
