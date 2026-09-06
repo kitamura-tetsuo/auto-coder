@@ -4942,6 +4942,9 @@ def _send_codex_cloud_error_feedback(
         client = CodexCloudClient(repo_name=repo_name)
 
         target = resolve_existing_pr_repair_target(repo_name, pr_data)
+        if not new_work_allowed():
+            actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: graceful shutdown is draining")
+            return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
         if target:
             details = get_prompt_template("codex_cloud.ci_review_repair_details")
             prompt = build_existing_pr_repair_prompt(target, details)
@@ -5951,6 +5954,9 @@ def _apply_local_test_fix(
 
             # BackendManager with test file tracking
             manager = backend_manager or get_llm_backend_manager()
+            if not new_work_allowed():
+                actions.append(f"Deferred local repair for PR #{pr_number}: graceful shutdown is draining")
+                return actions, llm_response
             llm_response = manager.run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
 
             if llm_response:

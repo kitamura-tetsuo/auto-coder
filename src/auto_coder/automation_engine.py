@@ -491,6 +491,30 @@ class AutomationEngine:
             )
         return set_job, child_jobs
 
+    @staticmethod
+    def _join_parent_validations(
+        decomposition_job: ValidationJob[DecompositionDecision],
+        child_jobs: dict[int, ValidationJob[ValidationDecision]],
+    ) -> tuple[DecompositionDecision, dict[int, ValidationDecision]]:
+        """Join a submitted batch completely before propagating any failure."""
+        decomposition_decision: Optional[DecompositionDecision] = None
+        child_decisions: dict[int, ValidationDecision] = {}
+        first_error: Optional[BaseException] = None
+        try:
+            decomposition_decision = decomposition_job.result()
+        except BaseException as exc:
+            first_error = exc
+        for number, job in child_jobs.items():
+            try:
+                child_decisions[number] = job.result()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+        assert decomposition_decision is not None
+        return decomposition_decision, child_decisions
+
     def _standalone_relationship_is_current(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> bool:
         """Reject and, when blocked, apply a parent submission discovered late."""
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
@@ -503,8 +527,8 @@ class AutomationEngine:
             if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
                 return False
             validator = self._get_decomposition_validator(repo_name)
-            decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
-            decision = decomposition_job.result()
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+            decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
             if decision.verdict == "BLOCKED":
                 validator.apply_blocked(
                     self.github,
@@ -561,23 +585,15 @@ class AutomationEngine:
         # identity has either persisted reusable evidence or returned ERROR.
         failures: list[str] = []
         try:
-            if decomposition_job.result().verdict == "ERROR":
+            decomposition_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
+            if decomposition_decision.verdict == "ERROR":
                 failures.append("decomposition validation failed")
+            if any(decision.verdict == "ERROR" for decision in child_decisions.values()):
+                failures.append("individual validation failed")
         except ValidationAdmissionDeferred:
-            failures.append("decomposition validation was deferred")
+            failures.append("validation was deferred")
         except Exception as exc:
-            failures.append(f"decomposition validation raised {type(exc).__name__}")
-        # Always join every job in this eagerly submitted batch. An early ERROR
-        # determines the outcome, but cannot release durable worker ownership
-        # while a sibling validator is still able to persist evidence.
-        for job in child_jobs.values():
-            try:
-                if job.result().verdict == "ERROR":
-                    failures.append("individual validation failed")
-            except ValidationAdmissionDeferred:
-                failures.append("individual validation was deferred")
-            except Exception as exc:
-                failures.append(f"individual validation raised {type(exc).__name__}")
+            failures.append(f"validation raised {type(exc).__name__}")
         if failures:
             raise RuntimeError(f"validation batch incomplete while processing child invalidation: {', '.join(failures)}")
 
@@ -606,8 +622,8 @@ class AutomationEngine:
                 if authoritative_set is None:
                     return None
                 parent_validator = self._get_decomposition_validator(repo_name)
-                decomposition_job, _ = self._schedule_parent_validations(repo_name, authoritative_set)
-                parent_decision = decomposition_job.result()
+                decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                 if parent_decision.verdict == "BLOCKED":
                     parent_validator.apply_blocked(
                         self.github,
@@ -619,6 +635,7 @@ class AutomationEngine:
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
         decomposition_validator: Optional[DecompositionValidationLifecycle] = None
         decomposition_decision: Optional[DecompositionDecision] = None
+        joined_child_decisions: dict[int, ValidationDecision] = {}
         if parent_number is not None:
             authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
             if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
@@ -631,7 +648,7 @@ class AutomationEngine:
                 return None
             decomposition_validator = self._get_decomposition_validator(repo_name)
             decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-            decomposition_decision = decomposition_job.result()
+            decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_decision.verdict == "BLOCKED":
                 decomposition_validator.apply_blocked(
                     self.github,
@@ -655,7 +672,7 @@ class AutomationEngine:
         validator = self._get_specification_validator(repo_name)
         individual_identity = validator.identity(issue_number, title, body)
         if parent_number is not None:
-            decision = child_jobs[issue_number].result()
+            decision = joined_child_decisions[issue_number]
         else:
             decision = self.validation_scheduler.submit(
                 f"individual:{individual_identity.key}",

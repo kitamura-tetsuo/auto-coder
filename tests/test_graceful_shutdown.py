@@ -13,7 +13,7 @@ from auto_coder.automation_config import AutomationConfig, Candidate, CandidateP
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
-from auto_coder.pr_processor import _apply_github_actions_fix
+from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback
 
 
 def test_worker_drain_owns_real_to_thread_operation_until_durable_completion(monkeypatch, tmp_path):
@@ -217,6 +217,70 @@ def test_queued_child_validation_is_not_started_during_drain(monkeypatch, tmp_pa
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
+def test_stale_parent_authorization_joins_child_validation_during_drain(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    config = AutomationConfig()
+    object.__setattr__(config, "validation_concurrency", 2)
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {
+        "number": 1,
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    github.get_direct_sub_issues_strict.return_value = [{"number": 22, "state": "open"}]
+    engine = AutomationEngine(github, config)
+    decomposition_started = threading.Event()
+    child_started = threading.Event()
+    release_decomposition = threading.Event()
+    release_child = threading.Event()
+    authoritative = (github.get_issue_dispatch_snapshot_strict.return_value, github.get_direct_sub_issues_strict.return_value)
+    monkeypatch.setattr(engine, "_fetch_authoritative_decomposition_set", lambda *_args: authoritative)
+    monkeypatch.setattr(engine, "_defer_initial_issue_stabilization", lambda *_args: False)
+    monkeypatch.setattr(engine, "_get_decomposition_validator", lambda *_args: MagicMock())
+
+    def decomposition():
+        decomposition_started.set()
+        assert release_decomposition.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    def individual():
+        child_started.set()
+        assert release_child.wait(5)
+        return SimpleNamespace(verdict="READY")
+
+    monkeypatch.setattr(
+        engine,
+        "_schedule_parent_validations",
+        lambda *_args: (
+            engine.validation_scheduler.submit("decomposition:stale-parent", decomposition),
+            {22: engine.validation_scheduler.submit("individual:stale-child", individual)},
+        ),
+    )
+
+    async def scenario():
+        authorization = asyncio.create_task(
+            engine._run_local_critical(
+                "stale remote session reconciliation",
+                engine._authorize_stale_jules_dispatch,
+                "owner/repo",
+                1,
+                github.get_issue_dispatch_snapshot_strict.return_value,
+            )
+        )
+        assert await asyncio.to_thread(decomposition_started.wait, 2)
+        assert await asyncio.to_thread(child_started.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        authorization.cancel()
+        release_decomposition.set()
+        await asyncio.sleep(0.05)
+        assert not authorization.done()
+        assert list(engine._critical_operations.values()) == ["stale remote session reconciliation"]
+        release_child.set()
+        assert await authorization is None
+
+    asyncio.run(scenario())
+
+
 def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
@@ -291,6 +355,86 @@ def test_initial_pr_repair_rechecks_drain_after_context_acquisition(monkeypatch,
 
     asyncio.run(scenario())
     assert llm_calls == 0
+
+
+def test_local_test_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    manager = MagicMock()
+
+    def context_lookup(**_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return "context"
+
+    monkeypatch.setattr("auto_coder.pr_processor.extract_important_errors", lambda *_args: "failure")
+    monkeypatch.setattr("auto_coder.pr_processor.get_commit_log", context_lookup)
+    monkeypatch.setattr("auto_coder.pr_processor.get_linked_issues_context", lambda *_args: "")
+
+    async def scenario():
+        repair = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 pr #89",
+                _apply_local_test_fix,
+                "owner/repo",
+                {"number": 89, "title": "Repair", "body": ""},
+                AutomationConfig(),
+                {"success": False, "output": "failure", "errors": "failure", "return_code": 1},
+                [],
+                manager,
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        repair.cancel()
+        release.set()
+        actions, response = await repair
+        assert actions == ["Deferred local repair for PR #89: graceful shutdown is draining"]
+        assert response == ""
+
+    asyncio.run(scenario())
+    manager.run_test_fix_prompt.assert_not_called()
+
+
+def test_cloud_ci_feedback_rechecks_drain_after_task_resolution(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    client = MagicMock()
+
+    def resolve(*_args):
+        entered.set()
+        assert release.wait(5)
+        return "task-89"
+
+    monkeypatch.setattr("auto_coder.pr_processor._resolve_codex_cloud_task_id", resolve)
+    monkeypatch.setattr("auto_coder.pr_processor.resolve_existing_pr_repair_target", lambda *_args: MagicMock())
+    monkeypatch.setattr("auto_coder.codex_cloud_client.CodexCloudClient", lambda **_kwargs: client)
+
+    async def scenario():
+        feedback = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 pr #89",
+                _send_codex_cloud_error_feedback,
+                "owner/repo",
+                {"number": 89},
+                [{"name": "tests"}],
+                AutomationConfig(),
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        feedback.cancel()
+        release.set()
+        result = await feedback
+        assert result.retryable
+        assert result.actions == ("Deferred Codex Cloud continuation for PR #89: graceful shutdown is draining",)
+
+    asyncio.run(scenario())
+    client.continue_if_paused.assert_not_called()
 
 
 def test_recurrent_provider_scan_is_owned_and_cannot_launch_during_drain(monkeypatch, tmp_path):
