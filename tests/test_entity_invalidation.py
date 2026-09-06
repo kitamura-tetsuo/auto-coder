@@ -739,6 +739,79 @@ def test_child_edit_webhook_validates_submitted_generation_before_eligibility_fi
     assert engine.invalidations.pending_count("owner/repo") == 0
 
 
+def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp_path: Path, monkeypatch):
+    """A child ERROR is not evidence and cannot acknowledge its durable trigger."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    body = "## Requirements\n- REQ-001: Preserve the edited behavior."
+    parent = {"id": 100, "number": 10, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}], "user": {"id": 1}}
+    child = {
+        "id": 110,
+        "number": 11,
+        "title": "Edited child",
+        "body": body + "\nEdited.",
+        "state": "closed",
+        "labels": [],
+        "user": {"id": 1},
+        "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
+    }
+    github = MagicMock()
+    snapshots = {10: parent, 11: child}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue_details.side_effect = lambda value: dict(value)
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if number == 11 else None
+    set_calls = []
+    child_verdicts = iter(("ERROR", "READY"))
+    child_calls = []
+    engine = AutomationEngine(github, AutomationConfig())
+    decomposition = DecompositionValidationLifecycle(
+        "owner/repo",
+        "provider/model",
+        tmp_path / "sets.json",
+        lambda *_args: set_calls.append("set") or DecompositionAnalysisResult("READY"),
+    )
+
+    def analyze_child(manifest, _body):
+        child_calls.append(manifest.issue_number)
+        return SpecificationAnalysisResult(next(child_verdicts))
+
+    individual = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json", analyze_child)
+    engine._decomposition_validators["owner/repo"] = decomposition
+    engine._specification_validators["owner/repo"] = individual
+
+    async def run_attempt(expect_pending: bool) -> None:
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await asyncio.wait_for(engine.queue.join(), timeout=3)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        assert engine.invalidations.pending_count("owner/repo") == int(expect_pending)
+
+    async def scenario() -> None:
+        await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", "edited-error")
+        await run_attempt(expect_pending=True)
+
+        child_identity = individual.identity(11, child["title"], child["body"])
+        assert individual.store.get(child_identity) is None
+        assert set_calls == ["set"]
+        assert child_calls == [11]
+        assert parent["labels"] == [{"name": "implementation-ready"}]
+        github.remove_labels.assert_not_called()
+        github.add_comment_to_issue.assert_not_called()
+
+        await engine._enqueue_pending_invalidations("owner/repo")
+        await run_attempt(expect_pending=False)
+
+    asyncio.run(scenario())
+
+    assert set_calls == ["set"]
+    assert child_calls == [11, 11]
+    child_identity = individual.identity(11, child["title"], child["body"])
+    assert individual.store.get(child_identity) is not None
+    assert individual.store.get(child_identity).verdict == "READY"
+    assert parent["labels"] == [{"name": "implementation-ready"}]
+
+
 @pytest.mark.parametrize("child_state", ["open", "closed"])
 def test_explicit_child_processing_validates_submitted_generation_before_eligibility_filter(tmp_path: Path, child_state: str):
     """The operator entry point validates a child's set before implementation filters."""
