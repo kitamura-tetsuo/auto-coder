@@ -2523,6 +2523,20 @@ class AutomationEngine:
                             "errors": result.errors,
                         }
 
+                    # Explicit/single-item processing is another supported
+                    # discovery origin for specification changes.  Resolve and
+                    # validate a submitted parent generation before unified
+                    # processing can reject a closed child or defer an owned
+                    # child.  This mirrors invalidation-worker discovery and
+                    # keeps validation eligibility independent of
+                    # implementation eligibility.
+                    if candidate.type == "issue":
+                        self._validate_submitted_parent_generation_for_child(
+                            repo_name,
+                            number,
+                            candidate.data,
+                        )
+
                     # Use unified processing function
                     processing_args = (repo_name, candidate, self.config, jules_mode)
                     if explicit_only:

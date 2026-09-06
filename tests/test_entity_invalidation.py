@@ -739,6 +739,53 @@ def test_child_edit_webhook_validates_submitted_generation_before_eligibility_fi
     assert engine.invalidations.pending_count("owner/repo") == 0
 
 
+@pytest.mark.parametrize("child_state", ["open", "closed"])
+def test_explicit_child_processing_validates_submitted_generation_before_eligibility_filter(tmp_path: Path, child_state: str):
+    """The operator entry point validates a child's set before implementation filters."""
+    body = "## Requirements\n- REQ-001: Preserve the edited behavior."
+    parent = {"id": 100, "number": 10, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}], "user": {"id": 1}}
+    child = {
+        "id": 110,
+        "number": 11,
+        "title": "Edited child",
+        "body": body + "\nEdited.",
+        "state": child_state,
+        "labels": [],
+        "user": {"id": 1},
+        "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
+    }
+    github = MagicMock()
+    snapshots = {10: parent, 11: child}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue.return_value = child
+    github.get_issue_details.side_effect = lambda value: dict(value)
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if number == 11 else None
+    events = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._get_authoritative_item_type = MagicMock(return_value="issue")
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    engine._decomposition_validators["owner/repo"] = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", lambda *_args: events.append("set") or DecompositionAnalysisResult("READY"))
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json", lambda manifest, _body: events.append(f"child:{manifest.issue_number}") or SpecificationAnalysisResult("READY"))
+    owner = ImplementationOwner("issue", 11)
+    if child_state == "open":
+        execution_id = slots.start_execution(owner)
+        assert execution_id is not None
+        assert slots.record_provider_session(owner, "retained-session")
+        slots.finish_execution(owner, execution_id)
+
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine.process_single("owner/repo", "issue", 11, explicit_only=True)
+
+    assert set(events) == {"set", "child:11"}
+    dispatch.assert_not_called()
+    assert result["errors"] == []
+    assert slots.active_execution_ids(owner) == ()
+    assert slots.has_provider_sessions(owner) is (child_state == "open")
+
+
 @pytest.mark.parametrize(
     ("entity_type", "event_type", "entity_key"),
     [("pr", "pull_request", "pull_request"), ("issue", "issues", "issue")],
