@@ -37,6 +37,14 @@ class ImplementationSlotUnavailable(RuntimeError):
     """Raised when an independent implementation cannot reserve a slot."""
 
 
+class ImplementationHierarchyConflict(RuntimeError):
+    """Raised when a direct parent or child already owns implementation state."""
+
+
+class ImplementationHierarchyUnavailable(RuntimeError):
+    """Raised when current direct hierarchy evidence cannot authorize admission."""
+
+
 class ImplementationOwnerResolutionError(RuntimeError):
     """Raised when resolving a PR owner is uncertain and must fail closed."""
 
@@ -290,6 +298,7 @@ class ImplementationSlotRepository:
         bypass_capacity: bool = False,
         bypass_active_execution: bool = False,
         allow_urgent_emergency: bool = False,
+        github_client: Optional[Any] = None,
     ) -> Optional[str]:
         """Atomically admit and durably identify one mutating execution.
 
@@ -310,6 +319,17 @@ class ImplementationSlotRepository:
                 self._write(owners)
             record = owners.get(owner.key)
             if record is None:
+                if owner.kind == "issue" and github_client is not None:
+                    first_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
+                    second_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
+                    if first_hierarchy != second_hierarchy:
+                        raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed while admitting issue:{owner.number}")
+                    related = set(second_hierarchy[1])
+                    if second_hierarchy[0] is not None:
+                        related.add(second_hierarchy[0])
+                    conflicts = sorted(number for number in related if f"issue:{number}" in owners)
+                    if conflicts:
+                        raise ImplementationHierarchyConflict(f"issue:{owner.number} conflicts with active direct parent/child issue:{conflicts[0]}")
                 normal_usage, emergency_in_use = self._capacity_usage(owners)
                 use_emergency = False
                 if normal_usage >= self.max_implementations and not bypass_capacity:
@@ -344,6 +364,31 @@ class ImplementationSlotRepository:
         active[owner.key] = execution_id
         self._execution_context.owners = active
         return execution_id
+
+    def _read_issue_hierarchy(self, github_client: Any, issue_number: int) -> tuple[Optional[int], tuple[int, ...]]:
+        """Read and strictly validate cache-bypassing direct hierarchy evidence."""
+        parent_reader = getattr(github_client, "get_parent_issue_number_strict", None)
+        child_reader = getattr(github_client, "get_direct_sub_issues_strict", None)
+        if not callable(parent_reader) or not callable(child_reader):
+            raise ImplementationHierarchyUnavailable("Cache-bypassing GitHub parent and direct-child readers are required")
+        try:
+            parent = parent_reader(self.repo_name, issue_number)
+            children_payload = child_reader(self.repo_name, issue_number)
+        except Exception as exc:
+            raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
+        if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
+            raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct parent identity")
+        if parent == issue_number or not isinstance(children_payload, list):
+            raise ImplementationHierarchyUnavailable("GitHub returned contradictory direct hierarchy evidence")
+        children: list[int] = []
+        for child in children_payload:
+            number = child.get("number") if isinstance(child, dict) else None
+            if isinstance(number, bool) or not isinstance(number, int) or number == issue_number:
+                raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct child identity")
+            children.append(number)
+        if len(children) != len(set(children)):
+            raise ImplementationHierarchyUnavailable("GitHub returned duplicate direct-child membership")
+        return parent, tuple(sorted(children))
 
     @staticmethod
     def _read_process_identity(pid: int) -> Optional[ProcessIdentity]:

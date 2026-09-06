@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 from auto_coder.implementation_slots import (
+    ImplementationHierarchyConflict,
+    ImplementationHierarchyUnavailable,
     ImplementationOwner,
     ImplementationOwnerResolutionError,
     ImplementationSlotRepository,
@@ -53,6 +55,93 @@ class GitHubState:
 
 def repository(tmp_path, limit=1):
     return ImplementationSlotRepository("owner/repo", limit, tmp_path / "slots.json")
+
+
+class AuthoritativeHierarchy:
+    """Minimal cache-bypassing hierarchy API used by production admission."""
+
+    def __init__(self, parents=None, children=None):
+        self.parents = parents or {}
+        self.children = children or {}
+
+    def get_parent_issue_number_strict(self, _repo, number):
+        value = self.parents.get(number)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def get_direct_sub_issues_strict(self, _repo, number):
+        return [{"number": child} for child in self.children.get(number, [])]
+
+
+def test_durable_admission_excludes_both_direct_parent_child_directions_and_restart(tmp_path):
+    """AC-001, AC-002, AC-004, AC-009: the owner record is the sole active oracle."""
+    path = tmp_path / "hierarchy-slots.json"
+    hierarchy = AuthoritativeHierarchy(parents={2: 1}, children={1: [2]})
+    slots = ImplementationSlotRepository("owner/repo", 3, path)
+    child_execution = slots.start_execution(ImplementationOwner("issue", 2), github_client=hierarchy)
+    assert child_execution is not None
+    slots.finish_execution(ImplementationOwner("issue", 2), child_execution)
+
+    restarted = ImplementationSlotRepository("owner/repo", 3, path)
+    with pytest.raises(ImplementationHierarchyConflict, match="issue:2"):
+        restarted.start_execution(ImplementationOwner("issue", 1), bypass_capacity=True, allow_urgent_emergency=True, github_client=hierarchy)
+    assert restarted.active_owners() == (ImplementationOwner("issue", 2),)
+
+    restarted.release(ImplementationOwner("issue", 2))
+    assert restarted.start_execution(ImplementationOwner("issue", 1), github_client=hierarchy) is not None
+    with pytest.raises(ImplementationHierarchyConflict, match="issue:1"):
+        restarted.start_execution(ImplementationOwner("issue", 2), github_client=hierarchy)
+
+
+def test_durable_admission_preserves_unrelated_and_sibling_concurrency(tmp_path):
+    """AC-007, AC-008: only the direct relation to the candidate conflicts."""
+    hierarchy = AuthoritativeHierarchy(parents={2: 1, 3: 1}, children={1: [2, 3]})
+    slots = repository(tmp_path, limit=4)
+    assert slots.start_execution(ImplementationOwner("issue", 2), github_client=hierarchy)
+    assert slots.start_execution(ImplementationOwner("issue", 3), github_client=hierarchy)
+    assert slots.start_execution(ImplementationOwner("issue", 99), github_client=hierarchy)
+
+
+def test_durable_admission_hierarchy_failure_and_change_fail_closed(tmp_path):
+    """AC-005, AC-006: operational and stale evidence cannot create ownership."""
+    slots = repository(tmp_path, limit=3)
+    unavailable = AuthoritativeHierarchy(parents={2: RuntimeError("offline")})
+    with pytest.raises(ImplementationHierarchyUnavailable, match="offline"):
+        slots.start_execution(ImplementationOwner("issue", 2), github_client=unavailable)
+
+    class ReparentingHierarchy(AuthoritativeHierarchy):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        def get_parent_issue_number_strict(self, _repo, _number):
+            self.reads += 1
+            return None if self.reads == 1 else 1
+
+    with pytest.raises(ImplementationHierarchyUnavailable, match="changed"):
+        slots.start_execution(ImplementationOwner("issue", 2), github_client=ReparentingHierarchy())
+    assert slots.active_owners() == ()
+
+
+def test_concurrent_opposite_side_admission_serializes_hierarchy_and_owner_commit(tmp_path):
+    """AC-003: separate repositories sharing storage cannot race in both owners."""
+    path = tmp_path / "race-slots.json"
+    hierarchy = AuthoritativeHierarchy(parents={2: 1}, children={1: [2]})
+    barrier = threading.Barrier(2)
+
+    def admit(number):
+        barrier.wait()
+        slots = ImplementationSlotRepository("owner/repo", 3, path)
+        try:
+            return slots.start_execution(ImplementationOwner("issue", number), github_client=hierarchy)
+        except ImplementationHierarchyConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(admit, (1, 2)))
+    assert sum(result is not None for result in results) == 1
+    assert len(ImplementationSlotRepository("owner/repo", 3, path).active_owners()) == 1
 
 
 def execution_process(storage_path, owner_kind="issue", owner_number=100, force=False, lifetime=60):
