@@ -245,6 +245,17 @@ def test_stale_replacement_requires_parent_readiness_and_sibling_order(tmp_path)
     github.snapshots[10]["labels"] = []
     assert engine._authorize_stale_jules_dispatch("owner/repo", 11, dict(github.snapshots[11])) is None
 
+    github.snapshots[10]["labels"] = ["implementation-ready"]
+    github.children = [9, 11]
+    github.snapshots[9] = {
+        "number": 9,
+        "title": "Elder",
+        "body": "## Requirements\n- REQ-001: Deliver elder behavior.",
+        "state": "open",
+        "labels": [],
+    }
+    assert engine._authorize_stale_jules_dispatch("owner/repo", 11, dict(github.snapshots[11])) is None
+
 
 def test_invalidation_feeds_bounded_validation_worker_when_slots_are_full(tmp_path):
     github = MutableHierarchyGitHub()
@@ -278,14 +289,3 @@ def test_invalidation_feeds_bounded_validation_worker_when_slots_are_full(tmp_pa
 
     asyncio.run(exercise())
     assert engine._process_single_candidate_unified.call_count == 1
-
-    github.snapshots[10]["labels"] = ["implementation-ready"]
-    github.children = [9, 11]
-    github.snapshots[9] = {
-        "number": 9,
-        "title": "Elder",
-        "body": "## Requirements\n- REQ-001: Deliver elder behavior.",
-        "state": "open",
-        "labels": [],
-    }
-    assert engine._authorize_stale_jules_dispatch("owner/repo", 11, dict(github.snapshots[11])) is None
