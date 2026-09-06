@@ -44,6 +44,7 @@ from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResul
 from .branch_manager import BranchManager
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
+from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .exceptions import AutoCoderRetryableBackendError
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
@@ -2369,28 +2370,55 @@ def _handle_pr_merge(
                 # 2. Trigger workflow_dispatch
                 from auto_coder.util.github_action import trigger_workflow_dispatch
 
-                # Check if monitor is already active BEFORE triggering workflow
-                # This prevents duplicate workflow runs and duplicate monitors
+                head_branch = pr_data.get("head", {}).get("ref")
+                head_sha = pr_data.get("head", {}).get("sha")
+                workflow_id = "ci.yml"
+
+                # Manual CI dispatch admission is governed exclusively by the
+                # durable dispatch-claim store (see GitHub Issue #1791). The
+                # claim identity is repo + PR + head SHA + workflow, so a new
+                # head SHA is a different identity and is never blocked by a
+                # stale claim (REQ-001, REQ-007, REQ-008: no label involved).
+                dispatch_identity = DispatchIdentity(
+                    repo_name=repo_name,
+                    pr_number=pr_number,
+                    head_sha=head_sha or "",
+                    workflow_id=workflow_id,
+                )
+                claim_store = get_dispatch_claim_store()
+                claim = claim_store.try_acquire_claim(dispatch_identity)
+                if not claim.acquired:
+                    logger.info(f"Dispatch claim not acquired for PR #{pr_number} ({dispatch_identity.key()}): {claim.reason}")
+                    actions.append(f"Skipped triggering {workflow_id} for PR #{pr_number}: dispatch already claimed ({claim.reason})")
+                    return actions
+
+                # `_active_monitors` remains only a local, same-process
+                # optimization to avoid redundant monitor threads; it is not
+                # the correctness oracle for dispatch admission (that is the
+                # durable claim store above), since it does not survive
+                # controller restart.
                 with _active_monitors_lock:
-                    if pr_number in _active_monitors:
-                        logger.info(f"Monitor already active for PR #{pr_number}, skipping trigger")
-                        return actions
                     _active_monitors.add(pr_number)
                     logger.debug(f"Added PR #{pr_number} to active monitors")
 
-                head_branch = pr_data.get("head", {}).get("ref")
-                workflow_id = "ci.yml"
-
                 try:
-                    triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
+                    dispatch_result = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
 
-                    if triggered:
+                    # The claim was published before the external call, so any
+                    # outcome other than a definite rejection must keep the
+                    # identity suppressing (REQ-004, REQ-006). If the durable
+                    # write itself fails, the claim is already left in its
+                    # prior (suppressing) state, so dispatch admission still
+                    # fails closed for this identity (REQ-003).
+                    recorded = claim_store.record_outcome(dispatch_identity, dispatch_result.outcome)
+                    if not recorded:
+                        logger.error(f"Failed to durably record dispatch outcome {dispatch_result.outcome.value} for {dispatch_identity.key()}; claim remains suppressing")
+
+                    if dispatch_result:
                         actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
                         get_trace_logger().log("CI Trigger", f"Triggered {workflow_id} for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
 
                         # 3. Start async monitor
-                        head_sha = pr_data.get("head", {}).get("sha")
-
                         try:
                             monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
                             monitor_thread.start()
@@ -2408,14 +2436,18 @@ def _handle_pr_merge(
                         return actions
 
                     else:
-                        actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")
+                        actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number} (outcome={dispatch_result.outcome.value})")
                         # Clean up active monitor since we failed to trigger
                         with _active_monitors_lock:
                             _active_monitors.discard(pr_number)
                         # Label will be removed by LabelManager exit
 
                 except Exception as e:
-                    # Clean up active monitor on exception
+                    # Clean up active monitor on exception. The dispatch claim
+                    # is intentionally left as-is: an exception here means the
+                    # dispatch outcome could not even be classified and
+                    # recorded, so the identity must remain suppressing
+                    # (REQ-003, REQ-004, AS-003) rather than risk a duplicate.
                     with _active_monitors_lock:
                         _active_monitors.discard(pr_number)
                     raise e
