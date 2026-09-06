@@ -43,7 +43,7 @@ from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .update_manager import check_for_updates_and_restart
-from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, resolve_authoritative_item_type
+from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, get_target_container, log_action
@@ -1252,9 +1252,9 @@ class AutomationEngine:
         return is_author_allowlisted(author_id, allowlist)
 
     def _has_open_sub_issues(self, repo_name: str, candidate: Candidate) -> bool:
-        """Fail-safe helper to check if target issue has unresolved sub-issues.
+        """Check if target issue has unresolved sub-issues.
         - candidate is expected to be an element from _get_candidates (type: issue)
-        - Returns False on exception to avoid skip suppression
+        Lookup failures propagate so dispatch fails closed.
         """
         try:
             if candidate.type != "issue":
@@ -1265,7 +1265,11 @@ class AutomationEngine:
                 return False
             if issue_data.get("has_open_sub_issues"):
                 return True
-            sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
+            if isinstance(self.github, GitHubClient):
+                sub_issues = self.github.get_open_sub_issues_strict(repo_name, issue_number)
+            else:
+                lookup = getattr(self.github, "get_open_sub_issues", None)
+                sub_issues = lookup(repo_name, issue_number) if callable(lookup) else []
             if isinstance(sub_issues, list) and sub_issues:
                 return True
             if self.open_issues_snapshot:
@@ -1275,7 +1279,22 @@ class AutomationEngine:
             return False
         except Exception as e:
             logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
+            raise
+
+    def _has_elder_open_sibling(self, repo_name: str, candidate: Candidate) -> bool:
+        """Check current native parent membership and elder siblings."""
+        number = candidate.issue_number or candidate.data.get("number")
+        if candidate.type != "issue" or not isinstance(number, int):
             return False
+        if isinstance(self.github, GitHubClient):
+            parent = self.github.get_parent_issue_number_strict(repo_name, number)
+            if parent is None:
+                parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number)
+            siblings = self.github.get_open_sub_issues_strict(repo_name, parent) if parent is not None else []
+        else:
+            parent = candidate.data.get("parent_issue_number")
+            siblings = self.github.get_open_sub_issues(repo_name, parent) if isinstance(parent, int) else []
+        return any(sibling < number for sibling in siblings if sibling != number)
 
     def _process_single_candidate_unified(
         self,
@@ -1432,6 +1451,7 @@ class AutomationEngine:
             if decision.verdict == "ERROR":
                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                 result.actions = ["Deferred - specification validation error"]
+                result.refill_retry_required = True
                 return result
             if decision.verdict == "BLOCKED":
                 try:
@@ -1468,8 +1488,14 @@ class AutomationEngine:
             # Refill and direct dispatch share this last authoritative hierarchy
             # gate. Candidate collection metadata is not sufficient because a
             # child can open after enumeration and before slot admission.
-            if self._has_open_sub_issues(repo_name, candidate):
-                result.actions = ["Skipped - open sub-issues must be completed first"]
+            try:
+                hierarchy_blocked = self._has_open_sub_issues(repo_name, candidate) or self._has_elder_open_sibling(repo_name, candidate)
+            except Exception as exc:
+                result.error = f"Cannot establish current Issue hierarchy before dispatch: {exc}"
+                result.refill_retry_required = True
+                return result
+            if hierarchy_blocked:
+                result.actions = ["Skipped - unresolved Issue hierarchy dependency"]
                 return result
 
             # The backend must receive exactly the authoritative generation that

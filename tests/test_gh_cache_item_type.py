@@ -104,6 +104,40 @@ class TestResolveAuthoritativeItemType:
         with pytest.raises(ValueError):
             resolve_authoritative_item_type(client, "owner/repo", 5266)
 
+
+class TestStrictIssueHierarchy:
+    def test_open_children_bypass_warmed_empty_cache(self):
+        client = GitHubClient(token="secret-token")
+        client._sub_issue_cache[("owner/repo", 20)] = []
+        response = MagicMock()
+        response.json.return_value = [{"number": 21, "state": "open"}]
+        response.links = {}
+        response.raise_for_status.return_value = None
+        with patch("httpx.Client") as client_class:
+            client_class.return_value.__enter__.return_value.get.return_value = response
+            assert client.get_open_sub_issues_strict("owner/repo", 20) == [21]
+        client_class.return_value.__enter__.return_value.get.assert_called_once()
+
+    def test_open_children_failure_is_not_flattened_to_empty(self):
+        client = GitHubClient(token="secret-token")
+        response = MagicMock()
+        response.raise_for_status.side_effect = RuntimeError("hierarchy unavailable")
+        with patch("httpx.Client") as client_class, patch("time.sleep"):
+            client_class.return_value.__enter__.return_value.get.return_value = response
+            with pytest.raises(RuntimeError, match="hierarchy unavailable"):
+                client.get_open_sub_issues_strict("owner/repo", 20)
+
+    def test_native_parent_identity_is_read_without_cached_issue_data(self):
+        client = GitHubClient(token="secret-token")
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"number": 10, "state": "open"}
+        response.raise_for_status.return_value = None
+        with patch("httpx.Client") as client_class:
+            client_class.return_value.__enter__.return_value.get.return_value = response
+            assert client.get_parent_issue_number_strict("owner/repo", 20) == 10
+        called_url = client_class.return_value.__enter__.return_value.get.call_args.args[0]
+        assert called_url.endswith("/issues/20/parent")
+
     def test_raises_instead_of_falling_back_to_a_cached_stale_issue_response(self):
         """A client lacking the authoritative lookup must fail closed, not use get_issue().
 

@@ -1099,7 +1099,7 @@ Recent configuration schema changes that require migration:
       - "Attempts to promote/register the issue as a native GitHub sub-issue using the GitHub REST API (POST /repos/{owner}/{repo}/issues/{parent_number}/sub_issues) when possible."
       - "If native sub-issue promotion fails or is unsupported in the agent environment, retains the metadata as a fallback parent relationship."
       - "Scans all open issues upfront at the beginning of issue retrieval/processing to detect Parent-Issue relationships before constructing issue candidates, ensuring correct processing order even when a parent issue has a lower number than its sub-issues."
-      - "Parent issues are blocked from running while any of their sub-issues (native or metadata-fallback) remain open."
+      - "Before implementation admission, native parent and sub-issue relationships are refreshed through cache-bypassing REST reads. Parents with open children and younger siblings with an elder open sibling are blocked; unavailable or malformed hierarchy evidence fails closed and is retried by capacity refill."
 
 ## Cloud Task Execution Abstraction
 
