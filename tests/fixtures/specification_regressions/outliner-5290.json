@@ -1,0 +1,28 @@
+{
+  "fixture_version": 1,
+  "source": {
+    "repository": "kitamura-tetsuo/outliner",
+    "issue_number": 5290,
+    "url": "https://github.com/kitamura-tetsuo/outliner/issues/5290",
+    "title": "Add an Objects Manager-style Schedules Manager with authoritative execution status",
+    "created_at": "2026-09-05T04:48:37Z",
+    "updated_at": "2026-09-05T05:23:41Z",
+    "body_sha256": "9a15441c009ceeacf1378a3f3b2133002d66d22b977669c80bea00c29b94be50"
+  },
+  "expected_specification_review": {
+    "verdict": "BLOCKED",
+    "required_requirement_ids": [
+      "REQ-002",
+      "REQ-010"
+    ],
+    "acceptable_categories": [
+      "unstated_dependency",
+      "unverifiable_requirement",
+      "material_ambiguity"
+    ],
+    "gap_kind": "undefined_authoritative_permission_model",
+    "missing_normative_boundary": "The contract depends on an existing Schedule write/read-only permission model without defining its authoritative semantics or source.",
+    "counterexample_anchor": "AS-009 assumes a viewer without Schedule write permission can open the manager, but the contract never defines how that readable-but-not-writable principal exists or is produced by the production authorization model."
+  },
+  "provenance_note": "This is a verbatim snapshot of the Issue body captured from GitHub for specification-review regression/eval use. Do not simplify or repair the fixture; create a separate fixture for revised specifications."
+}
