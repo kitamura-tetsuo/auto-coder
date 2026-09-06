@@ -50,6 +50,8 @@ def _github_client(issue_number: int = 42, state: str = "open", has_linked_pr: b
         "labels": ["@auto-coder"],
         "author": "someone",
     }
+    client.get_direct_sub_issues_strict.return_value = []
+    client.get_parent_issue_details_strict.return_value = None
     client.has_linked_pr.return_value = has_linked_pr
     return client
 

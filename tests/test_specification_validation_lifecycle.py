@@ -302,6 +302,7 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
     github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number in issues]))
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
     github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
+    github.get_parent_issue_details_strict = Mock(return_value=None)
     github.get_direct_sub_issues_strict = Mock(return_value=[])
     github.get_open_sub_issues_strict = Mock(return_value=[])
     github.get_item_type_strict = Mock(return_value="issue")
@@ -667,6 +668,8 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
     github.get_issue_details.return_value = {"number": 1728, "state": "open"}
     github.get_issue_comments_strict.return_value = []
     github.has_linked_pr.return_value = False
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_parent_issue_details_strict.return_value = None
     github.get_issue_comments_strict.return_value = []
     stale_jules = Mock()
     stale_jules.get_session.side_effect = [{"state": "IN_PROGRESS"}, {"state": "COMPLETED"}]
@@ -855,6 +858,8 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
     github.get_all_sub_issues.return_value = []
     github.get_parent_issue_details.return_value = None
     github.get_open_sub_issues.return_value = []
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_parent_issue_details_strict.return_value = None
     github.try_add_labels.return_value = True
     github.find_pr_by_head_branch.return_value = None
     github.get_pr_closing_issues.return_value = [1728]
@@ -937,6 +942,8 @@ def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch,
     github.get_all_sub_issues.return_value = []
     github.get_parent_issue_details.return_value = None
     github.get_open_sub_issues.return_value = []
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_parent_issue_details_strict.return_value = None
     github.get_issue.return_value = {"number": 1728, "state": "open"}
     github.get_issue_details.return_value = {"number": 1728, "state": "open"}
     github.has_linked_pr.return_value = False

@@ -542,3 +542,103 @@ def test_parent_readiness_removed_during_final_check_prevents_child_dispatch(tmp
     assert result.success is False
     assert "stale" in result.actions[0]
     dispatch.assert_not_called()
+
+
+def test_parent_relationship_added_during_individual_validation_blocks_standalone_admission(tmp_path):
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    child = issue(11, "Child", CHILD_BODY, ready=True)
+    attached = False
+    github = MagicMock()
+
+    def members(_repo, number):
+        return [dict(child)] if attached and number == 10 else []
+
+    def snapshot(_repo, number):
+        current = dict(parent if number == 10 else child)
+        if attached and number == 11:
+            current["parent_issue_url"] = "https://api.github.com/repos/owner/repo/issues/10"
+        return current
+
+    github.get_direct_sub_issues_strict.side_effect = members
+    github.get_issue_dispatch_snapshot_strict.side_effect = snapshot
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if attached and number == 11 else None
+    github.get_issue_comments_strict.return_value = []
+    github.has_linked_pr.return_value = False
+    github.get_issue_timeline.return_value = []
+
+    def analyze_child(*_args):
+        nonlocal attached
+        attached = True
+        return SpecificationAnalysisResult("READY")
+
+    set_analysis = Mock(return_value=DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)))
+    engine = configured_engine(tmp_path, github, set_analysis, analyze_child)
+    set_gate = engine._decomposition_validators["owner/repo"]
+    parent_input, child_inputs = decomposition_issues(parent, [child])
+    blocked_identity = set_gate.identity(parent, [child])
+    assert set_gate.decide(blocked_identity, parent_input, child_inputs).verdict == "BLOCKED"
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate("issue", GitHubClient.get_issue_details(github, child), 0, issue_number=11),
+            engine.config,
+        )
+
+    assert result.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
+    github.get_parent_issue_details_strict.assert_called()
+    github.remove_labels.assert_called_once_with("owner/repo", 10, ["implementation-ready"], item_type="issue")
+    dispatch.assert_not_called()
+    assert engine.implementation_slots.active_owners() == ()
+    set_analysis.assert_called_once()
+
+
+def test_stale_jules_replacement_enforces_parent_set_and_sibling_transitions(tmp_path):
+    """The production daemon callback cannot bypass any hierarchy authorization."""
+    from auto_coder.implementation_slots import ImplementationOwner
+
+    scenarios = ("blocked-child", "became-parent", "reopened-predecessor")
+    for scenario in scenarios:
+        parent = issue(10, "Parent", PARENT_BODY, ready=True)
+        first = issue(11, "First", CHILD_BODY, state="open")
+        target_number = 10 if scenario == "became-parent" else (12 if scenario == "reopened-predecessor" else 11)
+        target = issue(target_number, "Target", CHILD_BODY if target_number != 10 else PARENT_BODY, ready=True)
+        children = [first, target] if target_number == 12 else ([target] if target_number == 11 else [first])
+        github = relationship_github(parent if target_number != 10 else target, children)
+        github.get_item_type_strict.return_value = "issue"
+        github.get_issue.return_value = dict(target)
+        github.get_issue_details.return_value = dict(target)
+        github.has_linked_pr.return_value = False
+        github.remove_labels.return_value = True
+        set_result = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)) if scenario == "blocked-child" else DecompositionAnalysisResult("READY")
+        child_analysis = Mock(return_value=SpecificationAnalysisResult("READY"))
+        engine = configured_engine(tmp_path / scenario, github, lambda *_args, value=set_result: value, child_analysis)
+        slots = engine.implementation_slots
+        assert slots is not None
+        owner = ImplementationOwner("issue", target_number)
+        slots.record_provider_session(owner, "stale-session")
+        jules = MagicMock()
+        jules.get_session.return_value = {"state": "COMPLETED"}
+        jules.list_sessions.return_value = [
+            {
+                "name": "sessions/stale-session",
+                "state": "IN_PROGRESS",
+                "createTime": "2000-01-01T00:00:00Z",
+                "outputs": {},
+            }
+        ]
+        cloud = MagicMock()
+        cloud.get_issue_by_session.return_value = target_number
+        with (
+            patch("auto_coder.issue_processor.JulesClient", return_value=jules),
+            patch("auto_coder.issue_processor.CloudManager", return_value=cloud),
+            patch("auto_coder.issue_processor.is_session_stopped", return_value=False),
+            patch("auto_coder.issue_processor.increment_attempt") as increment,
+            patch("auto_coder.issue_processor._take_issue_actions") as replacement,
+        ):
+            engine.handle_stale_jules_issue_sessions("owner/repo")
+
+        replacement.assert_not_called()
+        increment.assert_not_called()
+        assert slots.active_execution_ids(owner) == ()
+        if scenario in {"became-parent", "reopened-predecessor"}:
+            child_analysis.assert_not_called()

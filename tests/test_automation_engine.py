@@ -507,8 +507,11 @@ class TestAutomationEngine:
             def json(self):
                 return []
 
+        class NoParentResponse(Response):
+            status_code = 404
+
         client_context = MagicMock()
-        client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: MembershipResponse() if url.endswith("/sub_issues") else Response()
+        client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: (MembershipResponse() if url.endswith("/sub_issues") else NoParentResponse() if url.endswith("/parent") else Response())
         GitHubClient.reset_singleton()
         github = GitHubClient.get_instance(token="test-token")
         github.get_open_prs_json = Mock(return_value=[])

@@ -216,8 +216,111 @@ class AutomationEngine:
             authoritative_children.append(child)
         return parent, authoritative_children
 
+    def _get_authoritative_parent_number(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[int]:
+        """Resolve the current native parent without trusting collected hints."""
+        parent_number = snapshot.get("parent_issue_number")
+        if not isinstance(parent_number, int):
+            parent_number = parse_parent_issue_url_number(snapshot.get("parent_issue_url"))
+        if isinstance(parent_number, int):
+            return parent_number
+        parent_reader = getattr(self.github, "get_parent_issue_details_strict", None)
+        parent = parent_reader(repo_name, issue_number) if callable(parent_reader) else None
+        number = parent.get("number") if isinstance(parent, dict) else None
+        return number if isinstance(number, int) and not isinstance(number, bool) else None
+
+    def _decide_authoritative_decomposition(
+        self,
+        repo_name: str,
+        parent_number: int,
+        authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
+    ) -> tuple[DecompositionValidationLifecycle, DecompositionDecision]:
+        """Obtain the durable decision for one authoritative parent generation."""
+        parent, children = authoritative_set
+        validator = self._get_decomposition_validator(repo_name)
+        identity = validator.identity(parent, children)
+        parent_manifest = build_normative_issue_manifest(parent_number, str(parent.get("title") or ""), str(parent.get("body") or ""))
+        child_issues = [
+            DecompositionIssue(
+                build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
+                str(child.get("body") or ""),
+            )
+            for child in children
+        ]
+        decision = validator.decide(
+            identity,
+            DecompositionIssue(parent_manifest, str(parent.get("body") or "")),
+            child_issues,
+        )
+        return validator, decision
+
+    def _standalone_relationship_is_current(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> bool:
+        """Reject and, when blocked, apply a parent submission discovered late."""
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+        if parent_number is None:
+            return True
+        authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+        if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
+            return False
+        if is_implementation_ready(authoritative_set[0]):
+            validator, decision = self._decide_authoritative_decomposition(repo_name, parent_number, authoritative_set)
+            if decision.verdict == "BLOCKED":
+                validator.apply_blocked(
+                    self.github,
+                    decision,
+                    lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                )
+        # Even READY was obtained after individual validation started, so this
+        # attempt must restart through the ordered set-before-child workflow.
+        return False
+
     def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Apply the same generation authorization to daemon replacement work."""
+        """Apply set, ordering, and Issue authorization to daemon replacement work."""
+        current = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        if not isinstance(current, dict) or current.get("number") != issue_number or not self._is_open_issue(current):
+            return None
+
+        direct_children = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
+        if not isinstance(direct_children, list):
+            return None
+        # A stale parent session cannot be replaced as standalone work. Analyze
+        # the newly observed submission, but leave child selection to the normal
+        # sequential candidate workflow.
+        if direct_children:
+            if is_implementation_ready(current):
+                authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
+                if authoritative_set is None:
+                    return None
+                decomposition_validator, decomposition_decision = self._decide_authoritative_decomposition(repo_name, issue_number, authoritative_set)
+                if decomposition_decision.verdict == "BLOCKED":
+                    decomposition_validator.apply_blocked(
+                        self.github,
+                        decomposition_decision,
+                        lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                    )
+            return None
+
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
+        decomposition_validator: Optional[DecompositionValidationLifecycle] = None
+        decomposition_decision: Optional[DecompositionDecision] = None
+        if parent_number is not None:
+            authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+            if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
+                return None
+            if is_implementation_ready(authoritative_set[0]):
+                decomposition_validator, decomposition_decision = self._decide_authoritative_decomposition(repo_name, parent_number, authoritative_set)
+                if decomposition_decision.verdict == "BLOCKED":
+                    decomposition_validator.apply_blocked(
+                        self.github,
+                        decomposition_decision,
+                        lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                    )
+                    return None
+                if decomposition_decision.verdict != "READY" or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in authoritative_set[1]):
+                    return None
+
+        if not is_implementation_ready(current) and decomposition_decision is None:
+            return None
+        snapshot = current
         title = str(snapshot.get("title") or "")
         body = str(snapshot.get("body") or "")
         manifest = build_normative_issue_manifest(issue_number, title, body)
@@ -231,10 +334,27 @@ class AutomationEngine:
         if decision.verdict != "READY":
             return None
         refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
-        if not isinstance(refreshed, dict) or not is_implementation_ready(refreshed):
+        if not isinstance(refreshed, dict) or not self._is_open_issue(refreshed):
             return None
         identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
-        return refreshed if identity == decision.identity else None
+        if identity != decision.identity:
+            return None
+        refreshed_children = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
+        refreshed_parent = self._get_authoritative_parent_number(repo_name, issue_number, refreshed)
+        if refreshed_children or refreshed_parent != parent_number:
+            return None
+        if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
+            refreshed_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+            if (
+                refreshed_set is None
+                or not is_implementation_ready(refreshed_set[0])
+                or decomposition_validator.identity(*refreshed_set) != decomposition_decision.identity
+                or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in refreshed_set[1])
+            ):
+                return None
+        elif not is_implementation_ready(refreshed):
+            return None
+        return refreshed
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
@@ -1531,21 +1651,12 @@ class AutomationEngine:
             decomposition_validator: Optional[DecompositionValidationLifecycle] = None
             authoritative_set: Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
             independently_ready = is_implementation_ready(current_issue)
-            live_parent_number = authoritative_parent_number or current_issue.get("parent_issue_number")
-            if not isinstance(live_parent_number, int):
-                live_parent_number = parse_parent_issue_url_number(current_issue.get("parent_issue_url"))
+            live_parent_number = authoritative_parent_number or self._get_authoritative_parent_number(repo_name, item_number, current_issue)
             # Current authoritative relationship data, never the collected
             # candidate hint, decides whether set authorization is mandatory.
             parent_details: Optional[Dict[str, Any]]
             if isinstance(live_parent_number, int):
                 parent_details = {"number": live_parent_number}
-            elif not independently_ready:
-                try:
-                    parent_reader = getattr(self.github, "get_parent_issue_details_strict", None)
-                    parent_details = parent_reader(repo_name, item_number) if callable(parent_reader) else None
-                except Exception as exc:
-                    result.error = f"Cannot determine authoritative parent relationship: {exc}"
-                    return result
             else:
                 parent_details = None
             if isinstance(parent_details, dict) and isinstance(parent_details.get("number"), int):
@@ -1705,7 +1816,7 @@ class AutomationEngine:
                 # ownership-facing operation and require a new set pass instead.
                 direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
                 latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
-                submission_current = not (isinstance(latest_children, list) and latest_children)
+                submission_current = not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, dispatch_snapshot)
             if not submission_current or dispatch_identity != decision.identity:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
@@ -1764,7 +1875,7 @@ class AutomationEngine:
                 )
             direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
             latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
-            return is_implementation_ready(latest) and not (isinstance(latest_children, list) and latest_children)
+            return is_implementation_ready(latest) and not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, latest)
 
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
