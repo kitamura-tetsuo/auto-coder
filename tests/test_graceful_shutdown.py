@@ -600,6 +600,53 @@ def test_local_issue_backend_fallback_is_not_started_during_drain(monkeypatch, t
     second._run_llm_cli.assert_not_called()
 
 
+def test_fresh_session_fallback_is_not_started_during_drain(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    continuation_entered = threading.Event()
+    release_continuation = threading.Event()
+    client = MagicMock(model_name="test-model")
+    client._run_llm_cli.return_value = "initial result"
+    client.get_last_session_id.return_value = "session-123"
+
+    def fail_continuation(*_args, **_kwargs):
+        continuation_entered.set()
+        assert release_continuation.wait(5)
+        raise RuntimeError("session no longer exists")
+
+    client.continue_session.side_effect = fail_continuation
+    manager = BackendManager(
+        default_backend="test",
+        default_client=client,
+        factories={"test": lambda: client},
+        order=["test"],
+    )
+    backend_config = MagicMock(usage_limit_retry_count=0, always_switch_after_execution=False)
+    monkeypatch.setattr("auto_coder.backend_manager.get_llm_config", lambda: MagicMock(get_backend_config=lambda _name: backend_config))
+
+    assert manager._run_llm_cli("initial implementation") == "initial result"
+
+    async def scenario():
+        resumed = asyncio.create_task(
+            engine._run_local_critical(
+                "worker 0 issue #93",
+                manager._run_llm_cli,
+                "continued implementation",
+            )
+        )
+        assert await asyncio.to_thread(continuation_entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        resumed.cancel()
+        release_continuation.set()
+        with pytest.raises(RuntimeError, match="session no longer exists"):
+            await resumed
+
+    asyncio.run(scenario())
+    client.continue_session.assert_called_once()
+    client._run_llm_cli.assert_called_once_with("initial implementation", is_noedit=False)
+
+
 def test_local_test_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())

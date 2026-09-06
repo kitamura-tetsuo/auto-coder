@@ -532,6 +532,8 @@ class BackendManager(LLMBackendManagerBase):
                     self._save_session_state(backend_name, None)
                     if hasattr(cli, "clear_last_session_id"):
                         cli.clear_last_session_id()
+                    if not new_work_allowed():
+                        raise
                     result = self._execute_backend_with_providers(
                         backend_name=backend_name,
                         cli=cli,
