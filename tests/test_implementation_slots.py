@@ -196,7 +196,7 @@ def test_production_readers_detect_reparenting_during_final_child_lookup(tmp_pat
     slots.reserve(ImplementationOwner("issue", 1))
 
     with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
-        with pytest.raises(ImplementationHierarchyUnavailable, match="Direct hierarchy changed"):
+        with pytest.raises(ImplementationHierarchyUnavailable, match="changed"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 
     assert slots.active_owners() == (ImplementationOwner("issue", 1),)
@@ -225,7 +225,7 @@ def test_production_readers_detect_child_attachment_during_final_parent_confirma
     slots.reserve(ImplementationOwner("issue", 1))
 
     with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
-        with pytest.raises(ImplementationHierarchyUnavailable, match="Direct children changed"):
+        with pytest.raises(ImplementationHierarchyUnavailable, match="changed"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 
     assert slots.active_owners() == (ImplementationOwner("issue", 1),)

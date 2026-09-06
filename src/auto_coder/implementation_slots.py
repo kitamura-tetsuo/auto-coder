@@ -388,9 +388,6 @@ class ImplementationSlotRepository:
                         owners[owner.key] = established_record
                     self._write(owners)
                     raise
-                if not record.get("admission_established", False):
-                    record["admission_established"] = True
-                    self._write(owners)
         active = getattr(self._execution_context, "owners", {})
         active[owner.key] = execution_id
         self._execution_context.owners = active
@@ -435,14 +432,19 @@ class ImplementationSlotRepository:
             children_payload = child_reader(self.repo_name, issue_number)
             confirmed_parent = parent_reader(self.repo_name, issue_number)
             confirmed_children_payload = child_reader(self.repo_name, issue_number)
+            final_parent = parent_reader(self.repo_name, issue_number)
         except Exception as exc:
             raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
         if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
             raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct parent identity")
         if confirmed_parent is not None and (isinstance(confirmed_parent, bool) or not isinstance(confirmed_parent, int)):
             raise ImplementationHierarchyUnavailable("GitHub returned an invalid confirmed direct parent identity")
+        if final_parent is not None and (isinstance(final_parent, bool) or not isinstance(final_parent, int)):
+            raise ImplementationHierarchyUnavailable("GitHub returned an invalid final direct parent identity")
         if confirmed_parent != parent:
             raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
+        if final_parent != confirmed_parent:
+            raise ImplementationHierarchyUnavailable(f"Direct parent changed during final hierarchy confirmation for issue:{issue_number}")
         if parent == issue_number or not isinstance(children_payload, list) or not isinstance(confirmed_children_payload, list):
             raise ImplementationHierarchyUnavailable("GitHub returned contradictory direct hierarchy evidence")
         children = self._parse_direct_children(issue_number, children_payload)
@@ -551,6 +553,8 @@ class ImplementationSlotRepository:
             remaining = [value for value in executions if value["id"] != execution_id]
             if len(remaining) != len(executions):
                 record["executions"] = remaining
+                if record.get("admission_pending", False):
+                    record["admission_established"] = True
                 self._write(owners)
         active = getattr(self._execution_context, "owners", {})
         if active.get(owner.key) == execution_id:
@@ -614,11 +618,17 @@ class ImplementationSlotRepository:
             record = owners.get(owner.key)
             if record is None:
                 return False
+            changed = False
             known_prs = record.setdefault("implementation_prs", [])
             if not isinstance(known_prs, list):
                 raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
             if pr_number not in known_prs:
                 known_prs.append(pr_number)
+                changed = True
+            if record.get("admission_pending", False) and not record.get("admission_established", False):
+                record["admission_established"] = True
+                changed = True
+            if changed:
                 self._write(owners)
             return True
 
@@ -631,11 +641,17 @@ class ImplementationSlotRepository:
             record = owners.get(owner.key)
             if record is None:
                 return False
+            changed = False
             provider_sessions = record.setdefault("provider_sessions", [])
             if not isinstance(provider_sessions, list):
                 raise ImplementationSlotUnavailable("Cannot safely parse provider session membership")
             if session_id not in provider_sessions:
                 provider_sessions.append(session_id)
+                changed = True
+            if record.get("admission_pending", False) and not record.get("admission_established", False):
+                record["admission_established"] = True
+                changed = True
+            if changed:
                 self._write(owners)
         return True
 
@@ -697,6 +713,8 @@ class ImplementationSlotRepository:
             if record is None:
                 return False
             record["validation_identity"] = identity
+            if record.get("admission_pending", False):
+                record["admission_established"] = True
             self._write(owners)
             return True
 
