@@ -329,7 +329,15 @@ class AutomationEngine:
         validator = self._get_specification_validator(repo_name)
         decision = validator.decide(manifest, title, body)
         if decision.verdict == "BLOCKED":
-            validator.apply_blocked(self.github, decision)
+            if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
+                validator.apply_inherited_blocked(
+                    self.github,
+                    decision,
+                    parent_number,
+                    lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
+                )
+            else:
+                validator.apply_blocked(self.github, decision)
             return None
         if decision.verdict != "READY":
             return None

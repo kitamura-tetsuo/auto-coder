@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.decomposition_analyzer import AffectedIssue, DecompositionAnalysisResult, DecompositionFinding, DecompositionIssue
@@ -12,7 +14,7 @@ from auto_coder.implementation_slots import ImplementationSlotRepository
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
-from auto_coder.util.gh_cache import GitHubClient
+from auto_coder.util.gh_cache import GitHubClient, is_implementation_ready
 
 PARENT_BODY = "## Requirements\n- REQ-001: Deliver both child behaviors."
 CHILD_BODY = "## Requirements\n- REQ-001: Deliver the first behavior."
@@ -642,3 +644,62 @@ def test_stale_jules_replacement_enforces_parent_set_and_sibling_transitions(tmp
         assert slots.active_execution_ids(owner) == ()
         if scenario in {"became-parent", "reopened-predecessor"}:
             child_analysis.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "child_ready,child_verdict,replacement_expected",
+    [(False, "READY", True), (True, "BLOCKED", False)],
+)
+def test_stale_jules_inherited_readiness_and_blocked_effects(tmp_path, child_ready, child_verdict, replacement_expected):
+    """The real daemon inherits readiness and targets parent withdrawal."""
+    from auto_coder.implementation_slots import ImplementationOwner
+
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    child = issue(11, "Child", CHILD_BODY, ready=child_ready)
+    github = relationship_github(parent, [child])
+    github.get_item_type_strict.return_value = "issue"
+    github.get_issue.return_value = dict(child)
+    github.get_issue_details.return_value = dict(child)
+    github.get_issue_comments_strict.return_value = []
+    github.has_linked_pr.return_value = False
+    github.remove_labels.return_value = True
+    child_result = SpecificationAnalysisResult("BLOCKED", (CHILD_FINDING,)) if child_verdict == "BLOCKED" else SpecificationAnalysisResult("READY")
+    engine = configured_engine(
+        tmp_path,
+        github,
+        lambda *_args: DecompositionAnalysisResult("READY"),
+        lambda *_args: child_result,
+    )
+    slots = engine.implementation_slots
+    assert slots is not None
+    owner = ImplementationOwner("issue", 11)
+    slots.record_provider_session(owner, "stale-session")
+    jules = MagicMock()
+    jules.get_session.return_value = {"state": "COMPLETED"}
+    jules.list_sessions.return_value = [
+        {
+            "name": "sessions/stale-session",
+            "state": "IN_PROGRESS",
+            "createTime": "2000-01-01T00:00:00Z",
+            "outputs": {},
+        }
+    ]
+    cloud = MagicMock()
+    cloud.get_issue_by_session.return_value = 11
+    with (
+        patch("auto_coder.issue_processor.JulesClient", return_value=jules),
+        patch("auto_coder.issue_processor.CloudManager", return_value=cloud),
+        patch("auto_coder.issue_processor.is_session_stopped", return_value=False),
+        patch("auto_coder.issue_processor.increment_attempt", return_value=2) as increment,
+        patch("auto_coder.issue_processor._take_issue_actions", return_value=["replacement"]) as replacement,
+    ):
+        engine.handle_stale_jules_issue_sessions("owner/repo")
+
+    assert replacement.called is replacement_expected
+    assert increment.called is replacement_expected
+    assert slots.active_execution_ids(owner) == ()
+    if child_verdict == "BLOCKED":
+        github.remove_labels.assert_called_once_with("owner/repo", 10, ["implementation-ready"], item_type="issue")
+    else:
+        github.remove_labels.assert_not_called()
+        assert not is_implementation_ready(child)
