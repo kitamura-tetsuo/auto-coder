@@ -392,9 +392,9 @@ class TestUnlockAndRetryLinkedIssue:
 
         result = _close_stale_jules_pr(github_client, "owner/repo", pr_data, config, checks)
 
-        github_client.remove_labels.assert_called_once_with("owner/repo", 4636, [config.AUTO_CODER_LABEL], item_type="issue")
+        github_client.remove_labels.assert_not_called()
         assert result.issue_numbers == [4636]
-        assert any(f"Removed {config.AUTO_CODER_LABEL} label from issue #4636" in action for action in result.actions)
+        assert not any("Removed @auto-coder" in action for action in result.actions)
 
     @patch("src.auto_coder.pr_processor.increment_attempt")
     def test_close_keeps_issue_label_when_labels_disabled(self, mock_increment):
@@ -412,39 +412,70 @@ class TestUnlockAndRetryLinkedIssue:
         github_client.remove_labels.assert_not_called()
         assert result.issue_numbers == [4636]
 
-    @patch("src.auto_coder.pr_processor.increment_attempt")
-    @patch("src.auto_coder.pr_processor._check_github_actions_status")
-    def test_single_candidate_starts_new_attempt_on_issue(self, mock_check_status, mock_increment, tmp_path):
+    def test_single_candidate_continuation_ignores_source_issue_processing_label(self, tmp_path):
+        """The real stale-PR handoff admits identical source Issues with either label state."""
         from src.auto_coder.automation_config import Candidate
         from src.auto_coder.automation_engine import AutomationEngine
         from src.auto_coder.implementation_slots import ImplementationSlotRepository
 
-        github_client = Mock()
-        github_client.get_pr_review_threads_strict.return_value = []
-        config = AutomationConfig()
-        config.JULES_PR_CI_TIMEOUT_HOURS = 12
-        pr_data = _jules_pr_data(hours_old=30)
-        pr_data["labels"] = [{"name": "@auto-coder"}]
-        issue_data = {"number": 4636, "title": "Reduce warm /demo load time", "labels": []}
-        github_client.get_item_type_strict.return_value = "issue"
-        github_client.get_issue_dispatch_snapshot_strict.return_value = {"number": 4636, "body": "", "labels": [{"name": "implementation-ready"}]}
-        github_client.get_issue.return_value = issue_data
-        github_client.get_issue_details.return_value = issue_data
-        github_client.get_all_sub_issues.return_value = []
-        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False)
-        mock_increment.return_value = 4
+        outcomes = []
+        for name, source_labels in (("without", []), ("with", [{"name": "@auto-coder"}])):
+            github_client = Mock()
+            github_client.get_pr_review_threads_strict.return_value = []
+            config = AutomationConfig()
+            config.JULES_PR_CI_TIMEOUT_HOURS = 12
+            pr_data = _jules_pr_data(hours_old=30)
+            pr_data["labels"] = [{"name": "@auto-coder"}]
+            issue_data = {
+                "number": 4636,
+                "title": "Reduce warm /demo load time",
+                "labels": list(source_labels),
+            }
+            authoritative_issue = {
+                "number": 4636,
+                "title": issue_data["title"],
+                "body": "",
+                "labels": [{"name": "implementation-ready"}, *source_labels],
+            }
+            github_client.get_item_type_strict.return_value = "issue"
+            github_client.get_issue_dispatch_snapshot_strict.return_value = authoritative_issue
+            github_client.get_issue.return_value = issue_data
+            github_client.get_issue_details.return_value = issue_data
+            github_client.get_all_sub_issues.return_value = []
 
-        engine = AutomationEngine(github_client, config=config)
-        engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
-        candidate = Candidate(type="pr", data=pr_data, priority=1)
+            engine = AutomationEngine(github_client, config=config)
+            engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / name / "slots.json")
+            candidate = Candidate(type="pr", data=pr_data, priority=1)
 
-        with patch.object(AutomationEngine, "_take_issue_actions", return_value=["Created branch issue-4636/attempt-4"]) as mock_take_issue:
-            result = engine._process_single_candidate_unified("owner/repo", candidate, config)
+            with (
+                patch(
+                    "src.auto_coder.pr_processor._check_github_actions_status",
+                    return_value=MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False),
+                ),
+                patch("src.auto_coder.pr_processor.increment_attempt", return_value=4) as increment,
+                patch.object(
+                    AutomationEngine,
+                    "_take_issue_actions",
+                    return_value=["Created branch issue-4636/attempt-4"],
+                ) as take_issue,
+            ):
+                result = engine._process_single_candidate_unified("owner/repo", candidate, config)
 
-        mock_take_issue.assert_called_once()
-        assert mock_take_issue.call_args[0][1] == issue_data
-        assert any("Started a new attempt for issue #4636" in action for action in result.actions)
-        assert any("Created branch issue-4636/attempt-4" in action for action in result.actions)
+            take_issue.assert_called_once()
+            assert take_issue.call_args.args[1] == issue_data
+            increment.assert_called_once_with("owner/repo", 4636)
+            github_client.remove_labels.assert_not_called()
+            outcomes.append(
+                (
+                    result.actions,
+                    engine.implementation_slots.active_owners(),
+                    increment.call_args_list,
+                )
+            )
+
+        assert outcomes[0] == outcomes[1]
+        assert any("Started a new attempt for issue #4636" in action for action in outcomes[0][0])
+        assert any("Created branch issue-4636/attempt-4" in action for action in outcomes[0][0])
 
     @patch("src.auto_coder.pr_processor.increment_attempt")
     @patch("src.auto_coder.pr_processor._check_github_actions_status")

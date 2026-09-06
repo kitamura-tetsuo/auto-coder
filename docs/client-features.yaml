@@ -1533,3 +1533,13 @@ successful defer.
       - "A configured alias, label-prompt mapping, or PR-label mapping that names `@auto-coder` directly can never select a prompt template or propagate a semantic label from it, because the label is excluded from the input set before any lookup occurs."
       - "Two authoritative entity states that are identical except that one carries the exact `@auto-coder` label produce identical label-derived LLM prompt content, prompt-template selection, and propagated semantic PR labels."
       - "This filtering never adds, removes, renames, or otherwise mutates an existing `@auto-coder` label on GitHub, and never changes matching, normalization, alias, priority, or propagation semantics for any other label."
+
+## Retired processing-label lifecycle lock
+
+- id: retired-auto-coder-lifecycle-lock
+  description: "Retires the exact `@auto-coder` label as a processing lifecycle lock (Issue #1793)."
+  behavior:
+    - "Issue, pull-request, provider dispatch, CI monitoring, recovery, merge, completion, and cleanup paths neither inspect nor mutate exact `@auto-coder`; historical labels remain untouched."
+    - "Lifecycle admission and ownership continue to use the existing durable implementation-slot, active-execution, provider-session, CloudRun, attempt, and workflow-dispatch claim state. Label presence cannot grant or deny work or establish recovery success."
+    - "The lock-only `--check-labels`, `CHECK_LABELS`, and `AUTO_CODER_LABEL` controls are removed. The general `--disable-labels`, `DISABLE_LABELS`, and `GitHubClient.disable_labels` controls remain available for semantic label mutations."
+    - "Manual workflow dispatch remains protected by its durable repository/PR/head-SHA/workflow claim and fails closed when that claim cannot be established."

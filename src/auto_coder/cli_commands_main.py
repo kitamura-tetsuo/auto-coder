@@ -106,11 +106,6 @@ async def _run_process_issues_daemon(
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
 @click.option(
-    "--check-labels/--no-check-labels",
-    default=True,
-    help="Enable checking for existing @auto-coder label before processing (default: enabled)",
-)
-@click.option(
     "--skip-main-update/--no-skip-main-update",
     default=True,
     help="When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)",
@@ -157,7 +152,6 @@ def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
     disable_labels: Optional[bool],
-    check_labels: bool,
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
     auto_merge: bool,
@@ -230,7 +224,6 @@ def process_issues(
     if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Disable labels: {disable_labels}")
-    logger.info(f"Check labels: {check_labels}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
@@ -255,7 +248,6 @@ def process_issues(
     summary.update(
         {
             "Disable labels": disable_labels,
-            "Check labels": check_labels,
             "Main update before fixes": policy_str,
             "Ignore Dependabot PRs": ignore_dependabot_prs,
             "Auto-merge": auto_merge,
@@ -297,12 +289,6 @@ def process_issues(
     message_backend_str = ", ".join(message_backend_list)
     logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
 
-    # When --only is specified, set CHECK_LABELS to False
-    effective_check_labels = check_labels
-    if only_target:
-        effective_check_labels = False
-
-    engine_config.CHECK_LABELS = effective_check_labels
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.AUTO_MERGE = bool(auto_merge)
@@ -358,7 +344,6 @@ def process_issues(
             if target_type and target_data and number:
                 click.echo(f"Resuming work on {target_type} #{number} (branch: {current_branch})")
                 logger.info(f"Resuming work on {target_type} #{number}")
-                engine_config.CHECK_LABELS = False
 
                 # Run single-item processing
                 _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode)
@@ -791,11 +776,6 @@ def fix_to_pass_tests_command(
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
 @click.option(
-    "--check-labels/--no-check-labels",
-    default=True,
-    help="Enable checking for existing @auto-coder label before processing (default: enabled)",
-)
-@click.option(
     "--skip-main-update/--no-skip-main-update",
     default=True,
     help="When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)",
@@ -836,7 +816,6 @@ def serve(
     repo: Optional[str],
     github_token: Optional[str],
     disable_labels: Optional[bool],
-    check_labels: bool,
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
     auto_merge: bool,
@@ -912,7 +891,6 @@ def serve(
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
-    engine_config.CHECK_LABELS = check_labels
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.AUTO_MERGE = bool(auto_merge)

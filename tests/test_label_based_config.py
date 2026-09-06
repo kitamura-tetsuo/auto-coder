@@ -347,12 +347,10 @@ class TestLabelEnvironmentConfig:
         # Label operations should be skipped when disabled
         assert config.DISABLE_LABELS is True
 
-    def test_config_with_check_labels_enabled(self):
-        """Test configuration with label checking enabled."""
+    def test_processing_lock_configuration_is_removed(self):
+        """The retired processing-label control is not exposed."""
         config = AutomationConfig(env_override=False)
-
-        # Label checking should be enabled by default
-        assert config.CHECK_LABELS is True
+        assert not hasattr(config, "CHECK_LABELS")
 
     def test_config_with_pr_label_copying_enabled(self):
         """Test configuration with PR label copying enabled."""

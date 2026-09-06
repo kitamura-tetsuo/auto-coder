@@ -266,7 +266,6 @@ class AutomationConfig:
 
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
-        object.__setattr__(self, "CHECK_LABELS", True)
         object.__setattr__(self, "CHECK_DEPENDENCIES", True)
         object.__setattr__(self, "SEARCH_GITHUB_ACTIONS_HISTORY", True)
         object.__setattr__(self, "ENABLE_ACTIONS_HISTORY_FALLBACK", True)
@@ -658,9 +657,6 @@ class AutomationConfig:
     # Configurable via [github_action].max_log_length in config.toml
     GITHUB_ACTION_LOG_MAX_LENGTH: int = 50000
 
-    # Label for auto-coder operations
-    AUTO_CODER_LABEL: str = "@auto-coder"
-
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)
     FORCE_CLEAN_BEFORE_CHECKOUT: bool = False
@@ -668,10 +664,6 @@ class AutomationConfig:
     # Disable GitHub label operations (@auto-coder label)
     # Default: False (labels enabled)
     DISABLE_LABELS: bool = False
-
-    # Enable check process by GitHub label (@auto-coder label)
-    # Default: True (check enabled)
-    CHECK_LABELS: bool = True
 
     # Check for and skip issues with unresolved dependencies
     # When an issue body contains "Depends on: #123" or similar patterns,

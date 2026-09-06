@@ -139,7 +139,6 @@ auto-coder process-issues [OPTIONS]
 - `--github-token TEXT`: GitHub API token.
 - `--jules-mode / --no-jules-mode`: Run in jules mode (default: on).
 - `--disable-labels / --no-disable-labels`: Disable GitHub label operations (default: false).
-- `--check-labels / --no-check-labels`: Enable checking for existing @auto-coder label (default: enabled).
 - `--skip-main-update / --no-skip-main-update`: Skip merging base branch into PR when checks fail (default: skip).
 - `--ignore-dependabot-prs / --no-ignore-dependabot-prs`: Skip all dependency-bot PRs (Dependabot/Renovate/[bot]), including ready ones (default: false).
 - `--auto-merge-dependabot-prs / --no-auto-merge-dependabot-prs`: When `--no-ignore-dependabot-prs` is set, only process dependency-bot PRs that have passing tests and are mergeable. If disabled, attempt to fix failing PRs (default: enabled).
@@ -505,32 +504,6 @@ When you run `auto-coder process` from a non-main branch, the system automatical
 2. Searches for open PR with matching head branch
 3. If PR found, resumes work on that PR
 4. If no PR found, extracts issue number from branch name (e.g., `fix/123-description` → issue #123)
-
-### Label Handling in WIP Mode
-
-**Important**: When resuming WIP branches, `auto-coder` **ignores** the `\@auto-coder` label state:
-- Processing continues even if `\@auto-coder` label already exists on the PR/issue
-- This allows you to retry/continue work without manually removing labels
-- The label will be re-added if not present, or left as-is if already present
-
-**Regular Mode** (not on WIP branch):
-- Checks for `\@auto-coder` label before processing
-- Skips processing if label already exists (prevents concurrent work)
-- Use `--check-labels=false` to override this behavior
-
-### Example Usage
-
-```bash
-# On branch 'fix/toml-parsing' with PR #704
-auto-coder process
-# → Automatically resumes PR #704, ignoring existing \@auto-coder label
-
-# Explicit target (bypasses label checks)
-auto-coder process --only 704
-
-# Force label checking even on WIP branch (not recommended)
-auto-coder process --check-labels
-```
 
 ## Parent Issue Auto-Reopen
 

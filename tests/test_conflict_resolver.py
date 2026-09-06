@@ -249,7 +249,7 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         mock_increment_attempt.assert_called_once_with("test/repo", 123)
         mock_process_issue.assert_called_once()
         assert dispatch_order == ["increment", "dispatch"]
-        mock_client.try_add_labels.assert_called_once_with("test/repo", 123, ["@auto-coder"], item_type="issue")
+        mock_client.try_add_labels.assert_not_called()
         mock_client.remove_labels.assert_not_called()
 
 

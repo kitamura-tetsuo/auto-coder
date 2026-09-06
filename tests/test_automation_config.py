@@ -170,7 +170,7 @@ def test_default_config_values():
     assert config.IGNORE_DEPENDABOT_PRS is False
     assert config.FORCE_CLEAN_BEFORE_CHECKOUT is False
     assert config.DISABLE_LABELS is False
-    assert config.CHECK_LABELS is True
+    assert not hasattr(config, "CHECK_LABELS")
     assert config.CHECK_DEPENDENCIES is True
     assert config.SEARCH_GITHUB_ACTIONS_HISTORY is True
     assert config.ENABLE_ACTIONS_HISTORY_FALLBACK is True
