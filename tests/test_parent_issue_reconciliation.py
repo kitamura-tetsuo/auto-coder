@@ -9,6 +9,7 @@ from src.auto_coder.automation_config import AutomationConfig, Candidate
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
+from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from src.auto_coder.parent_issue_reconciliation import ParentDeclarationStatus, parse_parent_declaration
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -416,3 +417,45 @@ def test_jules_standalone_blocked_completion_cannot_mutate_new_parent_set(tmp_pa
     assert github.comments == []
     assert github.removals == []
     assert github.issues[1]["labels"] == [{"name": "implementation-ready"}]
+
+
+@pytest.mark.parametrize("owned", [False, True])
+@pytest.mark.parametrize("declaration", ["Parent-Issue: #3", "Parent-Issue: #abc"])
+def test_late_individual_validation_snapshot_is_reconciled(tmp_path: Path, owned: bool, declaration: str):
+    body = "## Requirements\n- REQ-001: Preserve the graph."
+
+    class LateDeclarationGraph(GraphGitHub):
+        issue_reads = 0
+
+        def get_issue_dispatch_snapshot_strict(self, repo, number):
+            snapshot = super().get_issue_dispatch_snapshot_strict(repo, number)
+            if number == 1:
+                self.issue_reads += 1
+                threshold = 2 if owned else 3
+                if self.issue_reads >= threshold:
+                    snapshot["body"] = declaration + "\n" + body
+                    self.issues[1]["body"] = snapshot["body"]
+            return snapshot
+
+    github = LateDeclarationGraph({1: graph_issue(1, body, ready=True), 3: graph_issue(3, body)}, {}, {})
+    analyzed = []
+    engine = AutomationEngine(github, AutomationConfig())
+    slots = ImplementationSlotRepository("o/r", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    owner = ImplementationOwner("issue", 1)
+    if owned:
+        execution_id = slots.start_execution(owner)
+        assert execution_id is not None
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle("o/r", "provider/model", tmp_path / "issues.json", lambda *_args: analyzed.append("individual") or SpecificationAnalysisResult("READY"))
+
+    result = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
+
+    assert analyzed == []
+    if declaration == "Parent-Issue: #3":
+        assert github.events == ["linked"]
+        assert github.parents == {1: 3}
+    else:
+        assert github.events == []
+        assert "blocked" in (result.error or "").lower()
+    if owned:
+        assert slots.active_execution_ids(owner)

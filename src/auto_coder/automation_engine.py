@@ -348,6 +348,12 @@ class AutomationEngine:
             current = refreshed
         raise ParentOperationalError("Parent-Issue declaration did not stabilize during reconciliation")
 
+    def _reconcile_validation_snapshot(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Reconcile declarations on an authoritative validation input."""
+        if isinstance(self.github, GitHubClient) and parse_parent_declaration(snapshot.get("body")).status is not ParentDeclarationStatus.ABSENT:
+            return self._reconcile_parent_issue(repo_name, issue_number, snapshot)
+        return snapshot
+
     def _schedule_parent_validations(
         self,
         repo_name: str,
@@ -1891,8 +1897,24 @@ class AutomationEngine:
                 slots = self._get_implementation_slots(repo_name)
                 retained_async_owner = slots.has_provider_sessions(owner)
                 if (slots.active_execution_ids(owner) or retained_async_owner) and not continue_execution:
-                    owned_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                    try:
+                        owned_snapshot = self._reconcile_validation_snapshot(
+                            repo_name,
+                            item_number,
+                            self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number),
+                        )
+                    except ParentSpecificationError as exc:
+                        result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                        result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                        return result
+                    except ParentOperationalError as exc:
+                        result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                        result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
+                        result.refill_retry_required = True
+                        return result
                     owned_parent = self._get_authoritative_parent_number(repo_name, item_number, owned_snapshot)
+                    if owned_parent is not None:
+                        self._validate_submitted_parent_generation_for_child(repo_name, item_number, owned_snapshot)
                     owned_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
                     owned_children = owned_child_reader(repo_name, item_number) if callable(owned_child_reader) else []
                     if is_implementation_ready(owned_snapshot) and owned_parent is None and isinstance(owned_children, list) and not owned_children:
@@ -1951,7 +1973,20 @@ class AutomationEngine:
                         authoritative_parent_number=authoritative_parent_number,
                     )
             try:
-                current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                current_issue = self._reconcile_validation_snapshot(
+                    repo_name,
+                    item_number,
+                    self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number),
+                )
+            except ParentSpecificationError as exc:
+                result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                return result
+            except ParentOperationalError as exc:
+                result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
+                result.refill_retry_required = True
+                return result
             except Exception as exc:
                 result.error = str(exc)
                 result.refill_retry_required = True
@@ -1985,6 +2020,9 @@ class AutomationEngine:
                     return result
                 if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
                     result.actions = ["Skipped - child is no longer in the authoritative parent set"]
+                    return result
+                if not is_implementation_ready(authoritative_set[0]):
+                    result.actions = [f"Skipped - authoritative parent is missing {IMPLEMENTATION_READY_LABEL} label"]
                     return result
 
             inherited_ready = authoritative_set is not None and is_implementation_ready(authoritative_set[0])
