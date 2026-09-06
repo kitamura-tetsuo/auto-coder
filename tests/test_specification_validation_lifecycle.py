@@ -268,7 +268,7 @@ def test_hierarchy_uses_newly_authorized_parent_metadata(tmp_path):
     candidate.data["refill_metadata_open_children"] = {11: [19, 20]}
 
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
+    assert result.actions == ["Deferred - unresolved parent relationship"]
     engine._process_single_candidate_reserved.assert_not_called()
     assert engine.implementation_slots.active_owners() == ()
 
@@ -303,6 +303,7 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
     github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
     github.get_open_sub_issues_strict = Mock(return_value=[])
+    github.get_all_sub_issues_strict = Mock(return_value=[])
     github.get_item_type_strict = Mock(return_value="issue")
     github.try_add_labels = Mock(return_value=True)
     github.get_issue = Mock(side_effect=lambda _repo, number: issues[number])

@@ -59,6 +59,14 @@ parent or sibling Requirements and do not need their own readiness label.
 Set or child `BLOCKED` withdrawal applies to the parent submission, while
 validator `ERROR` preserves it for retry. Membership or text changes invalidate
 the set verdict before implementation admission.
+Durable Issue invalidations also feed a bounded specification-worker queue, so
+stabilized submissions can acquire semantic decisions while implementation
+slots and implementation workers are occupied. A parent-only invalidation
+validates the submitted set and its sequentially selected child rather than
+validating or dispatching the parent as a standalone task. Supported
+`Parent-Issue: #N` declarations are reconciled into native GitHub membership and
+re-fetched before classification; conflicting or unresolved relationships fail
+closed before semantic analysis.
 
 ## Adversarial implementation-readiness analysis
 

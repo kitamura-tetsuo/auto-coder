@@ -39,7 +39,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
-from .specification_validation_lifecycle import DecompositionValidationLifecycle, SpecificationValidationLifecycle, configured_provider_identity
+from .specification_validation_lifecycle import DecompositionValidationLifecycle, SpecificationValidationLifecycle, configured_provider_identity, specification_digest
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -71,6 +71,7 @@ class AutomationEngine:
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
+        self.specification_queue: asyncio.Queue[Candidate] = asyncio.Queue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self._invalidation_drain_lock = asyncio.Lock()
@@ -205,6 +206,34 @@ class AutomationEngine:
         manifest = build_normative_issue_manifest(issue_number, title, body)
         if manifest.error:
             return None
+        parent_lookup = getattr(self.github, "get_parent_issue_number_strict", None)
+        parent_number = parent_lookup(repo_name, issue_number) if callable(parent_lookup) else None
+        if not isinstance(parent_number, int):
+            parent_number = None
+        declared_parent = parse_parent_issue_number(body, current_issue_number=issue_number)
+        if parent_number is not None and declared_parent is not None and parent_number != declared_parent:
+            return None
+        decomposition_validator = None
+        decomposition_decision = None
+        if parent_number is not None:
+            parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+            if not is_implementation_ready(parent):
+                return None
+            numbers = self.github.get_all_sub_issues_strict(repo_name, parent_number)
+            open_numbers = self.github.get_open_sub_issues_strict(repo_name, parent_number)
+            if issue_number not in numbers or any(number < issue_number for number in open_numbers):
+                return None
+            parent_body = str(parent.get("body") or "")
+            parent_issue = DecompositionIssue(build_normative_issue_manifest(parent_number, str(parent.get("title") or ""), parent_body), parent_body)
+            children = []
+            for number in numbers:
+                value = snapshot if number == issue_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                child_body = str(value.get("body") or "")
+                children.append(DecompositionIssue(build_normative_issue_manifest(number, str(value.get("title") or ""), child_body), child_body))
+            decomposition_validator = self._get_decomposition_validator(repo_name)
+            decomposition_decision = decomposition_validator.decide(parent_issue, tuple(children))
+            if decomposition_decision.verdict != "READY":
+                return None
         validator = self._get_specification_validator(repo_name)
         decision = validator.decide(manifest, title, body)
         if decision.verdict == "BLOCKED":
@@ -213,10 +242,29 @@ class AutomationEngine:
         if decision.verdict != "READY":
             return None
         refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
-        if not isinstance(refreshed, dict) or not is_implementation_ready(refreshed):
+        readiness = refreshed
+        if parent_number is not None:
+            readiness = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+        if not isinstance(refreshed, dict) or not is_implementation_ready(readiness):
             return None
         identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
-        return refreshed if identity == decision.identity else None
+        if identity != decision.identity:
+            return None
+        if parent_number is not None and decomposition_validator is not None and decomposition_decision is not None:
+            current_numbers = self.github.get_all_sub_issues_strict(repo_name, parent_number)
+            if issue_number not in current_numbers:
+                return None
+            current_parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+            current_parent_body = str(current_parent.get("body") or "")
+            current_parent_issue = DecompositionIssue(build_normative_issue_manifest(parent_number, str(current_parent.get("title") or ""), current_parent_body), current_parent_body)
+            current_children = []
+            for number in current_numbers:
+                value = refreshed if number == issue_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                child_body = str(value.get("body") or "")
+                current_children.append(DecompositionIssue(build_normative_issue_manifest(number, str(value.get("title") or ""), child_body), child_body))
+            if decomposition_validator.identity(current_parent_issue, tuple(current_children)) != decomposition_decision.identity:
+                return None
+        return refreshed
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start the automation engine with event-driven architecture."""
@@ -255,6 +303,7 @@ class AutomationEngine:
 
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
+        validation_workers = [asyncio.create_task(self._specification_worker_loop(repo_name, i), name=f"specification-worker-{i}") for i in range(min(2, max(1, concurrency)))]
 
         async def wait_for_core_loops() -> None:
             await asyncio.gather(producer_task, *workers)
@@ -263,7 +312,7 @@ class AutomationEngine:
         try:
             # The invalidation consumer is a companion to the producer/workers,
             # not a reason to keep an otherwise stopped engine alive forever.
-            companion_tasks = {invalidation_task} | ({capacity_task} if capacity_task is not None else set())
+            companion_tasks = {invalidation_task, *validation_workers} | ({capacity_task} if capacity_task is not None else set())
             done, _ = await asyncio.wait({core_task, *companion_tasks}, return_when=asyncio.FIRST_COMPLETED)
             if core_task in done:
                 for task in companion_tasks:
@@ -577,6 +626,37 @@ class AutomationEngine:
                     if decision_completed:
                         await self._enqueue_pending_invalidations(repo_name)
 
+    async def _specification_worker_loop(self, repo_name: str, worker_id: int) -> None:
+        """Validate submitted generations independently of implementation capacity."""
+        with active_repo_context(repo_name):
+            while True:
+                candidate = await self.specification_queue.get()
+                try:
+                    number = candidate.issue_number or candidate.data.get("number")
+                    if candidate.type != "issue" or not isinstance(number, int):
+                        continue
+                    authoritative = await asyncio.to_thread(self._create_candidate_from_single, repo_name, "issue", number, True)
+                    if authoritative is not None:
+                        await asyncio.to_thread(
+                            self._process_single_candidate_unified,
+                            repo_name,
+                            authoritative,
+                            self.config,
+                            False,
+                            False,
+                            False,
+                            False,
+                            False,
+                            False,
+                            True,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(f"Specification worker {worker_id} deferred Issue validation: {exc}")
+                finally:
+                    self.specification_queue.task_done()
+
     async def invalidate_entity(
         self,
         repo_name: str,
@@ -610,6 +690,8 @@ class AutomationEngine:
                     invalidation_generation=claim.generation,
                 )
                 await self.queue.put(candidate)
+                if claim.identity.entity_type == "issue":
+                    await self.specification_queue.put(candidate)
 
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the automation engine."""
@@ -1339,6 +1421,7 @@ class AutomationEngine:
         continue_execution: bool = False,
         advance_issue_attempt: bool = False,
         generation_serialized: bool = False,
+        validation_only: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -1420,6 +1503,7 @@ class AutomationEngine:
                         continue_execution,
                         advance_issue_attempt,
                         generation_serialized=True,
+                        validation_only=validation_only,
                     )
             try:
                 current_issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
@@ -1433,6 +1517,42 @@ class AutomationEngine:
             if "pull_request" in current_issue:
                 result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub identifies the target as pr"
                 return result
+
+            # A ready parent submits its set; it is never itself a coding task.
+            # Validate/dispatch the first open child through the same common
+            # boundary so parent-only webhook invalidations are sufficient.
+            all_children_lookup = getattr(self.github, "get_all_sub_issues_strict", None)
+            if is_implementation_ready(current_issue) and callable(all_children_lookup):
+                try:
+                    direct_children = all_children_lookup(repo_name, item_number)
+                    if not isinstance(direct_children, list) or any(not isinstance(number, int) for number in direct_children):
+                        direct_children = []
+                    open_children = []
+                    for child_number in direct_children:
+                        child_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, child_number)
+                        if self._is_open_issue(child_snapshot):
+                            open_children.append((child_number, child_snapshot))
+                except Exception as exc:
+                    result.error = f"Cannot establish submitted parent decomposition: {exc}"
+                    result.refill_retry_required = True
+                    return result
+                if direct_children:
+                    if not open_children:
+                        result.actions = ["Skipped - submitted parent has no open child to implement"]
+                        return result
+                    selected_number, selected_snapshot = min(open_children, key=lambda value: value[0])
+                    selected = Candidate(type="issue", data=selected_snapshot, priority=candidate.priority, issue_number=selected_number)
+                    return self._process_single_candidate_unified(
+                        repo_name,
+                        selected,
+                        config,
+                        jules_mode,
+                        explicit_only,
+                        force,
+                        continue_execution,
+                        advance_issue_attempt,
+                        validation_only=validation_only,
+                    )
 
             # Readiness is intentionally decided from the same cache-bypassing
             # snapshot as the dispatch type and requirement contract. Candidate
@@ -1450,13 +1570,30 @@ class AutomationEngine:
             decomposition_parent: Optional[DecompositionIssue] = None
             decomposition_children: tuple[DecompositionIssue, ...] = ()
             try:
+                declared_parent = parse_parent_issue_number(str(current_issue.get("body") or ""), current_issue_number=item_number)
                 if isinstance(self.github, GitHubClient):
                     parent_number = self.github.get_parent_issue_number_strict(repo_name, item_number)
                 else:
                     lookup_parent = getattr(self.github, "get_parent_issue_number_strict", None)
                     parent_number = lookup_parent(repo_name, item_number) if callable(lookup_parent) else current_issue.get("parent_issue_number")
-                if parent_number is None:
-                    parent_number = parse_parent_issue_number(str(current_issue.get("body") or ""), current_issue_number=item_number)
+                    if not isinstance(parent_number, int):
+                        parent_number = None
+                if parent_number is not None and declared_parent is not None and parent_number != declared_parent:
+                    result.error = f"Issue hierarchy conflict: native parent #{parent_number} contradicts Parent-Issue declaration #{declared_parent}"
+                    result.actions = ["Rejected - conflicting parent relationships"]
+                    return result
+                if parent_number is None and declared_parent is not None:
+                    linker = getattr(self.github, "add_sub_issue", None)
+                    if not callable(linker) or not linker(repo_name, declared_parent, item_number):
+                        result.error = f"Cannot materialize Parent-Issue declaration #{declared_parent}"
+                        result.actions = ["Deferred - unresolved parent relationship"]
+                        return result
+                    refetch_parent = getattr(self.github, "get_parent_issue_number_strict", None)
+                    parent_number = refetch_parent(repo_name, item_number) if callable(refetch_parent) else None
+                    if parent_number != declared_parent:
+                        result.error = "Parent-Issue relationship was not authoritative after materialization"
+                        result.actions = ["Deferred - unresolved parent relationship"]
+                        return result
                 if isinstance(parent_number, int):
                     parent_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
                     if not isinstance(parent_snapshot, dict) or parent_snapshot.get("number") != parent_number:
@@ -1500,6 +1637,14 @@ class AutomationEngine:
                         "(for example, `- REQ-001: Describe the required observable behavior.`). Auto-Coder will re-evaluate the edited Issue on a later scan."
                     )
                     self.github.add_comment_to_issue(repo_name, item_number, diagnostic)
+                # Structural invalidity is a demonstrated contract defect, not a
+                # validator outage. Withdraw only the exact submission observed;
+                # edits alone must not silently resubmit it.
+                blocked_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                submission_number = parent_number if parent_snapshot is not None and isinstance(parent_number, int) else item_number
+                submission_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, submission_number)
+                if specification_digest(str(blocked_snapshot.get("title") or ""), str(blocked_snapshot.get("body") or "")) == specification_digest(current_title, current_body) and is_implementation_ready(submission_snapshot):
+                    self.github.remove_labels(repo_name, submission_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")
                 logger.warning(f"Rejected Issue #{item_number} before implementation dispatch: {contract.error}")
                 result.actions = [f"Rejected - invalid requirement contract: {contract.error}"]
                 result.error = contract.error
@@ -1546,7 +1691,17 @@ class AutomationEngine:
                     # Withdraw it only after confirming it is still the same live set.
                     refreshed_parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
                     refreshed_children = child_lookup(repo_name, parent_number) if callable(child_lookup) else self.github.get_all_sub_issues(repo_name, parent_number)
-                    if is_implementation_ready(refreshed_parent) and refreshed_children == child_numbers:
+                    refreshed_values = []
+                    for child_number in refreshed_children:
+                        value = self.github.get_issue_dispatch_snapshot_strict(repo_name, child_number)
+                        body = str(value.get("body") or "")
+                        refreshed_values.append(DecompositionIssue(build_normative_issue_manifest(child_number, str(value.get("title") or ""), body), body))
+                    refreshed_parent_body = str(refreshed_parent.get("body") or "")
+                    refreshed_parent_issue = DecompositionIssue(
+                        build_normative_issue_manifest(parent_number, str(refreshed_parent.get("title") or ""), refreshed_parent_body),
+                        refreshed_parent_body,
+                    )
+                    if is_implementation_ready(refreshed_parent) and refreshed_children == child_numbers and decomposition_validator.identity(refreshed_parent_issue, tuple(refreshed_values)) == decomposition_decision.identity:
                         self.github.remove_labels(repo_name, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")
                     result.error = "Decomposition validation found material defects"
                     result.actions = ["Rejected - blocked decomposition"]
@@ -1567,7 +1722,16 @@ class AutomationEngine:
                     try:
                         live_child = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
                         live_parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
-                        if validator.identity(item_number, str(live_child.get("title") or ""), str(live_child.get("body") or "")) == decision.identity and is_implementation_ready(live_parent):
+                        live_numbers = child_lookup(repo_name, parent_number) if callable(child_lookup) else self.github.get_all_sub_issues(repo_name, parent_number)
+                        live_values = []
+                        for child_number in live_numbers:
+                            value = live_child if child_number == item_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, child_number)
+                            body = str(value.get("body") or "")
+                            live_values.append(DecompositionIssue(build_normative_issue_manifest(child_number, str(value.get("title") or ""), body), body))
+                        live_parent_body = str(live_parent.get("body") or "")
+                        live_parent_issue = DecompositionIssue(build_normative_issue_manifest(parent_number, str(live_parent.get("title") or ""), live_parent_body), live_parent_body)
+                        set_matches = decomposition_validator is not None and decomposition_decision is not None and decomposition_validator.identity(live_parent_issue, tuple(live_values)) == decomposition_decision.identity
+                        if item_number in live_numbers and set_matches and validator.identity(item_number, str(live_child.get("title") or ""), str(live_child.get("body") or "")) == decision.identity and is_implementation_ready(live_parent):
                             self.github.remove_labels(repo_name, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")
                     except Exception as exc:
                         result.error = f"Specification is blocked; parent readiness withdrawal failed: {exc}"
@@ -1638,6 +1802,11 @@ class AutomationEngine:
                 return result
             if hierarchy_blocked:
                 result.actions = ["Skipped - unresolved Issue hierarchy dependency"]
+                return result
+
+            if validation_only:
+                result.success = True
+                result.actions = ["Validated - implementation-ready specification"]
                 return result
 
             dispatch_labels = candidate.data.get("labels", []) or []
