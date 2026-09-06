@@ -188,6 +188,9 @@ def _process_issue_jules_mode(
             is_jules=True,
         )
 
+        if not new_work_allowed():
+            return [f"Deferred Jules session for issue #{issue_number}: graceful shutdown is draining"]
+
         logger.info(f"Starting Jules session for issue #{issue_number}")
 
         # Determine base branch (default to main)
@@ -295,6 +298,9 @@ def _process_issue_claude_routine_mode(
             commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
             is_jules=True,
         )
+
+        if not new_work_allowed():
+            return [f"Deferred Claude Routine session for issue #{issue_number}: graceful shutdown is draining"]
 
         logger.info(f"Starting Claude Routine session for issue #{issue_number}")
 

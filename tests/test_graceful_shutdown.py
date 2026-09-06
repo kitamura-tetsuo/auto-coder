@@ -12,7 +12,7 @@ import yaml
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
-from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+from auto_coder.issue_processor import _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
 from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
 
 
@@ -797,6 +797,58 @@ def test_initial_cloud_launch_rechecks_drain_after_prompt_context(monkeypatch, t
     actions = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), backend_name="codex-cloud-luna")
     assert actions == ["Started Codex Cloud task 'task-after-restart' for issue #1778"]
     client.start_task.assert_called_once()
+
+
+@pytest.mark.parametrize("provider", ["jules", "claude-routine"])
+def test_initial_session_launch_rechecks_drain_after_prompt_context(monkeypatch, tmp_path, provider):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    client = MagicMock()
+    cloud_manager = MagicMock()
+    cloud_manager.add_session.return_value = True
+    issue = {"number": 1779, "title": "Remote", "body": "", "labels": [], "user": {}}
+
+    def context_lookup(**_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return "context"
+
+    monkeypatch.setattr("auto_coder.issue_processor.get_commit_log", context_lookup)
+    monkeypatch.setattr("auto_coder.issue_processor.CloudManager", lambda *_args: cloud_manager)
+    if provider == "jules":
+        client.start_session.return_value = "jules-session"
+        monkeypatch.setattr("auto_coder.issue_processor.JulesClient", lambda: client)
+        operation = _process_issue_jules_mode
+        operation_args = ("owner/repo", issue, AutomationConfig(), MagicMock())
+        expected = ["Deferred Jules session for issue #1779: graceful shutdown is draining"]
+    else:
+        client.fire_routine.return_value = ("claude-session", "https://example.test/session")
+        monkeypatch.setattr("auto_coder.claude_routine_client.ClaudeRoutineClient", lambda **_kwargs: client)
+        operation = _process_issue_claude_routine_mode
+        operation_args = ("owner/repo", issue, AutomationConfig(), MagicMock(), "claude-routine")
+        expected = ["Deferred Claude Routine session for issue #1779: graceful shutdown is draining"]
+
+    async def scenario():
+        launch = asyncio.create_task(engine._run_local_critical(f"worker 0 issue #1779 {provider}", operation, *operation_args))
+        assert await asyncio.to_thread(entered.wait, 2)
+        engine.request_graceful_shutdown("SIGTERM")
+        launch.cancel()
+        release.set()
+        assert await launch == expected
+
+    asyncio.run(scenario())
+    client.start_session.assert_not_called()
+    client.fire_routine.assert_not_called()
+    cloud_manager.add_session.assert_not_called()
+
+    # With no durable session recorded, a fresh RUNNING context can still
+    # dispatch the same authorized Issue after restart.
+    restarted_actions = operation(*operation_args)
+    assert restarted_actions != expected
+    cloud_manager.add_session.assert_called_once()
 
 
 def test_container_entrypoint_and_compose_grace_preserve_sigterm_delivery():
