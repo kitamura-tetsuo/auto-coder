@@ -427,41 +427,25 @@ class ImplementationSlotRepository:
         """Read and strictly validate cache-bypassing direct hierarchy evidence."""
         parent_reader = getattr(github_client, "get_parent_issue_number_strict", None)
         child_reader = getattr(github_client, "get_direct_sub_issues_strict", None)
-        if not callable(parent_reader) or not callable(child_reader):
-            raise ImplementationHierarchyUnavailable("Cache-bypassing GitHub parent and direct-child readers are required")
+        generation_reader = getattr(github_client, "get_issue_hierarchy_generation_strict", None)
+        if not callable(parent_reader) or not callable(child_reader) or not callable(generation_reader):
+            raise ImplementationHierarchyUnavailable("Cache-bypassing GitHub hierarchy and generation readers are required")
         try:
+            generation = generation_reader(self.repo_name, issue_number)
             parent = parent_reader(self.repo_name, issue_number)
             children_payload = child_reader(self.repo_name, issue_number)
-            confirmed_parent = parent_reader(self.repo_name, issue_number)
-            confirmed_children_payload = child_reader(self.repo_name, issue_number)
-            final_parent = parent_reader(self.repo_name, issue_number)
-            final_children_payload = child_reader(self.repo_name, issue_number)
-            committed_parent = parent_reader(self.repo_name, issue_number)
+            confirmed_generation = generation_reader(self.repo_name, issue_number)
         except Exception as exc:
             raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
+        if not isinstance(generation, str) or not generation or not isinstance(confirmed_generation, str) or not confirmed_generation:
+            raise ImplementationHierarchyUnavailable("GitHub returned an invalid Issue hierarchy generation")
+        if confirmed_generation != generation:
+            raise ImplementationHierarchyUnavailable(f"Issue hierarchy generation changed while reading issue:{issue_number}")
         if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
             raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct parent identity")
-        if confirmed_parent is not None and (isinstance(confirmed_parent, bool) or not isinstance(confirmed_parent, int)):
-            raise ImplementationHierarchyUnavailable("GitHub returned an invalid confirmed direct parent identity")
-        if final_parent is not None and (isinstance(final_parent, bool) or not isinstance(final_parent, int)):
-            raise ImplementationHierarchyUnavailable("GitHub returned an invalid final direct parent identity")
-        if committed_parent is not None and (isinstance(committed_parent, bool) or not isinstance(committed_parent, int)):
-            raise ImplementationHierarchyUnavailable("GitHub returned an invalid committed direct parent identity")
-        if confirmed_parent != parent:
-            raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
-        if final_parent != confirmed_parent:
-            raise ImplementationHierarchyUnavailable(f"Direct parent changed during final hierarchy confirmation for issue:{issue_number}")
-        if committed_parent != final_parent:
-            raise ImplementationHierarchyUnavailable(f"Direct parent changed after final child confirmation for issue:{issue_number}")
-        if parent == issue_number or not isinstance(children_payload, list) or not isinstance(confirmed_children_payload, list) or not isinstance(final_children_payload, list):
+        if parent == issue_number or not isinstance(children_payload, list):
             raise ImplementationHierarchyUnavailable("GitHub returned contradictory direct hierarchy evidence")
         children = self._parse_direct_children(issue_number, children_payload)
-        confirmed_children = self._parse_direct_children(issue_number, confirmed_children_payload)
-        if confirmed_children != children:
-            raise ImplementationHierarchyUnavailable(f"Direct children changed while reading hierarchy for issue:{issue_number}")
-        final_children = self._parse_direct_children(issue_number, final_children_payload)
-        if final_children != confirmed_children:
-            raise ImplementationHierarchyUnavailable(f"Direct children changed during final hierarchy confirmation for issue:{issue_number}")
         return parent, children
 
     @staticmethod

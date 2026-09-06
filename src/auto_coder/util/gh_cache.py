@@ -2307,6 +2307,14 @@ class GitHubClient:
             raise RuntimeError("GitHub parent-Issue response was ambiguous")
         return parent["number"]
 
+    def get_issue_hierarchy_generation_strict(self, repo_name: str, issue_number: int) -> str:
+        """Return the cache-bypassing Issue revision guarding hierarchy reads."""
+        snapshot = self.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        updated_at = snapshot.get("updated_at")
+        if not isinstance(updated_at, str) or not updated_at:
+            raise RuntimeError("GitHub Issue hierarchy generation was ambiguous")
+        return updated_at
+
     def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get all sub-issues (open and closed) using GitHub REST API."""
         try:

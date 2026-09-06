@@ -27,7 +27,9 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 Every production Issue implementation admission obtains cache-bypassing native
 parent and complete direct-child evidence while holding the shared durable slot
-lock. The evidence is read twice and must remain identical before commit. A
+lock. Each composite hierarchy read is bracketed by cache-bypassing Issue revision
+reads, and the revision must remain unchanged before the evidence can authorize
+admission. A
 present logical owner for either direct side rejects the new owner independently
 of normal, explicit, forced, or emergency capacity. Operational or ambiguous
 hierarchy reads fail closed and remain distinct from capacity and semantic

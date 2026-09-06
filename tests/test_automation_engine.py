@@ -39,9 +39,13 @@ class TestAutomationEngine:
                 self.hierarchy_reads = 0
                 self.child_reads = 0
                 self.parent = None
+                self.generation = "generation-1"
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
+
+            def get_issue_hierarchy_generation_strict(self, _repo, _number):
+                return self.generation
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
@@ -51,8 +55,9 @@ class TestAutomationEngine:
                 self.hierarchy_reads += 1
                 if number == 2:
                     self.child_reads += 1
-                    if self.child_reads == 9:
+                    if self.child_reads == 3:
                         self.parent = 1
+                        self.generation = "generation-2"
                 return []
 
         github = StrictGitHub()
@@ -75,7 +80,7 @@ class TestAutomationEngine:
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        assert result.error and "after final child confirmation" in result.error
+        assert result.error and "hierarchy generation changed" in result.error
         assert restarted.active_owners() == (parent,)
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
@@ -123,9 +128,13 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 self.hierarchy_reads = 0
                 self.child_reads = 0
                 self.parent = None
+                self.generation = "generation-1"
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
+
+            def get_issue_hierarchy_generation_strict(self, _repo, _number):
+                return self.generation
 
             def get_parent_issue_number_strict(self, _repo, number):
                 self.hierarchy_reads += 1
@@ -135,8 +144,9 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 self.hierarchy_reads += 1
                 if number == 2:
                     self.child_reads += 1
-                    if self.child_reads == 3:
+                    if self.child_reads == 1:
                         self.parent = 1
+                        self.generation = "generation-2"
                 return []
 
         github = StrictGitHub()
@@ -149,7 +159,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-        assert result.error and "after final child confirmation" in result.error
+        assert result.error and "hierarchy generation changed" in result.error
         assert restarted.active_owners() == (ImplementationOwner("issue", 1), ImplementationOwner("issue", 2))
         assert restarted.active_execution_ids(ImplementationOwner("issue", 2)) == ()
         assert github.hierarchy_reads > 0
@@ -166,6 +176,9 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
+
+            def get_issue_hierarchy_generation_strict(self, _repo, _number):
+                return "generation-1"
 
             def get_parent_issue_number_strict(self, _repo, number):
                 return 1 if number == 2 else None
@@ -225,6 +238,9 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
             def get_issue_strict(self, _repo, number):
                 return {"number": number, "title": "Child", "body": ""}
+
+            def get_issue_hierarchy_generation_strict(self, _repo, _number):
+                return "generation-1"
 
             def get_parent_issue_number_strict(self, _repo, number):
                 return 1 if number == 2 else None
@@ -753,7 +769,12 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return None
 
             def json(self):
-                return {"number": 1684, "body": authoritative["body"], "labels": [{"name": "implementation-ready"}]}
+                return {
+                    "number": 1684,
+                    "body": authoritative["body"],
+                    "labels": [{"name": "implementation-ready"}],
+                    "updated_at": "2024-01-01T00:00:00Z",
+                }
 
         class MembershipResponse(Response):
             def json(self):

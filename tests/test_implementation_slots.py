@@ -74,6 +74,9 @@ class AuthoritativeHierarchy:
     def get_direct_sub_issues_strict(self, _repo, number):
         return [{"number": child} for child in self.children.get(number, [])]
 
+    def get_issue_hierarchy_generation_strict(self, _repo, _number):
+        return "generation-1"
+
 
 def test_durable_admission_excludes_both_direct_parent_child_directions_and_restart(tmp_path):
     """AC-001, AC-002, AC-004, AC-009: the owner record is the sole active oracle."""
@@ -162,7 +165,7 @@ class HierarchyHttpResponse:
 def test_production_reader_preserves_self_child_as_operational_failure(tmp_path):
     """REQ-006: the HTTP parser must not erase contradictory self-membership."""
     client_context = MagicMock()
-    client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: (HierarchyHttpResponse(404, {}) if url.endswith("/parent") else HierarchyHttpResponse(200, [{"number": 2}]))
+    client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: (HierarchyHttpResponse(200, {"number": 2, "updated_at": "generation-1"}) if url.endswith("/issues/2") else (HierarchyHttpResponse(404, {}) if url.endswith("/parent") else HierarchyHttpResponse(200, [{"number": 2}])))
     github = object.__new__(GitHubClient)
     github.token = "token"
     slots = repository(tmp_path)
@@ -180,6 +183,8 @@ def test_production_readers_detect_reparenting_during_final_child_lookup(tmp_pat
     child_reads = {"count": 0}
 
     def get(url, **_kwargs):
+        if url.endswith("/issues/2"):
+            return HierarchyHttpResponse(200, {"number": 2, "updated_at": f"parent-{authoritative_parent['number']}"})
         if url.endswith("/parent"):
             number = authoritative_parent["number"]
             return HierarchyHttpResponse(404, {}) if number is None else HierarchyHttpResponse(200, {"number": number})
@@ -209,10 +214,12 @@ def test_production_readers_detect_child_attachment_during_final_parent_confirma
 
     def get(url, **_kwargs):
         nonlocal parent_reads
+        if url.endswith("/issues/2"):
+            return HierarchyHttpResponse(200, {"number": 2, "updated_at": f"children-{children}"})
         if url.endswith("/parent"):
             parent_reads += 1
             response = HierarchyHttpResponse(404, {})
-            if parent_reads == 4:
+            if parent_reads == 2:
                 children.append(1)
             return response
         return HierarchyHttpResponse(200, [{"number": number} for number in children])
@@ -244,6 +251,8 @@ def test_production_readers_rollback_reparenting_after_provisional_owner_write(t
                 authoritative_parent["number"] = 1
 
     def get(url, **_kwargs):
+        if url.endswith("/issues/2"):
+            return HierarchyHttpResponse(200, {"number": 2, "updated_at": f"parent-{authoritative_parent['number']}"})
         if url.endswith("/parent"):
             number = authoritative_parent["number"]
             return HierarchyHttpResponse(404, {}) if number is None else HierarchyHttpResponse(200, {"number": number})
@@ -267,6 +276,8 @@ def test_production_parent_reader_rejects_boolean_confirmation_identity(tmp_path
     parent_payloads = iter(({"number": 1}, {"number": True}))
 
     def get(url, **_kwargs):
+        if url.endswith("/issues/2"):
+            return HierarchyHttpResponse(200, {"number": 2, "updated_at": "generation-1"})
         if url.endswith("/parent"):
             return HierarchyHttpResponse(200, next(parent_payloads))
         return HierarchyHttpResponse(200, [])
