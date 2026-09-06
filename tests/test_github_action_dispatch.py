@@ -1,7 +1,10 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from auto_coder.dispatch_claim_store import DispatchOutcome
+from auto_coder.util.gh_cache import get_ghapi_client
 from auto_coder.util.github_action import trigger_workflow_dispatch
 
 
@@ -149,6 +152,51 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+
+class TestTriggerWorkflowDispatchRealHttpAdapter(unittest.TestCase):
+    """Drives the real CachedGhApi/httpx boundary so classification is exercised
+    against genuine httpx.HTTPStatusError objects rather than plain Exception
+    strings, and against a request URL that itself embeds digits that could be
+    mistaken for an HTTP status by a naive string search."""
+
+    def _run_with_mock_transport(self, handler, repo_name, workflow_id="ci.yml", ref="main"):
+        def _fake_get_caching_client():
+            return httpx.Client(transport=httpx.MockTransport(handler))
+
+        with (
+            patch("auto_coder.util.gh_cache.get_caching_client", side_effect=_fake_get_caching_client),
+            patch("auto_coder.util.github_action.GitHubClient") as mock_gh_client_cls,
+            patch("auto_coder.util.github_action.get_ghapi_client", side_effect=get_ghapi_client),
+        ):
+            mock_gh_client_cls.get_instance.return_value.token = "test-token"
+            return trigger_workflow_dispatch(repo_name, workflow_id, ref)
+
+    def test_503_with_numeric_repo_name_is_indeterminate_not_rejected(self):
+        """A 503 response must classify as INDETERMINATE even though the request
+        URL embeds a repo path segment ('404') that a naive digit search over
+        the exception string could misattribute as the HTTP status."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertIn("/repos/owner/404/actions/workflows/ci.yml/dispatches", str(request.url))
+            return httpx.Response(503, json={"message": "Service Unavailable"}, request=request)
+
+        result = self._run_with_mock_transport(handler, "owner/404")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
+
+    def test_genuine_404_is_still_a_definite_rejection(self):
+        """A real 404 HTTPStatusError from the adapter is still classified REJECTED,
+        so the fix for the 503 misclassification does not blur real rejections."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"message": "Not Found"}, request=request)
+
+        result = self._run_with_mock_transport(handler, "owner/repo")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.REJECTED)
 
 
 if __name__ == "__main__":

@@ -897,6 +897,32 @@ def get_detailed_checks_from_history(
         )
 
 
+def _extract_http_status_code(exc: Exception) -> Optional[int]:
+    """Extract a structured HTTP status code from an exception, if any.
+
+    Prefers a status attribute the exception (or its nested `.response`,
+    as on `httpx.HTTPStatusError`) carries directly. Only falls back to
+    matching an explicit "NNN <Reason Phrase>" status line in the
+    exception's string form (the format httpx and urllib use, e.g.
+    "404 Not Found") rather than any digit sequence: a message can also
+    embed unrelated numbers, such as a request URL path segment, and a
+    bare digit match would misattribute those to the HTTP status.
+    """
+    for attr in ("status_code", "code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        value = getattr(response, "status_code", None)
+        if isinstance(value, int):
+            return value
+    match = re.search(r"\b([1-5]\d{2}) [A-Z][A-Za-z]", str(exc))
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _classify_dispatch_exception(exc: Exception) -> DispatchOutcome:
     """Classify a workflow_dispatch failure per REQ-005.
 
@@ -907,11 +933,7 @@ def _classify_dispatch_exception(exc: Exception) -> DispatchOutcome:
     status) is indeterminate, since we cannot disprove that GitHub accepted
     the request before the response was lost.
     """
-    code = getattr(exc, "code", None) or getattr(exc, "status", None) or getattr(exc, "status_code", None)
-    if not isinstance(code, int):
-        match = re.search(r"\b(4\d{2})\b", str(exc))
-        if match:
-            code = int(match.group(1))
+    code = _extract_http_status_code(exc)
     if isinstance(code, int) and 400 <= code < 500:
         return DispatchOutcome.REJECTED
     return DispatchOutcome.INDETERMINATE
@@ -965,7 +987,7 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> Wor
         import time
 
         try:
-            if "422" in str(e):
+            if _extract_http_status_code(e) == 422:
                 logger.warning(f"Failed to trigger {workflow_id} with 422. Attempting to add workflow_dispatch trigger...")
 
                 # Get the file content

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
+from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchIdentity, DispatchOutcome
 from auto_coder.pr_processor import _handle_pr_merge, monitor_workflow_async
 from auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult
 
@@ -84,6 +84,39 @@ class TestWorkflowTrigger(unittest.TestCase):
         mock_trigger.assert_called_once()
         mock_lm_instance.keep_label.assert_not_called()  # Label NOT kept (removed by exit)
         self.assertIn("Failed to trigger ci.yml for PR #123 (outcome=rejected)", actions)
+
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
+    @patch("auto_coder.pr_processor.LabelManager")
+    @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
+    @patch("threading.Thread")
+    def test_new_head_sha_dispatches_despite_prior_accepted_claim(self, mock_thread, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
+        """REQ-001/REQ-007 regression: an accepted claim for head SHA A must not
+        suppress an otherwise eligible dispatch once the PR head advances to a
+        different SHA B, and each identity's persisted claim must carry its own
+        authoritative head SHA rather than collapsing onto one shared identity."""
+        mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
+
+        mock_lm_instance = MagicMock()
+        mock_label_manager.return_value.__enter__.return_value = mock_lm_instance
+
+        pr_data_a = {"number": 123, "head": {"ref": "feature-branch", "sha": "sha-A"}}
+        actions_a = _handle_pr_merge(self.github_client, self.repo_name, pr_data_a, self.config, {})
+        self.assertIn("Triggered ci.yml for PR #123", actions_a)
+        self.assertEqual(mock_trigger.call_count, 1)
+
+        pr_data_b = {"number": 123, "head": {"ref": "feature-branch", "sha": "sha-B"}}
+        actions_b = _handle_pr_merge(self.github_client, self.repo_name, pr_data_b, self.config, {})
+        self.assertIn("Triggered ci.yml for PR #123", actions_b)
+        self.assertEqual(mock_trigger.call_count, 2, "sha-B must be dispatched despite sha-A's accepted claim")
+
+        # Both identities are persisted separately, keyed by their own
+        # authoritative head SHA, and both remain suppressing after ACCEPTED.
+        identity_a = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="sha-A", workflow_id="ci.yml")
+        identity_b = DispatchIdentity(repo_name=self.repo_name, pr_number=123, head_sha="sha-B", workflow_id="ci.yml")
+        self.assertFalse(self._claim_store.try_acquire_claim(identity_a).acquired)
+        self.assertFalse(self._claim_store.try_acquire_claim(identity_b).acquired)
 
 
 class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
