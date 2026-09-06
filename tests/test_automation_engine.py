@@ -356,19 +356,15 @@ class TestAutomationEngine:
         class GitHubStub:
             def __init__(self):
                 self.comments = []
-                self.ready = True
 
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": body, "labels": [{"name": "implementation-ready"}] if self.ready else []}
+                return {"number": number, "body": body, "labels": [{"name": "implementation-ready"}]}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
                 self.comments.append({"body": comment})
-
-            def remove_labels(self, _repo_name, _number, _labels, item_type="issue"):
-                self.ready = False
 
         github = GitHubStub()
         engine = AutomationEngine(github, config=AutomationConfig())
@@ -384,7 +380,6 @@ class TestAutomationEngine:
         assert second.success is False
         assert reason in (first.error or "")
         assert first.actions == [f"Rejected - invalid requirement contract: {first.error}"]
-        assert second.actions == ["Skipped - missing implementation-ready label"]
         assert len(github.comments) == 1
         assert "Implementation has not started" in github.comments[0]["body"]
         assert "REQ-NNN:" in github.comments[0]["body"]
@@ -410,9 +405,6 @@ class TestAutomationEngine:
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
                 self.comments.append({"body": comment})
-
-            def remove_labels(self, _repo_name, _number, _labels, item_type="issue"):
-                pass
 
         github = GitHubStub()
         engine = AutomationEngine(github, config=AutomationConfig())
@@ -511,18 +503,23 @@ class TestAutomationEngine:
             def json(self):
                 return {"number": 1684, "body": authoritative["body"], "labels": [{"name": "implementation-ready"}]}
 
+        class MembershipResponse(Response):
+            def json(self):
+                return []
+
+        class NoParentResponse(Response):
+            status_code = 404
+
         client_context = MagicMock()
-        client_context.__enter__.return_value.get.return_value = Response()
+        client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: (MembershipResponse() if url.endswith("/sub_issues") else NoParentResponse() if url.endswith("/parent") else Response())
         GitHubClient.reset_singleton()
         github = GitHubClient.get_instance(token="test-token")
         github.get_open_prs_json = Mock(return_value=[])
         github.get_linked_prs = Mock(return_value=[])
         github.get_open_sub_issues_strict = Mock(return_value=[])
-        github.get_all_sub_issues_strict = Mock(return_value=[])
         github.get_parent_issue_number_strict = Mock(return_value=None)
         github.get_issue_comments_strict = Mock(return_value=[])
         github.add_comment_to_issue = Mock()
-        github.remove_labels = Mock()
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1684, title="Editable contract", success=True, actions=["dispatched"]))
@@ -554,19 +551,15 @@ class TestAutomationEngine:
             def __init__(self):
                 self.comments = []
                 self.body = "## Requirements\n### 1. Invalid"
-                self.ready = True
 
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": self.body, "labels": [{"name": "implementation-ready"}] if self.ready else []}
+                return {"number": number, "body": self.body, "labels": [{"name": "implementation-ready"}]}
 
             def get_issue_comments_strict(self, _repo_name, _number):
                 return list(self.comments)
 
             def add_comment_to_issue(self, _repo_name, _number, comment):
                 self.comments.append({"body": comment})
-
-            def remove_labels(self, _repo_name, _number, _labels, item_type="issue"):
-                self.ready = False
 
         github = GitHubStub()
         engine = AutomationEngine(github, config=AutomationConfig())
@@ -580,9 +573,9 @@ class TestAutomationEngine:
         accepted = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
         assert rejected.success is False
-        assert accepted.success is False
-        assert accepted.actions == ["Skipped - missing implementation-ready label"]
-        engine._process_single_candidate_reserved.assert_not_called()
+        assert accepted.success is True
+        assert accepted.actions == ["dispatched"]
+        engine._process_single_candidate_reserved.assert_called_once()
         assert slots.active_execution_ids(ImplementationOwner("issue", 1684)) == ()
 
     def test_legacy_issue_without_requirements_section_enters_normal_dispatch(self, tmp_path):

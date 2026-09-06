@@ -11,12 +11,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from .decomposition_analyzer import (
-    DECOMPOSITION_FINDING_CATEGORIES,
-    DecompositionAnalysisResult,
-    DecompositionIssue,
-    analyze_issue_decomposition,
-)
 from .prompt_loader import load_prompts
 from .requirement_contract import NormativeIssueManifest
 from .specification_analyzer import (
@@ -28,7 +22,6 @@ from .specification_analyzer import (
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
 VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v1"
-DECOMPOSITION_VALIDATION_SCHEMA_VERSION = "issue-decomposition-validation-v1"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 
@@ -239,6 +232,56 @@ class SpecificationValidationLifecycle:
             self.store.save(current_decision)
         return None
 
+    def apply_inherited_blocked(
+        self,
+        github: object,
+        decision: ValidationDecision,
+        parent_number: int,
+        set_is_current: Callable[[], bool],
+    ) -> Optional[str]:
+        """Withdraw a parent submission for one current blocked child."""
+        issue_number = decision.identity.issue_number
+        with self.store.locked(decision.identity.key):
+            failures: list[str] = []
+            current = self.store.get(decision.identity)
+            if current is None or current.verdict != "BLOCKED":
+                return "durable child BLOCKED decision is unavailable"
+
+            def still_current() -> bool:
+                snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                return isinstance(snapshot, dict) and self.identity(issue_number, str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) == decision.identity and set_is_current()
+
+            if not still_current():
+                return None
+            if not current.findings_published:
+                marker = f"{FINDINGS_MARKER_PREFIX}:{current.identity.key}"
+                try:
+                    comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    failures.append(f"findings lookup failed: {exc}")
+                    comments = None
+                if not still_current():
+                    return "; ".join(failures) or None
+                if comments is not None:
+                    published = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
+                    if not published:
+                        try:
+                            github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current))  # type: ignore[attr-defined]
+                            published = True
+                        except Exception as exc:
+                            failures.append(f"findings publication failed: {exc}")
+                    if published:
+                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed)
+                        self.store.save(current)
+            if not still_current():
+                return "; ".join(failures) or None
+            try:
+                github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
+                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True))
+            except Exception as exc:
+                failures.append(f"readiness withdrawal failed: {exc}")
+        return "; ".join(failures) or None
+
     @staticmethod
     def findings_comment(decision: ValidationDecision) -> str:
         lines = [f"<!-- {FINDINGS_MARKER_PREFIX}:{decision.identity.key} -->", "## Auto-Coder specification validation", "", "Implementation is blocked by material specification defects:"]
@@ -246,45 +289,3 @@ class SpecificationValidationLifecycle:
             ids = ", ".join(finding.requirement_ids) or "contract-wide"
             lines.extend(["", f"- **{finding.category}** ({ids}): {finding.explanation}", f"  Clarification required: {finding.clarification}"])
         return "\n".join(lines)
-
-
-DecompositionAnalyzer = Callable[[DecompositionIssue, tuple[DecompositionIssue, ...]], DecompositionAnalysisResult]
-
-
-class DecompositionValidationLifecycle:
-    """Persist semantic decisions for one exact parent/direct-child generation."""
-
-    def __init__(self, repository: str, provider_identity: str, path: Optional[Path] = None, analyzer: Optional[DecompositionAnalyzer] = None) -> None:
-        self.repository = repository
-        prompts = load_prompts().get("issue")
-        prompt = prompts.get("adversarial_decomposition_analysis") if isinstance(prompts, dict) else None
-        policy = {
-            "version": DECOMPOSITION_VALIDATION_SCHEMA_VERSION,
-            "prompt": prompt,
-            "categories": sorted(DECOMPOSITION_FINDING_CATEGORIES),
-            "provider": provider_identity,
-        }
-        self.policy_identity = hashlib.sha256(json.dumps(policy, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        state_root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
-        self.store = SpecificationValidationStore(repository, path or state_root / repository / "decomposition_validations.json")
-        self.analyzer = analyzer or (lambda parent, children: analyze_issue_decomposition(parent, children))
-
-    def identity(self, parent: DecompositionIssue, children: tuple[DecompositionIssue, ...]) -> ValidationIdentity:
-        generation = [[item.manifest.issue_number, item.manifest.title, item.body] for item in (parent, *children)]
-        digest = hashlib.sha256(json.dumps(generation, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-        return ValidationIdentity(self.repository, parent.manifest.issue_number, digest, self.policy_identity)
-
-    def decide(self, parent: DecompositionIssue, children: tuple[DecompositionIssue, ...]) -> ValidationDecision:
-        identity = self.identity(parent, children)
-        with self.store.locked(identity.key):
-            existing = self.store.get(identity)
-            if existing is not None:
-                return existing
-            analyzed = self.analyzer(parent, children)
-            # Decomposition findings have a different schema and are deliberately
-            # not flattened into individual findings. The verdict is the durable
-            # dispatch authorization; diagnostics remain analyzer-owned.
-            decision = ValidationDecision(identity, analyzed.verdict)
-            if analyzed.verdict in {"READY", "BLOCKED"}:
-                self.store.save(decision)
-            return decision

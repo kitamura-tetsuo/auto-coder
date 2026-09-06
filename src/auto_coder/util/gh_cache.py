@@ -25,6 +25,12 @@ logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
 
 
+def parse_parent_issue_url_number(parent_issue_url: object) -> Optional[int]:
+    """Return the stable Issue number encoded by a native parent URL."""
+    match = re.search(r"/issues/(\d+)$", parent_issue_url) if isinstance(parent_issue_url, str) else None
+    return int(match.group(1)) if match else None
+
+
 class ActionsSecretPermissionError(RuntimeError):
     """The dedicated credential cannot publish repository Actions secrets."""
 
@@ -1151,7 +1157,13 @@ class GitHubClient:
         if hasattr(updated_at, "isoformat"):
             updated_at = updated_at.isoformat()
 
+        parent_issue_number = get(issue, "parent_issue_number")
+        if not isinstance(parent_issue_number, int):
+            parent_issue_url = get(issue, "parent_issue_url")
+            parent_issue_number = parse_parent_issue_url_number(parent_issue_url)
+
         return {
+            "id": get(issue, "id"),
             "number": get(issue, "number"),
             "title": get(issue, "title"),
             "body": get(issue, "body") or "",
@@ -1164,6 +1176,10 @@ class GitHubClient:
             "author": get(user, "login") if user else None,
             "author_id": get(user, "id") if user else None,
             "comments_count": get(issue, "comments"),
+            "sub_issues_summary": get(issue, "sub_issues_summary"),
+            "has_open_sub_issues": bool(get(issue, "has_open_sub_issues", False)),
+            "open_sub_issue_numbers": list(get(issue, "open_sub_issue_numbers") or []),
+            "parent_issue_number": parent_issue_number,
         }
 
     def get_pr_details(self, pr: Any) -> Dict[str, Any]:
@@ -2269,33 +2285,6 @@ class GitHubClient:
         return sorted(set(children))
 
     @retry_with_backoff()
-    def get_all_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[int]:
-        """Return the exact current direct-child membership without caches."""
-        owner, repo = repo_name.split("/")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues?per_page=100"
-        children: List[int] = []
-        with httpx.Client() as client:
-            while url:
-                response = client.get(url, headers=headers, timeout=30)
-                response.raise_for_status()
-                page = response.json()
-                if not isinstance(page, list):
-                    raise RuntimeError("GitHub sub-issues response was not a list")
-                for child in page:
-                    number = child.get("number") if isinstance(child, dict) else None
-                    if not isinstance(number, int) or isinstance(number, bool):
-                        raise RuntimeError("GitHub sub-issues response contained an invalid Issue")
-                    if number != issue_number:
-                        children.append(number)
-                url = response.links.get("next", {}).get("url")
-        if len(children) != len(set(children)):
-            raise RuntimeError("GitHub sub-issues response contained duplicate membership")
-        return sorted(children)
-
-    @retry_with_backoff()
     def get_parent_issue_number_strict(self, repo_name: str, issue_number: int) -> Optional[int]:
         """Return the current native parent identity without cached evidence."""
         owner, repo = repo_name.split("/")
@@ -2331,6 +2320,58 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
+
+    def get_direct_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        """Return the complete cache-bypassing direct-child membership.
+
+        Closed children are deliberately retained because execution state is not
+        part of a submitted specification generation.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        items: List[Dict[str, Any]] = []
+        page = 1
+        with httpx.Client() as client:
+            while True:
+                response = client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
+                    headers=headers,
+                    params={"per_page": 100, "page": page},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError(f"GitHub returned ambiguous direct-child membership for {repo_name}#{issue_number}")
+                for item in payload:
+                    if not isinstance(item, dict) or not isinstance(item.get("number"), int):
+                        raise ValueError(f"GitHub returned an invalid direct child for {repo_name}#{issue_number}")
+                    if item["number"] != issue_number:
+                        items.append(item)
+                if len(payload) < 100:
+                    break
+                page += 1
+        return items
+
+    def get_parent_issue_details_strict(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
+        """Return a cache-bypassing native parent relationship."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        with httpx.Client() as client:
+            response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("parent"), dict):
+            payload = payload["parent"]
+        if not isinstance(payload, dict) or not isinstance(payload.get("number"), int):
+            raise ValueError(f"GitHub returned an ambiguous parent for {repo_name}#{issue_number}")
+        return payload
 
     def add_sub_issue(
         self,
