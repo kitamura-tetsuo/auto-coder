@@ -313,7 +313,6 @@ class ImplementationSlotRepository:
         with self._state_lock():
             owners = self._read()
             admission_hierarchy: Optional[tuple[Optional[int], tuple[int, ...]]] = None
-            created_owner = False
             reclaimed = self._remove_stale_executions(owners)
             if reclaimed:
                 # Persist cleanup even when capacity or duplicate admission
@@ -323,19 +322,7 @@ class ImplementationSlotRepository:
             if record is not None and record.get("admission_pending", False):
                 if owner.kind != "issue" or github_client is None:
                     raise ImplementationHierarchyUnavailable(f"Interrupted hierarchy admission for {owner.key} requires authoritative GitHub evidence")
-                stored_hierarchy = self._parse_stored_hierarchy(record)
-                try:
-                    current_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
-                    self._raise_hierarchy_conflict(owner, owners, current_hierarchy)
-                    if current_hierarchy != stored_hierarchy:
-                        raise ImplementationHierarchyUnavailable(f"Direct hierarchy changed after interrupted admission of {owner.key}")
-                except (ImplementationHierarchyConflict, ImplementationHierarchyUnavailable):
-                    owners.pop(owner.key, None)
-                    self._write(owners)
-                    raise
-                record["admission_pending"] = False
-                record.pop("admission_hierarchy", None)
-                self._write(owners)
+                admission_hierarchy = self._parse_stored_hierarchy(record)
             if record is None:
                 if owner.kind == "issue":
                     if github_client is not None:
@@ -366,7 +353,6 @@ class ImplementationSlotRepository:
                         "children": list(admission_hierarchy[1]),
                     }
                 owners[owner.key] = record
-                created_owner = True
             executions = record.setdefault("executions", [])
             if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
                 raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
@@ -382,7 +368,7 @@ class ImplementationSlotRepository:
                 execution.update({"boot_id": process_identity.boot_id, "process_start_ticks": process_identity.start_ticks})
             executions.append(execution)
             self._write(owners)
-            if created_owner and admission_hierarchy is not None:
+            if admission_hierarchy is not None:
                 try:
                     committed_hierarchy = self._read_issue_hierarchy(github_client, owner.number)
                     self._raise_hierarchy_conflict(owner, owners, committed_hierarchy)
@@ -392,9 +378,6 @@ class ImplementationSlotRepository:
                     owners.pop(owner.key, None)
                     self._write(owners)
                     raise
-                record["admission_pending"] = False
-                record.pop("admission_hierarchy", None)
-                self._write(owners)
         active = getattr(self._execution_context, "owners", {})
         active[owner.key] = execution_id
         self._execution_context.owners = active
@@ -438,6 +421,7 @@ class ImplementationSlotRepository:
             parent = parent_reader(self.repo_name, issue_number)
             children_payload = child_reader(self.repo_name, issue_number)
             confirmed_parent = parent_reader(self.repo_name, issue_number)
+            confirmed_children_payload = child_reader(self.repo_name, issue_number)
         except Exception as exc:
             raise ImplementationHierarchyUnavailable(f"Cannot establish current direct hierarchy for issue:{issue_number}: {exc}") from exc
         if parent is not None and (isinstance(parent, bool) or not isinstance(parent, int)):
@@ -446,17 +430,25 @@ class ImplementationSlotRepository:
             raise ImplementationHierarchyUnavailable("GitHub returned an invalid confirmed direct parent identity")
         if confirmed_parent != parent:
             raise ImplementationHierarchyUnavailable(f"Direct parent changed while reading hierarchy for issue:{issue_number}")
-        if parent == issue_number or not isinstance(children_payload, list):
+        if parent == issue_number or not isinstance(children_payload, list) or not isinstance(confirmed_children_payload, list):
             raise ImplementationHierarchyUnavailable("GitHub returned contradictory direct hierarchy evidence")
+        children = self._parse_direct_children(issue_number, children_payload)
+        confirmed_children = self._parse_direct_children(issue_number, confirmed_children_payload)
+        if confirmed_children != children:
+            raise ImplementationHierarchyUnavailable(f"Direct children changed while reading hierarchy for issue:{issue_number}")
+        return parent, children
+
+    @staticmethod
+    def _parse_direct_children(issue_number: int, payload: list[object]) -> tuple[int, ...]:
         children: list[int] = []
-        for child in children_payload:
+        for child in payload:
             number = child.get("number") if isinstance(child, dict) else None
             if isinstance(number, bool) or not isinstance(number, int) or number == issue_number:
                 raise ImplementationHierarchyUnavailable("GitHub returned an invalid direct child identity")
             children.append(number)
         if len(children) != len(set(children)):
             raise ImplementationHierarchyUnavailable("GitHub returned duplicate direct-child membership")
-        return parent, tuple(sorted(children))
+        return tuple(sorted(children))
 
     @staticmethod
     def _read_process_identity(pid: int) -> Optional[ProcessIdentity]:

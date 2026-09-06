@@ -31,10 +31,11 @@ lock. The evidence is read twice and must remain identical before commit. A
 present logical owner for either direct side rejects the new owner independently
 of normal, explicit, forced, or emergency capacity. Operational or ambiguous
 hierarchy reads fail closed and remain distinct from capacity and semantic
-validation outcomes. Admission records remain explicitly pending until their
-post-write hierarchy refresh succeeds; after an interrupted admission, restart
-processing must revalidate or discard that pending record before it can authorize
-an execution. Unrelated Issues and siblings retain existing concurrency.
+validation outcomes. Hierarchy-guarded records retain their pending marker and
+admission evidence for their lifetime. Every later execution admission, including
+restart recovery, writes its execution before a final hierarchy refresh and must
+discard the guarded owner on conflict or changed evidence before it can return to
+implementation dispatch. Unrelated Issues and siblings retain existing concurrency.
 
 ## Implementation-ready Issue dispatch gate
 
