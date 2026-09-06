@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from auto_coder.dispatch_claim_store import DispatchOutcome
 from auto_coder.util.github_action import trigger_workflow_dispatch
 
 
@@ -120,6 +121,34 @@ class TestTriggerWorkflowDispatch(unittest.TestCase):
         # Verify content has only one workflow_dispatch
         new_content_decoded = base64.b64decode(call_kwargs["content"]).decode("utf-8")
         self.assertEqual(new_content_decoded.count("workflow_dispatch:"), 1)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_definite_rejection(self, mock_gh_client_cls, mock_get_ghapi):
+        """A completed 4xx response (not a 422) is a definite rejection (REQ-005)."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        mock_api.actions.create_workflow_dispatch.side_effect = Exception("404 Not Found")
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.REJECTED)
+
+    @patch("auto_coder.util.github_action.get_ghapi_client")
+    @patch("auto_coder.util.github_action.GitHubClient")
+    def test_trigger_workflow_dispatch_indeterminate_on_transport_error(self, mock_gh_client_cls, mock_get_ghapi):
+        """A transport-level failure (no HTTP status) is indeterminate, not rejected (REQ-005)."""
+        mock_api = MagicMock()
+        mock_get_ghapi.return_value = mock_api
+
+        mock_api.actions.create_workflow_dispatch.side_effect = ConnectionResetError("connection reset by peer")
+
+        result = trigger_workflow_dispatch("owner/repo", "ci.yml", "main")
+
+        self.assertFalse(result)
+        self.assertEqual(result.outcome, DispatchOutcome.INDETERMINATE)
 
 
 if __name__ == "__main__":

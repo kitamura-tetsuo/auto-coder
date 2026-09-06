@@ -1,10 +1,13 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
 from auto_coder.pr_processor import _handle_pr_merge, monitor_workflow_async
-from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult
 
 
 class TestWorkflowTrigger(unittest.TestCase):
@@ -14,6 +17,15 @@ class TestWorkflowTrigger(unittest.TestCase):
         self.config = AutomationConfig()
         self.repo_name = "owner/repo"
         self.pr_data = {"number": 123, "head": {"ref": "feature-branch", "sha": "sha123"}}
+
+        # Use an isolated, temp-backed dispatch claim store for each test so
+        # dispatch admission decisions do not leak between test runs.
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp_dir.cleanup)
+        self._claim_store = DispatchClaimStore(db_path=Path(self._tmp_dir.name) / "dispatch_claims.db")
+        patcher = patch("auto_coder.pr_processor.get_dispatch_claim_store", return_value=self._claim_store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
@@ -25,7 +37,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
         # Mock trigger success
-        mock_trigger.return_value = True
+        mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
         # Mock LabelManager
         mock_lm_instance = MagicMock()
@@ -50,8 +62,8 @@ class TestWorkflowTrigger(unittest.TestCase):
         # Setup: No existing checks
         mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
-        # Mock trigger failure
-        mock_trigger.return_value = False
+        # Mock trigger failure (definitely rejected, so admission may retry later)
+        mock_trigger.return_value = WorkflowDispatchResult(outcome=DispatchOutcome.REJECTED)
 
         # Mock LabelManager
         mock_lm_instance = MagicMock()
@@ -71,7 +83,7 @@ class TestWorkflowTrigger(unittest.TestCase):
         # Verify
         mock_trigger.assert_called_once()
         mock_lm_instance.keep_label.assert_not_called()  # Label NOT kept (removed by exit)
-        self.assertIn("Failed to trigger ci.yml for PR #123", actions)
+        self.assertIn("Failed to trigger ci.yml for PR #123 (outcome=rejected)", actions)
 
 
 class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
