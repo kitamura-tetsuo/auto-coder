@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from .prompt_loader import load_prompts
+from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import NormativeIssueManifest
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
@@ -21,7 +22,7 @@ from .specification_analyzer import (
 )
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v1"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v2-remediation"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 
@@ -75,6 +76,7 @@ class ValidationDecision:
     findings: tuple[SpecificationFinding, ...] = ()
     findings_published: bool = False
     readiness_removed: bool = False
+    remediation: str = "NONE"
 
 
 def specification_digest(title: str, body: str) -> str:
@@ -91,6 +93,7 @@ def validation_policy_identity(provider_identity: str) -> str:
         "version": VALIDATION_SCHEMA_VERSION,
         "prompt": prompt,
         "categories": sorted(SPECIFICATION_FINDING_CATEGORIES),
+        "result_fields": ["verdict", "remediation", "findings"],
         "provider": provider_identity,
     }
     return hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -138,7 +141,8 @@ class SpecificationValidationStore:
         if raw.get("identity") != asdict(identity):
             return None
         findings = tuple(SpecificationFinding(**item) for item in raw.get("findings", []) if isinstance(item, dict))
-        return ValidationDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")))
+        remediation = str(raw.get("remediation", "NONE"))
+        return ValidationDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), remediation)
 
     def save(self, decision: ValidationDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -151,6 +155,7 @@ class SpecificationValidationStore:
                 "findings": [asdict(item) for item in decision.findings],
                 "findings_published": decision.findings_published,
                 "readiness_removed": decision.readiness_removed,
+                "remediation": decision.remediation,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -168,6 +173,8 @@ class SpecificationValidationLifecycle:
         self.repository = repository
         self.policy_identity = validation_policy_identity(provider_identity)
         self.store = SpecificationValidationStore(repository, path)
+        terminal_path = path.with_name("reissue_required.json") if path is not None else None
+        self.reissue_store = ReissueRequiredStore(repository, terminal_path)
         self.analyzer = analyzer or (lambda manifest, body: analyze_issue_specification(manifest, body))
 
     def identity(self, issue_number: int, title: str, body: str) -> ValidationIdentity:
@@ -180,10 +187,14 @@ class SpecificationValidationLifecycle:
             if existing is not None:
                 return existing
             analyzed = self.analyzer(manifest, body)
-            decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings)
+            decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
             if analyzed.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
             return decision
+
+    def is_reissue_required(self, issue_number: int) -> bool:
+        """Return the durable authorization stop for this stable Issue number."""
+        return self.reissue_store.contains(issue_number)
 
     def apply_blocked(
         self,
@@ -212,6 +223,11 @@ class SpecificationValidationLifecycle:
             # not an operational failure: the old generation simply remains blocked.
             if matching_snapshot() is None:
                 return None
+            if current_decision.remediation == "REISSUE_REQUIRED":
+                try:
+                    self.reissue_store.mark(issue_number)
+                except OSError as exc:
+                    return f"durable reissue-required marker failed: {exc}"
             if not current_decision.findings_published:
                 marker = f"{FINDINGS_MARKER_PREFIX}:{current_decision.identity.key}"
                 comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
@@ -221,7 +237,7 @@ class SpecificationValidationLifecycle:
                     return None
                 if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
                     github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current_decision))  # type: ignore[attr-defined]
-                current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed)
+                current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed, current_decision.remediation)
                 self.store.save(current_decision)
             if matching_snapshot() is None:
                 return None
@@ -235,6 +251,7 @@ class SpecificationValidationLifecycle:
                 current_decision.findings,
                 current_decision.findings_published,
                 True,
+                current_decision.remediation,
             )
             self.store.save(current_decision)
         return None
@@ -260,6 +277,11 @@ class SpecificationValidationLifecycle:
 
             if not still_current():
                 return None
+            if current.remediation == "REISSUE_REQUIRED":
+                try:
+                    self.reissue_store.mark(issue_number)
+                except OSError as exc:
+                    return f"durable reissue-required marker failed: {exc}"
             if not current.findings_published:
                 marker = f"{FINDINGS_MARKER_PREFIX}:{current.identity.key}"
                 try:
@@ -278,20 +300,21 @@ class SpecificationValidationLifecycle:
                         except Exception as exc:
                             failures.append(f"findings publication failed: {exc}")
                     if published:
-                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed)
+                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation)
                         self.store.save(current)
             if not still_current():
                 return "; ".join(failures) or None
             try:
                 github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True))
+                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation))
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
 
     @staticmethod
     def findings_comment(decision: ValidationDecision) -> str:
-        lines = [f"<!-- {FINDINGS_MARKER_PREFIX}:{decision.identity.key} -->", "## Auto-Coder specification validation", "", "Implementation is blocked by material specification defects:"]
+        remedy = "Replace this Issue with a new Issue number; editing this Issue cannot restore implementation eligibility." if decision.remediation == "REISSUE_REQUIRED" else "Edit this Issue in place and resubmit it for validation."
+        lines = [f"<!-- {FINDINGS_MARKER_PREFIX}:{decision.identity.key} -->", "## Auto-Coder specification validation", "", "Implementation is blocked by material specification defects:", "", f"**Remediation:** {remedy}"]
         for finding in decision.findings:
             ids = ", ".join(finding.requirement_ids) or "contract-wide"
             lines.extend(["", f"- **{finding.category}** ({ids}): {finding.explanation}", f"  Clarification required: {finding.clarification}"])

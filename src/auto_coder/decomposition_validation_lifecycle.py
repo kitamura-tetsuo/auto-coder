@@ -20,10 +20,11 @@ from .decomposition_analyzer import (
     analyze_issue_decomposition,
 )
 from .prompt_loader import load_prompts
+from .reissue_required_store import ReissueRequiredStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v1"
+DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v2-remediation"
 DECOMPOSITION_FINDINGS_MARKER = "auto-coder-decomposition-validation"
 
 
@@ -54,6 +55,7 @@ class DecompositionDecision:
     findings: tuple[DecompositionFinding, ...] = ()
     findings_published: bool = False
     readiness_removed: bool = False
+    remediation: str = "NONE"
 
 
 def decomposition_policy_identity(provider_identity: str) -> str:
@@ -63,7 +65,7 @@ def decomposition_policy_identity(provider_identity: str) -> str:
         "version": DECOMPOSITION_SCHEMA_VERSION,
         "prompt": prompt,
         "categories": sorted(DECOMPOSITION_FINDING_CATEGORIES),
-        "result_fields": ["verdict", "findings", "category", "affected_issues", "issue_number", "requirement_ids", "explanation", "clarification"],
+        "result_fields": ["verdict", "remediation", "findings", "category", "affected_issues", "issue_number", "requirement_ids", "explanation", "clarification"],
         "provider": provider_identity,
     }
     return hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -117,7 +119,7 @@ class DecompositionValidationStore:
             for item in raw.get("findings", [])
             if isinstance(item, dict)
         )
-        return DecompositionDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")))
+        return DecompositionDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), str(raw.get("remediation", "NONE")))
 
     def save(self, decision: DecompositionDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -130,6 +132,7 @@ class DecompositionValidationStore:
                 "findings": [asdict(finding) for finding in decision.findings],
                 "findings_published": decision.findings_published,
                 "readiness_removed": decision.readiness_removed,
+                "remediation": decision.remediation,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -147,6 +150,8 @@ class DecompositionValidationLifecycle:
         self.repository = repository
         self.policy_identity = decomposition_policy_identity(provider_identity)
         self.store = DecompositionValidationStore(repository, path)
+        terminal_path = path.with_name("reissue_required.json") if path is not None else None
+        self.reissue_store = ReissueRequiredStore(repository, terminal_path)
         self.analyzer = analyzer or (lambda parent, children: analyze_issue_decomposition(parent, children))
 
     def identity(self, parent: dict[str, object], children: Sequence[dict[str, object]]) -> DecompositionIdentity:
@@ -170,10 +175,13 @@ class DecompositionValidationLifecycle:
             if existing is not None:
                 return existing
             analyzed = self.analyzer(parent, children)
-            decision = DecompositionDecision(identity, analyzed.verdict, analyzed.findings)
+            decision = DecompositionDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
             if decision.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
             return decision
+
+    def is_reissue_required(self, parent_number: int) -> bool:
+        return self.reissue_store.contains(parent_number)
 
     def apply_blocked(self, github: object, decision: DecompositionDecision, fetch_set: Callable[[int], Optional[tuple[dict[str, object], list[dict[str, object]]]]]) -> Optional[str]:
         with self.store.locked(decision.identity.key):
@@ -188,6 +196,11 @@ class DecompositionValidationLifecycle:
 
             if not still_current():
                 return None
+            if current.remediation == "REISSUE_REQUIRED":
+                try:
+                    self.reissue_store.mark(current.identity.parent.issue_number)
+                except OSError as exc:
+                    return f"durable reissue-required marker failed: {exc}"
             if not current.findings_published:
                 marker = f"{DECOMPOSITION_FINDINGS_MARKER}:{current.identity.key}"
                 try:
@@ -206,20 +219,21 @@ class DecompositionValidationLifecycle:
                         except Exception as exc:
                             failures.append(f"findings publication failed: {exc}")
                     if published:
-                        current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed)
+                        current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation)
                         self.store.save(current)
             if not still_current():
                 return "; ".join(failures) or None
             try:
                 github.remove_labels(self.repository, current.identity.parent.issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True))
+                self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation))
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
 
     @staticmethod
     def findings_comment(decision: DecompositionDecision) -> str:
-        lines = [f"<!-- {DECOMPOSITION_FINDINGS_MARKER}:{decision.identity.key} -->", "## Auto-Coder decomposition validation", "", "Implementation is blocked by defects in the submitted parent/child specification set:"]
+        remedy = "Replace this parent Issue and submitted set with a new parent Issue number." if decision.remediation == "REISSUE_REQUIRED" else "Edit the submitted Issue set in place and resubmit it for validation."
+        lines = [f"<!-- {DECOMPOSITION_FINDINGS_MARKER}:{decision.identity.key} -->", "## Auto-Coder decomposition validation", "", "Implementation is blocked by defects in the submitted parent/child specification set:", "", f"**Remediation:** {remedy}"]
         for finding in decision.findings:
             affected = ", ".join(f"#{item.issue_number} ({', '.join(item.requirement_ids) or 'contract-wide'})" for item in finding.affected_issues)
             lines.extend(["", f"- **{finding.category}** — {affected}: {finding.explanation}", f"  Clarification required: {finding.clarification}"])

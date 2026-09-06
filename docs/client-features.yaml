@@ -23,6 +23,19 @@ implementation-slot state is active or unreadable.
 
 This file documents the client-facing features and tools provided by auto-coder.
 
+## Durable reissue-required specification remediation
+
+Individual and parent/decomposition specification results carry a strict
+remediation disposition in addition to their unchanged semantic verdict.
+`READY` and `ERROR` use `NONE`; `BLOCKED` uses either `EDIT_IN_PLACE` or
+`REISSUE_REQUIRED`. A current `REISSUE_REQUIRED` decision is durably recorded
+against the stable repository/Issue number before GitHub side effects. The stop
+survives edits, relabeling, validation generations, and controller restarts, so
+that Issue (or parent set) cannot later authorize implementation. Stale or
+withdrawn submissions cannot create the marker. Child-level terminal results
+mark only the child and withdraw only its currently authoritative submitted
+parent, leaving the parent and siblings unmarked.
+
 ## Durable direct parent/child implementation exclusion
 
 Every production Issue implementation admission obtains cache-bypassing native

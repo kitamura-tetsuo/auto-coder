@@ -157,7 +157,7 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
         "auto_coder.cli_helpers.create_adversarial_validation_backend_manager",
         create_manager,
     )
-    ready = '{"verdict":"READY","findings":[]}'
+    ready = '{"verdict":"READY","remediation":"NONE","findings":[]}'
     monkeypatch.setattr("auto_coder.specification_analyzer.run_llm_prompt", lambda *_args, **_kwargs: ready)
     monkeypatch.setattr("auto_coder.decomposition_analyzer.run_llm_prompt", lambda *_args, **_kwargs: ready)
     from auto_coder.specification_analyzer import analyze_issue_specification

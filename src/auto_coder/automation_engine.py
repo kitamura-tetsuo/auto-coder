@@ -2244,6 +2244,15 @@ class AutomationEngine:
                     result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
                     return result
                 decomposition_validator = self._get_decomposition_validator(repo_name)
+                individual_validator = self._get_specification_validator(repo_name)
+                if decomposition_validator.is_reissue_required(inherited_parent_number or 0) is True:
+                    result.error = "Parent specification set requires a replacement Issue number"
+                    result.actions = ["Rejected - parent set is durably reissue-required"]
+                    return result
+                if individual_validator.is_reissue_required(item_number) is True:
+                    result.error = "Child specification requires a replacement Issue number"
+                    result.actions = ["Rejected - child is durably reissue-required"]
+                    return result
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
                 decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_decision.verdict == "ERROR":
@@ -2308,6 +2317,10 @@ class AutomationEngine:
             # body, repository, Issue and validator policy. It deliberately runs
             # before implementation ownership/capacity is consulted.
             validator = self._get_specification_validator(repo_name)
+            if validator.is_reissue_required(item_number) is True:
+                result.error = "Specification requires a replacement Issue number"
+                result.actions = ["Rejected - Issue is durably reissue-required"]
+                return result
             if inherited_ready:
                 # This job was submitted alongside decomposition validation, so
                 # READY completion order cannot bypass either authorization gate.
@@ -2364,6 +2377,8 @@ class AutomationEngine:
                 str(dispatch_snapshot.get("body") or ""),
             )
             submission_current = self._is_open_issue(dispatch_snapshot) and is_implementation_ready(dispatch_snapshot)
+            if validator.is_reissue_required(item_number) is True:
+                submission_current = False
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 submission_current = (

@@ -46,6 +46,35 @@ def test_error_is_not_persisted_and_is_retried(tmp_path):
     assert calls.call_count == 2
 
 
+def test_current_reissue_required_is_durable_idempotent_and_survives_restart(tmp_path):
+    analysis = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="REISSUE_REQUIRED")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=analysis))
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    decision = gate.decide(manifest, "Title", BODY)
+    github = GitHubFlow([snapshot()] * 12)
+
+    assert gate.apply_blocked(github, decision) is None
+    assert gate.apply_blocked(github, decision) is None
+    assert gate.is_reissue_required(1728)
+    assert len(github.comments) == 1
+    assert github.removals == 2
+    restarted = SpecificationValidationLifecycle("owner/repo", "provider/model-a", tmp_path / "decisions.json")
+    assert restarted.is_reissue_required(1728)
+
+
+def test_stale_reissue_required_does_not_mark_subject(tmp_path):
+    analysis = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="REISSUE_REQUIRED")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=analysis))
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    decision = gate.decide(manifest, "Title", BODY)
+    github = GitHubFlow([snapshot(body=BODY + "\nEdited")])
+
+    assert gate.apply_blocked(github, decision) is None
+    assert not gate.is_reissue_required(1728)
+    assert github.comments == []
+    assert github.removals == 0
+
+
 def test_concurrent_paths_coalesce_semantic_validation(tmp_path):
     barrier = Barrier(2)
     calls = 0

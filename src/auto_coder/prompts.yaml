@@ -949,8 +949,8 @@ issue:
     Return BLOCKED only for a demonstrated material defect, using exactly one category per finding: missing_requirement_ownership, cross_issue_contradiction, unstated_cross_issue_dependency, boundary_semantics_conflict, or decomposition_false_success. A missing ownership finding applies when a parent Requirement has no explicit normative child ownership and the parent will not be independently implemented. False success means all children may meet their own Requirements while an explicit parent Requirement can still fail. Identify every affected supplied Issue, and list exact REQ IDs when the defect maps to them. Explain the smallest contract clarification needed. ERROR is never READY or BLOCKED.
 
     Output exactly one JSON object and no other text:
-    {"verdict":"READY|BLOCKED|ERROR","findings":[{"category":"one allowed category","affected_issues":[{"issue_number":123,"requirement_ids":["REQ-001"]}],"explanation":"demonstrated material cross-Issue defect","clarification":"smallest specification clarification"}]}
-    READY and ERROR require no findings. BLOCKED requires at least one finding. Never reference an Issue outside the supplied membership or a Requirement ID outside that Issue's manifest.
+    {"verdict":"READY|BLOCKED|ERROR","remediation":"NONE|EDIT_IN_PLACE|REISSUE_REQUIRED","findings":[{"category":"one allowed category","affected_issues":[{"issue_number":123,"requirement_ids":["REQ-001"]}],"explanation":"demonstrated material cross-Issue defect","clarification":"smallest specification clarification"}]}
+    READY and ERROR require remediation NONE and no findings. BLOCKED requires at least one finding and exactly one remediation: EDIT_IN_PLACE when the smallest correct remedy preserves the reviewed parent/direct-child responsibility boundaries, or REISSUE_REQUIRED when it requires replacing that reviewed set. Never reference an Issue outside the supplied membership or a Requirement ID outside that Issue's manifest.
 
     Parent independently implemented: $parent_implemented_independently
 
@@ -972,8 +972,8 @@ issue:
     For false_success_gap, identify a plausible materially incorrect implementation or observable outcome accepted or left indistinguishable by the written manifest, and explain the missing normative boundary without using presumed intent. Every finding must explain the correctness gap and smallest clarification. Include exact affected manifest REQ IDs when the defect maps to an existing Requirement; otherwise use an empty list. ERROR means you cannot produce a trustworthy verdict and must never be used as a fallback policy verdict.
 
     Output exactly one JSON object, with no Markdown or prose, using exactly this schema:
-    {"verdict":"READY|BLOCKED|ERROR","findings":[{"category":"one allowed category","requirement_ids":["REQ-001"],"explanation":"material correctness gap","clarification":"smallest clarification needed","counterexample":"required for false_success_gap, otherwise empty","missing_normative_boundary":"required for false_success_gap, otherwise empty"}]}
-    READY and ERROR require an empty findings list. BLOCKED requires at least one finding.
+    {"verdict":"READY|BLOCKED|ERROR","remediation":"NONE|EDIT_IN_PLACE|REISSUE_REQUIRED","findings":[{"category":"one allowed category","requirement_ids":["REQ-001"],"explanation":"material correctness gap","clarification":"smallest clarification needed","counterexample":"required for false_success_gap, otherwise empty","missing_normative_boundary":"required for false_success_gap, otherwise empty"}]}
+    READY and ERROR require remediation NONE and an empty findings list. BLOCKED requires at least one finding and exactly one remediation: EDIT_IN_PLACE when the smallest correct remedy preserves this Issue's fundamental implementation responsibility, or REISSUE_REQUIRED when it requires replacing the reviewed Issue.
 
     Issue title (non-normative evidence): $issue_title
 
