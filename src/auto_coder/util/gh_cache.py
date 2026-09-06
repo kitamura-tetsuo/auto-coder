@@ -2269,6 +2269,33 @@ class GitHubClient:
         return sorted(set(children))
 
     @retry_with_backoff()
+    def get_all_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[int]:
+        """Return the exact current direct-child membership without caches."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues?per_page=100"
+        children: List[int] = []
+        with httpx.Client() as client:
+            while url:
+                response = client.get(url, headers=headers, timeout=30)
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise RuntimeError("GitHub sub-issues response was not a list")
+                for child in page:
+                    number = child.get("number") if isinstance(child, dict) else None
+                    if not isinstance(number, int) or isinstance(number, bool):
+                        raise RuntimeError("GitHub sub-issues response contained an invalid Issue")
+                    if number != issue_number:
+                        children.append(number)
+                url = response.links.get("next", {}).get("url")
+        if len(children) != len(set(children)):
+            raise RuntimeError("GitHub sub-issues response contained duplicate membership")
+        return sorted(children)
+
+    @retry_with_backoff()
     def get_parent_issue_number_strict(self, repo_name: str, issue_number: int) -> Optional[int]:
         """Return the current native parent identity without cached evidence."""
         owner, repo = repo_name.split("/")

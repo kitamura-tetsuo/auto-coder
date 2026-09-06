@@ -16,6 +16,7 @@ import httpx
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
+from .decomposition_analyzer import DecompositionIssue
 from .deployment_channel import repository_dispatch_authority
 from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
 from .exceptions import AutoCoderRetryableBackendError
@@ -38,7 +39,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
-from .specification_validation_lifecycle import SpecificationValidationLifecycle, configured_provider_identity
+from .specification_validation_lifecycle import DecompositionValidationLifecycle, SpecificationValidationLifecycle, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -86,6 +87,7 @@ class AutomationEngine:
         self._pr_merged_or_closed: bool = False
         self.implementation_slots: Optional[ImplementationSlotRepository] = None
         self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
+        self._decomposition_validators: Dict[str, DecompositionValidationLifecycle] = {}
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -187,6 +189,13 @@ class AutomationEngine:
         if validator is None:
             validator = SpecificationValidationLifecycle(repo_name, configured_provider_identity())
             self._specification_validators[repo_name] = validator
+        return validator
+
+    def _get_decomposition_validator(self, repo_name: str) -> DecompositionValidationLifecycle:
+        validator = self._decomposition_validators.get(repo_name)
+        if validator is None:
+            validator = DecompositionValidationLifecycle(repo_name, configured_provider_identity())
+            self._decomposition_validators[repo_name] = validator
         return validator
 
     def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1431,7 +1440,37 @@ class AutomationEngine:
             # allow a subsequently removed readiness label to start work. Keep
             # this before slot resolution and every implementation ownership side
             # effect; explicit/forced processing therefore cannot bypass it.
-            if not self._is_open_issue(current_issue) or not is_implementation_ready(current_issue):
+            # A direct child inherits only the parent's readiness submission,
+            # never its normative Requirements. Establish that relationship
+            # authoritatively before interpreting a missing child label.
+            parent_number: Optional[int] = None
+            parent_snapshot: Optional[Dict[str, Any]] = None
+            decomposition_validator: Optional[DecompositionValidationLifecycle] = None
+            decomposition_decision = None
+            decomposition_parent: Optional[DecompositionIssue] = None
+            decomposition_children: tuple[DecompositionIssue, ...] = ()
+            try:
+                if isinstance(self.github, GitHubClient):
+                    parent_number = self.github.get_parent_issue_number_strict(repo_name, item_number)
+                else:
+                    lookup_parent = getattr(self.github, "get_parent_issue_number_strict", None)
+                    parent_number = lookup_parent(repo_name, item_number) if callable(lookup_parent) else current_issue.get("parent_issue_number")
+                if parent_number is None:
+                    parent_number = parse_parent_issue_number(str(current_issue.get("body") or ""), current_issue_number=item_number)
+                if isinstance(parent_number, int):
+                    parent_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+                    if not isinstance(parent_snapshot, dict) or parent_snapshot.get("number") != parent_number:
+                        # Lightweight adapters predating parent-set submission do
+                        # not provide an authoritative parent snapshot. They retain
+                        # standalone behavior; the production GitHub client fails
+                        # closed through its strict API.
+                        parent_snapshot = None
+            except Exception as exc:
+                result.error = f"Cannot establish readiness submission hierarchy: {exc}"
+                result.refill_retry_required = True
+                return result
+            submitted = is_implementation_ready(parent_snapshot) if parent_snapshot is not None else is_implementation_ready(current_issue)
+            if not self._is_open_issue(current_issue) or not submitted:
                 logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
                 result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
@@ -1466,6 +1505,53 @@ class AutomationEngine:
                 result.error = contract.error
                 return result
 
+            if parent_snapshot is not None and isinstance(parent_number, int):
+                try:
+                    child_lookup = getattr(self.github, "get_all_sub_issues_strict", None)
+                    child_numbers = child_lookup(repo_name, parent_number) if callable(child_lookup) else self.github.get_all_sub_issues(repo_name, parent_number)
+                    if item_number not in child_numbers:
+                        result.actions = ["Skipped - submitted parent/child membership changed"]
+                        return result
+                    parent_title = str(parent_snapshot.get("title") or "")
+                    parent_body = str(parent_snapshot.get("body") or "")
+                    parent_manifest = build_normative_issue_manifest(parent_number, parent_title, parent_body)
+                    if parent_manifest.error:
+                        result.error = f"Parent requirement contract is invalid: {parent_manifest.error}"
+                        return result
+                    decomposition_parent = DecompositionIssue(parent_manifest, parent_body)
+                    child_values = []
+                    for child_number in child_numbers:
+                        child_snapshot = current_issue if child_number == item_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, child_number)
+                        child_title = str(child_snapshot.get("title") or "")
+                        child_body = str(child_snapshot.get("body") or "")
+                        child_manifest = build_normative_issue_manifest(child_number, child_title, child_body)
+                        if child_manifest.error:
+                            result.error = f"Child #{child_number} requirement contract is invalid: {child_manifest.error}"
+                            return result
+                        child_values.append(DecompositionIssue(child_manifest, child_body))
+                    decomposition_children = tuple(child_values)
+                    decomposition_validator = self._get_decomposition_validator(repo_name)
+                    decomposition_decision = decomposition_validator.decide(decomposition_parent, decomposition_children)
+                except Exception as exc:
+                    result.error = f"Decomposition validation failed: {exc}"
+                    result.refill_retry_required = True
+                    return result
+                if decomposition_decision.verdict == "ERROR":
+                    result.error = "Decomposition validation failed; parent readiness was preserved for retry"
+                    result.actions = ["Deferred - decomposition validation error"]
+                    result.refill_retry_required = True
+                    return result
+                if decomposition_decision.verdict == "BLOCKED":
+                    # The parent is the readiness submission for the complete set.
+                    # Withdraw it only after confirming it is still the same live set.
+                    refreshed_parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+                    refreshed_children = child_lookup(repo_name, parent_number) if callable(child_lookup) else self.github.get_all_sub_issues(repo_name, parent_number)
+                    if is_implementation_ready(refreshed_parent) and refreshed_children == child_numbers:
+                        self.github.remove_labels(repo_name, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")
+                    result.error = "Decomposition validation found material defects"
+                    result.actions = ["Rejected - blocked decomposition"]
+                    return result
+
             # Semantic readiness is a durable authorization for this exact title,
             # body, repository, Issue and validator policy. It deliberately runs
             # before implementation ownership/capacity is consulted.
@@ -1477,6 +1563,19 @@ class AutomationEngine:
                 result.refill_retry_required = True
                 return result
             if decision.verdict == "BLOCKED":
+                if parent_snapshot is not None and isinstance(parent_number, int):
+                    try:
+                        live_child = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                        live_parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+                        if validator.identity(item_number, str(live_child.get("title") or ""), str(live_child.get("body") or "")) == decision.identity and is_implementation_ready(live_parent):
+                            self.github.remove_labels(repo_name, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")
+                    except Exception as exc:
+                        result.error = f"Specification is blocked; parent readiness withdrawal failed: {exc}"
+                        result.actions = ["Rejected - blocked specification (side effects incomplete)"]
+                        return result
+                    result.error = "Specification validation found material defects"
+                    result.actions = ["Rejected - blocked specification"]
+                    return result
                 try:
                     side_effect_error = validator.apply_blocked(self.github, decision)
                 except Exception as exc:
@@ -1504,7 +1603,23 @@ class AutomationEngine:
                 str(dispatch_snapshot.get("title") or ""),
                 str(dispatch_snapshot.get("body") or ""),
             )
-            if not self._is_open_issue(dispatch_snapshot) or not is_implementation_ready(dispatch_snapshot) or dispatch_identity != decision.identity:
+            readiness_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number) if isinstance(parent_number, int) else dispatch_snapshot
+            decomposition_current = True
+            if decomposition_validator is not None and decomposition_parent is not None and decomposition_decision is not None and isinstance(parent_number, int):
+                try:
+                    current_numbers = child_lookup(repo_name, parent_number) if callable(child_lookup) else self.github.get_all_sub_issues(repo_name, parent_number)
+                    current_parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+                    current_children = []
+                    for child_number in current_numbers:
+                        value = dispatch_snapshot if child_number == item_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, child_number)
+                        body = str(value.get("body") or "")
+                        current_children.append(DecompositionIssue(build_normative_issue_manifest(child_number, str(value.get("title") or ""), body), body))
+                    parent_body = str(current_parent.get("body") or "")
+                    current_parent_issue = DecompositionIssue(build_normative_issue_manifest(parent_number, str(current_parent.get("title") or ""), parent_body), parent_body)
+                    decomposition_current = decomposition_validator.identity(current_parent_issue, tuple(current_children)) == decomposition_decision.identity
+                except Exception:
+                    decomposition_current = False
+            if not self._is_open_issue(dispatch_snapshot) or not is_implementation_ready(readiness_snapshot) or dispatch_identity != decision.identity or not decomposition_current:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
@@ -1549,7 +1664,26 @@ class AutomationEngine:
             if candidate.type != "issue":
                 return True
             latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-            return isinstance(latest, dict) and self._is_open_issue(latest) and is_implementation_ready(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
+            readiness = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number) if isinstance(parent_number, int) else latest
+            if not (isinstance(latest, dict) and self._is_open_issue(latest) and is_implementation_ready(readiness)):
+                return False
+            if validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) != decision.identity:
+                return False
+            if decomposition_validator is None or decomposition_decision is None or not isinstance(parent_number, int):
+                return True
+            numbers = child_lookup(repo_name, parent_number) if callable(child_lookup) else self.github.get_all_sub_issues(repo_name, parent_number)
+            parent_value = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+            parent_body = str(parent_value.get("body") or "")
+            parent_issue = DecompositionIssue(
+                build_normative_issue_manifest(parent_number, str(parent_value.get("title") or ""), parent_body),
+                parent_body,
+            )
+            children = []
+            for number in numbers:
+                value = latest if number == item_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                body = str(value.get("body") or "")
+                children.append(DecompositionIssue(build_normative_issue_manifest(number, str(value.get("title") or ""), body), body))
+            return decomposition_validator.identity(parent_issue, tuple(children)) == decomposition_decision.identity
 
         # Try to reuse an existing owner before reconciliation.  In particular,
         # this atomically records a newly discovered branch-linked PR while its
