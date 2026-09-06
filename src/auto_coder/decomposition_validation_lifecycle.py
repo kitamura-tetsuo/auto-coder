@@ -174,6 +174,7 @@ class DecompositionValidationLifecycle:
 
     def apply_blocked(self, github: object, decision: DecompositionDecision, fetch_set: Callable[[int], Optional[tuple[dict[str, object], list[dict[str, object]]]]]) -> Optional[str]:
         with self.store.locked(decision.identity.key):
+            failures: list[str] = []
             current = self.store.get(decision.identity)
             if current is None or current.verdict != "BLOCKED":
                 return "durable decomposition BLOCKED decision is unavailable"
@@ -186,18 +187,32 @@ class DecompositionValidationLifecycle:
                 return None
             if not current.findings_published:
                 marker = f"{DECOMPOSITION_FINDINGS_MARKER}:{current.identity.key}"
-                comments = github.get_issue_comments_strict(self.repository, current.identity.parent.issue_number)  # type: ignore[attr-defined]
+                try:
+                    comments = github.get_issue_comments_strict(self.repository, current.identity.parent.issue_number)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    failures.append(f"findings lookup failed: {exc}")
+                    comments = None
                 if not still_current():
-                    return None
-                if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
-                    github.add_comment_to_issue(self.repository, current.identity.parent.issue_number, self.findings_comment(current))  # type: ignore[attr-defined]
-                current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed)
-                self.store.save(current)
+                    return "; ".join(failures) or None
+                if comments is not None:
+                    published = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
+                    if not published:
+                        try:
+                            github.add_comment_to_issue(self.repository, current.identity.parent.issue_number, self.findings_comment(current))  # type: ignore[attr-defined]
+                            published = True
+                        except Exception as exc:
+                            failures.append(f"findings publication failed: {exc}")
+                    if published:
+                        current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed)
+                        self.store.save(current)
             if not still_current():
-                return None
-            github.remove_labels(self.repository, current.identity.parent.issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-            self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True))
-        return None
+                return "; ".join(failures) or None
+            try:
+                github.remove_labels(self.repository, current.identity.parent.issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
+                self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True))
+            except Exception as exc:
+                failures.append(f"readiness withdrawal failed: {exc}")
+        return "; ".join(failures) or None
 
     @staticmethod
     def findings_comment(decision: DecompositionDecision) -> str:

@@ -1152,6 +1152,7 @@ class GitHubClient:
             updated_at = updated_at.isoformat()
 
         return {
+            "id": get(issue, "id"),
             "number": get(issue, "number"),
             "title": get(issue, "title"),
             "body": get(issue, "body") or "",
@@ -1164,6 +1165,10 @@ class GitHubClient:
             "author": get(user, "login") if user else None,
             "author_id": get(user, "id") if user else None,
             "comments_count": get(issue, "comments"),
+            "sub_issues_summary": get(issue, "sub_issues_summary"),
+            "has_open_sub_issues": bool(get(issue, "has_open_sub_issues", False)),
+            "open_sub_issue_numbers": list(get(issue, "open_sub_issue_numbers") or []),
+            "parent_issue_number": get(issue, "parent_issue_number"),
         }
 
     def get_pr_details(self, pr: Any) -> Dict[str, Any]:

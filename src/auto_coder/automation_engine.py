@@ -1379,7 +1379,10 @@ class AutomationEngine:
             decomposition_validator: Optional[DecompositionValidationLifecycle] = None
             authoritative_set: Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
             independently_ready = is_implementation_ready(current_issue)
-            if not independently_ready:
+            # A normalized native-parent hint makes the set authoritative even
+            # when the child also has its own readiness label. This prevents an
+            # independently labeled child from bypassing a current set BLOCKED.
+            if not independently_ready or isinstance(candidate.data.get("parent_issue_number"), int):
                 try:
                     parent_reader = getattr(self.github, "get_parent_issue_details_strict", None)
                     parent_details = parent_reader(repo_name, item_number) if callable(parent_reader) else None
@@ -1410,7 +1413,7 @@ class AutomationEngine:
                 result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
 
-            if inherited_ready and not independently_ready:
+            if inherited_ready:
                 assert authoritative_set is not None
                 parent_snapshot, child_snapshots = authoritative_set
                 decomposition_validator = self._get_decomposition_validator(repo_name)
@@ -1445,6 +1448,10 @@ class AutomationEngine:
                     result.actions = ["Rejected - blocked parent/child decomposition"]
                     if side_effect_error:
                         result.error += f"; GitHub side effect failed: {side_effect_error}"
+                    return result
+                open_predecessors = sorted(int(child["number"]) for child in child_snapshots if child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number)
+                if open_predecessors:
+                    result.actions = [f"Deferred - earlier sibling(s) remain open: {open_predecessors}"]
                     return result
 
             current_body = str(current_issue.get("body") or "")

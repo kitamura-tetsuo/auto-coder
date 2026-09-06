@@ -322,6 +322,7 @@ class TestGitHubClient:
         result = client.get_issue_details(mock_issue)
 
         expected = {
+            "id": None,
             "number": 123,
             "title": "Test Issue",
             "body": "Test body",
@@ -334,6 +335,10 @@ class TestGitHubClient:
             "author": "author",
             "author_id": None,
             "comments_count": 5,
+            "sub_issues_summary": None,
+            "has_open_sub_issues": False,
+            "open_sub_issue_numbers": [],
+            "parent_issue_number": None,
         }
         assert result == expected
 
