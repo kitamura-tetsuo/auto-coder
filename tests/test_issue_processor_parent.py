@@ -68,7 +68,6 @@ class TestParentIssueProcessing:
                 config,
                 github_client,
                 backend_manager=None,
-                check_labels=None,
             )
             assert "Processed parent issue verification" in result
 

@@ -127,19 +127,18 @@ def test_production_dispatch_rejects_closed_ready_issue_before_slot(tmp_path):
     assert engine.implementation_slots.active_owners() == ()
 
 
-def test_processing_label_rejection_releases_newly_admitted_owner(tmp_path):
+def test_processing_label_does_not_change_durable_admission(tmp_path):
     labeled = snapshot()
     labeled["labels"].append("@auto-coder")
     github = GitHubFlow([labeled, labeled, labeled])
     engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
-    engine.config.CHECK_LABELS = True
     candidate.data["labels"] = labeled["labels"]
 
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-    assert result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]
-    engine._process_single_candidate_reserved.assert_not_called()
-    assert engine.implementation_slots.active_owners() == ()
+    assert result.actions == ["dispatched"]
+    engine._process_single_candidate_reserved.assert_called_once()
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 1728),)
 
 
 def test_pre_admission_authoritative_failure_requests_refill_retry(tmp_path):

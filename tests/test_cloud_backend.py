@@ -270,7 +270,7 @@ backend_type = "codex-cloud"
             10,
             "I started a Codex Cloud task to work on this issue. Task ID: task_e_123\n\n" "https://chatgpt.com/codex/tasks/task_e_123",
         )
-        github_client.add_labels.assert_called_once_with("owner/repo", 10, ["@auto-coder"])
+        github_client.add_labels.assert_not_called()
         label_context.keep_label.assert_called_once_with()
         assert actions == ["Started Codex Cloud task 'task_e_123' for issue #10"]
 

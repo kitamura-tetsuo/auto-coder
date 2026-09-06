@@ -625,7 +625,6 @@ class TestParentIssueHighScoreCloudBackend:
             config,
             github_client,
             backend_manager=mock_backend_mgr,
-            check_labels=None,
         )
         assert result == ["Applied actions"]
 

@@ -48,7 +48,6 @@ def test_work_pr_is_closed_and_existing_task_reissues_without_local_processing(
         patch("auto_coder.pr_processor._close_empty_pr") as empty_check,
         patch("auto_coder.pr_processor._process_pr_for_fixes") as normal_processing,
         patch("auto_coder.pr_processor.increment_attempt") as increment,
-        patch("auto_coder.pr_processor._release_issue_processing_label") as release_label,
     ):
         result = process_pull_request(github_client, config, "owner/repo", pr_data)
 
@@ -62,26 +61,24 @@ def test_work_pr_is_closed_and_existing_task_reissues_without_local_processing(
     empty_check.assert_not_called()
     normal_processing.assert_not_called()
     increment.assert_not_called()
-    release_label.assert_not_called()
     assert result.priority == "close"
     assert any("in-flight Codex Cloud reissue flow" in action for action in result.actions_taken)
 
 
-def test_failed_reissue_delivery_releases_issue_to_retry_policy(
+def test_failed_reissue_delivery_advances_issue_retry_policy_without_label_release(
     config: AutomationConfig,
     github_client: MagicMock,
 ) -> None:
     with (
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=False),
         patch("auto_coder.pr_processor.increment_attempt", return_value=4) as increment,
-        patch("auto_coder.pr_processor._release_issue_processing_label", return_value=True) as release_label,
     ):
         result = process_pull_request(github_client, config, "owner/repo", codex_pr())
 
     increment.assert_called_once_with("owner/repo", 161)
-    release_label.assert_called_once_with(github_client, "owner/repo", 161, config)
     assert "Incremented attempt for issue #161 to 4" in result.actions_taken
-    assert "Removed @auto-coder label from issue #161" in result.actions_taken
+    assert all("@auto-coder" not in action for action in result.actions_taken)
+    github_client.remove_labels.assert_not_called()
 
 
 def test_task_specific_codex_branch_and_non_codex_work_branch_are_not_rejected(
@@ -123,7 +120,6 @@ def test_automation_engine_rejects_work_pr_before_label_and_in_progress_ci_gates
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as followup,
         patch("auto_coder.automation_engine.LabelManager") as label_gate,
         patch("auto_coder.pr_processor.increment_attempt") as increment,
-        patch("auto_coder.pr_processor._release_issue_processing_label") as release_label,
     ):
         candidates = engine._get_candidates("owner/repo")
 
@@ -134,7 +130,6 @@ def test_automation_engine_rejects_work_pr_before_label_and_in_progress_ci_gates
     label_gate.assert_not_called()
     ci_gate.assert_not_called()
     increment.assert_not_called()
-    release_label.assert_not_called()
 
 
 def test_lower_merge_boundary_rejects_unsafe_work_before_all_processing_side_effects(

@@ -141,13 +141,11 @@ class TestCloseEmptyPR:
     """Tests for _close_empty_pr."""
 
     @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_closes_empty_pr_and_increments_attempt(self, mock_increment, mock_release_label, mock_remove_sessions):
+    def test_closes_empty_pr_and_increments_attempt(self, mock_increment, mock_remove_sessions):
         github_client = Mock()
         github_client.get_issue.return_value = {"state": "open", "number": 4800}
         mock_increment.return_value = 2
-        mock_release_label.return_value = True
         config = AutomationConfig()
 
         pr_data = _empty_pr_data_with_commits()
@@ -163,16 +161,13 @@ class TestCloseEmptyPR:
         assert "no effective diff" in close_args[2]
 
         mock_increment.assert_called_once_with("owner/repo", 4800)
-        mock_release_label.assert_called_once_with(github_client, "owner/repo", 4800, config)
         github_client.reopen_issue.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_reopens_closed_source_issue(self, mock_increment, mock_release_label):
+    def test_reopens_closed_source_issue(self, mock_increment):
         github_client = Mock()
         github_client.get_issue.return_value = {"state": "closed", "number": 4800}
         mock_increment.return_value = 2
-        mock_release_label.return_value = True
         config = AutomationConfig()
 
         pr_data = _empty_pr_data_with_commits()
@@ -229,9 +224,8 @@ class TestCloseEmptyPRCloudRunAware:
         }
 
     @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_codex_cloud_empty_pr_does_not_increment_attempt(self, mock_increment, mock_release_label, mock_remove_sessions, tmp_path, monkeypatch):
+    def test_codex_cloud_empty_pr_does_not_increment_attempt(self, mock_increment, mock_remove_sessions, tmp_path, monkeypatch):
         """AC-001: closing a Codex Cloud task's only (empty) PR leaves the Issue attempt unchanged."""
         monkeypatch.setenv("HOME", str(tmp_path))
         CloudRunRepository("owner/repo").save(CloudRun(repo_name="owner/repo", issue_number=100, attempt=0, provider="codex-cloud", task_id="task-A"))
@@ -247,16 +241,14 @@ class TestCloseEmptyPRCloudRunAware:
         assert result.issue_numbers == []
         github_client.close_pr.assert_called_once()
         mock_increment.assert_not_called()
-        mock_release_label.assert_not_called()
         assert any("Preserved issue #100" in a for a in result.actions)
 
         run = CloudRunRepository("owner/repo").get(issue_number=100, attempt=0)
         assert run.pull_request_numbers == [200]
 
     @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_codex_cloud_empty_pr_preserves_other_pr_associations(self, mock_increment, mock_release_label, mock_remove_sessions, tmp_path, monkeypatch):
+    def test_codex_cloud_empty_pr_preserves_other_pr_associations(self, mock_increment, mock_remove_sessions, tmp_path, monkeypatch):
         """AC-002, AC-003: an empty PR closing does not disturb another PR already associated with the run."""
         monkeypatch.setenv("HOME", str(tmp_path))
         repo = CloudRunRepository("owner/repo")
@@ -279,9 +271,8 @@ class TestCloseEmptyPRCloudRunAware:
         assert set(updated_run.pull_request_numbers) == {200, 201, 202}
 
     @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_codex_cloud_empty_pr_leaves_run_recoverable(self, mock_increment, mock_release_label, mock_remove_sessions, tmp_path, monkeypatch):
+    def test_codex_cloud_empty_pr_leaves_run_recoverable(self, mock_increment, mock_remove_sessions, tmp_path, monkeypatch):
         """AC-004: after closing the only known PR, the CloudRun still exists and is unmodified in attempt terms."""
         monkeypatch.setenv("HOME", str(tmp_path))
         CloudRunRepository("owner/repo").save(CloudRun(repo_name="owner/repo", issue_number=100, attempt=0, provider="codex-cloud", task_id="task-A"))
@@ -299,13 +290,11 @@ class TestCloseEmptyPRCloudRunAware:
         assert run.task_id == "task-A"
 
     @patch("src.auto_coder.pr_processor._remove_reviewer_sessions_for_closed_pr")
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_jules_empty_pr_still_increments_attempt(self, mock_increment, mock_release_label, mock_remove_sessions, tmp_path, monkeypatch):
+    def test_jules_empty_pr_still_increments_attempt(self, mock_increment, mock_remove_sessions, tmp_path, monkeypatch):
         """AC-005: an Issue with no persisted CloudRun keeps the pre-existing (Jules) behavior."""
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_increment.return_value = 2
-        mock_release_label.return_value = True
 
         github_client = Mock()
         github_client.get_issue.return_value = {"state": "open", "number": 4800}
@@ -318,19 +307,16 @@ class TestCloseEmptyPRCloudRunAware:
         assert result.closed is True
         assert result.issue_numbers == [4800]
         mock_increment.assert_called_once_with("owner/repo", 4800)
-        mock_release_label.assert_called_once_with(github_client, "owner/repo", 4800, config)
 
 
 class TestProcessPullRequestEmptyDiff:
     """Tests for process_pull_request with empty PRs."""
 
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_process_pull_request_closes_empty_pr(self, mock_increment, mock_release_label):
+    def test_process_pull_request_closes_empty_pr(self, mock_increment):
         github_client = Mock()
         github_client.get_issue.return_value = {"state": "open", "number": 4800}
         mock_increment.return_value = 2
-        mock_release_label.return_value = True
         config = AutomationConfig()
 
         pr_data = _empty_pr_data_with_commits()
@@ -345,11 +331,9 @@ class TestAutomationEngineEmptyPRRequeue:
     """Tests for AutomationEngine candidate collection and single candidate empty PR handling."""
 
     @patch("src.auto_coder.util.github_action.preload_github_actions_status")
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_get_candidates_closes_empty_pr_and_queues_issue(self, mock_increment, mock_release_label, mock_preload):
+    def test_get_candidates_closes_empty_pr_and_queues_issue(self, mock_increment, mock_preload):
         mock_increment.return_value = 2
-        mock_release_label.return_value = True
 
         mock_github = Mock()
         config = AutomationConfig()
@@ -374,11 +358,9 @@ class TestAutomationEngineEmptyPRRequeue:
             assert mock_cand.priority == 3
             assert mock_cand in candidates
 
-    @patch("src.auto_coder.pr_processor._release_issue_processing_label")
     @patch("src.auto_coder.pr_processor.increment_attempt")
-    def test_process_single_candidate_closes_empty_pr_and_runs_unlocked_issue(self, mock_increment, mock_release_label):
+    def test_process_single_candidate_closes_empty_pr_and_runs_unlocked_issue(self, mock_increment):
         mock_increment.return_value = 2
-        mock_release_label.return_value = True
 
         mock_github = Mock()
         config = AutomationConfig()
