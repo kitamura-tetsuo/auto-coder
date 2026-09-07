@@ -2047,7 +2047,7 @@ class AutomationEngine:
                     # Validation eligibility belongs to the submitted generation,
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
-                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config=config)
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config)
                     parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
@@ -2271,7 +2271,7 @@ class AutomationEngine:
                     result.error = "Child specification requires a replacement Issue number"
                     result.actions = ["Rejected - child is durably reissue-required"]
                     return result
-                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config=config)
+                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config)
                 decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_decision.verdict == "ERROR":
                     result.error = "Decomposition validation failed; parent readiness was preserved for retry"
