@@ -995,6 +995,25 @@ issue:
       Prior applied material decomposition-review outcomes (non-normative; remediation evidence only):
       $prior_applied_decomposition_outcomes
 
+      FINAL EVIDENCE-BOUND DECISION (apply this after reading the supplied values):
+      1. Enumerate only observable outcomes stated by a current Requirement or an
+         intact fixed Objective. Do not add a generic quality attribute or lifecycle.
+      2. For each possible finding, identify an execution that the current child
+         Requirements permit. If the coordinated parent and child Requirements
+         already prohibit that execution, discard the finding rather than asking
+         for a duplicate guarantee.
+      3. A producer's no-apply/no-write constraint and a consumer's obligation to
+         present exactly the returned value are jointly sufficient for a parent's
+         preview-without-application outcome. Loading the stored input is part of
+         producing that projection, not persistence-service ownership. Narrower
+         child Objectives do not conflict with either constraint.
+      4. Consequently, such an explicit safe producer/consumer composition is
+         READY with NONE and no findings. A composition whose producer is instead
+         permitted or required to apply the draft is BLOCKED with an
+         objective_conflict quoting the parent's fixed no-application Objective;
+         when no Requirement states that missing negative boundary, reference the
+         parent with an empty Requirement list.
+
   adversarial_specification_analysis: |-
     Evaluate whether Issue #$issue_number is a precise, independent implementation and verification contract.
 
