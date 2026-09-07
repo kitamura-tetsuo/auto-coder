@@ -416,25 +416,23 @@ def test_refill_inherited_validation_error_joins_running_child(monkeypatch, tmp_
     asyncio.run(scenario())
 
 
-def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp_path):
+def test_producer_returns_at_update_check_drain_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
     entered = threading.Event()
     release = threading.Event()
-    updates = 0
+    update_checks = 0
 
     monkeypatch.setattr(engine, "_check_and_handle_closed_branch", lambda *_: True)
-    monkeypatch.setattr("auto_coder.automation_engine.check_for_updates_and_restart", lambda: None)
     monkeypatch.setattr(engine, "_claim_jules_session_list_refresh", lambda: False)
 
-    def blocking_pull():
-        nonlocal updates
-        updates += 1
+    def blocking_update_check():
+        nonlocal update_checks
+        update_checks += 1
         entered.set()
         assert release.wait(5)
-        return MagicMock(success=True)
 
-    monkeypatch.setattr("auto_coder.automation_engine.git_pull", blocking_pull)
+    monkeypatch.setattr("auto_coder.automation_engine.check_for_updates_and_restart", blocking_update_check)
     monkeypatch.setattr(engine, "_sleep_or_wake", MagicMock(side_effect=AssertionError("maintenance sleep started while draining")))
 
     async def scenario():
@@ -446,7 +444,7 @@ def test_producer_returns_at_repository_update_drain_checkpoint(monkeypatch, tmp
         await producer
 
     asyncio.run(scenario())
-    assert updates == 1
+    assert update_checks == 1
 
 
 def test_initial_pr_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):

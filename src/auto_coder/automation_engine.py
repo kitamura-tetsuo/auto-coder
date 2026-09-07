@@ -979,16 +979,6 @@ class AutomationEngine:
                     logger.info("Resumed loop early after PR merge/close; skipping Jules session enumeration")
                     skip_jules_sessions = False
 
-                # Pull latest changes for monitored repository
-                try:
-                    logger.info("Pulling latest changes for monitored repository...")
-                    heartbeat("producer:git-pull", f"iteration {iteration}")
-                    pull_res = await self._run_local_critical("repository update", git_pull)
-                    if not pull_res.success:
-                        logger.warning(f"Failed to pull latest changes: {pull_res.stderr}")
-                except Exception as e:
-                    logger.warning(f"Failed to pull monitored repository: {e}")
-
                 if self.is_draining:
                     return
 

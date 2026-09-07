@@ -1522,7 +1522,7 @@ Recent configuration schema changes that require migration:
 ## Early Loop Resume on PR Merge/Close & Jules Enumeration Skip
 
   producer_early_wake_on_pr_event:
-    description: "Cuts short the main producer loop sleep duration (300s) upon PR merge or close events and resumes candidate processing immediately while skipping Jules session enumeration."
+    description: "Cuts short the main producer loop sleep duration (60s) upon PR merge or close events and resumes maintenance immediately while skipping Jules session enumeration."
     implementation: |
       notify_pr_merged_or_closed, _sleep_or_wake, _check_if_pr_merged_or_closed,
       _producer_loop, _worker_loop in src/auto_coder/automation_engine.py,
@@ -1530,8 +1530,21 @@ Recent configuration schema changes that require migration:
     behavior:
       - "When a PR is merged or closed (internally by a worker, via branch cleanup, or externally received via GitHub webhook), signals the engine to cut short the active wait time in _producer_loop."
       - "On early resume, bypasses time-consuming Jules session listing and checks (invalidate_jules_sessions_cache, check_and_resume_or_archive_sessions, handle_stale_jules_issue_sessions, check_and_start_recurrent_jules_tasks_async) for that single iteration."
-      - "Immediately pulls latest changes and checks for actionable candidates so unlocked issues or PRs can be picked up without waiting for the full sleep duration to elapse."
+      - "Every resumed iteration still performs the update check, but generic recurring maintenance never synchronizes or repairs the monitored checkout; checkout mutation remains owned by explicit branch-processing operations."
       - "Subsequent scheduled iterations (when sleep completes normally) continue to enumerate and check Jules sessions as usual."
+
+## Monitored Checkout Ownership
+
+  producer_checkout_preservation:
+    description: "Keeps recurring producer maintenance from mutating the monitored repository checkout."
+    implementation: |
+      _producer_loop in src/auto_coder/automation_engine.py,
+      BranchManager in src/auto_coder/branch_manager.py,
+      switch_to_branch in src/auto_coder/git_branch.py
+    behavior:
+      - "Timer-driven and PR-woken producer maintenance performs update and Jules-session housekeeping without pulling, resetting, checking out, cleaning, merging, rebasing, cherry-picking, or otherwise repairing the monitored checkout."
+      - "An idle daemon preserves branch or detached-HEAD identity, HEAD, index, tracked edits, untracked files, and an external in-progress Git operation across recurring maintenance intervals."
+      - "Checkout synchronization remains inside explicit Issue and PR branch-processing boundaries: BranchManager uses switch_to_branch(..., pull_after_switch=True), and checkout, origin branch pull, or branch-verification failure makes branch entry fail."
 
 ## Strong-Model Adversarial Validation Before PR Merge
 
