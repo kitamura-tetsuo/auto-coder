@@ -35,9 +35,13 @@ jobs:
       # - name: Mypy
       #   run: uv run mypy src/
 
-  tests:
-    name: Tests with Coverage
+  tests-shard:
+    name: Tests with Coverage (${{ matrix.group }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -63,6 +67,7 @@ jobs:
           uv pip install -e .
 
       - name: Test CLI entry point
+        if: matrix.group == 1
         run: |
           # Run auto-coder --help and verify it exits successfully
           set -e
@@ -81,13 +86,28 @@ jobs:
           fi
           echo "CLI entry point test passed!"
 
-      - name: Run tests with coverage
+      - name: Run tests with coverage (shard ${{ matrix.group }}/4)
         run: |
-          bash scripts/test.sh
+          bash scripts/test.sh --splits 4 --group ${{ matrix.group }}
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.group }}
           path: htmlcov/
+          if-no-files-found: ignore
+
+  tests:
+    name: Tests with Coverage
+    needs: tests-shard
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check shard results
+        run: |
+          if [ "${{ needs.tests-shard.result }}" != "success" ]; then
+            echo "One or more test shards failed (result: ${{ needs.tests-shard.result }})."
+            exit 1
+          fi
+          echo "All test shards passed."
