@@ -1,6 +1,6 @@
 """Render the production individual-review prompt for Promptfoo cases."""
 
-from auto_coder.prompt_loader import render_prompt
+from src.auto_coder.prompt_loader import render_prompt
 
 
 def render(context):
