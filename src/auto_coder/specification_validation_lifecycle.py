@@ -16,10 +16,12 @@ from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import NormativeIssueManifest
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
+    IndividualRelationshipContext,
     IndividualReviewEvidence,
     SpecificationAnalysisResult,
     SpecificationFinding,
     analyze_issue_specification,
+    individual_relationship_context,
     individual_review_evidence,
 )
 from .specification_repair_rounds import SpecificationRepairRoundStore
@@ -65,6 +67,7 @@ class ValidationIdentity:
     issue_number: int
     specification_digest: str
     policy_identity: str
+    relationship_digest: str = "standalone"
 
     @property
     def key(self) -> str:
@@ -263,17 +266,37 @@ class SpecificationValidationLifecycle:
         self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer
 
-    def identity(self, issue_number: int, title: str, body: str) -> ValidationIdentity:
-        return ValidationIdentity(self.repository, issue_number, specification_digest(title, body), self.policy_identity)
+    def identity(
+        self,
+        issue_number: int,
+        title: str,
+        body: str,
+        relationship_context: Optional[IndividualRelationshipContext] = None,
+    ) -> ValidationIdentity:
+        relationship = relationship_context or IndividualRelationshipContext()
+        relationship_digest = hashlib.sha256(json.dumps(asdict(relationship), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        return ValidationIdentity(self.repository, issue_number, specification_digest(title, body), self.policy_identity, relationship_digest)
 
-    def decide(self, manifest: NormativeIssueManifest, title: str, body: str) -> ValidationDecision:
-        identity = self.identity(manifest.issue_number, title, body)
+    def decide(
+        self,
+        manifest: NormativeIssueManifest,
+        title: str,
+        body: str,
+        relationship_context: Optional[IndividualRelationshipContext] = None,
+    ) -> ValidationDecision:
+        identity = self.identity(manifest.issue_number, title, body, relationship_context)
         with self.store.locked(identity.key):
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
             if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
-                analyzed = self.analyzer(manifest, body) if self.analyzer is not None else analyze_issue_specification(manifest, body)
+                if self.analyzer is not None:
+                    analyzed = self.analyzer(manifest, body)
+                elif relationship_context is not None:
+                    with individual_relationship_context(relationship_context):
+                        analyzed = analyze_issue_specification(manifest, body)
+                else:
+                    analyzed = analyze_issue_specification(manifest, body)
                 decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
                 if analyzed.verdict in {"READY", "BLOCKED"}:
                     self.store.save(decision)
@@ -281,7 +304,7 @@ class SpecificationValidationLifecycle:
             contract = _contract_evidence(manifest, title, body)
             evidence = self.history_store.evidence(manifest.issue_number, contract)
             if self.analyzer is None:
-                analyzed = self._default_analyzer(manifest, body, evidence)
+                analyzed = self._default_analyzer(manifest, body, evidence, relationship_context)
             else:
                 analyzed = self.analyzer(manifest, body)
             decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
@@ -289,9 +312,12 @@ class SpecificationValidationLifecycle:
                 self.store.save(decision)
             return decision
 
-    def _default_analyzer(self, manifest: NormativeIssueManifest, body: str, evidence: IndividualReviewEvidence) -> SpecificationAnalysisResult:
+    def _default_analyzer(self, manifest: NormativeIssueManifest, body: str, evidence: IndividualReviewEvidence, relationship_context: Optional[IndividualRelationshipContext]) -> SpecificationAnalysisResult:
         with individual_review_evidence(evidence):
-            return analyze_issue_specification(manifest, body)
+            if relationship_context is None:
+                return analyze_issue_specification(manifest, body)
+            with individual_relationship_context(relationship_context):
+                return analyze_issue_specification(manifest, body)
 
     def is_reissue_required(self, issue_number: int) -> bool:
         """Return the durable authorization stop for this stable Issue number."""
@@ -377,7 +403,7 @@ class SpecificationValidationLifecycle:
 
             def still_current() -> bool:
                 snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
-                return isinstance(snapshot, dict) and self.identity(issue_number, str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) == decision.identity and set_is_current()
+                return isinstance(snapshot, dict) and specification_digest(str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) == decision.identity.specification_digest and set_is_current()
 
             if not still_current():
                 return None

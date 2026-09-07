@@ -597,5 +597,5 @@ def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Pat
     monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (created + timedelta(seconds=61)).timestamp())
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[3]), 0), engine.config)
 
-    assert analyzed == [("individual", 1), ("set", github.issues[3]["body"])]
+    assert analyzed == [("individual", 1), ("set", github.issues[3]["body"]), ("individual", 1)]
     assert second.actions == ["Completed - closed container parent after all direct children completed"]

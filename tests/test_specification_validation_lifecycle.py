@@ -12,7 +12,7 @@ from auto_coder.automation_config import AutomationConfig, Candidate, CandidateP
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.requirement_contract import build_normative_issue_manifest
-from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
+from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
@@ -23,6 +23,22 @@ FINDING = SpecificationFinding("material_ambiguity", ("REQ-001",), "The current 
 def lifecycle(tmp_path, verdict, analyzer=None, policy="provider/model-a"):
     result = SpecificationAnalysisResult(verdict, (FINDING,) if verdict == "BLOCKED" else ())
     return SpecificationValidationLifecycle("owner/repo", policy, tmp_path / "decisions.json", analyzer or (lambda _manifest, _body: result))
+
+
+def test_caller_reconciled_relationship_context_participates_in_durable_identity(tmp_path):
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    gate = lifecycle(tmp_path, "READY", calls)
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    standalone = gate.decide(manifest, "Title", BODY)
+    child_context = IndividualRelationshipContext(
+        role="child",
+        related_contracts='[{"issue_number":1727,"relationship":"parent","normative_manifest":[]}]',
+    )
+    child = gate.decide(manifest, "Title", BODY, child_context)
+
+    assert standalone.identity.relationship_digest != child.identity.relationship_digest
+    assert standalone.identity.specification_digest == child.identity.specification_digest
+    assert calls.call_count == 2
 
 
 def test_completed_decision_survives_restart_but_text_and_policy_do_not_reuse(tmp_path):

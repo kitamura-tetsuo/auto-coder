@@ -52,6 +52,7 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
 from .shutdown_context import install_admission_check, reset_admission_check
+from .specification_analyzer import IndividualRelationshipContext
 from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision, configured_provider_identity
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
@@ -486,7 +487,8 @@ class AutomationEngine:
                 if not isinstance(number, int) or child.get("state") != "closed":
                     return False, "a direct child is no longer closed"
                 decision = child_decisions.get(number)
-                identity = individual.identity(number, str(child.get("title") or ""), str(child.get("body") or ""))
+                relationship = self._child_review_context(parent, children, number)
+                identity = individual.identity(number, str(child.get("title") or ""), str(child.get("body") or ""), relationship)
                 if decision is None or decision.verdict != "READY" or decision.identity != identity:
                     return False, f"individual validation for child #{number} is stale or is not READY"
             self.github.close_issue(repo_name, parent_number)
@@ -628,12 +630,33 @@ class AutomationEngine:
                 title = str(child.get("title") or "")
                 body = str(child.get("body") or "")
                 manifest = build_normative_issue_manifest(number, title, body)
-                identity = individual.identity(number, title, body)
+                relationship_context = self._child_review_context(parent, children, number)
+                identity = individual.identity(number, title, body, relationship_context)
                 child_jobs[number] = self.validation_scheduler.submit(
                     f"individual:{identity.key}",
-                    partial(individual.decide, manifest, title, body),
+                    partial(individual.decide, manifest, title, body, relationship_context),
                 )
         return set_job, child_jobs
+
+    @staticmethod
+    def _child_review_context(parent: Dict[str, Any], children: List[Dict[str, Any]], issue_number: int) -> IndividualRelationshipContext:
+        """Serialize only caller-reconciled graph evidence for child analysis."""
+
+        def contract(issue: Dict[str, Any]) -> dict[str, object]:
+            number = int(issue["number"])
+            title = str(issue.get("title") or "")
+            body = str(issue.get("body") or "")
+            manifest = build_normative_issue_manifest(number, title, body)
+            return {
+                "issue_number": number,
+                "relationship": "parent" if number == int(parent["number"]) else "sibling",
+                "title": title,
+                "normative_manifest": [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
+                "body_non_normative_evidence": body,
+            }
+
+        related = [contract(parent)] + [contract(child) for child in children if int(child["number"]) != issue_number]
+        return IndividualRelationshipContext(role="child", related_contracts=json.dumps(related, ensure_ascii=False, indent=2))
 
     @staticmethod
     def _join_parent_validations(
@@ -820,7 +843,8 @@ class AutomationEngine:
         if manifest.error:
             return None
         validator = self._get_specification_validator(repo_name)
-        individual_identity = validator.identity(issue_number, title, body)
+        relationship_context = self._child_review_context(*authoritative_set, issue_number) if parent_number is not None else None
+        individual_identity = validator.identity(issue_number, title, body, relationship_context)
         spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name)
         decision: Optional[ValidationDecision] = None
         if spec_validation_enabled:
@@ -837,6 +861,9 @@ class AutomationEngine:
                     def _set_is_current() -> bool:
                         latest = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
                         if latest is None or not self._is_open_issue(latest[0]) or not is_implementation_ready(latest[0]) or issue_number not in {child.get("number") for child in latest[1]}:
+                            return False
+                        relationship = self._child_review_context(*latest, issue_number)
+                        if validator.identity(issue_number, title, body, relationship) != decision.identity:
                             return False
                         if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
                             return decomposition_validator.identity(*latest) == decomposition_decision.identity
@@ -860,10 +887,6 @@ class AutomationEngine:
         refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         if not isinstance(refreshed, dict) or not self._is_open_issue(refreshed):
             return None
-        identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
-        expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
-        if identity != expected_identity:
-            return None
         refreshed_children = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
         refreshed_parent = self._get_authoritative_parent_number(repo_name, issue_number, refreshed)
         if refreshed_children or refreshed_parent != parent_number:
@@ -882,6 +905,11 @@ class AutomationEngine:
                 if decomposition_validator.identity(*refreshed_set) != decomposition_decision.identity:
                     return None
         elif not is_implementation_ready(refreshed):
+            return None
+        refreshed_relationship = self._child_review_context(*refreshed_set, issue_number) if parent_number is not None else None
+        identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""), refreshed_relationship)
+        expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
+        if identity != expected_identity:
             return None
         return refreshed
 
@@ -2528,7 +2556,8 @@ class AutomationEngine:
             validator = self._get_specification_validator(repo_name)
             spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name, config)
             decision: Optional[ValidationDecision] = None
-            individual_identity = validator.identity(item_number, current_title, current_body)
+            relationship_context = self._child_review_context(*authoritative_set, item_number) if inherited_ready and authoritative_set is not None else None
+            individual_identity = validator.identity(item_number, current_title, current_body, relationship_context)
             if spec_validation_enabled:
                 if validator.is_reissue_required(item_number) is True:
                     result.error = "Specification requires a replacement Issue number"
@@ -2556,6 +2585,9 @@ class AutomationEngine:
                             def _set_is_current() -> bool:
                                 latest = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                                 if latest is None or not self._is_open_issue(latest[0]) or not is_implementation_ready(latest[0]) or item_number not in {child.get("number") for child in latest[1]}:
+                                    return False
+                                relationship = self._child_review_context(*latest, item_number)
+                                if validator.identity(item_number, current_title, current_body, relationship) != decision.identity:
                                     return False
                                 if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
                                     return decomposition_validator.identity(*latest) == decomposition_decision.identity
@@ -2593,17 +2625,15 @@ class AutomationEngine:
                 result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
                 result.refill_retry_required = True
                 return result
-            dispatch_identity = validator.identity(
-                item_number,
-                str(dispatch_snapshot.get("title") or ""),
-                str(dispatch_snapshot.get("body") or ""),
-            )
+            dispatch_relationship: Optional[IndividualRelationshipContext] = None
             submission_current = self._is_open_issue(dispatch_snapshot) and is_implementation_ready(dispatch_snapshot)
             if spec_validation_enabled and validator.is_reissue_required(item_number) is True:
                 submission_current = False
             decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
             if inherited_parent_number is not None:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                if latest_set is not None:
+                    dispatch_relationship = self._child_review_context(*latest_set, item_number)
                 submission_current = (
                     latest_set is not None
                     and self._is_open_issue(latest_set[0])
@@ -2620,6 +2650,12 @@ class AutomationEngine:
                 direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
                 latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
                 submission_current = not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, dispatch_snapshot)
+            dispatch_identity = validator.identity(
+                item_number,
+                str(dispatch_snapshot.get("title") or ""),
+                str(dispatch_snapshot.get("body") or ""),
+                dispatch_relationship,
+            )
             expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
             if not submission_current or dispatch_identity != expected_identity:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
@@ -2669,7 +2705,12 @@ class AutomationEngine:
             if candidate.type != "issue":
                 return True
             latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-            child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == expected_identity
+            latest_relationship: Optional[IndividualRelationshipContext] = None
+            if inherited_parent_number is not None:
+                identity_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                if identity_set is not None:
+                    latest_relationship = self._child_review_context(*identity_set, item_number)
+            child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or ""), latest_relationship) == expected_identity
             if not child_current:
                 return False
             latest_labels = latest.get("labels", [])
