@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -27,6 +28,9 @@ class GraphGitHub(GitHubClient):
 
     def get_issue_dispatch_snapshot_strict(self, _repo, number):
         return dict(self.issues[number])
+
+    def get_open_entities_strict(self, _repo):
+        return SimpleNamespace(issues=[SimpleNamespace(number=number) for number, issue in self.issues.items() if issue["state"] == "open"])
 
     def get_parent_issue_details_strict(self, _repo, number):
         parent = self.parents.get(number)
@@ -66,6 +70,125 @@ def graph_issue(number, body, ready=False, state="open", created_at=None):
         "user": {"id": 1},
         "created_at": created_at or "2020-01-01T00:00:00Z",
     }
+
+
+def test_only_parent_reconciles_every_declared_child_before_unified_processing():
+    """The supported explicit origin cannot pass a partial child set downstream."""
+    body = "## Requirements\n- REQ-001: Preserve the complete set."
+    github = GraphGitHub(
+        {
+            100: graph_issue(100, body, ready=True),
+            101: graph_issue(101, body + "\nParent-Issue: #100"),
+            102: graph_issue(102, body + "\nParent-Issue: #100"),
+            103: graph_issue(103, body + "\nParent-Issue: #100"),
+        },
+        {101: 100},
+        {100: [101]},
+    )
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._create_candidate_from_single = MagicMock(return_value=Candidate("issue", dict(github.issues[100]), 0))
+    observed = []
+
+    def process(*_args, **_kwargs):
+        observed.append(tuple(sorted(github.children[100])))
+        from src.auto_coder.automation_config import CandidateProcessingResult
+
+        return CandidateProcessingResult("issue", 100, "Issue 100", True, ["target only"])
+
+    engine._process_single_candidate_unified = MagicMock(side_effect=process)
+    engine._validate_submitted_parent_generation_for_child = MagicMock()
+
+    with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+        result = engine.process_single("o/r", "issue", 100, explicit_only=True)
+
+    assert observed == [(101, 102, 103)]
+    assert github.events == ["linked", "linked"]
+    assert result["issues_processed"][0]["actions_taken"] == ["target only"]
+    engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 100, engine._create_candidate_from_single.return_value.data, target_only=True)
+
+
+def test_only_child_reconciles_unmaterialized_elder_without_processing_it():
+    body = "## Requirements\n- REQ-001: Preserve sibling order."
+    github = GraphGitHub(
+        {
+            100: graph_issue(100, body, ready=True),
+            102: graph_issue(102, body + "\nParent-Issue: #100"),
+            103: graph_issue(103, body + "\nParent-Issue: #100", ready=True),
+        },
+        {103: 100},
+        {100: [103]},
+    )
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._create_candidate_from_single = MagicMock(return_value=Candidate("issue", dict(github.issues[103]), 0))
+
+    def process(_repo, candidate, *_args, **_kwargs):
+        assert candidate.data["number"] == 103
+        assert sorted(github.children[100]) == [102, 103]
+        from src.auto_coder.automation_config import CandidateProcessingResult
+
+        return CandidateProcessingResult("issue", 103, "Issue 103", True, ["deferred behind #102"])
+
+    engine._process_single_candidate_unified = MagicMock(side_effect=process)
+    engine._validate_submitted_parent_generation_for_child = MagicMock()
+
+    with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+        engine.process_single("o/r", "issue", 103, explicit_only=True)
+
+    assert github.events == ["linked"]
+    assert engine._process_single_candidate_unified.call_count == 1
+    engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 103, engine._create_candidate_from_single.return_value.data, target_only=True)
+
+
+def test_only_relationship_contradiction_fails_closed_before_dispatch():
+    body = "## Requirements\n- REQ-001: Preserve the hierarchy."
+    github = GraphGitHub(
+        {
+            100: graph_issue(100, body, ready=True),
+            102: graph_issue(102, body + "\nParent-Issue: #100"),
+            200: graph_issue(200, body),
+        },
+        {102: 200},
+        {200: [102]},
+    )
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._create_candidate_from_single = MagicMock(return_value=Candidate("issue", dict(github.issues[100]), 0))
+    engine._process_single_candidate_unified = MagicMock()
+
+    with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+        result = engine.process_single("o/r", "issue", 100, explicit_only=True)
+
+    assert result["errors"] == ["Blocked relationship reconciliation for Issue #100: Parent-Issue declaration #100 conflicts with native parent #200"]
+    engine._process_single_candidate_unified.assert_not_called()
+
+
+def test_only_materialization_failure_is_retryable_and_starts_no_target_work():
+    body = "## Requirements\n- REQ-001: Preserve the hierarchy."
+    github = GraphGitHub(
+        {
+            100: graph_issue(100, body, ready=True),
+            102: graph_issue(102, body + "\nParent-Issue: #100"),
+        },
+        {},
+        {},
+    )
+
+    def fail_link(*_args):
+        raise RuntimeError("temporary GitHub failure")
+
+    github.add_sub_issue_strict = fail_link
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._check_and_handle_closed_branch = MagicMock(return_value=True)
+    engine._create_candidate_from_single = MagicMock(return_value=Candidate("issue", dict(github.issues[100]), 0))
+    engine._process_single_candidate_unified = MagicMock()
+
+    with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+        result = engine.process_single("o/r", "issue", 100, explicit_only=True)
+
+    assert result["errors"] == ["Retryable relationship reconciliation failure for Issue #100: " "cannot materialize Parent-Issue relationship: temporary GitHub failure"]
+    engine._process_single_candidate_unified.assert_not_called()
 
 
 @pytest.mark.parametrize("key", ["Parent-Issue", "parent_issue", "PARENT ISSUE"])
