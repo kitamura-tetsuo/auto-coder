@@ -59,8 +59,9 @@ Successful `main` builds publish one immutable GHCR image tagged by commit and
 advance `beta`; failed builds cannot move that tag. The operator-only promotion
 workflow derives and verifies the current tested `beta`, records its manifest
 under the immutable `release-<SHA>` history tag, and advances `release` without
-rebuilding. A separate rollback workflow accepts only a previously released SHA
-and moves `release` to its immutable history manifest.
+rebuilding. A separate rollback workflow accepts exactly one explicit target:
+a validated dated GitHub Release tag, or a full SHA from pre-catalog immutable
+history. It pins the selected digest and moves only `release` without rebuilding.
 Registry reads validate concrete SHA-256 digests and fail closed on transport,
 authentication, malformed-output, and ambiguous errors. Promotion creates an
 immutable history tag only when the registry explicitly confirms it is absent;
@@ -1932,3 +1933,17 @@ dated-release-publication:
     - "A repeated attempt is reconciliation-only: an existing publication is read-only, and a prepared entry can be published only while its history, image revision, and current release channel still match."
     - "Catalog entries are historical records, not a current-deployment cursor. Find the dated entry under GitHub Releases and copy its `release-...JST-r...` tag."
     - "Set optional `RELEASE_CATALOG_TOKEN` when the built-in token cannot create a tag or Release, including source commits that change workflows; grant that credential repository contents and workflow-write authorization required by GitHub. Registry login continues to use `GITHUB_TOKEN`."
+
+validated-release-channel-restore:
+  description: "Restores the GHCR release distribution tag from one explicit durable catalog or legacy history identity (Issue #1850)."
+  implementation: "The manually dispatched Rollback Release workflow invokes ReleaseRestore under the repository-wide release-channel concurrency group."
+  operator_sequence:
+    - "Open the repository's GitHub Releases page, choose the intended dated non-draft/non-prerelease entry using its memo and source identity, and copy its exact tag, for example `release-20260907T174912JST-r123`."
+    - "The timestamp in that example is the original workflow request second displayed in JST (UTC+09:00), and `r123` is the recorded Actions run ID; it is not the editable Release publication time."
+    - "Choose Actions -> Rollback Release -> Run workflow, paste that exact value into `release_tag`, and leave `release_sha` empty. The workflow never selects previous, next, or latest relatively."
+    - "For a pre-catalog image, instead leave `release_tag` empty and enter its complete 40-character lowercase commit in `release_sha`. This alternative uses only `release-<SHA>` GHCR history and does not require or create catalog metadata."
+  behavior:
+    - "Exactly one input must be nonempty. URLs, abbreviated SHAs, digests, shell-like text, missing tags, and ambiguous dual inputs fail before any channel write; invalid catalog input never falls back to SHA history."
+    - "Catalog restore requires an exact eligible GitHub Release, its strict version-1 annotated Git tag and direct commit target, matching immutable GHCR history digest, and matching source revision read from the image digest. Prepared-only, draft, prerelease, lightweight, nested, mismatched, or unavailable evidence is rejected regardless of editable title, body, memo, or target_commitish."
+    - "The durable Git tag/Release and GHCR evidence are sufficient after Actions logs and artifacts expire. Repeating a restore can be a verified no-op and never creates another catalog entry."
+    - "Only the mutable `:release` distribution tag is written to the pinned digest and freshly read back. Failure or unavailable read-back is reported as uncertain without a compensating write; beta, history, source, Releases, Git refs, builds, and running containers remain untouched. A confirmed tag restoration is not confirmation that any container restarted or updated."
