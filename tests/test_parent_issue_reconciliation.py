@@ -683,6 +683,7 @@ def test_late_marker_for_new_ready_parent_defers_until_latest_generation(tmp_pat
 
 
 def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     body = "## Requirements\n- REQ-001: Preserve the graph."
     created = datetime.now(timezone.utc)
     github = GraphGitHub(
