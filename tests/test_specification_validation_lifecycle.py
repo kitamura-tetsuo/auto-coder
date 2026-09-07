@@ -1,6 +1,7 @@
 """Generation-bound Issue specification validation lifecycle regressions."""
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
 from unittest.mock import Mock, call, patch
@@ -44,6 +45,47 @@ def test_error_is_not_persisted_and_is_retried(tmp_path):
     assert gate.decide(manifest, "Title", BODY).verdict == "ERROR"
     assert gate.decide(manifest, "Title", BODY).verdict == "READY"
     assert calls.call_count == 2
+
+
+def test_first_valid_contract_becomes_immutable_baseline_across_policy_and_edits(tmp_path):
+    first = lifecycle(tmp_path, "READY", policy="policy-a")
+    baseline_manifest = build_normative_issue_manifest(1728, "Baseline", BODY)
+    first.decide(baseline_manifest, "Baseline", BODY)
+    edited_body = BODY.replace("current", "latest")
+    edited_manifest = build_normative_issue_manifest(1728, "Edited", edited_body)
+    lifecycle(tmp_path, "READY", policy="policy-b").decide(edited_manifest, "Edited", edited_body)
+
+    raw = json.loads((tmp_path / "individual_review_history.json").read_text())
+    baseline = json.loads(raw["1728"]["baseline"])
+    assert baseline["title"] == "Baseline"
+    assert baseline["body"] == BODY
+    assert baseline["requirements"] == [{"requirement_id": "REQ-001", "text": "Return the current value."}]
+
+
+def test_invalid_manifest_does_not_establish_baseline(tmp_path):
+    gate = lifecycle(tmp_path, "ERROR")
+    invalid = build_normative_issue_manifest(1728, "Invalid", "No Requirements section")
+    assert gate.decide(invalid, "Invalid", "No Requirements section").verdict == "ERROR"
+    assert not (tmp_path / "individual_review_history.json").exists()
+
+
+def test_only_current_applied_blocked_outcomes_enter_review_history(tmp_path):
+    analysis = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=analysis))
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    decision = gate.decide(manifest, "Title", BODY)
+
+    assert gate.apply_blocked(GitHubFlow([snapshot(body=BODY + " stale")]), decision) is None
+    history_path = tmp_path / "individual_review_history.json"
+    assert json.loads(history_path.read_text())["1728"]["applied_outcomes"] == []
+
+    assert gate.apply_blocked(GitHubFlow([snapshot()] * 4), decision) is None
+    raw = json.loads(history_path.read_text())
+    assert len(raw["1728"]["applied_outcomes"]) == 1
+    outcome = json.loads(raw["1728"]["applied_outcomes"][0])
+    assert outcome["verdict"] == "BLOCKED"
+    assert outcome["remediation"] == "EDIT_IN_PLACE"
+    assert outcome["findings"][0]["requirement_ids"] == ["REQ-001"]
 
 
 def test_current_reissue_required_is_durable_idempotent_and_survives_restart(tmp_path):

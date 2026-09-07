@@ -3,7 +3,7 @@ import json
 import pytest
 
 from auto_coder.requirement_contract import build_normative_issue_manifest
-from auto_coder.specification_analyzer import analyze_issue_specification, parse_specification_analysis_response
+from auto_coder.specification_analyzer import IndividualReviewEvidence, analyze_issue_specification, parse_specification_analysis_response
 
 
 def _manifest():
@@ -60,6 +60,26 @@ def test_ready_preserves_implementation_freedom_and_missing_examples():
     assert result.is_ready is True
     assert result.findings == ()
     assert result.error is None
+
+
+def test_scope_drift_evidence_is_rendered_only_as_remediation_evidence():
+    captured = []
+    evidence = IndividualReviewEvidence(
+        '{"title":"Original lifecycle boundary"}',
+        ('{"verdict":"BLOCKED","finding":"added persistence clarification"}',),
+    )
+    result = analyze_issue_specification(
+        _manifest(),
+        "Current authoritative body",
+        review_evidence=evidence,
+        prompt_runner=lambda prompt: captured.append(prompt) or _response("READY"),
+    )
+
+    assert result.verdict == "READY"
+    assert "Durable first-review baseline (non-normative evidence for remediation only" in captured[0]
+    assert "Original lifecycle boundary" in captured[0]
+    assert "added persistence clarification" in captured[0]
+    assert "historical drift or possible decomposition must never manufacture a finding" in captured[0]
 
 
 def test_false_success_requires_written_counterexample_and_boundary():

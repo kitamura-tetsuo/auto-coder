@@ -973,7 +973,11 @@ issue:
 
     Output exactly one JSON object, with no Markdown or prose, using exactly this schema:
     {"verdict":"READY|BLOCKED|ERROR","remediation":"NONE|EDIT_IN_PLACE|REISSUE_REQUIRED","findings":[{"category":"one allowed category","requirement_ids":["REQ-001"],"explanation":"material correctness gap","clarification":"smallest clarification needed","counterexample":"required for false_success_gap, otherwise empty","missing_normative_boundary":"required for false_success_gap, otherwise empty"}]}
-    READY and ERROR require remediation NONE and an empty findings list. BLOCKED requires at least one finding and exactly one remediation: EDIT_IN_PLACE when the smallest correct remedy preserves this Issue's fundamental implementation responsibility, or REISSUE_REQUIRED when it requires replacing the reviewed Issue.
+    First complete the material-defect analysis, ambiguity-closure pass, next-review-prediction pass, and reconciled child/standalone role checks. Only after that analysis has independently returned BLOCKED, choose remediation. READY and ERROR require remediation NONE and an empty findings list; historical drift or possible decomposition must never manufacture a finding or change either verdict.
+
+    For BLOCKED, use REISSUE_REQUIRED when the smallest safe repair splits independently implementable correctness boundaries, adds a semantic layer outside the baseline responsibility, redefines an unrelated subsystem where a preservation contract should isolate it, or when the baseline plus prior applied outcomes demonstrate cumulative material responsibility drift. Cumulative drift takes precedence even if the newest defect alone is small. A first review may require reissue when its demonstrated defects cannot safely be repaired without staged decomposition. Otherwise use EDIT_IN_PLACE when the correction stays within the baseline/current fundamental responsibility, including lifecycle clarification, a negative invariant, contradiction repair, or stronger test oracles.
+
+    Never infer reissue merely from prose length, Requirement/finding count, difficulty, persistence, concurrency, or any textual difference from the baseline. State the concrete responsibility-boundary or cumulative-drift reason in the finding explanation or clarification. Existing code, historical repository behavior, parent/sibling prose, and architectural preference cannot invent a decomposition. For a child, the disposition applies only to this child; do not reject the parent set from this individual result.
 
     Issue title (non-normative evidence): $issue_title
 
@@ -985,6 +989,12 @@ issue:
 
     Parent Issue context (non-normative evidence only):
     $parent_context
+
+    Durable first-review baseline (non-normative evidence for remediation only; it cannot create a current finding):
+    $durable_baseline
+
+    Prior applied material review outcomes (non-normative evidence for remediation only):
+    $prior_applied_outcomes
 
   action: |-
     Analyze the following GitHub issue and take appropriate actions:

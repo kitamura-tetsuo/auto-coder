@@ -36,6 +36,17 @@ withdrawn submissions cannot create the marker. Child-level terminal results
 mark only the child and withdraw only its currently authoritative submitted
 parent, leaving the parent and siblings unmarked.
 
+Each stable Issue number also receives an immutable individual-review baseline
+when its first valid authoritative title, body, and Requirement manifest enter
+semantic analysis. Later reviews receive that baseline and the deduplicated
+history of material BLOCKED outcomes actually applied to current submissions.
+This evidence is used only after the current-contract analyzer independently
+returns `BLOCKED`: responsibility-boundary expansion, unsafe decomposition, or
+cumulative material drift selects `REISSUE_REQUIRED`, while a correction within
+the baseline responsibility selects `EDIT_IN_PLACE`. History, Issue size,
+difficulty, and mere textual change cannot turn `READY` or `ERROR` into
+`BLOCKED`, and child-level reissue remains scoped to the child.
+
 ## Durable direct parent/child implementation exclusion
 
 Every production Issue implementation admission obtains cache-bypassing native

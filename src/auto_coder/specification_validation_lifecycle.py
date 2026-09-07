@@ -16,9 +16,11 @@ from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import NormativeIssueManifest
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
+    IndividualReviewEvidence,
     SpecificationAnalysisResult,
     SpecificationFinding,
     analyze_issue_specification,
+    individual_review_evidence,
 )
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
@@ -77,6 +79,83 @@ class ValidationDecision:
     findings_published: bool = False
     readiness_removed: bool = False
     remediation: str = "NONE"
+
+
+def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
+    value = {
+        "issue_number": manifest.issue_number,
+        "title": title,
+        "body": body,
+        "requirements": [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
+    }
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+class IndividualReviewHistoryStore:
+    """Atomic per-Issue baseline and applied BLOCKED-review history."""
+
+    def __init__(self, repository: str, path: Optional[Path] = None) -> None:
+        state_root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
+        self.path = path or state_root / repository / "individual_review_history.json"
+
+    def _read(self) -> dict[str, object]:
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except FileNotFoundError:
+            return {}
+
+    def evidence(self, issue_number: int, contract: str) -> IndividualReviewEvidence:
+        """Create the immutable first valid baseline and return prior outcomes."""
+        key = str(issue_number)
+        with self._locked():
+            state = self._read()
+            raw = state.get(key)
+            if raw is None:
+                raw = {"baseline": contract, "applied_outcomes": []}
+                state[key] = raw
+                self._write(state)
+            if not isinstance(raw, dict) or not isinstance(raw.get("baseline"), str):
+                raise ValueError(f"Invalid individual-review history for Issue #{issue_number}")
+            outcomes = raw.get("applied_outcomes", [])
+            if not isinstance(outcomes, list) or any(not isinstance(item, str) for item in outcomes):
+                raise ValueError(f"Invalid applied individual-review outcomes for Issue #{issue_number}")
+            valid = tuple(outcomes)
+            return IndividualReviewEvidence(str(raw["baseline"]), valid)
+
+    def record_applied(self, issue_number: int, identity_key: str, outcome: str) -> None:
+        key = str(issue_number)
+        with self._locked():
+            state = self._read()
+            raw = state.get(key)
+            if not isinstance(raw, dict):
+                return
+            applied = raw.setdefault("applied_outcomes", [])
+            applied_keys = raw.setdefault("applied_identity_keys", [])
+            if not isinstance(applied, list) or not isinstance(applied_keys, list) or identity_key in applied_keys:
+                return
+            applied.append(outcome)
+            applied_keys.append(identity_key)
+            self._write(state)
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        import fcntl
+
+        lock_path = self.path.with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a", encoding="utf-8") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream, fcntl.LOCK_UN)
+
+    def _write(self, state: dict[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
+        temporary.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, self.path)
 
 
 def specification_digest(title: str, body: str) -> str:
@@ -174,8 +253,10 @@ class SpecificationValidationLifecycle:
         self.policy_identity = validation_policy_identity(provider_identity)
         self.store = SpecificationValidationStore(repository, path)
         terminal_path = path.with_name("reissue_required.json") if path is not None else None
+        history_path = path.with_name("individual_review_history.json") if path is not None else None
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
-        self.analyzer = analyzer or (lambda manifest, body: analyze_issue_specification(manifest, body))
+        self.history_store = IndividualReviewHistoryStore(repository, history_path)
+        self.analyzer = analyzer
 
     def identity(self, issue_number: int, title: str, body: str) -> ValidationIdentity:
         return ValidationIdentity(self.repository, issue_number, specification_digest(title, body), self.policy_identity)
@@ -186,11 +267,26 @@ class SpecificationValidationLifecycle:
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
-            analyzed = self.analyzer(manifest, body)
+            if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
+                analyzed = self.analyzer(manifest, body) if self.analyzer is not None else analyze_issue_specification(manifest, body)
+                decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
+                if analyzed.verdict in {"READY", "BLOCKED"}:
+                    self.store.save(decision)
+                return decision
+            contract = _contract_evidence(manifest, title, body)
+            evidence = self.history_store.evidence(manifest.issue_number, contract)
+            if self.analyzer is None:
+                analyzed = self._default_analyzer(manifest, body, evidence)
+            else:
+                analyzed = self.analyzer(manifest, body)
             decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
             if analyzed.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
             return decision
+
+    def _default_analyzer(self, manifest: NormativeIssueManifest, body: str, evidence: IndividualReviewEvidence) -> SpecificationAnalysisResult:
+        with individual_review_evidence(evidence):
+            return analyze_issue_specification(manifest, body)
 
     def is_reissue_required(self, issue_number: int) -> bool:
         """Return the durable authorization stop for this stable Issue number."""
@@ -223,6 +319,7 @@ class SpecificationValidationLifecycle:
             # not an operational failure: the old generation simply remains blocked.
             if matching_snapshot() is None:
                 return None
+            self._record_applied_outcome(current_decision)
             if current_decision.remediation == "REISSUE_REQUIRED":
                 try:
                     self.reissue_store.mark(issue_number)
@@ -277,6 +374,7 @@ class SpecificationValidationLifecycle:
 
             if not still_current():
                 return None
+            self._record_applied_outcome(current)
             if current.remediation == "REISSUE_REQUIRED":
                 try:
                     self.reissue_store.mark(issue_number)
@@ -310,6 +408,20 @@ class SpecificationValidationLifecycle:
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
+
+    def _record_applied_outcome(self, decision: ValidationDecision) -> None:
+        outcome = json.dumps(
+            {
+                "specification_digest": decision.identity.specification_digest,
+                "verdict": decision.verdict,
+                "remediation": decision.remediation,
+                "findings": [asdict(item) for item in decision.findings],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        self.history_store.record_applied(decision.identity.issue_number, decision.identity.key, outcome)
 
     @staticmethod
     def findings_comment(decision: ValidationDecision) -> str:
