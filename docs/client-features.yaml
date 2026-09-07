@@ -175,6 +175,16 @@ automatic repair loops for local test and GitHub Actions failures:
 
 ## Durable reissue-required specification remediation
 
+Individual Issue specification review treats decision-critical semantics delegated
+only to existing/current behavior, authorization rules, repository conventions, or
+external authorities as an underspecified contract. It also verifies that actor,
+permission/capability, lifecycle, and ownership distinctions that change required
+behavior are established and reachable from the normative Requirements rather than
+invented by acceptance scenarios or contextual prose. Repository implementation and
+tests may expose the impact of a gap but cannot repair its normative authority.
+References to existing fields, named interfaces, or standards remain valid when the
+Requirements themselves define enough observable semantics to decide correctness.
+
 Specification validation has a durable repair-round circuit breaker. Individual
 Issues and parent decomposition sets independently count distinct authoritative
 contract generations whose trustworthy BLOCKED decision was applied as
