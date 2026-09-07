@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, FrozenSet, Optional, Set, Union
 
-from src.auto_coder.parent_issue_reconciliation import ParentDeclarationStatus, parse_parent_declaration
+from .parent_issue_reconciliation import ParentDeclarationStatus, parse_parent_declaration
 
 
 class BlockedByDeclarationStatus(Enum):

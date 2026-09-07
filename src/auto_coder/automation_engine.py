@@ -52,6 +52,16 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
 from .shutdown_context import install_admission_check, reset_admission_check
+from .sibling_dependencies import (
+    BlockedByDeclarationStatus,
+    DependencySatisfaction,
+    GraphValidity,
+    IssueEvidence,
+    IssueState,
+    IssueType,
+    evaluate_family_graph,
+    parse_blocked_by_declaration,
+)
 from .specification_analyzer import IndividualRelationshipContext
 from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision, configured_provider_identity
 from .test_log_utils import extract_important_errors
@@ -71,6 +81,7 @@ MAINTENANCE_INTERVAL_SECONDS = 60
 CAPACITY_STATE_CHECK_INTERVAL_SECONDS = 1
 REFILL_RETRY_INTERVAL_SECONDS = 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
+INVALID_DEPENDENCY_MARKER_PREFIX = "auto-coder-invalid-sibling-dependency"
 
 
 class EngineLifecycle(str, Enum):
@@ -116,6 +127,8 @@ class AutomationEngine:
         self.adversarial_validation_scheduler = AdversarialValidationScheduler(self.config.adversarial_validation_concurrency)
         self._lifecycle = EngineLifecycle.RUNNING
         self._lifecycle_lock = threading.Lock()
+        self._dependency_family_locks: Dict[tuple[str, int], threading.RLock] = {}
+        self._dependency_family_locks_guard = threading.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
         self._force_stop_event: Optional[asyncio.Event] = None
         self._critical_operations: Dict[asyncio.Task[Any], str] = {}
@@ -597,6 +610,162 @@ class AutomationEngine:
         if isinstance(self.github, GitHubClient) and parse_parent_declaration(snapshot.get("body")).status is not ParentDeclarationStatus.ABSENT:
             return self._reconcile_parent_issue(repo_name, issue_number, snapshot)
         return snapshot
+
+    def _dependency_family_lock(self, repo_name: str, parent_number: int) -> threading.RLock:
+        with self._dependency_family_locks_guard:
+            return self._dependency_family_locks.setdefault((repo_name, parent_number), threading.RLock())
+
+    def _reject_sibling_dependency(self, repo_name: str, issue_number: int, parent_number: int, body: str, reason: str) -> None:
+        """Finish every still-current rejection effect independently."""
+        digest = hashlib.sha256(f"{body}\0{parent_number}\0{reason}".encode()).hexdigest()
+        marker = f"<!-- {INVALID_DEPENDENCY_MARKER_PREFIX}:{digest} -->"
+        failures: list[str] = []
+        try:
+            current = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            native_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+            if current.get("body") != body or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
+                return
+            comments = self.github.get_issue_comments_strict(repo_name, issue_number)
+            if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
+                self.github.add_comment_to_issue(
+                    repo_name,
+                    issue_number,
+                    f"{marker}\n## Auto-Coder sibling dependency validation\n\n"
+                    f"Implementation submission is withdrawn because `{reason}`. `Blocked-By` may name only distinct Issues "
+                    f"whose authoritative direct parent is #{parent_number}; use comma-separated local references such as `Blocked-By: #123, #456`. "
+                    f"The readiness submission on Issue #{issue_number} and its authoritative parent #{parent_number} is being withdrawn.",
+                )
+        except Exception as exc:
+            failures.append(f"diagnostic: {exc}")
+        for target in (issue_number, parent_number):
+            try:
+                current = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+                native_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+                if current.get("body") != body or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
+                    return
+                target_snapshot = current if target == issue_number else self.github.get_issue_dispatch_snapshot_strict(repo_name, target)
+                if is_implementation_ready(target_snapshot):
+                    self.github.remove_labels(repo_name, target, [IMPLEMENTATION_READY_LABEL])
+            except Exception as exc:
+                failures.append(f"label #{target}: {exc}")
+        if failures:
+            raise ParentOperationalError("dependency rejection effects remain incomplete: " + "; ".join(failures))
+
+    def _reconcile_sibling_dependencies(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> DependencySatisfaction:
+        """Materialize and gate a complete sibling dependency family from live REST evidence."""
+        parent_decl = parse_parent_declaration(snapshot.get("body"))
+        declaration = parse_blocked_by_declaration(snapshot.get("body"), parent_decl.status)
+        if parent_decl.status is ParentDeclarationStatus.SUPPORTED:
+            snapshot = self._reconcile_parent_issue(repo_name, issue_number, snapshot)
+        native_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+        parent_number = native_parent.get("number") if isinstance(native_parent, dict) else None
+        if declaration.status is BlockedByDeclarationStatus.INVALID and isinstance(parent_number, int):
+            self._reject_sibling_dependency(repo_name, issue_number, parent_number, str(snapshot.get("body") or ""), declaration.reason or "invalid Blocked-By declaration")
+            return DependencySatisfaction.INVALID
+        if declaration.status is BlockedByDeclarationStatus.ABSENT and not isinstance(parent_number, int):
+            return DependencySatisfaction.SATISFIED
+        if not isinstance(parent_number, int):
+            raise ParentOperationalError("dependency parent relationship is not yet materialized")
+
+        with self._dependency_family_lock(repo_name, parent_number):
+            # Materialize supported parent declarations before sibling membership is judged.
+            current = snapshot
+            declaration = parse_blocked_by_declaration(current.get("body"), parse_parent_declaration(current.get("body")).status)
+            desired_refs = set(declaration.dependencies or ()) if declaration.status is BlockedByDeclarationStatus.SUPPORTED else set()
+            for number in sorted(desired_refs):
+                target = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                target_parent_decl = parse_parent_declaration(target.get("body"))
+                if target_parent_decl.status is ParentDeclarationStatus.SUPPORTED:
+                    self._reconcile_parent_issue(repo_name, number, target)
+
+            parent_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+            members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+            member_numbers = {int(member["number"]) for member in members}
+            children = []
+            for number in sorted(member_numbers):
+                child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                child_parent_decl = parse_parent_declaration(child.get("body"))
+                if child_parent_decl.status is ParentDeclarationStatus.SUPPORTED:
+                    child = self._reconcile_parent_issue(repo_name, number, child)
+                children.append(child)
+            confirmed_members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+            if {int(member["number"]) for member in confirmed_members} != member_numbers:
+                raise ParentOperationalError("authoritative dependency family changed during observation")
+            if parent_snapshot.get("number") != parent_number:
+                raise ParentOperationalError("authoritative dependency parent is unavailable")
+            evidence: dict[int, IssueEvidence] = {}
+            referenced: set[int] = set()
+            native_by_child: dict[int, frozenset[int]] = {}
+            snapshots = {int(child["number"]): child for child in children}
+            for number, child in snapshots.items():
+                native_items = self.github.get_blocked_by_strict(repo_name, number)
+                native = frozenset(int(item["number"]) for item in native_items)
+                native_by_child[number] = native
+                child_decl = parse_blocked_by_declaration(child.get("body"), parse_parent_declaration(child.get("body")).status)
+                referenced.update(native)
+                referenced.update(child_decl.dependencies or ())
+                evidence[number] = IssueEvidence(number, repo_name, IssueType.ISSUE, IssueState.CLOSED if child.get("state") == "closed" else IssueState.OPEN, parent_number, str(child.get("body") or ""), native)
+            for number in referenced - set(evidence):
+                try:
+                    target = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        evidence[number] = IssueEvidence(number, repo_name, IssueType.ISSUE, IssueState.UNAVAILABLE, None, "", frozenset(), True)
+                        continue
+                    raise
+                target_parent = self.github.get_parent_issue_details_strict(repo_name, number)
+                evidence[number] = IssueEvidence(
+                    number,
+                    repo_name,
+                    IssueType.PULL_REQUEST if "pull_request" in target else IssueType.ISSUE,
+                    IssueState.CLOSED if target.get("state") == "closed" else IssueState.OPEN,
+                    target_parent.get("number") if isinstance(target_parent, dict) else None,
+                    str(target.get("body") or ""),
+                    frozenset(),
+                )
+
+            graph = evaluate_family_graph(evidence, parent_number, repo_name)
+            invalid = [(number, result) for number, result in graph.results.items() if result.is_valid_graph is GraphValidity.INVALID]
+            if invalid:
+                for number, result in invalid:
+                    child = snapshots[number]
+                    self._reject_sibling_dependency(repo_name, number, parent_number, str(child.get("body") or ""), result.reason or "invalid desired dependency graph")
+                return DependencySatisfaction.INVALID
+            if any(result.is_valid_graph is GraphValidity.UNRESOLVED for result in graph.results.values()):
+                raise ParentOperationalError("desired sibling dependency graph is unresolved")
+
+            # No graph mutation starts until every family declaration has passed.
+            for number, result in graph.results.items():
+                if result.declaration_status is not BlockedByDeclarationStatus.SUPPORTED:
+                    continue
+                desired = set(result.desired_dependencies or ())
+                actual = set(native_by_child[number])
+                for dependency_number in sorted(actual - desired):
+                    declaring = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                    declaring_parent = self.github.get_parent_issue_details_strict(repo_name, number)
+                    if declaring.get("body") != snapshots[number].get("body") or not isinstance(declaring_parent, dict) or declaring_parent.get("number") != parent_number:
+                        raise ParentOperationalError("dependency declaration or family membership changed before mutation")
+                    dependency = self.github.get_issue_dispatch_snapshot_strict(repo_name, dependency_number)
+                    self.github.mutate_blocked_by_strict(repo_name, number, int(dependency["id"]), add=False)
+                for dependency_number in sorted(desired - actual):
+                    declaring = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                    declaring_parent = self.github.get_parent_issue_details_strict(repo_name, number)
+                    if declaring.get("body") != snapshots[number].get("body") or not isinstance(declaring_parent, dict) or declaring_parent.get("number") != parent_number:
+                        raise ParentOperationalError("dependency declaration or family membership changed before mutation")
+                    dependency = self.github.get_issue_dispatch_snapshot_strict(repo_name, dependency_number)
+                    self.github.mutate_blocked_by_strict(repo_name, number, int(dependency["id"]), add=True)
+
+            # A complete family readback (including reverse edges) fences lost responses and stale writes.
+            for number, result in graph.results.items():
+                incoming = self.github.get_blocked_by_strict(repo_name, number)
+                self.github.get_blocking_strict(repo_name, number)
+                expected = set(result.desired_dependencies or ())
+                if {int(item["number"]) for item in incoming} != expected:
+                    raise ParentOperationalError("native dependency graph did not confirm desired equality")
+                latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                if latest.get("body") != snapshots[number].get("body"):
+                    raise ParentOperationalError("dependency declaration changed during reconciliation")
+            return graph.results.get(issue_number, next(iter(graph.results.values()))).satisfaction
 
     def _preflight_explicit_issue_relationships(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
         """Complete the hierarchy containing an explicit ``--only`` target.
@@ -2058,6 +2227,19 @@ class AutomationEngine:
                         logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 5 minutes ago")
                         continue
 
+                # Dependency declarations are production intake, not candidate
+                # decoration.  Observe them even without a child readiness label.
+                blocked_by = parse_blocked_by_declaration(issue_data.get("body"), parse_parent_declaration(issue_data.get("body")).status)
+                if isinstance(self.github, GitHubClient) and hasattr(self.github, "token") and blocked_by.status is not BlockedByDeclarationStatus.ABSENT:
+                    try:
+                        dependency_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                        dependency_result = self._reconcile_sibling_dependencies(repo_name, number, dependency_snapshot)
+                    except Exception as exc:
+                        logger.warning(f"Deferring Issue #{number}; sibling dependency reconciliation is unresolved: {exc}")
+                        continue
+                    if dependency_result is DependencySatisfaction.INVALID:
+                        continue
+
                 # Skip if has sub-issues or linked PR
                 # Already queued by the stale-Jules-PR path above
                 if number in requeued_issue_numbers:
@@ -2779,6 +2961,28 @@ class AutomationEngine:
                     result.error = "Specification validation found material defects"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - blocked specification"]
+                    return result
+
+            # Dependency waiting does not suppress semantic review, but no force,
+            # urgency, inherited submission, or explicit target may cross this
+            # final native-graph safety boundary.
+            if isinstance(self.github, GitHubClient) and hasattr(self.github, "token"):
+                try:
+                    dependency_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                    dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, item_number, dependency_snapshot)
+                except Exception as exc:
+                    result.error = f"Sibling dependency reconciliation is unresolved: {exc}"
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                    result.actions = ["Deferred - unresolved sibling dependency reconciliation"]
+                    return result
+                if dependency_satisfaction is DependencySatisfaction.INVALID:
+                    result.error = "Sibling dependency declaration is invalid"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                    result.actions = ["Rejected - invalid sibling dependency declaration"]
+                    return result
+                if dependency_satisfaction in {DependencySatisfaction.WAITING, DependencySatisfaction.UNAVAILABLE}:
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                    result.actions = ["Deferred - sibling prerequisite remains open or unavailable"]
                     return result
 
             # This is the final cache-bypassing check immediately before slot and

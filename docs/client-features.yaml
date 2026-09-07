@@ -1,5 +1,26 @@
 # Client Features Documentation
 
+## Native sibling dependency reconciliation
+
+After the Issue creation-stabilization window, production intake treats a
+supported `Blocked-By:` line as the complete desired native GitHub incoming
+dependency set. It first materializes declared parent relationships, requires
+every dependency to be a distinct direct sibling Issue, validates the complete
+family (including closed children) for cycles, and then reconciles GitHub using
+stable Issue IDs with complete incoming/reverse pagination and authoritative
+readback. Removing the declaration leaves native dependencies unmanaged, while
+an explicitly empty declaration clears them.
+
+Malformed, conflicting, non-sibling, nonexistent, pull-request, and cyclic
+declarations are rejected before implementation ownership. A marked actionable
+diagnostic is reused across retries, and readiness is withdrawn independently
+from both the declaring child and its current authoritative parent. Operational
+or ambiguous GitHub failures fail closed without asserting a specification
+defect or withdrawing readiness. Valid open direct or transitive prerequisites
+defer implementation (but not enabled semantic validation); only authoritative
+closure satisfies them. Numeric elder-sibling ordering remains an additional
+temporary scheduling restriction.
+
 ## Secret-safe GitHub request outcomes
 
 The production GhApi/hishel boundary exposes a typed outcome for each actual
