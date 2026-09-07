@@ -109,9 +109,7 @@ def objective_integrity_result(
         if not isinstance(anchor.source_identity, str) or not anchor.source_identity.strip():
             return _error(f"Required Objective evidence for Issue #{anchor.issue_number} is malformed")
         current = anchor.current
-        if current.status not in {"PRESENT", "ABSENT", "INVALID"} or (
-            current.status == "PRESENT" and (not isinstance(current.text, str) or not current.text.strip())
-        ) or (current.status != "PRESENT" and current.text is not None):
+        if current.status not in {"PRESENT", "ABSENT", "INVALID"} or (current.status == "PRESENT" and (not isinstance(current.text, str) or not current.text.strip())) or (current.status != "PRESENT" and current.text is not None):
             return _error(f"Required Objective evidence for Issue #{anchor.issue_number} is malformed")
         if anchor.state == "UNANCHORED":
             if anchor.original_text is not None:
