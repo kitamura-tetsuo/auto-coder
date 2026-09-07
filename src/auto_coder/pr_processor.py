@@ -369,6 +369,24 @@ def _is_pr_review_thread_gate_enabled(
     return True
 
 
+def _is_automatic_test_fix_enabled(
+    config: Optional[AutomationConfig] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Return whether automatic test failure fix is enabled."""
+    if config is not None and repo_name is not None and getattr(config, "repo_name", None) == repo_name:
+        return bool(getattr(config, "automatic_test_fix", True))
+    if config is not None and not getattr(config, "automatic_test_fix", True):
+        return False
+    if repo_name is not None:
+        from .llm_backend_config import get_automatic_test_fix_from_config
+
+        return get_automatic_test_fix_from_config(repo_name=repo_name)
+    if config is not None:
+        return bool(getattr(config, "automatic_test_fix", True))
+    return True
+
+
 def is_authoritative_adversarial_thread(
     thread: ReviewThread,
     repo_name: str,
@@ -3109,11 +3127,17 @@ def _handle_pr_merge(
             actions.append(f"PR #{pr_number} was not created by local LLM, skipping local LLM fixes")
             return actions
 
+        # If automatic test fixing is disabled and we're not already on the PR branch,
+        # skip checkout and test-failure repair entirely to avoid mutating the workspace.
+        if not _is_automatic_test_fix_enabled(config, repo_name) and not already_on_pr_branch:
+            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
+            return actions
+
         # Step 7: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
 
         # Prepare branch (ensure fetched)
-        prepare_ok = _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
+        prepare_ok = True if already_on_pr_branch else _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
         if not prepare_ok:
             actions.append(f"Failed to prepare PR #{pr_number} branch")
             return actions
@@ -3170,6 +3194,10 @@ def _handle_pr_merge(
                 if any("up to date with" in action for action in update_actions):
                     actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
                     get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
+
+                    if not _is_automatic_test_fix_enabled(config, repo_name):
+                        actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
+                        return actions
 
                     # Fix PR issues using GitHub Actions logs first, then local tests
                     if failed_checks:
@@ -5702,8 +5730,17 @@ def _fix_pr_issues_with_github_actions_testing(
     pr_number = pr_data["number"]
 
     # Initialize backend managers
-    current_backend_manager = get_llm_backend_manager()
-    high_score_backend_manager = create_high_score_backend_manager()
+    current_backend_manager: Optional[BackendManager] = None
+    high_score_backend_manager: Optional[BackendManager] = None
+    if _is_automatic_test_fix_enabled(config, repo_name):
+        try:
+            current_backend_manager = get_llm_backend_manager()
+        except Exception as e:
+            logger.debug(f"Could not get LLM backend manager: {e}")
+        try:
+            high_score_backend_manager = create_high_score_backend_manager()
+        except Exception as e:
+            logger.debug(f"Could not create high score backend manager: {e}")
 
     # Track history
     attempt_history: List[Dict[str, Any]] = []
@@ -5711,10 +5748,13 @@ def _fix_pr_issues_with_github_actions_testing(
     try:
         # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
         # 1. Apply fix based on GHA logs
-        get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number)
-        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager)
-        actions.extend(initial_fix_actions)
+        if not _is_automatic_test_fix_enabled(config, repo_name):
+            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping GitHub Actions fix")
+        else:
+            get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number)
+            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager)
+            actions.extend(initial_fix_actions)
 
         # 2. Apply fix based on local tests when 1-3 tests failed
         if failed_tests and 1 <= len(failed_tests) <= 3:
@@ -5725,6 +5765,9 @@ def _fix_pr_issues_with_github_actions_testing(
             attempt = 0
 
             while not test_result.get("success") and 1 <= len(failed_tests) <= 3 and attempt < attempts_limit:
+                if not _is_automatic_test_fix_enabled(config, repo_name):
+                    actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping local test repair")
+                    break
                 if not new_work_allowed():
                     actions.append(f"Deferred another repair attempt for PR #{pr_number}: graceful shutdown is draining")
                     break
@@ -5759,6 +5802,9 @@ def _fix_pr_issues_with_github_actions_testing(
                     actions.extend(local_fix_actions)
 
                 test_result = run_local_tests(config, test_file=failed_tests[0])
+
+        if not _is_automatic_test_fix_enabled(config, repo_name):
+            return actions
 
         # 3. Commit and Push
         # Check if any changes were made
@@ -5802,8 +5848,17 @@ def _fix_pr_issues_with_local_testing(
     pr_number = pr_data["number"]
 
     # Initialize backend managers
-    current_backend_manager = get_llm_backend_manager()
-    high_score_backend_manager = create_high_score_backend_manager()
+    current_backend_manager: Optional[BackendManager] = None
+    high_score_backend_manager: Optional[BackendManager] = None
+    if _is_automatic_test_fix_enabled(config, repo_name):
+        try:
+            current_backend_manager = get_llm_backend_manager()
+        except Exception as e:
+            logger.debug(f"Could not get LLM backend manager: {e}")
+        try:
+            high_score_backend_manager = create_high_score_backend_manager()
+        except Exception as e:
+            logger.debug(f"Could not create high score backend manager: {e}")
 
     # Track history of previous attempts for context
     attempt_history: List[Dict[str, Any]] = []
@@ -5814,6 +5869,8 @@ def _fix_pr_issues_with_local_testing(
             msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
             logger.info(msg)
             actions.append(msg)
+        elif not _is_automatic_test_fix_enabled(config, repo_name):
+            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping GitHub Actions fix")
         else:
             get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs (local loop)", item_type="pr", item_number=pr_number)
             actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
@@ -5855,6 +5912,10 @@ def _fix_pr_issues_with_local_testing(
                     break
                 else:
                     actions.append(f"Local tests failed on attempt {attempt}")
+
+                    if not _is_automatic_test_fix_enabled(config, repo_name):
+                        actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping local test repair")
+                        break
 
                     # Apply local test failure fix (always try unless finite limit reached)
                     # Stop if finite limit reached after this attempt
@@ -5920,6 +5981,9 @@ def _apply_github_actions_fix(
     """
     actions: List[str] = []
     pr_number = pr_data["number"]
+
+    if not _is_automatic_test_fix_enabled(config, repo_name):
+        return [f"Automatic test fix is disabled for PR #{pr_number}; skipping GitHub Actions fix"]
 
     try:
         # Get commit log since branch creation
@@ -5997,6 +6061,8 @@ def _apply_local_test_fix(
         Tuple of (actions_list, llm_response)
     """
     actions = []
+    if not _is_automatic_test_fix_enabled(config, repo_name):
+        return [f"Automatic test fix is disabled for PR #{pr_data['number']}; skipping local test repair"], ""
     if not new_work_allowed():
         return [f"Deferred local repair for PR #{pr_data['number']}: graceful shutdown is draining"], ""
     llm_response = ""
