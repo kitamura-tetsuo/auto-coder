@@ -94,6 +94,42 @@ class CloudManager:
 
         return sessions
 
+    def read_bindings_strict(self) -> Dict[str, CloudTaskBinding]:
+        """Read ownership state without converting corruption into an empty store."""
+        self._ensure_cloud_dir()
+        if not self.cloud_file_path.exists():
+            return {}
+        with open(self.cloud_file_path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None or not {"issue_number", "session_id"}.issubset(reader.fieldnames):
+                raise ValueError(f"Malformed cloud ownership file: {self.cloud_file_path}")
+            bindings: Dict[str, CloudTaskBinding] = {}
+            for row in reader:
+                issue = row.get("issue_number", "").strip()
+                task = row.get("session_id", "").strip()
+                provider = row.get("provider", "").strip()
+                backend = row.get("backend_name", "").strip()
+                if not issue or not task:
+                    raise ValueError(f"Malformed cloud ownership row: {self.cloud_file_path}")
+                candidate = CloudTaskBinding(provider, task, backend)
+                if issue in bindings and bindings[issue] != candidate:
+                    raise ValueError(f"Contradictory cloud ownership for issue #{issue}")
+                bindings[issue] = candidate
+            return bindings
+
+    def ensure_binding(self, issue_number: int, binding: CloudTaskBinding) -> bool:
+        """Create a missing projection, refusing to overwrite another owner."""
+        with self._lock:
+            sessions = self.read_bindings_strict()
+            key = str(issue_number)
+            current = sessions.get(key)
+            if current is not None and current != binding:
+                raise ValueError(f"Contradictory cloud ownership for issue #{issue_number}")
+            if current == binding:
+                return True
+            sessions[key] = binding
+            return self._write_bindings(sessions)
+
     def _read_sessions(self) -> Dict[str, str]:
         """Read the historical session-id view used by lifecycle callers."""
         return {number: binding.task_id for number, binding in self._read_bindings().items()}

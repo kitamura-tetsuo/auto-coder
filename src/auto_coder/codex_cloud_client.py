@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,22 @@ from .utils import CommandExecutor
 logger = get_logger(__name__)
 
 _followup_state_lock = threading.Lock()
+
+
+class CodexSubmissionOutcome(str, Enum):
+    ACCEPTED = "accepted"
+    DEFINITELY_NOT_SUBMITTED = "definitely-not-submitted"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True)
+class CodexSubmissionResult:
+    """Evidence returned at the non-idempotent CLI submission boundary."""
+
+    outcome: CodexSubmissionOutcome
+    task_id: str = ""
+    task_url: str = ""
+    diagnostic: str = ""
 
 
 @dataclass
@@ -167,6 +184,21 @@ class CodexCloudClient(CloudTaskClientBase):
         Returns:
             The created Task ID.
         """
+        result = self.submit_task(prompt, repo_name, base_branch, title)
+        if result.outcome is not CodexSubmissionOutcome.ACCEPTED:
+            if result.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
+                raise ValueError(result.diagnostic)
+            raise RuntimeError(result.diagnostic)
+        return result.task_id
+
+    def submit_task(
+        self,
+        prompt: str,
+        repo_name: str = "",
+        base_branch: str = "",
+        title: Optional[str] = None,
+    ) -> CodexSubmissionResult:
+        """Submit once and retain evidence from both output streams."""
         logger.info(f"Starting Codex Cloud task (title={title or 'N/A'}, branch={base_branch or 'N/A'})")
 
         effective_repo = repo_name or self.repo_name
@@ -194,7 +226,10 @@ class CodexCloudClient(CloudTaskClientBase):
         cmd = ["codex", "cloud", "exec"]
 
         if not self.environment_id:
-            raise ValueError(f"No environment_id configured for Codex Cloud backend '{self.backend_name}'. " "Set environment_id in llm_config.toml or CODEX_CLOUD_ENV_ID.")
+            return CodexSubmissionResult(
+                CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED,
+                diagnostic=f"No environment_id configured for Codex Cloud backend '{self.backend_name}'. Set environment_id in llm_config.toml or CODEX_CLOUD_ENV_ID.",
+            )
         cmd.extend(["--env", self.environment_id])
 
         if self.attempts != 1:
@@ -215,24 +250,26 @@ class CodexCloudClient(CloudTaskClientBase):
             env["CODEX_BASE_URL"] = self.base_url
 
         logger.info(f"🤖 Running: {' '.join(cmd)}")
-        result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
-        output = (result.stdout or result.stderr or "").strip()
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to start Codex Cloud task: {output or 'unknown CLI error'}")
+        try:
+            result = CommandExecutor.run_command(cmd, env=env if len(env) > len(os.environ) else None)
+        except (FileNotFoundError, PermissionError) as exc:
+            return CodexSubmissionResult(CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED, diagnostic=f"Codex Cloud CLI did not start: {exc}")
+        except Exception as exc:
+            return CodexSubmissionResult(CodexSubmissionOutcome.INDETERMINATE, diagnostic=f"Codex Cloud CLI execution became indeterminate: {exc}")
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
 
         task_id = self._extract_task_id(output)
         task_url = self._extract_task_url(output)
 
-        if not task_id:
-            raise RuntimeError(f"Codex Cloud did not return a task ID: {output or 'empty output'}")
+        if task_id:
+            if task_url:
+                self.task_urls[task_id] = task_url
+            self.active_tasks[task_id] = prompt
+            logger.info(f"Codex Cloud returned task: {task_id} (url={task_url or 'N/A'})")
+            return CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, task_id, task_url or "", output)
 
-        if task_url:
-            self.task_urls[task_id] = task_url
-
-        self.active_tasks[task_id] = prompt
-        logger.info(f"Started Codex Cloud task: {task_id} (url={task_url or 'N/A'})")
-        return task_id
+        diagnostic = f"Codex Cloud did not return a task ID: {output or 'empty output'}"
+        return CodexSubmissionResult(CodexSubmissionOutcome.INDETERMINATE, diagnostic=diagnostic)
 
     def list_tasks(self, repo_name: Optional[str] = None) -> List[CloudTask]:
         """List active or recent Codex Cloud tasks.
