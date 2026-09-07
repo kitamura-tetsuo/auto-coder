@@ -1020,6 +1020,17 @@ issue:
          objective_conflict quoting the parent's fixed no-application Objective;
          when no Requirement states that missing negative boundary, reference the
          parent with an empty Requirement list.
+      5. Apply these as semantic equivalence rules, not merely examples. A child
+         Objective naming the output it owns remains intact when its Requirements
+         add input selection, no-mutation safety, or an exact handoff for that
+         output. Those constraints do not create a second deliverable and do not
+         inherit the parent's broader purpose. Thus, if the supplied safe
+         producer/consumer composition matches rule 3, do not emit
+         objective_conflict for either child's narrower Objective.
+      6. Before responding, validate the JSON tuple as a whole. If no permitted
+         counterexample survived steps 1-5, the only valid tuple is exactly
+         `READY`, `NONE`, and `[]`; do not retain a remediation or speculative
+         finding from an earlier analysis pass.
 
   adversarial_specification_analysis: |-
     Evaluate whether Issue #$issue_number is a precise, independent implementation and verification contract.
