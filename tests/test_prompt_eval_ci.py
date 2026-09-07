@@ -54,10 +54,12 @@ def test_empty_registry_and_unrelated_change_do_not_invoke_provider(tmp_path: Pa
     assert "No prompt-evaluation targets affected" in result.stdout
 
 
-def test_prompt_regression_workflow_supplies_codex_credentials() -> None:
+def test_prompt_regression_workflow_disables_selective_evaluations() -> None:
     workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml").read_text())
     assert workflow["permissions"] == {"contents": "read"}
-    steps = workflow["jobs"]["selective-prompt-evals"]["steps"]
+    job = workflow["jobs"]["selective-prompt-evals"]
+    assert job["if"] == "${{ false }}"
+    steps = job["steps"]
     assert {"name": "Setup Node.js", "uses": "actions/setup-node@v6", "with": {"node-version": "24"}} in steps
     evaluation_step = steps[-1]
     assert evaluation_step["env"]["CODEX_AUTH_JSON"] == "${{ secrets.CODEX_AUTH_JSON }}"
