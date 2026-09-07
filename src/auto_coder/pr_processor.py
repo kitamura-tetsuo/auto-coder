@@ -50,7 +50,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .github_app_reviewer import publish_adversarial_review, resolve_reviewer_app_identity
+from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review, resolve_reviewer_app_identity
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config
@@ -275,7 +275,12 @@ def _resolve_eligible_review_thread_ids(repo_name: str) -> Set[int]:
     return set(configured_ids or [])
 
 
-def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_number: int) -> ClaimedReviewThreadGateState:
+def _get_claimed_review_thread_state(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    config: Optional[AutomationConfig] = None,
+) -> ClaimedReviewThreadGateState:
     """Fetch review threads and separate ordinary blockers from claimed threads.
 
     Reuses the existing ``_get_review_thread_gate_state`` boolean/lookup-error
@@ -287,7 +292,7 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
     returned as a structured lookup error so callers can distinguish an API
     failure from an ordinary unresolved-thread blocker.
     """
-    gate = _get_review_thread_gate_state(github_client, repo_name, pr_number)
+    gate = _get_review_thread_gate_state(github_client, repo_name, pr_number, config=config)
     if gate.lookup_error:
         return ClaimedReviewThreadGateState(lookup_error=gate.lookup_error)
     if not gate.has_unresolved:
@@ -308,7 +313,7 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
     eligible_author_ids = _resolve_eligible_review_thread_ids(repo_name)
     classification = classify_review_threads(threads, eligible_author_ids)
     claimed_thread_ids = {thread.thread_id for thread in classification.claimed}
-    return ClaimedReviewThreadGateState(
+    state = ClaimedReviewThreadGateState(
         claimed=tuple(classification.claimed),
         unresolved=tuple(thread for thread in threads if not thread.is_resolved),
         # Repair delegation must receive only ordinary blockers. Claimed-addressed
@@ -317,12 +322,94 @@ def _get_claimed_review_thread_state(github_client: Any, repo_name: str, pr_numb
         blocking_unresolved=tuple(thread for thread in threads if not thread.is_resolved and thread.id not in claimed_thread_ids),
         has_blocking_unresolved=classification.blocking_unresolved_count > 0,
     )
+    if config is not None and not _is_pr_adversarial_validation_enabled(config, repo_name):
+        return _filter_unresolved_review_threads_for_disabled_validator(state, repo_name)
+    return state
 
 
 _ADVERSARIAL_THREAD_HEADINGS = (
     "### Auto-Coder adversarial finding",
     "### Auto-Coder material test-oracle gap",
 )
+
+
+def _is_pr_adversarial_validation_enabled(
+    config: Optional[AutomationConfig] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Return whether PR adversarial validation is enabled."""
+    if config is not None and repo_name is not None and getattr(config, "repo_name", None) == repo_name:
+        return bool(getattr(config, "pr_adversarial_validation", True)) and bool(getattr(config, "ENABLE_ADVERSARIAL_VALIDATION", True))
+    if config is not None and (not getattr(config, "pr_adversarial_validation", True) or not getattr(config, "ENABLE_ADVERSARIAL_VALIDATION", True)):
+        return False
+    if repo_name is not None:
+        from .llm_backend_config import get_pr_adversarial_validation_from_config
+
+        return get_pr_adversarial_validation_from_config(repo_name=repo_name)
+    if config is not None:
+        return bool(getattr(config, "pr_adversarial_validation", True)) and bool(getattr(config, "ENABLE_ADVERSARIAL_VALIDATION", True))
+    return True
+
+
+def is_authoritative_adversarial_thread(
+    thread: ReviewThread,
+    repo_name: str,
+    reviewer_identity: Optional[ReviewerAppIdentity] = None,
+) -> bool:
+    """Return whether a review thread authoritatively originates from Auto-Coder's adversarial validator."""
+    if thread.is_resolved or thread.comments_truncated:
+        return False
+    comments = thread.comments or []
+    if not comments:
+        return False
+    root = comments[0]
+    if root is None or not any(root.body.startswith(heading) or root.body.lstrip().startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
+        return False
+    if reviewer_identity is None:
+        try:
+            reviewer_identity = resolve_reviewer_app_identity(repo_name)
+        except Exception as exc:
+            logger.error(f"Could not resolve reviewer App identity to authenticate thread: {exc}")
+            return False
+    return reviewer_identity.matches_login(root.author_login)
+
+
+def _filter_unresolved_review_threads_for_disabled_validator(
+    state: ClaimedReviewThreadGateState,
+    repo_name: str,
+) -> ClaimedReviewThreadGateState:
+    """Exclude authoritatively identified adversarial validator threads from merge blocking.
+
+    When adversarial validation is disabled, unresolved validator-owned threads
+    must not remain internal merge blockers solely through the generic review-thread gate
+    (REQ-004), while remaining unmodified and unresolved on GitHub (REQ-006).
+    Non-adversarial review threads (such as human reviews) remain blocking (REQ-005).
+    """
+    try:
+        reviewer_identity = resolve_reviewer_app_identity(repo_name)
+    except Exception as exc:
+        logger.error(f"Could not resolve reviewer identity to check validator review threads: {exc}")
+        return state
+
+    remaining_blocking: List[ReviewThread] = []
+    for thread in state.blocking_unresolved:
+        if is_authoritative_adversarial_thread(thread, repo_name, reviewer_identity):
+            continue
+        remaining_blocking.append(thread)
+
+    remaining_claimed: List[ClaimedReviewThread] = []
+    for thread in state.claimed:
+        if any(thread.original_finding.startswith(heading) or thread.original_finding.lstrip().startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS) and reviewer_identity.matches_login(thread.root_author_login):
+            continue
+        remaining_claimed.append(thread)
+
+    return ClaimedReviewThreadGateState(
+        claimed=tuple(remaining_claimed),
+        unresolved=state.unresolved,
+        blocking_unresolved=tuple(remaining_blocking),
+        has_blocking_unresolved=bool(remaining_blocking),
+        lookup_error=state.lookup_error,
+    )
 
 
 def _allow_older_head_adversarial_threads(
@@ -564,14 +651,26 @@ def has_unresolved_review_threads(
         return False
 
 
-def _get_review_thread_gate_state(github_client: Any, repo_name: str, pr_number: int) -> ReviewThreadGateState:
+def _get_review_thread_gate_state(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    config: Optional[AutomationConfig] = None,
+) -> ReviewThreadGateState:
     """Fetch review threads strictly in production so lookup errors fail closed."""
     try:
         client = github_client or GitHubClient.get_instance()
         strict_getter = getattr(type(client), "get_pr_review_threads_strict", None)
         if callable(strict_getter):
             threads = client.get_pr_review_threads_strict(repo_name, pr_number)
-            return ReviewThreadGateState(has_unresolved=any(not thread.is_resolved for thread in threads))
+            unresolved = [thread for thread in threads if not thread.is_resolved]
+            if config is not None and not _is_pr_adversarial_validation_enabled(config, repo_name):
+                try:
+                    reviewer_identity = resolve_reviewer_app_identity(repo_name)
+                    unresolved = [thread for thread in unresolved if not is_authoritative_adversarial_thread(thread, repo_name, reviewer_identity)]
+                except Exception as exc:
+                    logger.error(f"Could not resolve reviewer identity in review thread gate: {exc}")
+            return ReviewThreadGateState(has_unresolved=bool(unresolved))
         return ReviewThreadGateState(has_unresolved=has_unresolved_review_threads(client, repo_name, pr_number))
     except Exception as e:
         logger.error(f"Failed strict review-thread lookup for PR #{pr_number}: {e}")
@@ -2136,7 +2235,7 @@ def is_current_head_adversarial_review_blocked(
     consults generic GitHub review state or human review threads (REQ-004):
     only the dedicated reviewer App's own marker-scoped verdict counts.
     """
-    if not config.ENABLE_ADVERSARIAL_VALIDATION or _is_dependabot_pr(pr_data):
+    if not _is_pr_adversarial_validation_enabled(config, repo_name) or _is_dependabot_pr(pr_data):
         return False
     pr_number = pr_data.get("number")
     if not isinstance(pr_number, int):
@@ -2431,7 +2530,7 @@ def _handle_pr_merge(
             # (REQ-001, REQ-011) does not block merge outright; it is instead
             # carried into a fresh adversarial validation run so an independent
             # disposition can decide whether to resolve it.
-            claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
+            claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
             if claimed_thread_state.lookup_error:
                 actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {claimed_thread_state.lookup_error}")
                 if processing_status is not None:
@@ -2440,24 +2539,28 @@ def _handle_pr_merge(
                 return actions
             revalidating_older_head_threads = False
             reviewer_login = ""
-            if claimed_thread_state.has_blocking_unresolved and config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data):
-                # An authentic validator finding remains a merge blocker, but it
-                # must not prevent validation of a newer head.  Same-head
-                # non-PASS results still take the ordinary blocking/dedup path.
-                head_sha_for_gate = pr_data.get("head", {}).get("sha", "")
-                gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
-                if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
-                    current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
-                    if not current_status_error and current_status is None:
-                        try:
-                            reviewer_login = resolve_reviewer_app_identity(repo_name).login
-                        except Exception as exc:
-                            logger.error(f"Could not authenticate older-head adversarial threads for PR #{pr_number}: {exc}")
-                        else:
-                            claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login)
-                            revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
-                            if revalidating_older_head_threads:
-                                actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
+            adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
+            if adv_enabled:
+                if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
+                    # An authentic validator finding remains a merge blocker, but it
+                    # must not prevent validation of a newer head.  Same-head
+                    # non-PASS results still take the ordinary blocking/dedup path.
+                    head_sha_for_gate = pr_data.get("head", {}).get("sha", "")
+                    gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
+                    if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
+                        current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
+                        if not current_status_error and current_status is None:
+                            try:
+                                reviewer_login = resolve_reviewer_app_identity(repo_name).login
+                            except Exception as exc:
+                                logger.error(f"Could not authenticate older-head adversarial threads for PR #{pr_number}: {exc}")
+                            else:
+                                claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login)
+                                revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
+                                if revalidating_older_head_threads:
+                                    actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
+            else:
+                claimed_thread_state = _filter_unresolved_review_threads_for_disabled_validator(claimed_thread_state, repo_name)
             if claimed_thread_state.has_blocking_unresolved:
                 actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                 pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
@@ -2482,7 +2585,7 @@ def _handle_pr_merge(
 
             # Strong-model adversarial validation step. Issue-less PRs have no
             # independent specification oracle, so validation is not applicable.
-            adversarial_validation_enabled = config.ENABLE_ADVERSARIAL_VALIDATION and not _is_dependabot_pr(pr_data)
+            adversarial_validation_enabled = adv_enabled and not _is_dependabot_pr(pr_data)
             adversarial_eligibility = AdversarialValidationEligibility()
             if adversarial_validation_enabled:
                 adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
@@ -5175,7 +5278,7 @@ def _merge_pr(
         from auto_coder.util.gh_cache import get_ghapi_client
 
         client = github_client or GitHubClient.get_instance()
-        review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number)
+        review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number, config=config)
         if review_thread_state.lookup_error:
             logger.info(f"PR #{pr_number} review threads could not be checked. Skipping merge.")
             log_action(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")

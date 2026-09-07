@@ -1969,7 +1969,7 @@ def get_feature_switch_from_config(
         ValueError: If a configured value is not a boolean.
     """
     if apply_env and feature_name == "pr_adversarial_validation":
-        adv_val_env = os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
+        adv_val_env = os.environ.get("AUTO_CODER_PR_ADVERSARIAL_VALIDATION") or os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
         if adv_val_env is not None:
             return adv_val_env.strip().lower() not in ("false", "0", "no")
 
