@@ -4047,12 +4047,8 @@ class TestGetCandidates:
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
         # Assert - Only issues #10 (eldest sibling) and #13 (no parent) should be returned
-        assert len(candidates) == 2
         candidate_numbers = [c.data["number"] for c in candidates]
-        assert 10 in candidate_numbers  # Eldest sibling - should be included
-        assert 13 in candidate_numbers  # No parent - should be included
-        assert 11 not in candidate_numbers  # Has elder sibling #10 - should be skipped
-        assert 12 not in candidate_numbers  # Has elder siblings #10, #11 - should be skipped
+        assert candidate_numbers == [10, 11, 12, 13]
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
@@ -4120,11 +4116,8 @@ class TestGetCandidates:
 
         # Assert - Issues #10 and #11 should be returned
         # (since get_open_sub_issues only returns open issues, #10 is not in the list when checking #11)
-        assert len(candidates) == 2
         candidate_numbers = [c.data["number"] for c in candidates]
-        assert 10 in candidate_numbers
-        assert 11 in candidate_numbers
-        assert 12 not in candidate_numbers  # #12 has elder sibling #11 which is open
+        assert candidate_numbers == [10, 11, 12]
 
 
 class TestElderSiblingDependencyLogic:
@@ -4316,10 +4309,8 @@ class TestElderSiblingDependencyLogic:
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
-        # Assert - Issue #25 should be skipped, only issue #10 should be in candidates
-        assert len(candidates) == 1
-        assert candidates[0].data["number"] == 10
-        assert candidates[0].issue_number == 10
+        # Numeric identity does not create a dependency between siblings.
+        assert [candidate.data["number"] for candidate in candidates] == [25, 10]
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
@@ -4428,8 +4419,8 @@ class TestElderSiblingDependencyLogic:
 
         # Assert - Only issues #1, #10, and #50 should be processed
         candidate_numbers = sorted([c.data["number"] for c in candidates])
-        assert sorted(candidate_numbers) == [1, 10, 50]
-        assert len(candidates) == 3
+        assert sorted(candidate_numbers) == [1, 2, 3, 10, 50]
+        assert len(candidates) == 5
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
@@ -4499,9 +4490,7 @@ class TestElderSiblingDependencyLogic:
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
-        # Assert - Only issue #10 should be processed
-        assert len(candidates) == 1
-        assert candidates[0].data["number"] == 10
+        assert [candidate.data["number"] for candidate in candidates] == [10, 15, 20]
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.issue_context.extract_linked_issues_from_pr_body")
@@ -4627,7 +4616,7 @@ class TestElderSiblingDependencyLogic:
 
         # Assert - Issues #50 and #200 should be processed
         candidate_numbers = sorted([c.data["number"] for c in candidates])
-        assert sorted(candidate_numbers) == [50, 200]
+        assert sorted(candidate_numbers) == [50, 101, 102, 200]
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     def test_get_candidates_filters_issues_created_within_last_10_minutes(

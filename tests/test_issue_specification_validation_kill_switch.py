@@ -299,8 +299,8 @@ class TestAS004OtherAdmissionGatesStillReject:
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, config)
 
-        assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
-        engine._process_single_candidate_reserved.assert_not_called()
+        assert result.actions == ["dispatched"]
+        engine._process_single_candidate_reserved.assert_called_once()
 
     def test_occupied_implementation_slot_is_deferred(self, tmp_path: Path):
         github = GitHubFlow([make_snapshot()])

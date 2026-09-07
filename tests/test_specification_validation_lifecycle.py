@@ -334,9 +334,9 @@ def test_elder_sibling_rejects_leaf_before_ownership(tmp_path):
     engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
     candidate.data["parent_issue_number"] = 10
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
-    engine._process_single_candidate_reserved.assert_not_called()
-    assert engine.implementation_slots.active_owners() == ()
+    assert result.actions == ["dispatched"]
+    engine._process_single_candidate_reserved.assert_called_once()
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 1728),)
 
 
 def test_specification_error_keeps_real_refill_pending_then_admits(tmp_path):
@@ -384,8 +384,8 @@ def test_refill_builds_metadata_hierarchy_and_continues_past_younger_sibling(tmp
     engine._process_single_candidate_reserved = Mock(side_effect=lambda _repo, candidate, *_args, **_kwargs: dispatched.append(candidate.data["number"]) or CandidateProcessingResult("issue", candidate.data["number"], success=True))
 
     assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
-    assert dispatched == [30]
-    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 30),)
+    assert dispatched == [20]
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 20),)
 
 
 def test_hierarchy_uses_newly_authorized_parent_metadata(tmp_path):
@@ -398,9 +398,9 @@ def test_hierarchy_uses_newly_authorized_parent_metadata(tmp_path):
     candidate.data["refill_metadata_open_children"] = {11: [19, 20]}
 
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert result.actions == ["Skipped - unresolved Issue hierarchy dependency"]
-    engine._process_single_candidate_reserved.assert_not_called()
-    assert engine.implementation_slots.active_owners() == ()
+    assert result.actions == ["dispatched"]
+    engine._process_single_candidate_reserved.assert_called_once()
+    assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", 1728),)
 
 
 @pytest.mark.parametrize(

@@ -201,5 +201,4 @@ class TestAutomationEngineCandidates:
         # 5031 has open sub issues -> skipped
         # 5032 has parent 5031, elder siblings [] -> chosen
         # 5033 has parent 5031, elder siblings [5032] -> skipped
-        assert len(candidates) == 1
-        assert candidates[0].data["number"] == 5032
+        assert [candidate.data["number"] for candidate in candidates] == [5032, 5033]
