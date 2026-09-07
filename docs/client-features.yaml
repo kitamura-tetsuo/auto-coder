@@ -168,6 +168,17 @@ automatic repair loops for local test and GitHub Actions failures:
 
 ## Durable reissue-required specification remediation
 
+Specification validation has a durable repair-round circuit breaker. Individual
+Issues and parent decomposition sets independently count distinct authoritative
+contract generations whose trustworthy BLOCKED decision was applied as
+`EDIT_IN_PLACE`. The `[validation].repair_round_limit` positive integer setting
+defaults to `3`. Once exhausted, the next new generation is still reviewed and
+may become READY, but another `EDIT_IN_PLACE` result is upgraded to terminal
+`REISSUE_REQUIRED` with a machine-readable limit reason. Duplicate observations,
+policy-only reruns, errors, stale results, READY results, and semantic reissue
+decisions do not consume repair rounds; counts survive restart and remain tied to
+the stable Issue or parent number.
+
 Individual and parent/decomposition specification results carry a strict
 remediation disposition in addition to their unchanged semantic verdict.
 `READY` and `ERROR` use `NONE`; `BLOCKED` uses either `EDIT_IN_PLACE` or

@@ -2007,6 +2007,24 @@ def get_issue_specification_validation_from_config(
     return get_feature_switch_from_config("issue_specification_validation", config_path=config_path, repo_name=repo_name)
 
 
+def get_specification_repair_round_limit_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
+    """Return the positive maximum applied in-place specification repairs."""
+    value = _get_config_value(
+        section="validation",
+        key="repair_round_limit",
+        default=3,
+        config_path=config_path,
+        value_type=int,
+        repo_name=repo_name,
+    )
+    if type(value) is not int or value <= 0:
+        raise ValueError("[validation].repair_round_limit must be a positive integer")
+    return value
+
+
 def get_issue_decomposition_validation_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,

@@ -22,6 +22,7 @@ from .specification_analyzer import (
     analyze_issue_specification,
     individual_review_evidence,
 )
+from .specification_repair_rounds import SpecificationRepairRoundStore
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
 VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v2-remediation"
@@ -79,6 +80,7 @@ class ValidationDecision:
     findings_published: bool = False
     readiness_removed: bool = False
     remediation: str = "NONE"
+    remediation_reason: Optional[str] = None
 
 
 def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
@@ -221,7 +223,7 @@ class SpecificationValidationStore:
             return None
         findings = tuple(SpecificationFinding(**item) for item in raw.get("findings", []) if isinstance(item, dict))
         remediation = str(raw.get("remediation", "NONE"))
-        return ValidationDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), remediation)
+        return ValidationDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), remediation, raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None)
 
     def save(self, decision: ValidationDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -235,6 +237,7 @@ class SpecificationValidationStore:
                 "findings_published": decision.findings_published,
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
+                "remediation_reason": decision.remediation_reason,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -256,6 +259,8 @@ class SpecificationValidationLifecycle:
         history_path = path.with_name("individual_review_history.json") if path is not None else None
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
         self.history_store = IndividualReviewHistoryStore(repository, history_path)
+        rounds_path = path.with_name("specification_repair_rounds.json") if path is not None else None
+        self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer
 
     def identity(self, issue_number: int, title: str, body: str) -> ValidationIdentity:
@@ -319,6 +324,7 @@ class SpecificationValidationLifecycle:
             # not an operational failure: the old generation simply remains blocked.
             if matching_snapshot() is None:
                 return None
+            current_decision = self._apply_repair_round_policy(current_decision)
             self._record_applied_outcome(current_decision)
             if current_decision.remediation == "REISSUE_REQUIRED":
                 try:
@@ -334,7 +340,7 @@ class SpecificationValidationLifecycle:
                     return None
                 if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
                     github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current_decision))  # type: ignore[attr-defined]
-                current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed, current_decision.remediation)
+                current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed, current_decision.remediation, current_decision.remediation_reason)
                 self.store.save(current_decision)
             if matching_snapshot() is None:
                 return None
@@ -349,6 +355,7 @@ class SpecificationValidationLifecycle:
                 current_decision.findings_published,
                 True,
                 current_decision.remediation,
+                current_decision.remediation_reason,
             )
             self.store.save(current_decision)
         return None
@@ -374,6 +381,7 @@ class SpecificationValidationLifecycle:
 
             if not still_current():
                 return None
+            current = self._apply_repair_round_policy(current)
             self._record_applied_outcome(current)
             if current.remediation == "REISSUE_REQUIRED":
                 try:
@@ -398,16 +406,41 @@ class SpecificationValidationLifecycle:
                         except Exception as exc:
                             failures.append(f"findings publication failed: {exc}")
                     if published:
-                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation)
+                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation, current.remediation_reason)
                         self.store.save(current)
             if not still_current():
                 return "; ".join(failures) or None
             try:
                 github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation))
+                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation, current.remediation_reason))
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
+
+    def _apply_repair_round_policy(self, decision: ValidationDecision) -> ValidationDecision:
+        """Apply the generation-deduplicated circuit breaker before GitHub effects."""
+        from .llm_backend_config import get_specification_repair_round_limit_from_config
+
+        applied = self.repair_rounds.apply(
+            "individual",
+            decision.identity.issue_number,
+            decision.identity.specification_digest,
+            decision.remediation,
+            get_specification_repair_round_limit_from_config(repo_name=self.repository),
+        )
+        if (applied.remediation, applied.reason) == (decision.remediation, decision.remediation_reason):
+            return decision
+        updated = ValidationDecision(
+            decision.identity,
+            decision.verdict,
+            decision.findings,
+            decision.findings_published,
+            decision.readiness_removed,
+            applied.remediation,
+            applied.reason,
+        )
+        self.store.save(updated)
+        return updated
 
     def _record_applied_outcome(self, decision: ValidationDecision) -> None:
         outcome = json.dumps(
@@ -427,6 +460,8 @@ class SpecificationValidationLifecycle:
     def findings_comment(decision: ValidationDecision) -> str:
         remedy = "Replace this Issue with a new Issue number; editing this Issue cannot restore implementation eligibility." if decision.remediation == "REISSUE_REQUIRED" else "Edit this Issue in place and resubmit it for validation."
         lines = [f"<!-- {FINDINGS_MARKER_PREFIX}:{decision.identity.key} -->", "## Auto-Coder specification validation", "", "Implementation is blocked by material specification defects:", "", f"**Remediation:** {remedy}"]
+        if decision.remediation_reason:
+            lines.extend(["", f"**Reason:** `{decision.remediation_reason}`"])
         for finding in decision.findings:
             ids = ", ".join(finding.requirement_ids) or "contract-wide"
             lines.extend(["", f"- **{finding.category}** ({ids}): {finding.explanation}", f"  Clarification required: {finding.clarification}"])

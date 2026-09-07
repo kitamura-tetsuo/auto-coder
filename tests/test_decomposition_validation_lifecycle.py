@@ -147,6 +147,25 @@ def test_production_lifecycle_preserves_first_set_baseline_and_passes_applied_hi
     assert len(history["applied_outcomes"]) == 1
 
 
+def test_decomposition_repair_budget_is_generation_bound_and_independent_from_child(tmp_path):
+    """AS-003/004/009 exercise authoritative set application and shared durable storage."""
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "sets.json"
+    gate = DecompositionValidationLifecycle("owner/repo", "policy-a", path, lambda *_args: blocked)
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    github = relationship_github(parent, children)
+    assert gate.apply_blocked(github, decision, lambda _number: (parent, children)) is None
+
+    policy_rerun = DecompositionValidationLifecycle("owner/repo", "policy-b", path, lambda *_args: blocked)
+    rerun = policy_rerun.decide(policy_rerun.identity(parent, children), parent_input, child_inputs)
+    assert policy_rerun.apply_blocked(github, rerun, lambda _number: (parent, children)) is None
+    assert policy_rerun.repair_rounds.count("decomposition", 10) == 1
+    assert policy_rerun.repair_rounds.count("individual", 11) == 0
+
+
 def test_parent_submission_reaches_set_then_child_validation_before_dispatch(tmp_path):
     """Production candidate processing inherits readiness without labeling the child."""
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
