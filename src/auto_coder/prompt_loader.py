@@ -17,6 +17,57 @@ DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parent / "prompts.yaml"
 
 _PROMPTS_CACHE: Dict[Path, Dict[str, Any]] = {}
 
+_ISSUE_POLICY_PROMPTS = frozenset(
+    {
+        "issue.action",
+        "issue.breaking_change",
+        "issue.urgent",
+        "issue.bug",
+        "issue.enhancement",
+        "issue.documentation",
+        "jules.issue.action",
+        "codex_cloud.initial_issue_implementation",
+    }
+)
+_PR_CONTRACT_POLICY_PROMPTS = frozenset(
+    {
+        "pr.action",
+        "pr.breaking_change",
+        "pr.urgent",
+        "pr.bug",
+        "pr.enhancement",
+        "pr.documentation",
+        "jules.pr.action",
+        "pr.github_actions_fix",
+        "pr.github_actions_fix_direct",
+        "pr.local_test_fix",
+        "pr.existing_pr_repair",
+        "pr.merge_conflict_resolution",
+        "pr.adversarial_validation",
+        "pr.adversarial_validation_initial_review",
+        "pr.adversarial_validation_rereview",
+        "pr.adversarial_validation_followup",
+        "pr.adversarial_validation_fix",
+    }
+)
+
+
+def _prepend_contract_policy(key: str, template: str, prompts: Dict[str, Any]) -> str:
+    """Compose shared Objective policy into production Issue/PR prompts."""
+    policies = prompts.get("policies")
+    if not isinstance(policies, dict):
+        return template
+    fragments: List[str] = []
+    if key in _ISSUE_POLICY_PROMPTS:
+        authoring = policies.get("short_objective_authoring")
+        if isinstance(authoring, str):
+            fragments.append(authoring.rstrip())
+    if key in _ISSUE_POLICY_PROMPTS or key in _PR_CONTRACT_POLICY_PROMPTS:
+        boundary = policies.get("objective_requirements_boundary")
+        if isinstance(boundary, str):
+            fragments.append(boundary.rstrip())
+    return "\n\n".join([*fragments, template])
+
 
 def _resolve_path(path: Optional[str] = None) -> Path:
     """Resolve the prompt configuration path."""
@@ -369,6 +420,8 @@ def render_prompt(
 
     # Fall back to original key-based rendering
     template_str = get_prompt_template(key, path=path)
+    prompts = load_prompts(path)
+    template_str = _prepend_contract_policy(key, template_str, prompts)
     template = Template(template_str)
 
     params: Dict[str, Any] = {}
@@ -387,7 +440,6 @@ def render_prompt(
         rendered_prompt = template.safe_substitute(safe_params)
 
         # Load prompts to get header
-        prompts = load_prompts(path)
         header_key = "jules_header" if is_jules else "header"
         header = prompts.get(header_key)
         # Fallback to default header if jules_header is missing

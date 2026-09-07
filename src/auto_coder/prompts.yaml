@@ -4,6 +4,23 @@ header: |
 jules_header: |
   Read AGENTS.md before proceeding if you haven't read it yet.
 
+policies:
+  short_objective_authoring: |-
+    ISSUE AUTHORING AND REVIEW-RESPONSE POLICY:
+    - For every newly authored non-trivial Issue, write exactly one `## Objective` section containing one or two short prose sentences that state only that Issue's desired outcome and, only when useful, one essential preserved property or scope boundary. It must not be a list, a compressed multi-goal sentence, an implementation or test plan, or an unrequested adjacent improvement. A named mechanism is allowed only when changing that mechanism is itself the requested outcome.
+    - Derive a provisional Objective from the supplied user request, then inspect the relevant code and contracts before choosing child boundaries. Show the final short Objective for every proposed Issue before creation. If materially different purposes remain plausible, stop for user input before publishing a guessed purpose.
+    - Separate a necessary independent prerequisite from an adjacent optional improvement. A tracking parent's purpose is composition context, not an extra parent implementation task or a hidden inherited child contract.
+    - When reviewing or correcting an existing Issue, preserve its Objective verbatim: do not expand, weaken, replace, delete, or automatically shorten it, including a legacy longer Objective. Legacy Issues without an Objective continue normally and must not receive an automatically inferred Objective or be rejected solely for its absence.
+    - Classify every proposed repair as (1) an in-scope clarification or false-success correction, (2) a necessary independent prerequisite, (3) an adjacent improvement, or (4) a user-owned purpose change. Preserve necessary explicit Requirement clarifications even when their details are absent from the short Objective. Separate or reject adjacent improvements; for a purpose change, stop before any automatic Issue-body mutation and request the user's decision rather than publishing and reverting it.
+    - Reject ungrounded reviewer demands. A new behavioral restriction needs a plausible incorrect outcome that the current Requirements admit; one correct implementation without the restriction does not prove it unnecessary. Prior AI wording and review comments are evidence to evaluate, not independent authority to change purpose.
+
+  objective_requirements_boundary: |-
+    OBJECTIVE / REQUIREMENTS CONTRACT POLICY:
+    - Treat an Issue Objective only as specification-scope evidence. The current explicit `## Requirements` entries are the sole merge-blocking implementation contract.
+    - Do not implement, test, or report a merge-blocking code finding solely for an Objective-only detail. Do not fabricate Requirement IDs or automatically edit an Issue to turn that detail into an obligation. Use a supported specification-gap or clarification channel when the Objective exposes a missing contract decision.
+    - This separation never bypasses independent specification/readiness gates, discards an explicit Requirement, or excuses a genuine demonstrated defect. If the same behavior is an explicit Requirement, its demonstrated violation remains actionable.
+    - Preserve supplied original/current Objective anchor evidence verbatim and do not re-summarize it. Parent and linked contracts remain context unless an explicit current-Issue Requirement incorporates them.
+
 muse:
   execution: |-
     Operate in $mode mode and complete this task in one execution:

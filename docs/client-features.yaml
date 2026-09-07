@@ -2056,3 +2056,12 @@ runtime_coordination_locks:
     - Stable identities include the resolved state path, coordination purpose, and logical key.
     - Shared-state processes must use one physical runtime tree and consistent canonical state paths.
   documentation: docs/runtime-locks.md
+
+short-objective-contract-policy:
+  description: "Keeps a concise Issue purpose separate from the normative implementation contract (Issue #1860)."
+  behavior:
+    - "New non-trivial Issues use one Objective section with one or two short outcome sentences; detailed behavior and acceptance coverage remain in explicit Requirements."
+    - "Issue decomposition inspects code and contracts before fixing child boundaries, exposes every proposed Objective before creation, and stops rather than guessing between materially different purposes."
+    - "Review response preserves an existing Objective verbatim, rejects adjacent demands, and requires user direction before any purpose-changing Issue mutation; legacy Issues are neither inferred nor rejected for lacking Objective."
+    - "Production Issue, label, cloud, PR implementation, correction, initial review, rereview, and dynamic follow-up prompts receive one shared policy: Objective is scope evidence while current explicit Requirements are the sole merge-blocking contract."
+    - "Objective-only omissions use supported specification-gap or clarification channels and never become invented REQ IDs, automatic Issue edits, or implicit code and test obligations."
