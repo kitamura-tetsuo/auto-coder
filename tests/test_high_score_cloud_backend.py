@@ -363,17 +363,21 @@ class TestDifficultIssueHandling:
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
-    def test_automation_engine_routes_parent_issue_through_cloud_lifecycle(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
-        """Parent verification uses the lifecycle-aware high-score dispatcher."""
-        mock_high_score_cloud.return_value = ["Parent verification dispatched"]
+    def test_automation_engine_never_routes_parent_issue_through_cloud_lifecycle(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
+        """A container parent is stopped before every implementation backend."""
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
-        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
-        mock_github.get_all_sub_issues.return_value = [201, 202]
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+            "number": number,
+            "body": "",
+            "state": "open",
+            "labels": [],
+        }
+        mock_github.get_direct_sub_issues_strict.return_value = [{"number": 201, "state": "open"}]
 
         config = AutomationConfig()
         engine = AutomationEngine(mock_github, config)
@@ -395,14 +399,7 @@ class TestDifficultIssueHandling:
             jules_mode=True,
         )
 
-        mock_high_score_cloud.assert_called_once_with(
-            "owner/repo",
-            candidate.data,
-            config,
-            mock_github,
-            label_context=ANY,
-            implementation_slots=ANY,
-        )
+        mock_high_score_cloud.assert_not_called()
         mock_take_actions.assert_not_called()
-        assert result.success is True
-        assert result.actions == ["Parent verification dispatched"]
+        assert result.success is False
+        assert result.actions == ["Skipped - parent submission is missing implementation-ready label"]

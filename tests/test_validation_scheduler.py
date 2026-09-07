@@ -47,6 +47,7 @@ def configured_engine(tmp_path: Path, activity: Activity) -> AutomationEngine:
     github = Mock()
     snapshots = {number: issue(number, "closed" if number == 20 else "open") for number in (10, 20, 30, 40)}
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.close_issue.side_effect = lambda _repo, number: snapshots[number].update(state="closed")
     # Retrieval deliberately differs from semantic ordering and contains a
     # closed member, proving the supported GitHub origin preserves both.
     github.get_direct_sub_issues_strict.return_value = [{"number": 40}, {"number": 20}, {"number": 30}]
@@ -200,6 +201,7 @@ def test_all_closed_parent_processing_uses_shared_validation_capacity(tmp_path: 
     snapshots = {10: parent, 20: child}
     github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.close_issue.side_effect = lambda _repo, number: snapshots[number].update(state="closed")
     engine = AutomationEngine(github, AutomationConfig(env_override=False))
     engine.validation_scheduler.shutdown()
     engine.validation_scheduler = ValidationScheduler(1)
@@ -229,5 +231,5 @@ def test_all_closed_parent_processing_uses_shared_validation_capacity(tmp_path: 
         result = processing.result(timeout=5)
 
     assert decomposition_started.is_set()
-    assert result.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert result.actions == ["Completed - closed container parent after all direct children completed"]
     engine.validation_scheduler.shutdown()

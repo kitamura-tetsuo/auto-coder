@@ -50,6 +50,10 @@ class GraphGitHub(GitHubClient):
         self.removals.append((number, labels, item_type))
         self.issues[number]["labels"] = []
 
+    def close_issue(self, _repo, number, comment=None):
+        self.events.append("closed")
+        self.issues[number]["state"] = "closed"
+
 
 def graph_issue(number, body, ready=False, state="open", created_at=None):
     return {
@@ -136,6 +140,45 @@ def test_invalid_marker_blocks_common_dispatch_without_side_effects():
     github.add_comment_to_issue.assert_not_called()
 
 
+def test_closed_issue_cannot_be_materialized_as_new_parent():
+    body = "## Requirements\n- REQ-001: Keep the graph shallow."
+    github = GraphGitHub(
+        {
+            1: graph_issue(1, body, state="closed"),
+            2: graph_issue(2, body + "\nParent-Issue: #1", ready=True),
+        },
+        {},
+        {},
+    )
+    engine = AutomationEngine(github, AutomationConfig())
+
+    result = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[2]), 0), engine.config)
+
+    assert result.actions == ["Blocked - invalid Parent-Issue relationship metadata"]
+    assert result.error == "Parent-Issue reconciliation blocked processing: declared parent #1 is closed"
+    assert github.parents == {}
+    assert github.events == []
+
+
+def test_preexisting_nested_parent_fails_before_validation_or_implementation(tmp_path: Path):
+    body = "## Requirements\n- REQ-001: Keep the graph shallow."
+    github = GraphGitHub(
+        {1: graph_issue(1, body), 2: graph_issue(2, body, ready=True), 3: graph_issue(3, body)},
+        {2: 1, 3: 2},
+        {1: [2], 2: [3]},
+    )
+    analyzed: list[str] = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle("o/r", "provider/model", tmp_path / "sets.json", lambda *_args: analyzed.append("set") or DecompositionAnalysisResult("READY"))
+
+    result = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[2]), 0), engine.config, force=True, explicit_only=True)
+
+    assert result.actions == ["Blocked - invalid Parent-Issue relationship metadata"]
+    assert "both a child and a parent" in (result.error or "")
+    assert analyzed == []
+    assert github.events == []
+
+
 @pytest.mark.parametrize("child_body", ["Parent-Issue: #3", "Parent-Issue: #abc"])
 def test_explicit_parent_reconciles_closed_children_before_any_validation(tmp_path: Path, child_body: str):
     body = "## Requirements\n- REQ-001: Preserve the graph."
@@ -192,7 +235,7 @@ def test_explicit_new_parent_waits_for_creation_window_and_uses_latest_body(tmp_
     monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (created + timedelta(seconds=61)).timestamp())
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(issues[1]), 0), engine.config)
     assert analyzed == [issues[1]["body"]]
-    assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert second.actions == ["Completed - closed container parent after all direct children completed"]
 
 
 def test_ready_native_leaf_under_unready_parent_starts_no_analyzer(tmp_path: Path):
@@ -236,7 +279,7 @@ def test_standalone_blocked_completion_cannot_act_after_child_is_added(tmp_path:
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
     assert analyzed.count("individual") == 2
     assert analyzed.count("set") == 1
-    assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert second.actions == ["Rejected - blocked child specification"]
 
 
 def test_ambiguous_422_is_operational_and_preserves_submission(monkeypatch):
@@ -513,7 +556,7 @@ def test_late_marker_for_new_ready_parent_defers_until_latest_generation(tmp_pat
 
     assert ("set", github.issues[3]["body"]) in analyzed
     assert ("individual", 1) in analyzed
-    assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert second.actions == ["Completed - closed container parent after all direct children completed"]
 
 
 def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Path, monkeypatch):
@@ -555,4 +598,4 @@ def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Pat
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[3]), 0), engine.config)
 
     assert analyzed == [("individual", 1), ("set", github.issues[3]["body"])]
-    assert second.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert second.actions == ["Completed - closed container parent after all direct children completed"]
