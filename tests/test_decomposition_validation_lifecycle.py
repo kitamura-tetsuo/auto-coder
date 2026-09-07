@@ -8,7 +8,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.decomposition_analyzer import AffectedIssue, DecompositionAnalysisResult, DecompositionFinding, DecompositionIssue
+from auto_coder.decomposition_analyzer import AffectedIssue, DecompositionAnalysisResult, DecompositionFinding, DecompositionIssue, analyze_issue_decomposition
 from auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from auto_coder.implementation_slots import ImplementationSlotRepository
 from auto_coder.requirement_contract import build_normative_issue_manifest
@@ -111,6 +111,40 @@ def test_ready_survives_restart_error_retries_and_concurrent_analysis_coalesces(
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert list(pool.map(run, range(2))) == ["READY", "READY"]
     assert count == 1
+
+
+def test_production_lifecycle_preserves_first_set_baseline_and_passes_applied_history(tmp_path):
+    parent = issue(10, "Original parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Original child", CHILD_BODY)]
+    prompts = []
+    responses = [
+        '{"verdict":"BLOCKED","remediation":"EDIT_IN_PLACE","findings":[{"category":"missing_requirement_ownership","affected_issues":[{"issue_number":10,"requirement_ids":["REQ-001"]}],"explanation":"No child owns the parent behavior.","clarification":"Assign it to child 11."}]}',
+        '{"verdict":"READY","remediation":"NONE","findings":[]}',
+    ]
+
+    def analyze(parent_input, child_inputs):
+        return analyze_issue_decomposition(parent_input, child_inputs, prompt_runner=lambda prompt: prompts.append(prompt) or responses.pop(0))
+
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", analyze)
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    first = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    github = relationship_github(parent, children)
+    assert gate.apply_blocked(github, first, lambda _number: (parent, children)) is None
+
+    edited_parent = {**parent, "title": "Edited parent", "body": PARENT_BODY + "\n\n## Context\nNew prose"}
+    edited_children = [{**children[0], "title": "Edited child"}]
+    edited_parent_input, edited_child_inputs = decomposition_issues(edited_parent, edited_children)
+    second = gate.decide(gate.identity(edited_parent, edited_children), edited_parent_input, edited_child_inputs)
+
+    assert second.verdict == "READY"
+    assert "Original parent" in prompts[1]
+    assert "Original child" in prompts[1]
+    assert "Edited parent" in prompts[1]
+    assert '"remediation": "EDIT_IN_PLACE"' in prompts[1]
+    history = gate.history_store._read()["10"]
+    assert history["baseline"].count("Original parent") == 1
+    assert "Edited parent" not in history["baseline"]
+    assert len(history["applied_outcomes"]) == 1
 
 
 def test_parent_submission_reaches_set_then_child_validation_before_dispatch(tmp_path):
