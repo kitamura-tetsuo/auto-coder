@@ -21,6 +21,7 @@ DECOMPOSITION_FINDING_CATEGORIES = frozenset(
         "unstated_cross_issue_dependency",
         "boundary_semantics_conflict",
         "decomposition_false_success",
+        "objective_conflict",
     }
 )
 
@@ -91,6 +92,45 @@ def decomposition_review_evidence(evidence: DecompositionReviewEvidence) -> Iter
 
 def _error(message: str) -> DecompositionAnalysisResult:
     return DecompositionAnalysisResult(verdict="ERROR", error=message)
+
+
+def objective_integrity_result(
+    evidence: DecompositionReviewEvidence,
+    membership: Sequence[DecompositionIssue],
+) -> Optional[DecompositionAnalysisResult]:
+    """Fail closed unless Objective evidence exactly describes the reviewed set."""
+    expected = {item.manifest.issue_number for item in membership}
+    anchors = evidence.objectives
+    if len(anchors) != len(expected) or {item.issue_number for item in anchors} != expected:
+        return _error("Required decomposition Objective evidence is unavailable or does not match supplied membership")
+    if len({item.issue_number for item in anchors}) != len(anchors):
+        return _error("Required decomposition Objective evidence is malformed")
+    for anchor in anchors:
+        if not isinstance(anchor.source_identity, str) or not anchor.source_identity.strip():
+            return _error(f"Required Objective evidence for Issue #{anchor.issue_number} is malformed")
+        current = anchor.current
+        if current.status not in {"PRESENT", "ABSENT", "INVALID"} or (current.status == "PRESENT" and (not isinstance(current.text, str) or not current.text.strip())) or (current.status != "PRESENT" and current.text is not None):
+            return _error(f"Required Objective evidence for Issue #{anchor.issue_number} is malformed")
+        if anchor.state == "UNANCHORED":
+            if anchor.original_text is not None:
+                return _error(f"Required Objective evidence for Issue #{anchor.issue_number} is malformed")
+            continue
+        if anchor.state != "ANCHORED" or not isinstance(anchor.original_text, str) or not anchor.original_text.strip():
+            return _error(f"Required Objective evidence for Issue #{anchor.issue_number} is malformed")
+        if current.status == "PRESENT" and current.text == anchor.original_text:
+            continue
+        mismatch = {
+            "ABSENT": "The current Issue has no Objective section.",
+            "INVALID": "The current Issue has a duplicate or empty Objective section.",
+        }.get(current.status, "The current Objective text differs from the fixed Objective.")
+        finding = DecompositionFinding(
+            "objective_conflict",
+            (AffectedIssue(anchor.issue_number, ()),),
+            f"Fixed Objective {json.dumps(anchor.original_text, ensure_ascii=False)} was not preserved. {mismatch}",
+            "Restore this member's fixed Objective text exactly (apart from CRLF-to-LF conversion and outer whitespace), or obtain a user decision to replace its purpose; do not rewrite other members or the anchor.",
+        )
+        return DecompositionAnalysisResult("BLOCKED", (finding,), remediation="EDIT_IN_PLACE")
+    return None
 
 
 def _membership(parent: DecompositionIssue, children: Sequence[DecompositionIssue]) -> Optional[dict[int, NormativeIssueManifest]]:

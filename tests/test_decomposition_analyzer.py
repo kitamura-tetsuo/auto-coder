@@ -114,6 +114,7 @@ def test_supplied_manifest_remains_authoritative_when_body_evidence_disagrees():
 @pytest.mark.parametrize(
     "category",
     [
+        "objective_conflict",
         "missing_requirement_ownership",
         "cross_issue_contradiction",
         "unstated_cross_issue_dependency",
@@ -136,6 +137,14 @@ def test_reissue_required_is_preserved_as_blocked_remediation():
     result = parse_decomposition_analysis_response(_response("BLOCKED", [_finding()], "REISSUE_REQUIRED"), parent, children)
     assert result.verdict == "BLOCKED"
     assert result.remediation == "REISSUE_REQUIRED"
+
+
+def test_objective_conflict_accepts_empty_requirement_reference_for_current_member():
+    parent, children = _set()
+    finding = _finding("objective_conflict", issue_number=children[0].manifest.issue_number, requirement_ids=[])
+    result = parse_decomposition_analysis_response(_response("BLOCKED", [finding]), parent, children)
+    assert result.verdict == "BLOCKED"
+    assert result.findings[0].affected_issues[0].requirement_ids == ()
 
 
 @pytest.mark.parametrize(

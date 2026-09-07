@@ -4,10 +4,32 @@
     {
       "id": "individual-objective-scope",
       "prompt_dependencies": [
-        {"path": "src/auto_coder/prompts.yaml", "keys": ["issue.adversarial_specification_analysis"]}
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "issue.adversarial_specification_analysis"
+          ]
+        }
       ],
       "config": "prompt-evals/targets/individual-objective-scope/promptfooconfig.yaml",
-      "cases": ["prompt-evals/targets/individual-objective-scope/cases/*.yaml"]
+      "cases": [
+        "prompt-evals/targets/individual-objective-scope/cases/*.yaml"
+      ]
+    },
+    {
+      "id": "decomposition-objective-scope",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "issue.adversarial_decomposition_analysis"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/decomposition-objective-scope/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/decomposition-objective-scope/cases/*.yaml"
+      ]
     }
   ]
 }

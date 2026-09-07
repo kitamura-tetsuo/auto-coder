@@ -1,0 +1,9 @@
+description: Decomposition fixed-Objective composition and scope discrimination
+providers:
+  - id: openai:codex-sdk:gpt-5.6-sol
+    config:
+      sandbox_mode: read-only
+      model_reasoning_effort: high
+prompts:
+  - file://prompt.py:render
+tests: file://cases/*.yaml
