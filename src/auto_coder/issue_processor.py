@@ -396,16 +396,23 @@ def _process_issue_codex_cloud_mode(
     # so it never reaches the LLM prompt (FTR-1792).
     issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
     prompt = render_prompt(
-        "issue.action",
+        "codex_cloud.initial_issue_implementation",
         repo_name=repo_name,
         issue_number=issue_number,
+        issue_url=f"https://github.com/{repo_name}/issues/{issue_number}",
         issue_title=issue_title,
         issue_body=issue_data.get("body", ""),
         issue_labels=", ".join(issue_labels),
         issue_state=issue_data.get("state", "open"),
         issue_author=issue_data.get("user", {}).get("login", "unknown"),
+        issue_attempt=attempt,
+        backend_name=backend_name,
+        base_branch=config.MAIN_BRANCH,
         commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
-        is_jules=True,
+        parent_issue_number=issue_data.get("parent_issue_number"),
+        parent_issue_title=issue_data.get("parent_issue_title", ""),
+        parent_issue_body=issue_data.get("parent_issue_body", ""),
+        linked_issues_context=issue_data.get("linked_issues_context", ""),
     )
 
     if not new_work_allowed():

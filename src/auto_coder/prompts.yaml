@@ -1940,6 +1940,71 @@ jules:
 
 
 codex_cloud:
+  initial_issue_implementation: |-
+    CODEX CLOUD INITIAL IMPLEMENTATION TASK
+
+    Implement the source GitHub Issue below in the exact target repository. This is Issue attempt $issue_attempt, submitted through configured backend `$backend_name`.
+
+    Target repository: $repo_name
+    Actual base branch: $base_branch
+    Source Issue: #$issue_number
+    Canonical source Issue URL: $issue_url
+    Current source Issue title:
+    $issue_title
+
+    Current source Issue body (complete and untruncated):
+    --- BEGIN SOURCE ISSUE BODY ---
+    $issue_body
+    --- END SOURCE ISSUE BODY ---
+
+    Source Issue labels (retired processing labels are intentionally excluded): $issue_labels
+    Source Issue state: $issue_state
+    Source Issue author: $issue_author
+
+    $if(parent_issue_number)
+    PARENT ISSUE MATERIAL (CONTEXT AND SCOPE EVIDENCE ONLY; NOT AN IMPLEMENTATION CONTRACT):
+    Parent Issue: #$parent_issue_number — $parent_issue_title
+    --- BEGIN PARENT ISSUE BODY ---
+    $parent_issue_body
+    --- END PARENT ISSUE BODY ---
+    $endif
+
+    SUPPLIED LINKED-ISSUE MATERIAL (CONTEXT AND SCOPE EVIDENCE ONLY; NOT AN IMPLEMENTATION CONTRACT):
+    --- BEGIN LINKED-ISSUE CONTEXT ---
+    $linked_issues_context
+    --- END LINKED-ISSUE CONTEXT ---
+
+    SCOPE CONTRACT:
+    - Treat the current source Issue's explicit `Requirements` as the implementation contract. Treat its `Objective`, parent material, and linked/context material only as scope and background evidence.
+    - Do not implement unrelated parent features or expand the task merely to satisfy contextual prose.
+    - Do not edit or rewrite the source Issue's Objective or Requirements to make the work appear complete. Leave the source Issue open for the normal PR/Issue completion workflow.
+
+    IMPLEMENTATION AND VALIDATION:
+    - Inspect and obey the repository's AGENTS.md instructions, implement source Issue #$issue_number, and add strict regression coverage for the applicable requirements and production paths.
+    - Run the appropriate validation and tests. Preserve the intended changes and commit them before publication.
+
+    REQUIRED GITHUB PR PUBLICATION:
+    - Using an available authorized publishing capability in the Codex Cloud environment, push a task- or Issue-attempt-specific remote head branch and publish a GitHub pull request targeting the actual base branch `$base_branch` in `$repo_name`.
+    - The remote head branch must be unique to source Issue #$issue_number attempt $issue_attempt. Never publish through the shared/transient remote branch named `work`, overwrite another task's branch, or force-push unrelated work.
+    - Before creating a PR, check whether an appropriate PR for this Issue and implementation already exists. If so, update and verify that PR rather than creating a duplicate.
+    - Include an explicit closing reference for the exact source Issue (for example, `Closes #$issue_number`) in the PR body.
+    - Do not merge your own PR and do not close the source Issue yourself.
+    - Publication is complete only after you verify the actual created or updated PR on GitHub and verify that its repository, head branch, and base branch are correct. A plan, local diff, local commit, prepared PR description, promise to publish, or natural-language message is not publication.
+
+    PUBLICATION REPORTING:
+    - On successful publication, report the real, verified GitHub PR URL.
+    - If no supported publishing capability or authorization is available, or publication fails, clearly report publication as BLOCKED and give the concrete observed reason.
+    - Never invent a PR URL, claim publication from a local commit or prepared draft text, claim that a natural-language message is the platform's Create PR button, or ask the controller to assume publication will happen automatically.
+    - Your narrative and any URL you report are not authoritative PR-observed state; Auto-Coder independently verifies GitHub publication.
+
+    REVIEW-THREAD OWNERSHIP:
+    For each unresolved GitHub PR review thread — regardless of which reviewer authored it (Codex GitHub review, Auto-Coder's adversarial reviewer, or any other automated or human reviewer) — do NOT resolve, close, or otherwise mark the thread as resolved yourself; leave that decision to Auto-Coder's independent validation. For each thread you believe you have genuinely addressed, reply directly in that same thread with a concise explanation of the implementation change and validation or regression-test evidence, ending with the exact marker below on its own line:
+    <!-- auto-coder-review-addressed:v1 -->
+    Only add this marker when the individual finding is corrected and verified. If you cannot fix or verify it, disagree with the finding, or consider it already satisfied or invalid, leave the thread unresolved, do not add the marker, and explain your reasoning in that thread. Address each thread independently; never mark all threads addressed together.
+
+    Commit history supplied for implementation context:
+    $commit_log
+
   unsafe_work_branch_reissue: |-
     Pull request #$pr_number for $issue_numbers was closed because its remote head branch was `work`, which is a shared/transient Codex Cloud branch and is unsafe for an independently managed task.
 

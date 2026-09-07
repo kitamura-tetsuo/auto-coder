@@ -67,6 +67,9 @@ class TestPromptsRequireAddressWithoutResolve:
     def test_codex_cloud_continuation_prompt(self):
         self._assert_protocol_present(get_prompt_template("codex_cloud.continuation"))
 
+    def test_codex_cloud_initial_issue_prompt(self):
+        self._assert_protocol_present(get_prompt_template("codex_cloud.initial_issue_implementation"))
+
     def test_codex_cloud_ci_review_repair_details_prompt(self):
         self._assert_protocol_present(get_prompt_template("codex_cloud.ci_review_repair_details"))
 
@@ -76,8 +79,7 @@ class TestPromptsRequireAddressWithoutResolve:
         self._assert_protocol_present(get_prompt_template("jules.issue.action"))
 
     def test_effective_rendered_prompt_for_jules_issue_dispatch(self):
-        # REQ-001/REQ-007: _process_issue_jules_mode, _process_issue_claude_routine_mode,
-        # and _process_issue_codex_cloud_mode all call
+        # REQ-001/REQ-007: Jules and Claude Routine initial dispatch call
         # render_prompt("issue.action", is_jules=True, ...), which redirects to
         # jules.issue.action. Exercise that real redirect path (not just the raw
         # "issue.action" template) so a jules.issue.action regression is caught.
