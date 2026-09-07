@@ -408,8 +408,9 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         first_attempt = attempts.start(100, "head-a")
         started_attempts = []
 
-        def process_pr(_github, _config, _repo, _data, *, force_adversarial_validation=False):
+        def process_pr(_github, _config, _repo, _data, *, force_adversarial_validation=False, adversarial_validation_scheduler=None):
             assert force_adversarial_validation is True
+            assert adversarial_validation_scheduler is engine.adversarial_validation_scheduler
             started_attempts.append(attempts.start(100, "head-a"))
             return ProcessedPRResult(pr_data=_data, actions_taken=["forced validation reached"])
 

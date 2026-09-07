@@ -1081,7 +1081,7 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Retried")
         attempt_repository = attempt_repository_type.return_value
         attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-v2", 2)
-        attempt_repository.latest_completed_sequence.side_effect = [2, 3]
+        attempt_repository.latest_sequence.side_effect = [2, 3]
         # V1 is authoritative immediately after publication. Before its final
         # merge transition, newer V2 completes but has not published yet.
         attempt_repository.latest_published_sequence.return_value = 2
@@ -1171,11 +1171,10 @@ class TestAdversarialValidationPRFlow:
             assert attempt_repository.latest_completed_sequence(100, head_sha) == newer_validation.attempt_sequence
             assert any("Ignored late adversarial-validation attempt" in action for action in actions)
         else:
-            resolve_threads.assert_called_once()
-            dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, head_sha, older_validation)
-            merge_pr.assert_called_once()
-            assert attempt_repository.latest_completed_sequence(100, head_sha) == older_validation.attempt_sequence
-            assert not any("Ignored late adversarial-validation attempt" in action for action in actions)
+            resolve_threads.assert_not_called()
+            dedicated_reviewer_publication.assert_not_called()
+            merge_pr.assert_not_called()
+            assert any("Ignored late adversarial-validation attempt" in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

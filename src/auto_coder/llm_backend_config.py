@@ -1770,6 +1770,24 @@ def get_validation_concurrency_from_config(
     return value
 
 
+def get_adversarial_validation_concurrency_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
+    """Get the independent adversarial PR-validation concurrency bound."""
+    value = _get_config_value(
+        section="process_issues",
+        key="adversarial_validation_concurrency",
+        default=2,
+        config_path=config_path,
+        value_type=int,
+        repo_name=repo_name,
+    )
+    if type(value) is not int or value < 1:
+        raise ValueError("[process_issues].adversarial_validation_concurrency must be a positive integer")
+    return value
+
+
 def get_max_concurrent_implementations_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,

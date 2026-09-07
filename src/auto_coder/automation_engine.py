@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 import httpx
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
+from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .decomposition_analyzer import DecompositionIssue
@@ -111,6 +112,7 @@ class AutomationEngine:
         self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         self._decomposition_validators: Dict[str, DecompositionValidationLifecycle] = {}
         self.validation_scheduler = ValidationScheduler(self.config.validation_concurrency)
+        self.adversarial_validation_scheduler = AdversarialValidationScheduler(self.config.adversarial_validation_concurrency)
         self._lifecycle = EngineLifecycle.RUNNING
         self._lifecycle_lock = threading.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
@@ -2944,6 +2946,7 @@ class AutomationEngine:
                         repo_name,
                         candidate.data,
                         force_adversarial_validation=force_adversarial_validation,
+                        adversarial_validation_scheduler=self.adversarial_validation_scheduler,
                     )
                     result.actions = pr_result.actions_taken
                     # Check if there was an error during processing

@@ -29,6 +29,7 @@ from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_clien
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
+from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .adversarial_validator import (
     AdversarialValidationResult,
     adversarial_validation_codex_feedback_marker,
@@ -720,6 +721,7 @@ def process_pull_request(
     pr_data: Dict[str, Any],
     *,
     force_adversarial_validation: bool = False,
+    adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
 ) -> ProcessedPRResult:
     """Process a single pull request with priority order."""
     try:
@@ -853,6 +855,7 @@ def process_pull_request(
                     pr_data,
                     config,
                     force_adversarial_validation=force_adversarial_validation,
+                    adversarial_validation_scheduler=adversarial_validation_scheduler,
                 )
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
@@ -1711,6 +1714,7 @@ def _process_pr_for_fixes(
     config: AutomationConfig,
     *,
     force_adversarial_validation: bool = False,
+    adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
 ) -> ProcessedPRResult:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr = ProcessedPRResult(
@@ -1749,6 +1753,7 @@ def _process_pr_for_fixes(
                     config,
                     processing_status,
                     force_adversarial_validation=force_adversarial_validation,
+                    adversarial_validation_scheduler=adversarial_validation_scheduler,
                 )
                 processed_pr.actions_taken = actions
                 processed_pr.error = processing_status.error
@@ -1777,6 +1782,7 @@ def _take_pr_actions(
     processing_status: Optional[ProcessedPRResult] = None,
     *,
     force_adversarial_validation: bool = False,
+    adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
 ) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
     actions = PRActionList()
@@ -1793,6 +1799,7 @@ def _take_pr_actions(
             {},
             processing_status,
             force_adversarial_validation=force_adversarial_validation,
+            adversarial_validation_scheduler=adversarial_validation_scheduler,
         )
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
@@ -2364,12 +2371,16 @@ def _handle_pr_merge(
     processing_status: Optional[ProcessedPRResult] = None,
     *,
     force_adversarial_validation: bool = False,
+    adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
 ) -> PRActionList:
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
     pr_number = pr_data["number"]
     decision_attempt_repository: Optional[AdversarialValidationAttemptRepository] = None
     decision_attempt_sequence = 0
+    active_attempt_id = ""
+    active_attempt_status = "ERROR"
+    validation_admission = contextlib.ExitStack()
 
     try:
         # This is the lowest shared boundary for CI, review, adversarial,
@@ -2825,8 +2836,14 @@ def _handle_pr_merge(
                         # drive the decision; a saved same-head verdict is history.
                         published_status = None
                         claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
+                        if adversarial_validation_scheduler is not None:
+                            lease = validation_admission.enter_context(adversarial_validation_scheduler.admit(repo_name, pr_number))
+                            if not lease.acquired:
+                                actions.append(f"Skipped duplicate local adversarial-validation trigger for PR #{pr_number}")
+                                return actions
                         attempt_repository = AdversarialValidationAttemptRepository(repo_name)
                         attempt = attempt_repository.start(pr_number, head_sha)
+                        active_attempt_id = attempt.attempt_id
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
                         try:
@@ -2856,7 +2873,7 @@ def _handle_pr_merge(
 
                         val_result.attempt_id = attempt.attempt_id
                         val_result.attempt_sequence = attempt.sequence
-                        attempt_repository.finish(attempt.attempt_id, val_result.result.strip().upper() or "ERROR")
+                        active_attempt_status = val_result.result.strip().upper() or "ERROR"
 
                         val_result.clarification_reply_fingerprint = provenance_fingerprint
                         if val_result.result.strip().upper() == "ERROR":
@@ -2868,7 +2885,7 @@ def _handle_pr_merge(
                         val_result.provenance_thread_comment_ids = {thread.thread_id: thread.root_comment_database_id for thread in claimed_review_threads if thread.is_change_provenance and thread.root_comment_database_id is not None}
 
                         with attempt_repository.serialized_transition():
-                            attempt_is_superseded = attempt_repository.latest_completed_sequence(pr_number, head_sha) > attempt.sequence
+                            attempt_is_superseded = attempt_repository.latest_sequence(pr_number, head_sha) > attempt.sequence
                             if attempt_is_superseded:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 return actions
@@ -3004,7 +3021,7 @@ def _handle_pr_merge(
 
             merge_transition = decision_attempt_repository.serialized_transition() if decision_attempt_repository is not None else contextlib.nullcontext()
             with merge_transition:
-                if decision_attempt_repository is not None and decision_attempt_repository.latest_completed_sequence(pr_number, head_sha) > decision_attempt_sequence:
+                if decision_attempt_repository is not None and decision_attempt_repository.latest_sequence(pr_number, head_sha) > decision_attempt_sequence:
                     actions.append("Skipping merge because a newer adversarial-validation attempt is applicable")
                     return actions
                 try:
@@ -3221,6 +3238,22 @@ def _handle_pr_merge(
         if processing_status is not None:
             processing_status.error = str(e)
             processing_status.outcome = PRProcessingOutcome.FAILED
+
+    finally:
+        # Finalize only this attempt after publication/merge decisions and all
+        # owned worktree cleanup, while its admission lease is still held.
+        if decision_attempt_repository is not None and active_attempt_id:
+            try:
+                decision_attempt_repository.finish(active_attempt_id, active_attempt_status)
+            except Exception as e:
+                logger.error(f"Failed to finalize adversarial-validation attempt {active_attempt_id}: {e}")
+                if processing_status is not None:
+                    processing_status.error = str(e)
+                    processing_status.outcome = PRProcessingOutcome.FAILED
+            finally:
+                validation_admission.close()
+        else:
+            validation_admission.close()
 
     return actions
 

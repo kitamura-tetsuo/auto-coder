@@ -124,6 +124,16 @@ class AdversarialValidationAttemptRepository:
             default=0,
         )
 
+    def latest_sequence(self, pr_number: int, head_sha: str) -> int:
+        """Return the newest attempt, including one that is still in progress."""
+        with self._locked():
+            attempts = self._read()["attempts"]
+        assert isinstance(attempts, list)
+        return max(
+            (int(item["sequence"]) for item in attempts if isinstance(item, dict) and item.get("pr_number") == pr_number and item.get("head_sha") == head_sha),
+            default=0,
+        )
+
     def mark_published(self, attempt_id: str) -> None:
         """Mark only one attempt's result as durable without touching siblings."""
         with self._locked():
