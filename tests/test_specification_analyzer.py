@@ -62,6 +62,30 @@ def test_ready_preserves_implementation_freedom_and_missing_examples():
     assert result.error is None
 
 
+def test_external_reference_with_explicit_semantics_is_not_intrinsically_blocking():
+    manifest = build_normative_issue_manifest(
+        1772,
+        "Explicit persisted-state contract",
+        """## Requirements
+REQ-001: Read the existing `enabled` persisted field; when its authoritative value is `true`, display `Enabled`, and when it is `false`, display `Disabled`.
+REQ-002: Values other than the booleans `true` and `false` must produce the observable error `invalid enabled state` and must not display either status.
+""",
+    )
+    captured = []
+
+    result = analyze_issue_specification(
+        manifest,
+        "The field is part of the External Settings interface.",
+        prompt_runner=lambda prompt: captured.append(prompt) or _response("READY"),
+    )
+
+    assert result.verdict == "READY"
+    assert "External references are not defects by themselves" in captured[0]
+    assert "The blocker is missing normative semantics" in captured[0]
+    assert '"requirement_id": "REQ-001"' in captured[0]
+    assert "External Settings interface" in captured[0]
+
+
 def test_scope_drift_evidence_is_rendered_only_as_remediation_evidence():
     captured = []
     evidence = IndividualReviewEvidence(
