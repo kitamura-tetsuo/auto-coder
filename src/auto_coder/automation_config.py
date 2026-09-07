@@ -902,6 +902,16 @@ class Candidate:
     urgent_admission: bool = False
 
 
+class ExplicitTargetOutcome(str, Enum):
+    """Authoritative outcome of an explicitly requested target."""
+
+    SUCCESS = "success"
+    DEFERRED = "deferred"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
 @dataclass
 class CandidateProcessingResult:
     """Result of processing a single candidate (issue or PR).
@@ -918,6 +928,8 @@ class CandidateProcessingResult:
     outcome: "PRProcessingOutcome" = field(default_factory=lambda: PRProcessingOutcome.SUCCESS)
     refill_retry_required: bool = False
     capacity_deferred: bool = False
+    target_outcome: Optional[ExplicitTargetOutcome] = None
+    target_reason: Optional[str] = None
 
 
 class PRProcessingOutcome(str, Enum):
@@ -1013,3 +1025,8 @@ class ProcessResult:
     issues_processed: List[Dict[str, Any]] = field(default_factory=list)
     prs_processed: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    target_number: Optional[int] = None
+    target_type: Optional[str] = None
+    target_outcome: Optional[str] = None
+    target_actions: List[str] = field(default_factory=list)
+    target_reason: Optional[str] = None
