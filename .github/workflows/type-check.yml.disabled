@@ -52,7 +52,7 @@ jobs:
 
     - name: Run custom comprehensive type checker
       run: |
-        python comprehensive_type_checker.py
+        python scripts/comprehensive_type_checker.py
 
     - name: Upload type check results
       if: always()
@@ -61,4 +61,4 @@ jobs:
         name: type-check-results-${{ matrix.python-version }}
         path: |
           pyright_results.json
-          comprehensive_type_checker.py
+          scripts/comprehensive_type_checker.py

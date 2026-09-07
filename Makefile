@@ -16,7 +16,7 @@ type-check-fast:
 # Detailed type check with multiple tools
 type-check:
 	@echo "=== Comprehensive Type Check ==="
-	python comprehensive_type_checker.py
+	python scripts/comprehensive_type_checker.py
 
 # Detailed type check on specific file
 type-check-file:

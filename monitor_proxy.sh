@@ -35,7 +35,7 @@ start_proxy() {
     sleep 1
 
     # Start new proxy process
-    nohup python3 /home/node/src/auto-coder/tcp_proxy.py "$port" localhost "$target_port" > "$log_file" 2>&1 &
+    nohup python3 /home/node/src/auto-coder/scripts/tcp_proxy.py "$port" localhost "$target_port" > "$log_file" 2>&1 &
     new_pid=$!
 
     # Save PID

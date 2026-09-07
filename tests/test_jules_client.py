@@ -107,9 +107,16 @@ class TestJulesClient:
         mock_config.get_backend_config.assert_called_once_with("custom-jules")
         assert client.options == ["--custom"]
 
+    @pytest.mark.parametrize(
+        ("repo_name", "base_branch"),
+        [
+            ("owner/repo", "main"),
+            ("another-owner/service", "release/2026.09"),
+        ],
+    )
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
-    def test_start_session(self, mock_post, mock_get_config):
+    def test_start_session(self, mock_post, mock_get_config, repo_name, base_branch):
         """Test starting a new Jules session."""
         # Mock config
         mock_config = Mock()
@@ -127,7 +134,7 @@ class TestJulesClient:
         mock_post.return_value = mock_response
 
         client = JulesClient()
-        session_id = client.start_session("Test prompt", "owner/repo", "main")
+        session_id = client.start_session("Test prompt", repo_name, base_branch)
 
         assert session_id == "test-session-123"
         assert session_id in client.active_sessions
@@ -137,8 +144,12 @@ class TestJulesClient:
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
-        assert call_args[1]["json"]["prompt"] == "Test prompt"
-        assert "title" not in call_args[1]["json"]
+        payload = call_args[1]["json"]
+        assert payload["prompt"] == "Test prompt"
+        assert payload["automationMode"] == "AUTO_CREATE_PR"
+        assert payload["sourceContext"]["source"] == f"sources/github/{repo_name}"
+        assert payload["sourceContext"]["githubRepoContext"]["startingBranch"] == base_branch
+        assert "title" not in payload
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
