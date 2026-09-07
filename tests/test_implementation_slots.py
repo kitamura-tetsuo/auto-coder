@@ -342,7 +342,9 @@ def wait_for_zombie(process, timeout=5):
 
 def unix_identity_command(uid, gid):
     identity = ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--clear-groups"]
-    return identity if os.geteuid() == 0 else ["sudo", "-n", *identity]
+    # sudo's default environment reset would discard the per-test runtime root
+    # and make the child try to coordinate through the invoking user's home.
+    return identity if os.geteuid() == 0 else ["sudo", "-n", "--preserve-env=AUTO_CODER_RUNTIME_ROOT", *identity]
 
 
 def run_slot_writer_as(uid, gid, storage_path, owner_number, action="reserve"):

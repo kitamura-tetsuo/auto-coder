@@ -75,6 +75,141 @@ cmd = CommandExecutor()
 logger = get_logger(__name__)
 
 
+# These are repository paths, rather than workflow or job display names.  GitHub
+# lets workflow/job names change (and unrelated applications can reuse them), so
+# only API provenance from one of these files is advisory.
+PROMPT_REGRESSION_ADVISORY_WORKFLOWS = frozenset(
+    {
+        ".github/workflows/prompt-regression.yml",
+        ".github/workflows/prompt-regression.yml.disabled",
+        ".github/workflows/prompt-regression-report.yml",
+    }
+)
+
+
+def _workflow_path(value: object) -> str:
+    """Return GitHub's canonical workflow path without its optional ref suffix."""
+    return str(value).split("@", 1)[0] if isinstance(value, str) else ""
+
+
+def is_prompt_regression_advisory_run(run: object) -> bool:
+    """Classify an Actions run only from verified workflow-file provenance."""
+    return isinstance(run, dict) and _workflow_path(run.get("path")) in PROMPT_REGRESSION_ADVISORY_WORKFLOWS
+
+
+def _actions_run_id(observation: object) -> Optional[int]:
+    if not isinstance(observation, dict):
+        return None
+    raw_id = observation.get("id") or observation.get("databaseId")
+    # A check-run id is not a workflow-run id. Prefer the browser URL, which
+    # explicitly carries the associated Actions execution.
+    for url_key in ("html_url", "details_url", "url"):
+        match = re.search(r"/actions/runs/(\d+)", str(observation.get(url_key) or ""))
+        if match:
+            return int(match.group(1))
+    return int(raw_id) if raw_id and "path" in observation else None
+
+
+def _exclude_prompt_regression_advisories(observations: List[Dict[str, Any]], api: Any, owner: str, repo: str) -> List[Dict[str, Any]]:
+    """Remove verified advisory observations before flattening or deduplication.
+
+    An unresolvable association remains ordinary evidence and therefore fails
+    closed.  This prevents names or marker text from manufacturing an exemption.
+    """
+    retained: List[Dict[str, Any]] = []
+    provenance: Dict[int, bool] = {}
+    for observation in observations:
+        advisory = is_prompt_regression_advisory_run(observation)
+        run_id = _actions_run_id(observation)
+        if not advisory and run_id is not None:
+            if run_id not in provenance:
+                try:
+                    provenance[run_id] = is_prompt_regression_advisory_run(api.actions.get_workflow_run(owner, repo, run_id))
+                except Exception as exc:
+                    logger.warning(f"Could not verify workflow provenance for run {run_id}; " f"retaining it as ordinary CI evidence: {exc}")
+                    provenance[run_id] = False
+            advisory = provenance[run_id]
+        if advisory:
+            logger.info(f"Ignoring verified prompt-regression advisory run {run_id or '(unknown id)'}")
+        else:
+            retained.append(observation)
+    return retained
+
+
+def is_verified_prompt_regression_advisory_comment(
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    comment: object,
+) -> bool:
+    """Verify the narrowly specified generated advisory comment identity.
+
+    Marker text is only a parsing entry point.  Authority comes from the exact
+    bot author plus a fresh repository-scoped Actions run lookup whose identity
+    agrees with every field in the report and with the containing PR.
+    """
+    if not isinstance(comment, dict) or comment.get("pull_request_review_id") is not None:
+        return False
+    user = comment.get("user")
+    if not isinstance(user, dict) or user.get("login") != "github-actions[bot]":
+        return False
+    body = comment.get("body")
+    if not isinstance(body, str):
+        return False
+    lines = body.splitlines()
+    marker = "<!-- auto-coder:prompt-regression-advisory:v1 -->"
+    prefix = "Advisory-Identity: "
+    if len(lines) < 2 or lines[0] != marker or not lines[1].startswith(prefix):
+        return False
+    try:
+        identity = json.loads(lines[1][len(prefix) :])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    required = {"repository", "pr_number", "head_sha", "run_id", "run_attempt", "workflow_path"}
+    if not isinstance(identity, dict) or not required.issubset(identity):
+        return False
+    if identity["repository"] != repo_name or identity["pr_number"] != pr_number or identity["head_sha"] != head_sha:
+        return False
+    try:
+        run_id = int(identity["run_id"])
+        run_attempt = int(identity["run_attempt"])
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+        run = api.actions.get_workflow_run(owner, repo, run_id)
+        observed_attempt = int(run.get("run_attempt") or 0)
+    except Exception as exc:
+        logger.warning(f"Could not verify prompt-regression advisory comment: {exc}")
+        return False
+    repository = run.get("repository") if isinstance(run, dict) else None
+    pull_requests = run.get("pull_requests") if isinstance(run, dict) else None
+    return bool(
+        is_prompt_regression_advisory_run(run)
+        and _workflow_path(identity["workflow_path"]) == _workflow_path(run.get("path"))
+        and str(run.get("head_sha") or "") == head_sha
+        and observed_attempt == run_attempt
+        and isinstance(repository, dict)
+        and repository.get("full_name") == repo_name
+        and isinstance(pull_requests, list)
+        and any(isinstance(ref, dict) and ref.get("number") == pr_number for ref in pull_requests)
+    )
+
+
+def filter_actionable_github_checks(repo_name: str, checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fail-closed filtering for correction inputs assembled outside aggregation."""
+    if not checks:
+        return []
+    try:
+        token = GitHubClient.get_instance().token
+        api = get_ghapi_client(token)
+        owner, repo = repo_name.split("/")
+        return _exclude_prompt_regression_advisories(checks, api, owner, repo)
+    except Exception as exc:
+        # Missing association evidence cannot establish an exemption.
+        logger.warning(f"Could not verify correction-input workflow provenance: {exc}")
+        return checks
+
+
 @dataclass
 class GitHubActionsCheck:
     """GitHub Actions check information."""
@@ -375,6 +510,11 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 fallback_result.error = f"Primary check failed: {api_error}\nFallback check also failed: {fallback_result.error}"
             return fallback_result
 
+        # Preserve workflow provenance until this point and isolate advisory
+        # executions before name-based deduplication, waiting, deployment
+        # approval, run-id collection, or failure construction.
+        checks_data = _exclude_prompt_regression_advisories(checks_data, api, owner, repo)
+
         if not checks_data:
             # No checks found, checks might not have started yet
             # For a new commit, we expect at least some checks if CI is configured.
@@ -645,6 +785,7 @@ def _check_github_actions_status_from_history(
             # API: api.actions.list_workflow_runs_for_repo(owner, repo, branch=head_branch)
             runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, branch=head_branch, per_page=20)
             runs = runs_resp.get("workflow_runs", [])
+            runs = _exclude_prompt_regression_advisories(runs, api, owner, repo)
         except Exception as e:
             error_message = f"Failed to get runs for branch {head_branch}: {e}"
             logger.warning(error_message)
@@ -793,13 +934,23 @@ def get_detailed_checks_from_history(
 
         for run_id in status_result.ids:
             logger.info(f"Processing run {run_id}")
-            processed_run_ids.append(run_id)
 
             # Get jobs for this run using GhApi
             try:
                 token = GitHubClient.get_instance().token
                 api = get_ghapi_client(token)
                 owner, repo = repo_name.split("/")
+
+                try:
+                    run = api.actions.get_workflow_run(owner, repo, run_id)
+                except Exception as exc:
+                    # Do not fabricate an exclusion when provenance is missing.
+                    logger.warning(f"Could not verify workflow provenance for run {run_id}: {exc}")
+                    run = None
+                if is_prompt_regression_advisory_run(run):
+                    logger.info(f"Skipping details for verified prompt-regression advisory run {run_id}")
+                    continue
+                processed_run_ids.append(run_id)
 
                 # API: api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
                 jobs_res = api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
@@ -1392,6 +1543,8 @@ def _search_github_actions_logs_from_history(
 
         # Process found runs to find failed ones and get logs
         for run in runs:
+            if is_prompt_regression_advisory_run(run):
+                continue
             run_id = run.get("id")
             conclusion = run.get("conclusion")
 
@@ -1496,7 +1649,7 @@ def _get_github_actions_logs(
     failed_checks: List[Dict[str, Any]] = []
     pr_data: Optional[Dict[str, Any]] = None
     if len(args) >= 1 and isinstance(args[0], list):
-        failed_checks = args[0]
+        failed_checks = filter_actionable_github_checks(repo_name, args[0])
     if len(args) >= 2 and isinstance(args[1], dict):
         pr_data = args[1]
 
@@ -1525,7 +1678,7 @@ def _get_github_actions_logs(
     if not pr_data:
         pr_data = None
     if len(args) >= 1 and isinstance(args[0], list):
-        failed_checks = args[0]
+        failed_checks = filter_actionable_github_checks(repo_name, args[0])
     if len(args) >= 2 and isinstance(args[1], dict):
         pr_data = args[1]
     if not failed_checks:
@@ -1902,6 +2055,7 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
         # API: api.actions.list_workflow_runs_for_repo(owner, repo, per_page=100)
         runs_resp = api.actions.list_workflow_runs_for_repo(owner, repo, per_page=100)
         runs = runs_resp.get("workflow_runs", [])
+        runs = _exclude_prompt_regression_advisories(runs, api, owner, repo)
 
         # Group runs by SHA
         runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
@@ -2403,7 +2557,7 @@ def _create_github_action_log_summary(
     failed_checks: List[Dict[str, Any]] = []
     pr_data: Optional[Dict[str, Any]] = None
     if len(args) >= 1 and isinstance(args[0], list):
-        failed_checks = args[0]
+        failed_checks = filter_actionable_github_checks(repo_name, args[0])
     if len(args) >= 2 and isinstance(args[1], dict):
         pr_data = args[1]
 

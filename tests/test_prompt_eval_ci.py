@@ -55,7 +55,7 @@ def test_empty_registry_and_unrelated_change_do_not_invoke_provider(tmp_path: Pa
 
 
 def test_prompt_regression_workflow_disables_selective_evaluations() -> None:
-    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml").read_text())
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml.disabled").read_text())
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["selective-prompt-evals"]
     assert job["if"] == "${{ false }}"
