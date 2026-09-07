@@ -598,11 +598,114 @@ class AutomationEngine:
             return self._reconcile_parent_issue(repo_name, issue_number, snapshot)
         return snapshot
 
+    def _preflight_explicit_issue_relationships(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
+        """Complete the hierarchy containing an explicit ``--only`` target.
+
+        This deliberately performs no validation or implementation work.  The
+        repository-wide enumeration is used only to find declarations which can
+        change the target's native direct-child set; all policy decisions happen
+        later, from a fresh authoritative read.
+        """
+        enumerator = getattr(self.github, "get_open_entities_strict", None)
+        if not callable(enumerator):
+            raise ParentOperationalError("authoritative open-Issue enumeration is unavailable")
+        try:
+            entities = enumerator(repo_name)
+            open_entities = getattr(entities, "issues", None)
+            if not isinstance(open_entities, list):
+                raise ParentOperationalError("authoritative open-Issue enumeration was malformed")
+            numbers: list[int] = []
+            for entity in open_entities:
+                number = getattr(entity, "number", None)
+                if not isinstance(number, int) or isinstance(number, bool):
+                    raise ParentOperationalError("authoritative open-Issue enumeration contained an invalid Issue")
+                numbers.append(number)
+            if len(numbers) != len(set(numbers)):
+                raise ParentOperationalError("authoritative open-Issue enumeration contained duplicate Issues")
+
+            snapshots: dict[int, Dict[str, Any]] = {}
+            declarations = {}
+            for number in numbers:
+                snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                if not isinstance(snapshot, dict) or snapshot.get("number") != number or "pull_request" in snapshot or not self._is_open_issue(snapshot):
+                    raise ParentOperationalError(f"authoritative open Issue #{number} could not be confirmed")
+                declaration = parse_parent_declaration(snapshot.get("body"))
+                if declaration.status is ParentDeclarationStatus.INVALID:
+                    raise ParentSpecificationError(f"Issue #{number}: {declaration.reason or 'invalid Parent-Issue declaration'}")
+                snapshots[number] = snapshot
+                declarations[number] = declaration
+            if issue_number not in snapshots:
+                target_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+                if not isinstance(target_snapshot, dict) or target_snapshot.get("number") != issue_number or "pull_request" in target_snapshot:
+                    raise ParentOperationalError(f"explicit Issue #{issue_number} could not be confirmed")
+                target_declaration = parse_parent_declaration(target_snapshot.get("body"))
+                if target_declaration.status is ParentDeclarationStatus.INVALID:
+                    raise ParentSpecificationError(f"Issue #{issue_number}: {target_declaration.reason or 'invalid Parent-Issue declaration'}")
+                snapshots[issue_number] = target_snapshot
+                declarations[issue_number] = target_declaration
+
+            target = snapshots[issue_number]
+            target_native = self.github.get_parent_issue_details_strict(repo_name, issue_number)
+            native_parent = target_native.get("number") if isinstance(target_native, dict) else None
+            target_declaration = declarations[issue_number]
+            declared_parent = target_declaration.parent_number if target_declaration.status is ParentDeclarationStatus.SUPPORTED else None
+            if isinstance(native_parent, int) and isinstance(declared_parent, int) and native_parent != declared_parent:
+                raise ParentSpecificationError(f"Parent-Issue declaration #{declared_parent} conflicts with native parent #{native_parent}")
+            affected_parent = declared_parent if isinstance(declared_parent, int) else native_parent
+
+            target_children = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
+            if not isinstance(target_children, list):
+                raise ParentOperationalError(f"cannot establish direct-child membership for Issue #{issue_number}")
+            native_child_numbers: set[int] = set()
+            for child in target_children:
+                child_number = child.get("number") if isinstance(child, dict) else None
+                if isinstance(child_number, int) and not isinstance(child_number, bool):
+                    native_child_numbers.add(child_number)
+            if len(native_child_numbers) != len(target_children):
+                raise ParentOperationalError(f"direct-child membership for Issue #{issue_number} was malformed")
+            if affected_parent is None and (native_child_numbers or any(declaration.parent_number == issue_number for declaration in declarations.values())):
+                affected_parent = issue_number
+
+            if affected_parent is not None:
+                affected_numbers = {number for number, declaration in declarations.items() if declaration.parent_number == affected_parent}
+                if affected_parent == issue_number:
+                    affected_numbers.update(native_child_numbers)
+                else:
+                    siblings = self.github.get_direct_sub_issues_strict(repo_name, affected_parent)
+                    if not isinstance(siblings, list):
+                        raise ParentOperationalError(f"cannot establish direct-child membership for Issue #{affected_parent}")
+                    for sibling in siblings:
+                        number = sibling.get("number") if isinstance(sibling, dict) else None
+                        if not isinstance(number, int) or isinstance(number, bool):
+                            raise ParentOperationalError(f"direct-child membership for Issue #{affected_parent} was malformed")
+                        affected_numbers.add(number)
+                affected_numbers.add(issue_number)
+                for number in sorted(affected_numbers):
+                    snapshot = snapshots.get(number)
+                    if snapshot is None:
+                        snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                    self._reconcile_parent_issue(repo_name, number, snapshot)
+                authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, affected_parent)
+                if authoritative_set is None:
+                    raise ParentOperationalError(f"cannot re-read reconciled hierarchy for parent #{affected_parent}")
+
+            refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            if not isinstance(refreshed, dict) or refreshed.get("number") != issue_number or "pull_request" in refreshed:
+                raise ParentOperationalError("GitHub returned an ambiguous explicit target after relationship preflight")
+            return refreshed
+        except ParentSpecificationError:
+            raise
+        except ParentOperationalError:
+            raise
+        except Exception as exc:
+            raise ParentOperationalError(f"explicit relationship preflight failed: {exc}") from exc
+
     def _schedule_parent_validations(
         self,
         repo_name: str,
         authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
         config: Optional[AutomationConfig] = None,
+        selected_child_number: Optional[int] = None,
     ) -> tuple[Optional[ValidationJob[DecompositionDecision]], dict[int, ValidationJob[ValidationDecision]]]:
         """Eagerly submit a stable parent generation under the shared bound."""
         parent, children = authoritative_set
@@ -627,6 +730,8 @@ class AutomationEngine:
             individual = self._get_specification_validator(repo_name)
             for child in children:
                 number = int(child["number"])
+                if selected_child_number is not None and number != selected_child_number:
+                    continue
                 title = str(child.get("title") or "")
                 body = str(child.get("body") or "")
                 manifest = build_normative_issue_manifest(number, title, body)
@@ -723,7 +828,14 @@ class AutomationEngine:
         children = child_reader(repo_name, decision.identity.issue_number) if callable(child_reader) else []
         return isinstance(children, list) and not children
 
-    def _validate_submitted_parent_generation_for_child(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
+    def _validate_submitted_parent_generation_for_child(
+        self,
+        repo_name: str,
+        issue_number: int,
+        snapshot: Dict[str, Any],
+        *,
+        target_only: bool = False,
+    ) -> None:
         """Materialize validation evidence triggered by one authoritative child change.
 
         Webhooks invalidate only the edited Issue.  Resolve its live relationship
@@ -748,7 +860,14 @@ class AutomationEngine:
             return
         if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
             return
-        decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+        if target_only:
+            decomposition_job, child_jobs = self._schedule_parent_validations(
+                repo_name,
+                authoritative_set,
+                selected_child_number=issue_number,
+            )
+        else:
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
         # Do not acknowledge the durable invalidation until every missing
         # identity has either persisted reusable evidence or returned ERROR.
         failures: list[str] = []
@@ -3300,6 +3419,29 @@ class AutomationEngine:
                             "errors": result.errors,
                         }
 
+                    if explicit_only and candidate.type == "issue":
+                        try:
+                            refreshed_target = self._preflight_explicit_issue_relationships(repo_name, number)
+                            candidate.data.update(refreshed_target)
+                        except ParentSpecificationError as exc:
+                            result.errors.append(f"Blocked relationship reconciliation for Issue #{number}: {exc}")
+                            return {
+                                "repository": result.repository,
+                                "timestamp": result.timestamp,
+                                "issues_processed": result.issues_processed,
+                                "prs_processed": result.prs_processed,
+                                "errors": result.errors,
+                            }
+                        except ParentOperationalError as exc:
+                            result.errors.append(f"Retryable relationship reconciliation failure for Issue #{number}: {exc}")
+                            return {
+                                "repository": result.repository,
+                                "timestamp": result.timestamp,
+                                "issues_processed": result.issues_processed,
+                                "prs_processed": result.prs_processed,
+                                "errors": result.errors,
+                            }
+
                     # Explicit/single-item processing is another supported
                     # discovery origin for specification changes.  Resolve and
                     # validate a submitted parent generation before unified
@@ -3312,6 +3454,7 @@ class AutomationEngine:
                             repo_name,
                             number,
                             candidate.data,
+                            target_only=explicit_only,
                         )
 
                     # Use unified processing function

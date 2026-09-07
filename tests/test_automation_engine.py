@@ -379,12 +379,14 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         processing_result = CandidateProcessingResult(type="issue", number=100, title="Recovery", success=True, actions=["started"])
         engine._check_and_handle_closed_branch = Mock(return_value=True)
         engine._create_candidate_from_single = Mock(return_value=candidate)
+        engine._preflight_explicit_issue_relationships = Mock(return_value=dict(candidate.data))
         engine._process_single_candidate_unified = Mock(return_value=processing_result)
 
         with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
             result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True)
 
         engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True)
+        engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
 
     def test_forced_pr_reaches_validation_attempt_despite_active_execution_and_label(self, tmp_path):

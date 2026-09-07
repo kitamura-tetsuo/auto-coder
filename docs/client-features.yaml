@@ -1442,6 +1442,7 @@ Recent configuration schema changes that require migration:
       - "If native sub-issue promotion fails or is unsupported in the agent environment, retains the metadata as a fallback parent relationship."
       - "Scans all open issues upfront at the beginning of issue retrieval/processing to detect Parent-Issue relationships before constructing issue candidates, ensuring correct processing order even when a parent issue has a lower number than its sub-issues."
       - "Before implementation admission, native parent and sub-issue relationships are refreshed through cache-bypassing REST reads. Parents with open children and younger siblings with an elder open sibling are blocked; unavailable or malformed hierarchy evidence fails closed and is retried by capacity refill."
+      - "Explicit `--only` Issue processing strictly enumerates current open Issues and performs a relationship-only reconciliation of every declaration affecting the target's parent/direct-child set before validation or dispatch, then re-reads the native hierarchy; failures block or defer the target without processing discovered siblings."
 
 ## Cloud Task Execution Abstraction
 

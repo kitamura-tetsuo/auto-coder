@@ -830,6 +830,10 @@ def test_explicit_child_processing_validates_submitted_generation_before_eligibi
         "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
     }
     github = MagicMock()
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(
+        issues=[OpenGitHubIssue(number=10)] + ([OpenGitHubIssue(number=11)] if child_state == "open" else []),
+        pull_requests=[],
+    )
     snapshots = {10: parent, 11: child}
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
     github.get_issue.return_value = child
