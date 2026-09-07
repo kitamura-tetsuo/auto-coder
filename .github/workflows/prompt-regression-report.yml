@@ -1,0 +1,68 @@
+name: Prompt Regression Advisory Report
+
+'on':
+  workflow_run:
+    workflows: [Prompt Regression (Advisory)]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      # This workflow always uses its default-branch copy. It never checks out or
+      # executes the evaluated PR revision.
+      - name: Download upstream record
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: prompt-regression-report-${{ github.event.workflow_run.run_attempt }}
+          path: advisory
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate identity, summarize, and publish immutable attempt report
+        uses: actions/github-script@v8
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const run = context.payload.workflow_run;
+            const authoritative = await github.rest.actions.getWorkflowRun({owner: context.repo.owner, repo: context.repo.repo, run_id: run.id});
+            const observed = authoritative.data;
+            if (observed.path !== '.github/workflows/prompt-regression.yml' || observed.repository.full_name !== `${context.repo.owner}/${context.repo.repo}`)
+              return core.warning('Delivery unavailable: upstream workflow provenance could not be verified.');
+            if (!Array.isArray(observed.pull_requests) || observed.pull_requests.length !== 1)
+              return core.warning('Delivery unavailable: no unique authoritative PR association; no destination was guessed.');
+            const pr = observed.pull_requests[0].number;
+            let report;
+            try { report = JSON.parse(fs.readFileSync('advisory/report.json', 'utf8')); }
+            catch (_) { report = {schema_version: 1, base_sha: '', head_sha: observed.head_sha, selected_targets: [], targets: [], error: 'Evaluation record is missing or unreadable.'}; }
+            if (report.head_sha && report.head_sha !== observed.head_sha)
+              return core.warning('Delivery unavailable: artifact head does not match the authoritative upstream run.');
+            const supplied = report.identity || {};
+            if (report.head_sha && (supplied.repository !== observed.repository.full_name || Number(supplied.pr_number) !== Number(pr) || Number(supplied.run_id) !== Number(observed.id) || Number(supplied.run_attempt) !== Number(observed.run_attempt)))
+              return core.warning('Delivery unavailable: artifact execution identity does not match GitHub API evidence.');
+            const identity = {repository: observed.repository.full_name, pr_number: pr, head_sha: observed.head_sha, run_id: observed.id, run_attempt: observed.run_attempt, workflow_path: observed.path};
+            const marker = '<!-- auto-coder:prompt-regression-advisory:v1 -->';
+            const identityLine = `Advisory-Identity: ${JSON.stringify(identity)}`;
+            const targets = Array.isArray(report.targets) ? report.targets : [];
+            const outcomes = targets.map(t => `- **${String(t.id)}**: ${String(t.outcome)} — ${String(t.reason || '')}`);
+            if (report.error) outcomes.push(`- **pipeline**: ERROR — ${String(report.error)}`);
+            if (!outcomes.length) outcomes.push(`- **selection**: NOT_RUN — ${String(report.reason || 'No evaluation results were produced.')}`);
+            const detail = `https://github.com/${identity.repository}/actions/runs/${identity.run_id}/attempts/${identity.run_attempt}`;
+            const body = [marker, identityLine, '', '**Prompt regression advisory report**', '', ...outcomes, '', `Revision: \`${identity.head_sha}\` (base \`${String(report.base_sha || 'unavailable')}\`)`, `[Represented evaluation details](${detail})`, '', '**Advisory for humans only. These results are not merge blockers or automatic repair instructions, and require no acknowledgement or resolution before merging.**'].join('\n');
+            core.summary.addHeading('Prompt regression advisory').addRaw(body).write();
+            const publish = Boolean(report.error) || targets.some(t => t.outcome === 'MISMATCH' || t.outcome === 'ERROR');
+            if (!publish) return;
+            const comments = await github.paginate(github.rest.issues.listComments, {owner: context.repo.owner, repo: context.repo.repo, issue_number: pr, per_page: 100});
+            const existing = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.startsWith(`${marker}\n${identityLine}\n`));
+            if (existing) return core.notice(`Reused authenticated advisory comment ${existing.html_url}`);
+            try { const created = await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: pr, body}); core.notice(`Published ${created.data.html_url}`); }
+            catch (error) { core.warning(`Advisory delivery failed without changing evaluation outcome: ${error.message}`); }
