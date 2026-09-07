@@ -395,7 +395,7 @@ class TestAS003ParentRelationshipRemainsAuthoritative:
         engine._process_single_candidate_reserved.assert_not_called()
 
 
-class TestAS004SiblingOrderingRemainsAuthoritative:
+class TestAS004ExplicitDependencyOrderingRemainsAuthoritative:
     """AS-004: Sibling ordering remains authoritative.
 
     Given decomposition validation is disabled and a later sibling is otherwise eligible
@@ -418,8 +418,8 @@ class TestAS004SiblingOrderingRemainsAuthoritative:
         second_candidate = Candidate(type="issue", data=dict(second_child), priority=0, issue_number=12)
         result = engine._process_single_candidate_unified("owner/repo", second_candidate, config)
 
-        assert "Deferred - earlier sibling(s) remain open: [11]" in result.actions[0]
-        engine._process_single_candidate_reserved.assert_not_called()
+        assert result.actions == ["dispatched"]
+        engine._process_single_candidate_reserved.assert_called_once()
 
     def test_later_sibling_dispatches_when_earlier_sibling_closed(self, tmp_path: Path):
         parent = make_parent(10, ready=True, total_sub_issues=2)
@@ -523,18 +523,11 @@ class TestAS006MembershipChangesWhileDisabled:
 
         engine = make_engine(tmp_path, github, config=config)
 
-        # Initially, child 12 is deferred because child 11 is open
+        # Open independent siblings do not create an implicit ordering edge.
         second_candidate = Candidate(type="issue", data=dict(second_child), priority=0, issue_number=12)
-        res1 = engine._process_single_candidate_unified("owner/repo", second_candidate, config)
-        assert "Deferred - earlier sibling(s) remain open" in res1.actions[0]
-
-        # Live membership changes: child 11 is removed from parent set
-        github.children = [dict(second_child)]
-        github.parent["sub_issues_summary"] = {"total": 1}
-
-        res2 = engine._process_single_candidate_unified("owner/repo", second_candidate, config)
-        assert res2.actions == ["dispatched"]
-        assert res2.success is True
+        result = engine._process_single_candidate_unified("owner/repo", second_candidate, config)
+        assert result.actions == ["dispatched"]
+        assert result.success is True
 
 
 class TestAS007ReEnableAfterChangedGeneration:

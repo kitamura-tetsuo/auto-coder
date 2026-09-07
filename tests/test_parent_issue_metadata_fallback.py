@@ -251,8 +251,7 @@ class TestSiblingExclusionWithMetadataFallback:
         candidate_numbers = [c.issue_number for c in issue_candidates]
 
         assert 100 not in candidate_numbers
-        assert 102 not in candidate_numbers
-        assert 101 in candidate_numbers
+        assert candidate_numbers == [101, 102]
 
     @patch("src.auto_coder.automation_engine.LabelManager")
     @patch.object(AutomationEngine, "_is_issue_author_allowed", return_value=True)
@@ -304,8 +303,7 @@ class TestSiblingExclusionWithMetadataFallback:
         issue_candidates = [c for c in candidates if c.type == "issue"]
         candidate_numbers = [c.issue_number for c in issue_candidates]
 
-        assert 101 in candidate_numbers
-        assert 102 not in candidate_numbers
+        assert candidate_numbers == [101, 102]
 
 
 class TestGetOpenIssuesJsonFallback:
@@ -512,7 +510,6 @@ class TestGetOpenIssuesJsonFallback:
 
         # Parent #10 must NOT be selected because it has open sub-issues
         assert 10 not in candidate_numbers
-        # Child #30 must NOT be selected because elder sibling #20 is open
-        assert 30 not in candidate_numbers
-        # Elder child #20 MUST be the candidate
-        assert candidate_numbers == [20]
+        # Both roots remain candidates; Issue number does not imply precedence.
+        assert 30 in candidate_numbers
+        assert candidate_numbers == [20, 30]

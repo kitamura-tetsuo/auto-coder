@@ -382,7 +382,7 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     GitHubClient.reset_singleton()
 
 
-def test_explicit_later_sibling_waits_after_set_validation(tmp_path):
+def test_explicit_independent_later_sibling_dispatches_after_set_validation(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     first = issue(11, "First", CHILD_BODY)
     later = issue(12, "Later", CHILD_BODY)
@@ -394,15 +394,11 @@ def test_explicit_later_sibling_waits_after_set_validation(tmp_path):
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, later), 0, issue_number=12), engine.config)
     assert order == ["set"]
-    assert result.actions == ["Deferred - earlier sibling(s) remain open: [11]"]
-    # Eager validation is independent of implementation ordering. At least the
-    # earlier child may already execute; queued sibling completion is covered by
-    # the scheduler production-path regression.
     assert 11 in {call.args[0].issue_number for call in child_analysis.call_args_list}
-    dispatch.assert_not_called()
+    dispatch.assert_called_once()
 
 
-def test_reopened_predecessor_is_rechecked_before_later_sibling_admission(tmp_path):
+def test_reopened_independent_sibling_does_not_revoke_later_admission(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     first = issue(11, "First", CHILD_BODY, state="closed")
     later = issue(12, "Later", CHILD_BODY)
@@ -417,8 +413,7 @@ def test_reopened_predecessor_is_rechecked_before_later_sibling_admission(tmp_pa
     engine = configured_engine(tmp_path, github, set_analysis, analyze_child)
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, later), 0, issue_number=12), engine.config)
-    assert result.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
-    dispatch.assert_not_called()
+    dispatch.assert_called_once()
     identity = engine._decomposition_validators["owner/repo"].identity(parent, [first, later])
     persisted = engine._decomposition_validators["owner/repo"].store.get(identity)
     assert persisted is not None and persisted.verdict == "READY"
@@ -660,7 +655,7 @@ def test_stale_jules_replacement_enforces_parent_set_and_sibling_transitions(tmp
     """The production daemon callback cannot bypass any hierarchy authorization."""
     from auto_coder.implementation_slots import ImplementationOwner
 
-    scenarios = ("blocked-child", "became-parent", "reopened-predecessor")
+    scenarios = ("blocked-child", "became-parent")
     for scenario in scenarios:
         parent = issue(10, "Parent", PARENT_BODY, ready=True)
         first = issue(11, "First", CHILD_BODY, state="open")
@@ -778,7 +773,7 @@ def test_parent_generation_validates_despite_retained_first_child_owner(tmp_path
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", parent, 0, issue_number=10), engine.config)
 
     engine.validation_scheduler.shutdown()
-    assert result.actions == ["Deferred - implementation ownership already exists (issue:11)"]
+    assert result.actions == ["Deferred - logical implementation limit is occupied (issue:12)"]
     assert set(events) == {"set", "child:11", "child:12"}
     dispatch.assert_not_called()
 

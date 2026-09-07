@@ -1117,9 +1117,6 @@ class AutomationEngine:
                     return None
                 if decomposition_decision.verdict != "READY":
                     return None
-            if any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in authoritative_set[1]):
-                return None
-
         if parent_number is None and not is_implementation_ready(current):
             return None
         if parent_number is None and self._defer_initial_issue_stabilization(repo_name, current):
@@ -1181,13 +1178,7 @@ class AutomationEngine:
             return None
         if parent_number is not None:
             refreshed_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
-            if (
-                refreshed_set is None
-                or not self._is_open_issue(refreshed_set[0])
-                or not is_implementation_ready(refreshed_set[0])
-                or issue_number not in {child.get("number") for child in refreshed_set[1]}
-                or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in refreshed_set[1])
-            ):
+            if refreshed_set is None or not self._is_open_issue(refreshed_set[0]) or not is_implementation_ready(refreshed_set[0]) or issue_number not in {child.get("number") for child in refreshed_set[1]}:
                 return None
             if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
                 if decomposition_validator.identity(*refreshed_set) != decomposition_decision.identity:
@@ -1199,6 +1190,13 @@ class AutomationEngine:
         expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
         if identity != expected_identity:
             return None
+        if isinstance(self.github, GitHubClient) and hasattr(self.github, "token"):
+            try:
+                dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, issue_number, refreshed)
+            except Exception:
+                return None
+            if dependency_satisfaction is not DependencySatisfaction.SATISFIED:
+                return None
         return refreshed
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
@@ -2309,31 +2307,6 @@ class AutomationEngine:
                 if issue_data.get("has_open_sub_issues"):
                     continue
 
-                # Check for elder sibling dependency: if this issue is a sub-issue,
-                # ensure no elder sibling (sub-issue with lower number) is still open
-                # Use pre-fetched data
-                parent_issue_number = issue_data.get("parent_issue_number")
-                if parent_issue_number is not None:
-                    # Try to find parent in pre-fetched map
-                    parent_issue_data = issue_map.get(parent_issue_number)
-
-                    open_sub_issues: List[int] = []
-                    if parent_issue_data:
-                        open_sub_issues = parent_issue_data.get("open_sub_issue_numbers", [])
-                    else:
-                        # Parent not in map (e.g. closed), fallback to API call if strictly needed
-                        try:
-                            open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
-                        except Exception as e:
-                            logger.warning(f"Failed to check parent sub-issues for #{number}: {e}")
-                            open_sub_issues = []
-
-                    # Filter to only sibling sub-issues (exclude current issue and parent issue)
-                    elder_siblings = [s for s in open_sub_issues if s < number and s != parent_issue_number and s != number]
-                    if elder_siblings:
-                        logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
-                        continue
-
                 # Skip only while an *open* PR covers the issue; the work happens on that
                 # PR. Closed or merged PRs stay in the issue timeline forever, so counting
                 # them here would permanently hide any issue that once had a PR - including
@@ -2434,21 +2407,6 @@ class AutomationEngine:
             logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
             raise
 
-    def _has_elder_open_sibling(self, repo_name: str, candidate: Candidate) -> bool:
-        """Check current native parent membership and elder siblings."""
-        number = candidate.issue_number or candidate.data.get("number")
-        if candidate.type != "issue" or not isinstance(number, int):
-            return False
-        if isinstance(self.github, GitHubClient):
-            parent = self.github.get_parent_issue_number_strict(repo_name, number)
-            siblings = self.github.get_open_sub_issues_strict(repo_name, parent) if parent is not None else []
-        else:
-            parent = parse_parent_issue_number(str(candidate.data.get("body") or ""), current_issue_number=number) or candidate.data.get("parent_issue_number")
-            siblings = self.github.get_open_sub_issues(repo_name, parent) if isinstance(parent, int) else []
-        metadata_children = candidate.data.get("refill_metadata_open_children", {})
-        fallback_siblings = metadata_children.get(parent, []) if isinstance(metadata_children, dict) and isinstance(parent, int) else []
-        return any(sibling < number for sibling in [*siblings, *fallback_siblings] if sibling != number)
-
     def _process_single_candidate_unified(
         self,
         repo_name: str,
@@ -2541,8 +2499,8 @@ class AutomationEngine:
                     result.refill_retry_required = True
                     return result
             # A submitted parent represents its whole direct-child contract, not
-            # a standalone coding target. Route only the first open child; the
-            # existing discovery ordering continues to serialize later siblings.
+            # a standalone coding target. Numeric order is only a deterministic
+            # tie-breaker: dependency refusal must not strand another root.
             try:
                 direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
                 # Candidate hints can be stale and daemon normalization only
@@ -2644,19 +2602,29 @@ class AutomationEngine:
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - container parent requires decomposition validation"]
                         return result
-                    child = self.github.get_issue_dispatch_snapshot_strict(repo_name, int(open_children[0]["number"]))
-                    child["parent_issue_number"] = item_number
-                    return self._process_single_candidate_unified(
-                        repo_name,
-                        Candidate(type="issue", data=child, priority=candidate.priority, issue_number=int(child["number"])),
-                        config,
-                        jules_mode,
-                        explicit_only,
-                        force,
-                        continue_execution,
-                        advance_issue_attempt,
-                        authoritative_parent_number=item_number,
-                    )
+                    last_refusal: Optional[CandidateProcessingResult] = None
+                    for open_child in open_children:
+                        child_number = int(open_child["number"])
+                        child = self.github.get_issue_dispatch_snapshot_strict(repo_name, child_number)
+                        child["parent_issue_number"] = item_number
+                        child_result = self._process_single_candidate_unified(
+                            repo_name,
+                            Candidate(type="issue", data=child, priority=candidate.priority, issue_number=child_number),
+                            config,
+                            jules_mode,
+                            explicit_only,
+                            force,
+                            continue_execution,
+                            advance_issue_attempt,
+                            authoritative_parent_number=item_number,
+                        )
+                        if child_result.success:
+                            return child_result
+                        last_refusal = child_result
+                        if child_result.target_outcome is ExplicitTargetOutcome.BLOCKED:
+                            return child_result
+                    if last_refusal is not None:
+                        return last_refusal
                 result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = [f"Skipped - parent submission is missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
@@ -2903,12 +2871,6 @@ class AutomationEngine:
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - child specification validation error"]
                             return result
-                open_predecessors = sorted(int(child["number"]) for child in child_snapshots if child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number)
-                if open_predecessors:
-                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                    result.actions = [f"Deferred - earlier sibling(s) remain open: {open_predecessors}"]
-                    return result
-
             current_body = str(current_issue.get("body") or "")
             current_title = str(current_issue.get("title") or "")
             contract = build_normative_issue_manifest(item_number, current_title, current_body)
@@ -3010,13 +2972,21 @@ class AutomationEngine:
                     result.actions = ["Rejected - blocked specification"]
                     return result
 
-            # Dependency waiting does not suppress semantic review, but no force,
-            # urgency, inherited submission, or explicit target may cross this
-            # final native-graph safety boundary.
+            # This is the final cache-bypassing check immediately before slot and
+            # ownership handling. READY for an edited or withdrawn submission is
+            # not transferable.
+            try:
+                dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+            except Exception as exc:
+                result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
+                result.refill_retry_required = True
+                return result
+            # Reconcile from the same cache-bypassing generation used for final
+            # admission, after all awaited validation. No earlier graph result
+            # or force/urgent path is authorization.
             if isinstance(self.github, GitHubClient) and hasattr(self.github, "token"):
                 try:
-                    dependency_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-                    dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, item_number, dependency_snapshot)
+                    dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, item_number, dispatch_snapshot)
                 except Exception as exc:
                     result.error = f"Sibling dependency reconciliation is unresolved: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
@@ -3031,16 +3001,6 @@ class AutomationEngine:
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - sibling prerequisite remains open or unavailable"]
                     return result
-
-            # This is the final cache-bypassing check immediately before slot and
-            # ownership handling. READY for an edited or withdrawn submission is
-            # not transferable.
-            try:
-                dispatch_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-            except Exception as exc:
-                result.error = f"Cannot confirm validated Issue generation before dispatch: {exc}"
-                result.refill_retry_required = True
-                return result
             dispatch_relationship: Optional[IndividualRelationshipContext] = None
             submission_current = self._is_open_issue(dispatch_snapshot) and is_implementation_ready(dispatch_snapshot)
             if spec_validation_enabled and validator.is_reissue_required(item_number) is True:
@@ -3050,13 +3010,7 @@ class AutomationEngine:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 if latest_set is not None:
                     dispatch_relationship = self._child_review_context(*latest_set, item_number)
-                submission_current = (
-                    latest_set is not None
-                    and self._is_open_issue(latest_set[0])
-                    and is_implementation_ready(latest_set[0])
-                    and item_number in {child.get("number") for child in latest_set[1]}
-                    and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in latest_set[1])
-                )
+                submission_current = latest_set is not None and self._is_open_issue(latest_set[0]) and is_implementation_ready(latest_set[0]) and item_number in {child.get("number") for child in latest_set[1]}
                 if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
                     submission_current = submission_current and latest_set is not None and decomposition_validator.identity(*latest_set) == decomposition_decision.identity
             elif submission_current:
@@ -3087,7 +3041,7 @@ class AutomationEngine:
             # gate. Candidate collection metadata is not sufficient because a
             # child can open after enumeration and before slot admission.
             try:
-                hierarchy_blocked = self._has_open_sub_issues(repo_name, candidate) or self._has_elder_open_sibling(repo_name, candidate)
+                hierarchy_blocked = self._has_open_sub_issues(repo_name, candidate)
             except Exception as exc:
                 result.error = f"Cannot establish current Issue hierarchy before dispatch: {exc}"
                 result.refill_retry_required = True
@@ -3138,16 +3092,15 @@ class AutomationEngine:
                 return False
             if inherited_parent_number is not None:
                 current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
-                if (
-                    current_set is None
-                    or not self._is_open_issue(current_set[0])
-                    or not is_implementation_ready(current_set[0])
-                    or item_number not in {child.get("number") for child in current_set[1]}
-                    or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in current_set[1])
-                ):
+                if current_set is None or not self._is_open_issue(current_set[0]) or not is_implementation_ready(current_set[0]) or item_number not in {child.get("number") for child in current_set[1]}:
                     return False
                 if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
                     if decomposition_validator.identity(*current_set) != decomposition_decision.identity:
+                        return False
+                if isinstance(self.github, GitHubClient) and hasattr(self.github, "token"):
+                    try:
+                        return self._reconcile_sibling_dependencies(repo_name, item_number, latest) is DependencySatisfaction.SATISFIED
+                    except Exception:
                         return False
                 return True
             direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)

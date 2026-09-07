@@ -54,8 +54,16 @@ from both the declaring child and its current authoritative parent. Operational
 or ambiguous GitHub failures fail closed without asserting a specification
 defect or withdrawing readiness. Valid open direct or transitive prerequisites
 defer implementation (but not enabled semantic validation); only authoritative
-closure satisfies them. Numeric elder-sibling ordering remains an additional
-temporary scheduling restriction.
+closure satisfies them.
+
+Issue numbers do not imply precedence. Independent eligible siblings may run
+concurrently; numeric ordering is used only as a deterministic presentation
+tie-breaker. Authors must express required order explicitly: every generated
+child should accompany `Parent-Issue: #<parent>` with `Blocked-By:` (empty for a
+dependency root, or comma-separated local references such as `#12, #34`).
+Dependency metadata is structural and remains outside the child's normative
+`## Requirements` section. Existing unannotated families use their reconciled
+native dependency edges and receive no historical number-based backfill.
 
 ## Secret-safe GitHub request outcomes
 
@@ -164,7 +172,7 @@ boundary:
 - The bypass produces no synthetic validation records, PR/Issue comments, label
   mutations, or implementation attempt increments.
 - Non-validation admission gates (author allowlist, implementation-ready label,
-  open state, parent/child relationships, elder sibling ordering, and slot
+  open state, parent/child relationships, explicit sibling dependencies, and slot
   ownership) remain strictly enforced.
 - Disabling individual validation does not consume scheduler capacity or block
   other enabled validation categories, such as parent/child decomposition validation.
@@ -1540,7 +1548,7 @@ Recent configuration schema changes that require migration:
       - "Attempts to promote/register the issue as a native GitHub sub-issue using the GitHub REST API (POST /repos/{owner}/{repo}/issues/{parent_number}/sub_issues) when possible."
       - "If native sub-issue promotion fails or is unsupported in the agent environment, retains the metadata as a fallback parent relationship."
       - "Scans all open issues upfront at the beginning of issue retrieval/processing to detect Parent-Issue relationships before constructing issue candidates, ensuring correct processing order even when a parent issue has a lower number than its sub-issues."
-      - "Before implementation admission, native parent and sub-issue relationships are refreshed through cache-bypassing REST reads. Parents with open children and younger siblings with an elder open sibling are blocked; unavailable or malformed hierarchy evidence fails closed and is retried by capacity refill."
+      - "Before implementation admission, native parent, sub-issue, and dependency relationships are refreshed through cache-bypassing REST reads. Parents with open children remain containers; siblings are ordered only by explicit Blocked-By/native dependency edges, while unavailable or malformed hierarchy evidence fails closed and is retried by capacity refill."
       - "Explicit `--only` Issue processing strictly enumerates current open Issues and performs a relationship-only reconciliation of every declaration affecting the target's parent/direct-child set before validation or dispatch, then re-reads the native hierarchy; failures block or defer the target without processing discovered siblings."
 
 ## Cloud Task Execution Abstraction
