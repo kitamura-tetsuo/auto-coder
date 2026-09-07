@@ -347,6 +347,14 @@ before ownership and dispatch, both the live parent set and child identities are
 re-fetched, and parent-label withdrawal, membership edits, or specification edits
 fail closed.
 
+Adversarial PR validation has a separate, instance-local
+`process_issues.adversarial_validation_concurrency` bound (default 2; set it to 1
+for serialized execution). Capacity is acquired only after CI, review, and prior-result
+eligibility gates pass. It remains owned through isolated-worktree cleanup, durable
+attempt finalization, publication, and merge authority checks. Duplicate local triggers
+for one PR are coalesced, while durable attempt sequence fencing prevents an older
+same-head result from gaining authority after any newer attempt starts.
+
 ## Adversarial implementation-readiness analysis
 
 Auto-Coder exposes a provider-independent semantic analysis operation for an
