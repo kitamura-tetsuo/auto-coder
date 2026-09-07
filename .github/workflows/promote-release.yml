@@ -2,9 +2,16 @@ name: Promote Release
 
 on:
   workflow_dispatch:
+    inputs:
+      memo:
+        description: Optional operator memo preserved in the release catalog
+        required: false
+        default: ""
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
   packages: write
 
 concurrency:
@@ -22,32 +29,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v4
-      - name: Validate and promote current beta without rebuilding
+      - name: Promote and publish the immutable catalog entry
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_CATALOG_TOKEN || secrets.GITHUB_TOKEN }}
+          PROMOTION_MEMO: ${{ inputs.memo }}
         run: |
           set -Eeuo pipefail
-          DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:beta")
-          SOURCE_SHA=$(docker buildx imagetools inspect "$IMAGE:beta" --format '{{json .Image}}' | jq -er '.config.Labels["org.opencontainers.image.revision"]')
-          python scripts/deployment_artifacts.py require-release-sha "$SOURCE_SHA"
-
-          TESTED_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:tested-beta-$SOURCE_SHA")
-          python scripts/deployment_artifacts.py require-tested-beta "$DIGEST" "$TESTED_DIGEST"
-
-          if HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA"); then
-            python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
-          else
-            INSPECT_STATUS=$?
-            if [ "$INSPECT_STATUS" -ne 3 ]; then
-              exit "$INSPECT_STATUS"
-            fi
-            python scripts/deployment_artifacts.py create-history-if-absent "$IMAGE:release-$SOURCE_SHA" "$DIGEST"
-            HISTORY_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$SOURCE_SHA")
-            python scripts/deployment_artifacts.py require-release-history "$DIGEST" "$HISTORY_DIGEST"
-          fi
-
-          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
-          RELEASE_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release")
-          python scripts/deployment_artifacts.py require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"
+          uv run auto-coder deployment promote-release \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"

@@ -1901,3 +1901,13 @@ immutable-release-catalog-records:
     - "Preparation validates before mutation, creates refs without update or deletion, reuses only an identical binding, and reports success only after a fresh exact-ref read validates all data."
     - "Unavailable or malformed reads never prove absence; ambiguous and conflicting writes are reconciled by exact-ref validation and cannot overwrite a winner."
     - "These commands make only Git tag-object and ref requests and do not publish Releases, alter branches, build images, or mutate GHCR."
+
+dated-release-publication:
+  description: "Publishes a dated GitHub Release after a verified immutable-image promotion (Issue #1849)."
+  implementation: "The manually dispatched Promote Release workflow invokes the replay-safe ReleasePromotion service under the shared release-channel lock."
+  behavior:
+    - "An optional memo is preserved verbatim as inert record data; artifact SHA and digest are always derived from the pinned beta digest and its image metadata."
+    - "The run-ID-qualified JST tag records the original workflow request time, while GitHub displays publication time separately; the public notes expose the SHA, digest, immutable image history reference, run link, tag, and memo."
+    - "A repeated attempt is reconciliation-only: an existing publication is read-only, and a prepared entry can be published only while its history, image revision, and current release channel still match."
+    - "Catalog entries are historical records, not a current-deployment cursor. Find the dated entry under GitHub Releases and copy its `release-...JST-r...` tag."
+    - "Set optional `RELEASE_CATALOG_TOKEN` when the built-in token cannot create a tag or Release, including source commits that change workflows; grant that credential repository contents and workflow-write authorization required by GitHub. Registry login continues to use `GITHUB_TOKEN`."
