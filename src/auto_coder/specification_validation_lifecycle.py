@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import NormativeIssueManifest
@@ -27,7 +28,7 @@ from .specification_analyzer import (
 from .specification_repair_rounds import SpecificationRepairRoundStore
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v2-remediation"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v3-objective-anchor"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 
@@ -119,6 +120,12 @@ class IndividualReviewHistoryStore:
             if raw is None:
                 raw = {"baseline": contract, "applied_outcomes": []}
                 state[key] = raw
+                self._write(state)
+            elif isinstance(raw, dict) and "baseline" not in raw:
+                # A complete-set review may have captured the shared Objective
+                # before this Issue's first individual review.
+                raw["baseline"] = contract
+                raw.setdefault("applied_outcomes", [])
                 self._write(state)
             if not isinstance(raw, dict) or not isinstance(raw.get("baseline"), str):
                 raise ValueError(f"Invalid individual-review history for Issue #{issue_number}")
@@ -262,6 +269,7 @@ class SpecificationValidationLifecycle:
         history_path = path.with_name("individual_review_history.json") if path is not None else None
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
         self.history_store = IndividualReviewHistoryStore(repository, history_path)
+        self.objective_store = ObjectiveAnchorStore(repository, history_path)
         rounds_path = path.with_name("specification_repair_rounds.json") if path is not None else None
         self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer
@@ -286,6 +294,15 @@ class SpecificationValidationLifecycle:
     ) -> ValidationDecision:
         identity = self.identity(manifest.issue_number, title, body, relationship_context)
         with self.store.locked(identity.key):
+            evidence: Optional[IndividualReviewEvidence] = None
+            if manifest.explicit_contract_present and manifest.explicit_contract_valid:
+                contract = _contract_evidence(manifest, title, body)
+                try:
+                    history = self.history_store.evidence(manifest.issue_number, contract)
+                    objective = self.objective_store.capture(manifest.issue_number, body, "individual-current-snapshot:v1")
+                    evidence = IndividualReviewEvidence(history.baseline, history.prior_applied_outcomes, objective)
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}")
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
@@ -301,8 +318,7 @@ class SpecificationValidationLifecycle:
                 if analyzed.verdict in {"READY", "BLOCKED"}:
                     self.store.save(decision)
                 return decision
-            contract = _contract_evidence(manifest, title, body)
-            evidence = self.history_store.evidence(manifest.issue_number, contract)
+            assert evidence is not None
             if self.analyzer is None:
                 analyzed = self._default_analyzer(manifest, body, evidence, relationship_context)
             else:
