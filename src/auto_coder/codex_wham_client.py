@@ -141,6 +141,15 @@ class CodexWhamClient:
             "originator": "codex_cli_rs",
         }
 
+    def follow_up_preflight(self) -> bool:
+        """Return whether a follow-up can reach the HTTP boundary now.
+
+        Recovery callers use this before publishing a one-shot durable send
+        reservation.  It deliberately checks only local credential readiness;
+        every outcome after the reservation remains budget-consuming.
+        """
+        return self._get_headers() is not None
+
     def _parse_turn_dict(self, item: object) -> Optional[WhamTurn]:
         """Parse a single turn dict into a WhamTurn."""
         if not isinstance(item, dict):
