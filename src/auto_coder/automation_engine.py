@@ -315,6 +315,17 @@ class AutomationEngine:
 
         return get_issue_specification_validation_from_config(repo_name=repo_name)
 
+    def _is_issue_decomposition_validation_enabled(self, repo_name: str, config: Optional[AutomationConfig] = None) -> bool:
+        """Return whether parent/child decomposition validation is enabled."""
+        cfg = config or self.config
+        if cfg is not None and getattr(cfg, "repo_name", None) == repo_name:
+            return bool(getattr(cfg, "issue_decomposition_validation", True))
+        if cfg is not None and not getattr(cfg, "issue_decomposition_validation", True):
+            return False
+        from .llm_backend_config import get_issue_decomposition_validation_from_config
+
+        return get_issue_decomposition_validation_from_config(repo_name=repo_name)
+
     def _get_decomposition_validator(self, repo_name: str) -> DecompositionValidationLifecycle:
         validator = self._decomposition_validators.get(repo_name)
         if validator is None:
@@ -478,23 +489,25 @@ class AutomationEngine:
         repo_name: str,
         authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
         config: Optional[AutomationConfig] = None,
-    ) -> tuple[ValidationJob[DecompositionDecision], dict[int, ValidationJob[ValidationDecision]]]:
+    ) -> tuple[Optional[ValidationJob[DecompositionDecision]], dict[int, ValidationJob[ValidationDecision]]]:
         """Eagerly submit a stable parent generation under the shared bound."""
         parent, children = authoritative_set
-        decomposition = self._get_decomposition_validator(repo_name)
-        set_identity = decomposition.identity(parent, children)
-        parent_manifest = build_normative_issue_manifest(int(parent["number"]), str(parent.get("title") or ""), str(parent.get("body") or ""))
-        child_inputs = [
-            DecompositionIssue(
-                build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
-                str(child.get("body") or ""),
+        set_job: Optional[ValidationJob[DecompositionDecision]] = None
+        if self._is_issue_decomposition_validation_enabled(repo_name, config):
+            decomposition = self._get_decomposition_validator(repo_name)
+            set_identity = decomposition.identity(parent, children)
+            parent_manifest = build_normative_issue_manifest(int(parent["number"]), str(parent.get("title") or ""), str(parent.get("body") or ""))
+            child_inputs = [
+                DecompositionIssue(
+                    build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
+                    str(child.get("body") or ""),
+                )
+                for child in children
+            ]
+            set_job = self.validation_scheduler.submit(
+                f"decomposition:{set_identity.key}",
+                lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
             )
-            for child in children
-        ]
-        set_job = self.validation_scheduler.submit(
-            f"decomposition:{set_identity.key}",
-            lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
-        )
         child_jobs: dict[int, ValidationJob[ValidationDecision]] = {}
         if self._is_issue_specification_validation_enabled(repo_name, config):
             individual = self._get_specification_validator(repo_name)
@@ -512,17 +525,18 @@ class AutomationEngine:
 
     @staticmethod
     def _join_parent_validations(
-        decomposition_job: ValidationJob[DecompositionDecision],
+        decomposition_job: Optional[ValidationJob[DecompositionDecision]],
         child_jobs: dict[int, ValidationJob[ValidationDecision]],
-    ) -> tuple[DecompositionDecision, dict[int, ValidationDecision]]:
+    ) -> tuple[Optional[DecompositionDecision], dict[int, ValidationDecision]]:
         """Join a submitted batch completely before propagating any failure."""
         decomposition_decision: Optional[DecompositionDecision] = None
         child_decisions: dict[int, ValidationDecision] = {}
         first_error: Optional[BaseException] = None
-        try:
-            decomposition_decision = decomposition_job.result()
-        except BaseException as exc:
-            first_error = exc
+        if decomposition_job is not None:
+            try:
+                decomposition_decision = decomposition_job.result()
+            except BaseException as exc:
+                first_error = exc
         for number, job in child_jobs.items():
             try:
                 child_decisions[number] = job.result()
@@ -531,7 +545,6 @@ class AutomationEngine:
                     first_error = exc
         if first_error is not None:
             raise first_error
-        assert decomposition_decision is not None
         return decomposition_decision, child_decisions
 
     def _standalone_relationship_is_current(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> bool:
@@ -545,15 +558,16 @@ class AutomationEngine:
         if is_implementation_ready(authoritative_set[0]):
             if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
                 return False
-            validator = self._get_decomposition_validator(repo_name)
-            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-            decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
-            if decision.verdict == "BLOCKED":
-                validator.apply_blocked(
-                    self.github,
-                    decision,
-                    lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
-                )
+            if self._is_issue_decomposition_validation_enabled(repo_name):
+                validator = self._get_decomposition_validator(repo_name)
+                decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
+                if decision is not None and decision.verdict == "BLOCKED":
+                    validator.apply_blocked(
+                        self.github,
+                        decision,
+                        lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                    )
         # Even READY was obtained after individual validation started, so this
         # attempt must restart through the ordered set-before-child workflow.
         return False
@@ -605,7 +619,7 @@ class AutomationEngine:
         failures: list[str] = []
         try:
             decomposition_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
-            if decomposition_decision.verdict == "ERROR":
+            if decomposition_decision is not None and decomposition_decision.verdict == "ERROR":
                 failures.append("decomposition validation failed")
             if any(decision.verdict == "ERROR" for decision in child_decisions.values()):
                 failures.append("individual validation failed")
@@ -640,47 +654,52 @@ class AutomationEngine:
                 authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
                 if authoritative_set is None:
                     return None
-                parent_validator = self._get_decomposition_validator(repo_name)
-                decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-                parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
-                if parent_decision.verdict == "BLOCKED":
-                    parent_validator.apply_blocked(
-                        self.github,
-                        parent_decision,
-                        lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
-                    )
+                if self._is_issue_decomposition_validation_enabled(repo_name):
+                    parent_validator = self._get_decomposition_validator(repo_name)
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                    parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
+                    if parent_decision is not None and parent_decision.verdict == "BLOCKED":
+                        parent_validator.apply_blocked(
+                            self.github,
+                            parent_decision,
+                            lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                        )
             return None
 
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
         decomposition_validator: Optional[DecompositionValidationLifecycle] = None
         decomposition_decision: Optional[DecompositionDecision] = None
         joined_child_decisions: dict[int, ValidationDecision] = {}
+        decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name)
         if parent_number is not None:
             authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
             if authoritative_set is None or issue_number not in {child.get("number") for child in authoritative_set[1]}:
                 return None
             # A native child is authorized only through a live submitted parent;
             # its own label is never a fallback after the parent is withdrawn.
-            if not is_implementation_ready(authoritative_set[0]):
+            if not self._is_open_issue(authoritative_set[0]) or not is_implementation_ready(authoritative_set[0]):
                 return None
             if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
                 return None
             decomposition_validator = self._get_decomposition_validator(repo_name)
             decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
             decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
-            if decomposition_decision.verdict == "BLOCKED":
-                decomposition_validator.apply_blocked(
-                    self.github,
-                    decomposition_decision,
-                    lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
-                )
-                return None
-            if decomposition_decision.verdict != "READY" or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in authoritative_set[1]):
+            if decomposition_enabled and decomposition_decision is not None:
+                if decomposition_decision.verdict == "BLOCKED":
+                    decomposition_validator.apply_blocked(
+                        self.github,
+                        decomposition_decision,
+                        lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                    )
+                    return None
+                if decomposition_decision.verdict != "READY":
+                    return None
+            if any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in authoritative_set[1]):
                 return None
 
-        if not is_implementation_ready(current) and decomposition_decision is None:
+        if parent_number is None and not is_implementation_ready(current):
             return None
-        if decomposition_decision is None and self._defer_initial_issue_stabilization(repo_name, current):
+        if parent_number is None and self._defer_initial_issue_stabilization(repo_name, current):
             return None
         snapshot = current
         title = str(snapshot.get("title") or "")
@@ -701,12 +720,21 @@ class AutomationEngine:
                     lambda: validator.decide(manifest, title, body),
                 ).result()
             if decision.verdict == "BLOCKED":
-                if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
+                if parent_number is not None:
+
+                    def _set_is_current() -> bool:
+                        latest = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+                        if latest is None or not self._is_open_issue(latest[0]) or not is_implementation_ready(latest[0]) or issue_number not in {child.get("number") for child in latest[1]}:
+                            return False
+                        if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
+                            return decomposition_validator.identity(*latest) == decomposition_decision.identity
+                        return True
+
                     validator.apply_inherited_blocked(
                         self.github,
                         decision,
                         parent_number,
-                        lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
+                        _set_is_current,
                     )
                 else:
                     validator.apply_blocked(
@@ -728,15 +756,19 @@ class AutomationEngine:
         refreshed_parent = self._get_authoritative_parent_number(repo_name, issue_number, refreshed)
         if refreshed_children or refreshed_parent != parent_number:
             return None
-        if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
+        if parent_number is not None:
             refreshed_set = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
             if (
                 refreshed_set is None
+                or not self._is_open_issue(refreshed_set[0])
                 or not is_implementation_ready(refreshed_set[0])
-                or decomposition_validator.identity(*refreshed_set) != decomposition_decision.identity
+                or issue_number not in {child.get("number") for child in refreshed_set[1]}
                 or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < issue_number for child in refreshed_set[1])
             ):
                 return None
+            if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
+                if decomposition_validator.identity(*refreshed_set) != decomposition_decision.identity:
+                    return None
         elif not is_implementation_ready(refreshed):
             return None
         return refreshed
@@ -2026,6 +2058,9 @@ class AutomationEngine:
                 except Exception as exc:
                     result.error = f"Cannot confirm parent readiness submission: {exc}"
                     return result
+                if not self._is_open_issue(parent_snapshot):
+                    result.actions = ["Skipped - parent issue is closed"]
+                    return result
                 if is_implementation_ready(parent_snapshot):
                     if self._defer_initial_issue_stabilization(repo_name, parent_snapshot):
                         result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
@@ -2056,7 +2091,8 @@ class AutomationEngine:
                     )
                     if not open_children:
                         parent_decomposition_validator = self._get_decomposition_validator(repo_name)
-                        if parent_decision.verdict == "BLOCKED":
+                        decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
+                        if decomposition_enabled and parent_decision is not None and parent_decision.verdict == "BLOCKED":
                             side_effect_error = parent_decomposition_validator.apply_blocked(
                                 self.github,
                                 parent_decision,
@@ -2065,7 +2101,7 @@ class AutomationEngine:
                             result.error = "Parent/child decomposition validation found material defects"
                             if side_effect_error:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
-                        elif parent_decision.verdict == "ERROR":
+                        elif decomposition_enabled and parent_decision is not None and parent_decision.verdict == "ERROR":
                             result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                         result.actions = ["Skipped - submitted parent has no open child eligible for sequential implementation"]
                         return result
@@ -2094,6 +2130,9 @@ class AutomationEngine:
                     return result
                 if live_parent_set is None or item_number not in {child.get("number") for child in live_parent_set[1]}:
                     result.actions = ["Skipped - child is no longer in the authoritative parent set"]
+                    return result
+                if not self._is_open_issue(live_parent_set[0]):
+                    result.actions = ["Skipped - authoritative parent is closed"]
                     return result
                 if not is_implementation_ready(live_parent_set[0]):
                     result.actions = [f"Skipped - authoritative parent is missing {IMPLEMENTATION_READY_LABEL} label"]
@@ -2237,11 +2276,14 @@ class AutomationEngine:
                 if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
                     result.actions = ["Skipped - child is no longer in the authoritative parent set"]
                     return result
+                if not self._is_open_issue(authoritative_set[0]):
+                    result.actions = ["Skipped - authoritative parent is closed"]
+                    return result
                 if not is_implementation_ready(authoritative_set[0]):
                     result.actions = [f"Skipped - authoritative parent is missing {IMPLEMENTATION_READY_LABEL} label"]
                     return result
 
-            inherited_ready = authoritative_set is not None and is_implementation_ready(authoritative_set[0])
+            inherited_ready = authoritative_set is not None and self._is_open_issue(authoritative_set[0]) and is_implementation_ready(authoritative_set[0])
 
             # Readiness is intentionally decided from the same cache-bypassing
             # snapshot as the dispatch type and requirement contract. Candidate
@@ -2262,7 +2304,8 @@ class AutomationEngine:
                     return result
                 decomposition_validator = self._get_decomposition_validator(repo_name)
                 individual_validator = self._get_specification_validator(repo_name)
-                if decomposition_validator.is_reissue_required(inherited_parent_number or 0) is True:
+                decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
+                if decomposition_enabled and decomposition_validator.is_reissue_required(inherited_parent_number or 0) is True:
                     result.error = "Parent specification set requires a replacement Issue number"
                     result.actions = ["Rejected - parent set is durably reissue-required"]
                     return result
@@ -2273,24 +2316,25 @@ class AutomationEngine:
                     return result
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config)
                 decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
-                if decomposition_decision.verdict == "ERROR":
-                    result.error = "Decomposition validation failed; parent readiness was preserved for retry"
-                    result.actions = ["Deferred - decomposition validation error"]
-                    return result
-                if decomposition_decision.verdict == "BLOCKED":
-                    try:
-                        side_effect_error = decomposition_validator.apply_blocked(
-                            self.github,
-                            decomposition_decision,
-                            lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
-                        )
-                    except Exception as exc:
-                        side_effect_error = str(exc)
-                    result.error = "Parent/child decomposition validation found material defects"
-                    result.actions = ["Rejected - blocked parent/child decomposition"]
-                    if side_effect_error:
-                        result.error += f"; GitHub side effect failed: {side_effect_error}"
-                    return result
+                if decomposition_enabled and decomposition_decision is not None:
+                    if decomposition_decision.verdict == "ERROR":
+                        result.error = "Decomposition validation failed; parent readiness was preserved for retry"
+                        result.actions = ["Deferred - decomposition validation error"]
+                        return result
+                    if decomposition_decision.verdict == "BLOCKED":
+                        try:
+                            side_effect_error = decomposition_validator.apply_blocked(
+                                self.github,
+                                decomposition_decision,
+                                lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+                            )
+                        except Exception as exc:
+                            side_effect_error = str(exc)
+                        result.error = "Parent/child decomposition validation found material defects"
+                        result.actions = ["Rejected - blocked parent/child decomposition"]
+                        if side_effect_error:
+                            result.error += f"; GitHub side effect failed: {side_effect_error}"
+                        return result
                 if spec_validation_enabled:
                     for eager_decision in eager_child_decisions.values():
                         if eager_decision.verdict == "ERROR":
@@ -2360,12 +2404,22 @@ class AutomationEngine:
                     return result
                 if decision.verdict == "BLOCKED":
                     try:
-                        if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
+                        if inherited_parent_number is not None:
+                            decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
+
+                            def _set_is_current() -> bool:
+                                latest = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                                if latest is None or not self._is_open_issue(latest[0]) or not is_implementation_ready(latest[0]) or item_number not in {child.get("number") for child in latest[1]}:
+                                    return False
+                                if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
+                                    return decomposition_validator.identity(*latest) == decomposition_decision.identity
+                                return True
+
                             side_effect_error = validator.apply_inherited_blocked(
                                 self.github,
                                 decision,
                                 inherited_parent_number,
-                                lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
+                                _set_is_current,
                             )
                         else:
                             side_effect_error = validator.apply_blocked(
@@ -2401,15 +2455,18 @@ class AutomationEngine:
             submission_current = self._is_open_issue(dispatch_snapshot) and is_implementation_ready(dispatch_snapshot)
             if spec_validation_enabled and validator.is_reissue_required(item_number) is True:
                 submission_current = False
-            if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
+            decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
+            if inherited_parent_number is not None:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 submission_current = (
                     latest_set is not None
+                    and self._is_open_issue(latest_set[0])
                     and is_implementation_ready(latest_set[0])
-                    and decomposition_validator.identity(*latest_set) == decomposition_decision.identity
                     and item_number in {child.get("number") for child in latest_set[1]}
                     and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in latest_set[1])
                 )
+                if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
+                    submission_current = submission_current and latest_set is not None and decomposition_validator.identity(*latest_set) == decomposition_decision.identity
             elif submission_current:
                 # An Issue classified as standalone can become a parent without
                 # changing its own text or labels. Recheck membership before any
@@ -2469,14 +2526,20 @@ class AutomationEngine:
             child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == expected_identity
             if not child_current:
                 return False
-            if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
+            if inherited_parent_number is not None:
                 current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
-                return (
-                    current_set is not None
-                    and is_implementation_ready(current_set[0])
-                    and decomposition_validator.identity(*current_set) == decomposition_decision.identity
-                    and not any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in current_set[1])
-                )
+                if (
+                    current_set is None
+                    or not self._is_open_issue(current_set[0])
+                    or not is_implementation_ready(current_set[0])
+                    or item_number not in {child.get("number") for child in current_set[1]}
+                    or any(child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number for child in current_set[1])
+                ):
+                    return False
+                if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
+                    if decomposition_validator.identity(*current_set) != decomposition_decision.identity:
+                        return False
+                return True
             direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
             latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
             return is_implementation_ready(latest) and not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, latest)
