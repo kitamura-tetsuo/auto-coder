@@ -130,6 +130,8 @@ print(response)
             "RUN_ID": "42",
             "SOURCE_SHA": RELEASE_SHA,
             "REGISTRY_API_BASE": f"http://127.0.0.1:{registry.server_port}",
+            "GITHUB_TOKEN": "test-token",
+            "RELEASE_TAG": "",
         }
     )
     if release_sha is not None:
@@ -308,12 +310,13 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert "context:" not in promote
 
     assert rollback.count("release_sha:") == 1
+    assert rollback.count("release_tag:") == 1
     assert "digest:" not in rollback
     assert "tested-beta-" not in rollback
-    assert 'inspect-digest "$IMAGE:release-$RELEASE_SHA"' in rollback
-    assert 'create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"' in rollback
+    assert "uv run auto-coder deployment restore-release" in rollback
+    assert '--release-tag "$RELEASE_TAG"' in rollback
+    assert '--release-sha "$RELEASE_SHA"' in rollback
     assert 'tag "$IMAGE:release-$RELEASE_SHA"' not in rollback
-    assert 'require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"' in rollback
     assert "docker/build-push-action" not in rollback
     assert "context:" not in rollback
     assert "group: release-channel" in promote
@@ -346,7 +349,8 @@ def test_workflow_rejects_multiply_quoted_digest_before_any_write(tmp_path, work
     result, operations = _run_release_workflow(tmp_path, workflow_name, step_name, {f"{reference}|digest": {"status": 0, "stdout": malformed}}, release_sha)
 
     assert result.returncode != 0
-    assert "invalid digest output" in result.stderr
+    expected_error = "invalid digest output" if workflow_name == "advance-beta.yml" else "absent or unavailable"
+    assert expected_error in result.stderr
     assert not any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
 
 
@@ -387,7 +391,7 @@ def test_release_workflow_reports_failure_when_post_write_digest_differs(tmp_pat
 
     assert any(operation[:3] == ["buildx", "imagetools", "create"] for operation in operations)
     assert result.returncode != 0
-    assert "release tag digest mismatch" in result.stderr
+    assert "postcondition differs from pinned digest" in result.stderr
 
 
 def test_compose_channels_use_disjoint_private_storage_and_artifacts():

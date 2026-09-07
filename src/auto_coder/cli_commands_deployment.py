@@ -9,6 +9,7 @@ import click
 from .deployment_channel import VALID_CHANNELS, DeploymentChannelError, assign_repository
 from .release_catalog import ReleaseCatalog, ReleaseCatalogError, new_record
 from .release_promotion import Registry, ReleasePromotion, ReleasePromotionError, write_summary
+from .release_restore import ReleaseRestore, ReleaseRestoreError, write_restore_failure_summary, write_restore_summary
 from .util.gh_cache import GitHubGitDataClient
 
 
@@ -93,4 +94,23 @@ def promote_release(repository: str, run_id: int, run_attempt: int, memo_env: st
         write_summary(outcome)
         click.echo(f"{outcome.result}: {outcome.record.release_tag} {outcome.release_url}")
     except (ReleasePromotionError, ReleaseCatalogError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@deployment_group.command("restore-release")
+@click.option("--repository", required=True)
+@click.option("--release-tag", default="")
+@click.option("--release-sha", default="")
+@click.option("--github-token", envvar="GITHUB_TOKEN", hidden=True)
+@click.option("--api-url", envvar="GITHUB_API_URL", default="https://api.github.com", hidden=True)
+def restore_release(repository: str, release_tag: str, release_sha: str, github_token: str | None, api_url: str) -> None:
+    """Restore one explicitly selected catalog or legacy history entry."""
+    if not github_token:
+        raise click.ClickException("catalog token is required")
+    try:
+        outcome = ReleaseRestore(GitHubGitDataClient(github_token, repository, api_url), Registry(), repository).execute(release_tag, release_sha)
+        write_restore_summary(outcome)
+        click.echo(f"{outcome.result}: {outcome.source_sha} {outcome.digest}")
+    except (ReleaseRestoreError, ReleaseCatalogError, RuntimeError, subprocess.SubprocessError) as exc:
+        write_restore_failure_summary(str(exc))
         raise click.ClickException(str(exc)) from exc

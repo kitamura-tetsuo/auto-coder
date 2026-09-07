@@ -3,9 +3,16 @@ name: Rollback Release
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: Exact tag copied from an eligible GitHub Release (alternative to release_sha)
+        required: false
+        default: ""
+        type: string
       release_sha:
-        description: Commit SHA of a previously promoted release
-        required: true
+        description: Full commit SHA for pre-catalog release history (alternative to release_tag)
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -28,13 +35,12 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - name: Roll back to immutable release history without rebuilding
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_SHA: ${{ inputs.release_sha }}
         run: |
           set -Eeuo pipefail
-          python scripts/deployment_artifacts.py require-release-sha "$RELEASE_SHA"
-          DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release-$RELEASE_SHA")
-
-          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:release" "$IMAGE@$DIGEST"
-          RELEASE_DIGEST=$(python scripts/deployment_artifacts.py inspect-digest "$IMAGE:release")
-          python scripts/deployment_artifacts.py require-release-postcondition "$DIGEST" "$RELEASE_DIGEST"
+          uv run auto-coder deployment restore-release \
+            --repository "${{ github.repository }}" \
+            --release-tag "$RELEASE_TAG" \
+            --release-sha "$RELEASE_SHA"
