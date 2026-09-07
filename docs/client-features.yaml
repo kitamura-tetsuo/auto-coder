@@ -1842,11 +1842,12 @@ Recent configuration schema changes that require migration:
 ## Selective Promptfoo prompt-regression CI
 
   selective_prompt_regression:
-    description: "Runs CI-only prompt behavioral evaluations for affected registered targets."
+    description: "Provides disabled CI wiring and local tooling for prompt behavioral evaluations of affected registered targets."
     implementation: |
       prompt-evals/registry.json, prompt-evals/run_prompt_evals.py,
       .github/workflows/prompt-regression.yml
     behavior:
+      - "The Selective Promptfoo Evaluations GitHub Actions job is disabled; the registry, runner, and fixtures remain available for explicit local use without blocking pull requests."
       - "The versioned registry associates stable target IDs with dot-addressable production prompt dependencies, target-local Promptfoo configuration, and corpus globs."
       - "CI compares dependency values between the pull request base and head, so independent prompt changes select only their targets while a declared shared dependency selects all and only its dependents."
       - "Target config and corpus changes select their owner; selector, registry, and workflow changes select every target and malformed selection metadata fails closed."

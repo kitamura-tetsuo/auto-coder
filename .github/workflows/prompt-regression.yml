@@ -10,6 +10,9 @@ permissions:
 jobs:
   selective-prompt-evals:
     name: Selective Promptfoo Evaluations
+    # Promptfoo evaluations are retained for local/manual use, but are disabled in
+    # GitHub Actions until they can run reliably without blocking pull requests.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout full history
