@@ -21,13 +21,14 @@ from .decomposition_analyzer import (
     analyze_issue_decomposition,
     decomposition_review_evidence,
 )
+from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .specification_repair_rounds import SpecificationRepairRoundStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v3-graph-drift"
+DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v4-objective-anchor"
 DECOMPOSITION_FINDINGS_MARKER = "auto-coder-decomposition-validation"
 
 
@@ -231,6 +232,8 @@ class DecompositionValidationLifecycle:
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
         history_path = path.with_name("decomposition_review_history.json") if path is not None else None
         self.history_store = DecompositionReviewHistoryStore(repository, history_path)
+        objective_path = path.with_name("individual_review_history.json") if path is not None else None
+        self.objective_store = ObjectiveAnchorStore(repository, objective_path)
         rounds_path = path.with_name("specification_repair_rounds.json") if path is not None else None
         self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer or (lambda parent, children: analyze_issue_decomposition(parent, children))
@@ -252,13 +255,21 @@ class DecompositionValidationLifecycle:
 
     def decide(self, identity: DecompositionIdentity, parent: DecompositionIssue, children: Sequence[DecompositionIssue]) -> DecompositionDecision:
         with self.store.locked(identity.key):
+            members = (parent, *children)
+            valid = all(item.manifest.explicit_contract_present and item.manifest.explicit_contract_valid for item in members)
+            evidence: Optional[DecompositionReviewEvidence] = None
+            if valid:
+                try:
+                    history = self.history_store.evidence(parent.manifest.issue_number, _set_contract_evidence(parent, children))
+                    objectives = tuple(self.objective_store.capture(item.manifest.issue_number, item.body, "complete-direct-child-set-snapshot:v1") for item in members)
+                    evidence = DecompositionReviewEvidence(history.baseline, history.prior_applied_outcomes, objectives)
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    return DecompositionDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}")
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
-            members = (parent, *children)
-            valid = all(item.manifest.explicit_contract_present and item.manifest.explicit_contract_valid for item in members)
             if valid:
-                evidence = self.history_store.evidence(parent.manifest.issue_number, _set_contract_evidence(parent, children))
+                assert evidence is not None
                 with decomposition_review_evidence(evidence):
                     analyzed = self.analyzer(parent, children)
             else:

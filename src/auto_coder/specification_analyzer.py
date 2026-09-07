@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
 from .backend_manager import BackendManager, run_llm_prompt
+from .objective_evidence import ObjectiveAnchor, objective_evidence_json
 from .prompt_loader import render_prompt
 from .requirement_contract import NormativeIssueManifest
 
@@ -56,6 +57,7 @@ class IndividualReviewEvidence:
 
     baseline: str
     prior_applied_outcomes: tuple[str, ...] = ()
+    objective: Optional[ObjectiveAnchor] = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +206,7 @@ def analyze_issue_specification(
         related_contracts=relationship_context.related_contracts,
         durable_baseline=review_evidence.baseline if review_evidence else "(No earlier baseline is available.)",
         prior_applied_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material review outcomes.)"),
+        objective_evidence=(objective_evidence_json(review_evidence.objective) if review_evidence and review_evidence.objective else "(Required Objective evidence is unavailable.)"),
     )
     try:
         if prompt_runner is not None:

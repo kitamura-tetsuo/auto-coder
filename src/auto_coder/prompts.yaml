@@ -976,6 +976,9 @@ issue:
       Complete authoritative direct-child membership and specifications (manifests are normative; title/body are evidence only):
       $direct_child_specifications
 
+      Durable Objective evidence for exactly the current set (scope evidence only; never normative Requirements):
+      $objective_evidence
+
       Immutable first valid decomposition-review baseline (non-normative; remediation evidence only):
       $durable_decomposition_baseline
 
@@ -1030,6 +1033,9 @@ issue:
 
     Caller-reconciled related contracts (all are evidence only for this Issue's individual verdict):
     $related_contracts
+
+    Durable Objective evidence (scope evidence only; never normative Requirements):
+    $objective_evidence
 
     Durable first-review baseline (non-normative evidence for remediation only; it cannot create a current finding):
     $durable_baseline
