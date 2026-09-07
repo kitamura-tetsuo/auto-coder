@@ -23,6 +23,27 @@ implementation-slot state is active or unreadable.
 
 This file documents the client-facing features and tools provided by auto-coder.
 
+## Repo-scoped feature-switch contract for optional pipeline gates
+
+Auto-Coder exposes canonical, repo-scoped boolean feature settings for optional
+pipeline gates and self-repair loops:
+- `issue_specification_validation`: Controls whether individual Issue specification validation runs before implementation admission.
+- `issue_decomposition_validation`: Controls whether parent/child decomposition validation runs before sub-issue implementation admission.
+- `pr_adversarial_validation`: Canonical switch for pre-merge adversarial review validation.
+- `pr_review_thread_gate`: Controls whether unresolved PR review threads gate PR processing and merge.
+- `automatic_test_fix`: Controls whether automatic test-failure repair loops execute.
+
+Each switch defaults to `true` when unconfigured. Effective values are resolved
+with global-versus-repository precedence (`~/.auto-coder/<owner>/<repo>/config.toml`
+overrides `~/.auto-coder/config.toml`).
+Settings can be declared under the `[features]` table or at the top level of `config.toml`.
+Configured values must strictly be booleans (`true` or `false`); any non-boolean
+value raises an explicit configuration error identifying the invalid setting.
+`AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION` remains supported as an environment-variable
+compatibility override for `pr_adversarial_validation`, and
+`AutomationConfig.ENABLE_ADVERSARIAL_VALIDATION` stays synchronized with the effective
+`pr_adversarial_validation` value.
+
 ## Durable reissue-required specification remediation
 
 Individual and parent/decomposition specification results carry a strict
@@ -1372,7 +1393,7 @@ Recent configuration schema changes that require migration:
       backend_adversarial_validation in src/auto_coder/llm_backend_config.py
     configuration:
       - "[backend_adversarial_validation]: Configures order / default / model for the strong adversarial reviewer in ~/.auto-coder/llm_config.toml."
-      - "ENABLE_ADVERSARIAL_VALIDATION (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var)."
+      - "ENABLE_ADVERSARIAL_VALIDATION / pr_adversarial_validation (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var or pr_adversarial_validation setting)."
       - "MAX_ADVERSARIAL_VALIDATIONS / [adversarial_validation].max_reviews (AutomationConfig): Specifies maximum adversarial review executions for a PR (default: None for unlimited, overridable via AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS env var). When reached on a green PR, adversarial validation is skipped and PR proceeds to merge."
     behavior:
       - "Runs after normal CI / GitHub Actions checks are green and before merge eligibility."

@@ -220,8 +220,10 @@ class AutomationConfig:
 
         # Load Jules and other settings from config with repo scoping
         from .llm_backend_config import (
+            FEATURE_SWITCH_NAMES,
             get_active_repo_name,
             get_adversarial_validation_max_reviews_from_config,
+            get_feature_switch_from_config,
             get_github_action_log_max_length_from_config,
             get_isolate_single_test_on_failure_from_config,
             get_issue_allowlist_from_config,
@@ -273,7 +275,10 @@ class AutomationConfig:
         object.__setattr__(self, "MERGE_METHOD", "--squash")
         object.__setattr__(self, "MERGE_AUTO", True)
         object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
-        object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", True)
+        for switch_name in FEATURE_SWITCH_NAMES:
+            val = get_feature_switch_from_config(switch_name, repo_name=effective_repo, apply_env=False)
+            object.__setattr__(self, switch_name, val)
+        object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", self.pr_adversarial_validation)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
         object.__setattr__(self, "JULES_ONLY_MODE", False)
@@ -550,6 +555,7 @@ class AutomationConfig:
         adv_val_env = os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
         if adv_val_env is not None:
             enabled = adv_val_env.strip().lower() not in ("false", "0", "no")
+            object.__setattr__(self, "pr_adversarial_validation", enabled)
             object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", enabled)
             logger.info(f"Loaded ENABLE_ADVERSARIAL_VALIDATION={enabled} from environment")
 
@@ -693,6 +699,13 @@ class AutomationConfig:
     # Default: True (auto-merge enabled)
     AUTO_MERGE: bool = True
 
+    # Pipeline feature switches (defaults to True)
+    issue_specification_validation: bool = True
+    issue_decomposition_validation: bool = True
+    pr_adversarial_validation: bool = True
+    pr_review_thread_gate: bool = True
+    automatic_test_fix: bool = True
+
     # Enable/disable strong-model adversarial validation step before merge
     # Default: True (adversarial validation enabled)
     ENABLE_ADVERSARIAL_VALIDATION: bool = True
@@ -826,6 +839,15 @@ class AutomationConfig:
         for label in self.PR_LABEL_PRIORITIES:
             if label not in self.PR_LABEL_MAPPINGS:
                 logger.warning(f"PR_LABEL_PRIORITIES contains label '{label}' not in PR_LABEL_MAPPINGS")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        if name == "pr_adversarial_validation":
+            if getattr(self, "ENABLE_ADVERSARIAL_VALIDATION", None) != value:
+                super().__setattr__("ENABLE_ADVERSARIAL_VALIDATION", value)
+        elif name == "ENABLE_ADVERSARIAL_VALIDATION":
+            if getattr(self, "pr_adversarial_validation", None) != value:
+                super().__setattr__("pr_adversarial_validation", value)
 
 
 @dataclass
