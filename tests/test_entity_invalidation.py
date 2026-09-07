@@ -933,6 +933,61 @@ def test_delayed_webhook_expires_through_consumer_and_fetches_final_state(tmp_pa
     assert processed == [final_state]
 
 
+def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_path: Path, monkeypatch):
+    """The webhook origin must survive the durable queue and a capacity defer."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    fetched = []
+    processed = []
+
+    def fetch(_repo, _entity_type, number, bypass_cache):
+        fetched.append((number, bypass_cache))
+        return Candidate(
+            type="issue",
+            data={"number": number, "state": "open", "labels": ["implementation-ready", "urgent"]},
+            priority=0,
+        )
+
+    monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda _repo, candidate: processed.append(candidate.urgent_admission)
+        or CandidateProcessingResult(
+            type="issue",
+            number=1767,
+            actions=["Deferred - logical implementation limit is occupied"],
+            capacity_deferred=True,
+        ),
+    )
+
+    async def scenario():
+        await process_github_payload(
+            "issues",
+            {
+                "action": "labeled",
+                "issue": {"number": 1767},
+                "label": {"name": "urgent"},
+            },
+            engine,
+            "owner/repo",
+            "urgent-delivery",
+        )
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        for _ in range(100):
+            if processed:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+    assert fetched == [(1767, True)]
+    assert processed == [True]
+    assert engine.invalidations.pending_count("owner/repo") == 1
+
+
 def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     created_at = (datetime.now(timezone.utc) - timedelta(seconds=59.5)).isoformat()

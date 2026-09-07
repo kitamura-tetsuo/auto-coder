@@ -39,6 +39,7 @@ class EntityIdentity:
 class ClaimedInvalidation:
     identity: EntityIdentity
     generation: int
+    urgent_admission: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class DurableInvalidationQueue:
                 claimed_generation INTEGER,
                 state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
                 not_before REAL,
+                urgent_admission INTEGER NOT NULL DEFAULT 0 CHECK(urgent_admission IN (0, 1)),
                 PRIMARY KEY(repository, entity_type, entity_number)
             );
             CREATE TABLE IF NOT EXISTS github_deliveries (
@@ -111,6 +113,8 @@ class DurableInvalidationQueue:
         invalidation_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(entity_invalidations)")}
         if "not_before" not in invalidation_columns:
             self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN not_before REAL")
+        if "urgent_admission" not in invalidation_columns:
+            self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN urgent_admission INTEGER NOT NULL DEFAULT 0")
 
         delivery_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(github_deliveries)")}
         if "entity_type" not in delivery_columns:
@@ -160,6 +164,7 @@ class DurableInvalidationQueue:
         event_type: Optional[str] = None,
         action: Optional[str] = None,
         not_before: Optional[float] = None,
+        urgent_admission: bool = False,
     ) -> bool:
         """Persist an invalidation; return False only for a duplicate delivery."""
         with self._lock, self._connection:
@@ -180,8 +185,8 @@ class DurableInvalidationQueue:
                     return False
             self._connection.execute(
                 """
-                INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state, not_before)
-                VALUES (?, ?, ?, 1, 'dirty', ?)
+                INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state, not_before, urgent_admission)
+                VALUES (?, ?, ?, 1, 'dirty', ?, ?)
                 ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
                     generation = CASE
                         WHEN state = 'processing' THEN generation + 1
@@ -191,9 +196,10 @@ class DurableInvalidationQueue:
                         WHEN entity_invalidations.not_before IS NULL THEN excluded.not_before
                         WHEN excluded.not_before IS NULL THEN entity_invalidations.not_before
                         ELSE MIN(entity_invalidations.not_before, excluded.not_before)
-                    END
+                    END,
+                    urgent_admission = MAX(entity_invalidations.urgent_admission, excluded.urgent_admission)
                 """,
-                (identity.repository, identity.entity_type, identity.number, not_before),
+                (identity.repository, identity.entity_type, identity.number, not_before, int(urgent_admission)),
             )
             return True
 
@@ -209,13 +215,13 @@ class DurableInvalidationQueue:
                          AND (not_before IS NULL OR not_before <= ?)
                        ORDER BY rowid LIMIT 1
                    ) AND state = 'dirty'
-                   RETURNING entity_type, entity_number, generation""",
+                   RETURNING entity_type, entity_number, generation, urgent_admission""",
                 (repository, time.time()),
             ).fetchone()
             if row is None:
                 return None
-            entity_type, number, generation = row
-            return ClaimedInvalidation(EntityIdentity(repository, entity_type, number), generation)
+            entity_type, number, generation, urgent_admission = row
+            return ClaimedInvalidation(EntityIdentity(repository, entity_type, number), generation, bool(urgent_admission))
 
     def seconds_until_next_ready(self, repository: str) -> Optional[float]:
         """Return the delay until the earliest dirty invalidation is eligible."""

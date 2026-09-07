@@ -899,6 +899,7 @@ class Candidate:
     related_issues: List[int] = field(default_factory=list)
     issue_number: Optional[int] = None
     invalidation_generation: Optional[int] = None
+    urgent_admission: bool = False
 
 
 @dataclass
@@ -916,6 +917,7 @@ class CandidateProcessingResult:
     error: Optional[str] = None
     outcome: "PRProcessingOutcome" = field(default_factory=lambda: PRProcessingOutcome.SUCCESS)
     refill_retry_required: bool = False
+    capacity_deferred: bool = False
 
 
 class PRProcessingOutcome(str, Enum):

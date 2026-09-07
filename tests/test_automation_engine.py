@@ -895,6 +895,41 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert state["issue:2"]["emergency"] is True
         assert slots.start_execution(ImplementationOwner("issue", 3), allow_urgent_emergency=True) is None
 
+    def test_removed_urgent_label_cannot_authorize_stale_emergency_admission(self, tmp_path):
+        class GitHubStub:
+            def __init__(self):
+                self.reads = 0
+
+            def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
+                self.reads += 1
+                labels = [{"name": "implementation-ready"}, {"name": "urgent"}]
+                if self.reads >= 3:
+                    labels.pop()
+                return {"number": number, "body": "", "labels": labels}
+
+            def get_issue(self, _repo_name, number):
+                return {"number": number, "state": "open"}
+
+            def get_issue_details(self, issue):
+                return issue
+
+        github = GitHubStub()
+        engine = AutomationEngine(github, config=AutomationConfig())
+        slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+        assert slots.start_execution(ImplementationOwner("issue", 1)) is not None
+        engine.implementation_slots = slots
+        engine._process_single_candidate_reserved = Mock()
+
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data={"number": 2, "title": "Stale urgent", "labels": ["urgent"]}, priority=3),
+            engine.config,
+        )
+
+        assert result.actions == ["Skipped - validated Issue generation changed before ownership admission"]
+        assert ImplementationOwner("issue", 2) not in slots.active_owners()
+        engine._process_single_candidate_reserved.assert_not_called()
+
     def test_existing_issue_execution_remains_tracked_until_it_finishes(self, tmp_path):
         """Revalidation cannot delete the capacity record of live implementation."""
 
