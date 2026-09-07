@@ -22,8 +22,8 @@
   vars:
     issue_number: 1858
     issue_title: Saved-draft preview
-    normative_manifest: '[{"requirement_id":"REQ-001","text":"Render the selected draft."},{"requirement_id":"REQ-002","text":"Select only the requested saved draft as input."},{"requirement_id":"REQ-003","text":"Do not write draft or live configuration state."}]'
-    issue_body: "## Objective\nPreview a saved draft without changing live configuration.\n\n## Requirements\nREQ-001: Render the selected draft.\nREQ-002: Select only the requested saved draft as input.\nREQ-003: Do not write draft or live configuration state.\n\nPrior feedback proposed a distributed ownership registry for hypothetical future multi-controller deployment."
+    normative_manifest: '[{"requirement_id":"REQ-001","text":"Render the selected draft as preview output containing its effective configuration values."},{"requirement_id":"REQ-002","text":"Select only the requested saved draft as input."},{"requirement_id":"REQ-003","text":"Do not write draft or live configuration state."}]'
+    issue_body: "## Objective\nPreview a saved draft without changing live configuration.\n\n## Requirements\nREQ-001: Render the selected draft as preview output containing its effective configuration values.\nREQ-002: Select only the requested saved draft as input.\nREQ-003: Do not write draft or live configuration state.\n\nPrior feedback proposed a distributed ownership registry for hypothetical future multi-controller deployment."
     parent_context: (none)
     relationship_role: standalone
     related_contracts: (none)
