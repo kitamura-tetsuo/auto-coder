@@ -4,8 +4,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 RUNNER = Path(__file__).parents[1] / "prompt-evals/run_prompt_evals.py"
+REPOSITORY_ROOT = Path(__file__).parents[1]
 pytestmark = pytest.mark.usefixtures("_use_real_commands")
 
 
@@ -50,6 +52,23 @@ def test_empty_registry_and_unrelated_change_do_not_invoke_provider(tmp_path: Pa
     result = invoke(repo, base, repo / "missing-npx")
     assert result.returncode == 0
     assert "No prompt-evaluation targets affected" in result.stdout
+
+
+def test_prompt_regression_workflow_supplies_github_models_credentials() -> None:
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml").read_text())
+    assert workflow["permissions"]["models"] == "read"
+    evaluation_step = workflow["jobs"]["selective-prompt-evals"]["steps"][-1]
+    assert evaluation_step["env"]["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+    config = yaml.safe_load((REPOSITORY_ROOT / "prompt-evals/targets/individual-objective-scope/promptfooconfig.yaml").read_text())
+    provider = config["providers"][0]
+    assert provider == {
+        "id": "openai:chat:gpt-4.1",
+        "config": {
+            "apiBaseUrl": "https://models.github.ai/inference",
+            "apiKey": "${GITHUB_TOKEN}",
+        },
+    }
 
 
 def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_path: Path) -> None:
