@@ -8,6 +8,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from .runtime_locks import ensure_lock_directory, lock_path
+
 
 class ReissueRequiredStore:
     """Atomically persist stable Issue identities that must be replaced."""
@@ -15,6 +17,7 @@ class ReissueRequiredStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or root / repository / "reissue_required.json"
+        self.repository = repository
         self._lock = threading.Lock()
 
     def _read(self) -> set[int]:
@@ -36,9 +39,9 @@ class ReissueRequiredStore:
         import fcntl
 
         with self._lock:
-            lock_path = self.path.with_suffix(".lock")
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with lock_path.open("a", encoding="utf-8") as stream:
+            runtime_path = lock_path(self.repository, self.path, "reissue-required-store")
+            ensure_lock_directory(runtime_path)
+            with runtime_path.open("a", encoding="utf-8") as stream:
                 fcntl.flock(stream, fcntl.LOCK_EX)
                 subjects = self._read()
                 if issue_number in subjects:

@@ -2024,3 +2024,10 @@ validated-release-channel-restore:
     - "Catalog restore requires an exact eligible GitHub Release, its strict version-1 annotated Git tag and direct commit target, matching immutable GHCR history digest, and matching source revision read from the image digest. Prepared-only, draft, prerelease, lightweight, nested, mismatched, or unavailable evidence is rejected regardless of editable title, body, memo, or target_commitish."
     - "The durable Git tag/Release and GHCR evidence are sufficient after Actions logs and artifacts expire. Repeating a restore can be a verified no-op and never creates another catalog entry."
     - "Only the mutable `:release` distribution tag is written to the pinned digest and freshly read back. Failure or unavailable read-back is reported as uncertain without a compensating write; beta, history, source, Releases, Git refs, builds, and running containers remain untouched. A confirmed tag restoration is not confirmation that any container restarted or updated."
+runtime_coordination_locks:
+  summary: Repository state coordination locks live outside configuration and durable state.
+  behavior:
+    - Locks use AUTO_CODER_RUNTIME_ROOT/locks/<owner>/<repo>, defaulting to ~/.auto-coder/runtime/locks/<owner>/<repo>.
+    - Stable identities include the resolved state path, coordination purpose, and logical key.
+    - Shared-state processes must use one physical runtime tree and consistent canonical state paths.
+  documentation: docs/runtime-locks.md

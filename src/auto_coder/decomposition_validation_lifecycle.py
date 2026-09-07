@@ -25,6 +25,7 @@ from .decomposition_analyzer import (
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
+from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_repair_rounds import SpecificationRepairRoundStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
@@ -85,6 +86,7 @@ class DecompositionValidationStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or root / repository / "decomposition_validations.json"
+        self.repository = repository
 
     def _read(self) -> dict[str, object]:
         try:
@@ -97,13 +99,13 @@ class DecompositionValidationStore:
     def locked(self, key: str) -> Iterator[None]:
         import fcntl
 
-        lock_name = f"{self.path}:{key}"
+        runtime_path = lock_path(self.repository, self.path, "decomposition-validation", key)
+        lock_name = str(runtime_path)
         with _LOCKS_GUARD:
             lock = _LOCKS.setdefault(lock_name, threading.Lock())
         with lock:
-            lock_path = self.path.with_suffix(f".{key}.lock")
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with lock_path.open("a", encoding="utf-8") as stream:
+            ensure_lock_directory(runtime_path)
+            with runtime_path.open("a", encoding="utf-8") as stream:
                 fcntl.flock(stream, fcntl.LOCK_EX)
                 try:
                     yield
@@ -153,6 +155,7 @@ class DecompositionReviewHistoryStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or root / repository / "decomposition_review_history.json"
+        self.repository = repository
 
     def _read(self) -> dict[str, object]:
         try:
@@ -169,7 +172,7 @@ class DecompositionReviewHistoryStore:
 
     def evidence(self, parent_number: int, contract: str) -> DecompositionReviewEvidence:
         key = str(parent_number)
-        lock = DecompositionValidationStore("", self.path)
+        lock = DecompositionValidationStore(self.repository, self.path)
         with lock.locked("history"):
             state = self._read()
             raw = state.get(key)
@@ -185,7 +188,7 @@ class DecompositionReviewHistoryStore:
             return DecompositionReviewEvidence(raw["baseline"], tuple(outcomes))
 
     def record_applied(self, parent_number: int, identity_key: str, outcome: str) -> None:
-        lock = DecompositionValidationStore("", self.path)
+        lock = DecompositionValidationStore(self.repository, self.path)
         with lock.locked("history"):
             state = self._read()
             raw = state.get(str(parent_number))

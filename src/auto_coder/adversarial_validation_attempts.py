@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .runtime_locks import ensure_lock_directory, lock_path
+
 
 @dataclass(frozen=True)
 class AdversarialValidationAttempt:
@@ -24,12 +26,13 @@ class AdversarialValidationAttemptRepository:
 
     def __init__(self, repo_name: str, storage_path: Optional[Path] = None):
         self.storage_path = storage_path or Path.home() / ".auto-coder" / repo_name / "adversarial_validation_attempts.json"
-        self.lock_path = self.storage_path.with_suffix(".lock")
-        self.transition_lock_path = self.storage_path.with_suffix(".transition.lock")
+        self.lock_path = lock_path(repo_name, self.storage_path, "adversarial-attempt-store")
+        self.transition_lock_path = lock_path(repo_name, self.storage_path, "adversarial-transition")
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_lock_directory(self.lock_path)
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             os.chmod(self.lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -47,6 +50,7 @@ class AdversarialValidationAttemptRepository:
         separate lock, while ordinary state mutations retain their short lock.
         """
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_lock_directory(self.transition_lock_path)
         with self.transition_lock_path.open("a+", encoding="utf-8") as lock:
             os.chmod(self.transition_lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)

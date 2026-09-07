@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
+from .runtime_locks import ensure_lock_directory, lock_path
 
 logger = get_logger(__name__)
 
@@ -132,7 +133,7 @@ class CloudRunRepository:
             self.storage_path = storage_path
         else:
             self.storage_path = Path.home() / ".auto-coder" / repo_name / "cloud_runs.json"
-        self.lock_path = self.storage_path.with_suffix(self.storage_path.suffix + ".lock")
+        self.lock_path = lock_path(repo_name, self.storage_path, "cloud-run-store")
 
     def _ensure_dir(self) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,7 +173,7 @@ class CloudRunRepository:
 
     def _file_lock(self):
         """Return an opened, exclusively locked cross-process lock file."""
-        self._ensure_dir()
+        ensure_lock_directory(self.lock_path)
         lock_file = open(self.lock_path, "a+", encoding="utf-8")
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)

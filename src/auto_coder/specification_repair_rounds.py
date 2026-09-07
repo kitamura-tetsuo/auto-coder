@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .runtime_locks import ensure_lock_directory, lock_path
+
 
 @dataclass(frozen=True)
 class RepairRoundApplication:
@@ -26,6 +28,7 @@ class SpecificationRepairRoundStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or root / repository / "specification_repair_rounds.json"
+        self.repository = repository
 
     def apply(self, subject_kind: str, subject_number: int, generation: str, remediation: str, limit: int) -> RepairRoundApplication:
         """Record or upgrade a trustworthy current BLOCKED remediation."""
@@ -70,9 +73,9 @@ class SpecificationRepairRoundStore:
     def _locked(self) -> Iterator[None]:
         import fcntl
 
-        lock_path = self.path.with_suffix(".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as stream:
+        runtime_path = lock_path(self.repository, self.path, "specification-repair-rounds")
+        ensure_lock_directory(runtime_path)
+        with runtime_path.open("a", encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             try:
                 yield
