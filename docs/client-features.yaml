@@ -1,5 +1,17 @@
 # Client Features Documentation
 
+## Secret-safe GitHub request outcomes
+
+The production GhApi/hishel boundary exposes a typed outcome for each actual
+wire attempt and separately records local cache results. Outcomes retain HTTP
+status, evidence-based authentication/throttling classification, provenance,
+request and attempt identities, safe rate-limit metadata, and delivery
+certainty. Optional admission and observation hooks operate at the transport
+boundary, including cache revalidation, so a mutation can be refused before it
+is sent. Diagnostics are emitted through the existing colored console and
+bounded rotating-file loguru sinks without request payloads, credentials,
+signed queries, GraphQL documents or arbitrary successful response bodies.
+
 ## Crash-safe Codex Cloud submission ownership
 
 Initial Codex Cloud dispatch publishes a repository- and Issue-attempt-scoped

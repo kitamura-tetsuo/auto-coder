@@ -20,6 +20,23 @@ from nacl.encoding import Base64Encoder
 from nacl.public import PublicKey, SealedBox
 
 from ..logger_config import get_logger
+from .github_request_outcome import (
+    AdmissionHook,
+    DeliveryCertainty,
+    DiagnosticTransport,
+    GitHubApiOutcome,
+    GitHubRequestContext,
+    GitHubRequestError,
+    GitHubRequestOutcome,
+    GitHubResponseMetadata,
+    ObservationHook,
+    RequestProvenance,
+    begin_operation,
+    finalize_response,
+    log_outcome,
+    response_metadata,
+    take_wire_outcomes,
+)
 
 logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
@@ -162,16 +179,32 @@ TIMELINE_MAX_PAGES = 100
 _local_storage = threading.local()
 
 
-def get_caching_client() -> httpx.Client:
+def get_caching_client(
+    admission_hook: AdmissionHook | None = None,
+    observation_hook: ObservationHook | None = None,
+    subsystem: str = "ghapi",
+) -> httpx.Client:
     """
     Returns a thread-local instance of a caching httpx client using hishel.
     This ensures that the SQLite connection (inside SyncSqliteStorage) is only used
     by the thread that created it.
     """
+    # Hook-bearing clients are deliberately not shared: admission policy belongs
+    # to one operation and must never leak to a later caller on the same thread.
+    if admission_hook is not None or observation_hook is not None:
+        storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
+        return SyncCacheClient(
+            storage=storage,
+            transport=DiagnosticTransport(
+                admission_hook=admission_hook,
+                observation_hook=observation_hook,
+                subsystem=subsystem,
+            ),
+        )
     if not hasattr(_local_storage, "client"):
         # Create a new storage and client for this thread
         storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
-        _local_storage.client = SyncCacheClient(storage=storage)
+        _local_storage.client = SyncCacheClient(storage=storage, transport=DiagnosticTransport())
     return _local_storage.client
 
 
@@ -288,15 +321,22 @@ class SafeGhApiProxy:
         return SafeGhApiProxy(attr)
 
 
-def get_ghapi_client(token: str) -> GhApi:
+def get_ghapi_client(
+    token: str,
+    *,
+    admission_hook: AdmissionHook | None = None,
+    observation_hook: ObservationHook | None = None,
+    subsystem: str = "ghapi",
+) -> GhApi:
     """
     Returns a GhApi instance configured with hishel caching for GET requests.
     """
+    hook_client = get_caching_client(admission_hook, observation_hook, subsystem) if admission_hook is not None or observation_hook is not None else None
 
     class CachedGhApi(GhApi):
         def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
             # Use the shared caching client
-            client = get_caching_client()
+            client = hook_client or get_caching_client()
 
             if verb is None:
                 verb = "POST" if data else "GET"
@@ -333,23 +373,33 @@ def get_ghapi_client(token: str) -> GhApi:
                     content_data = data
 
             # Use params=query for GET params
-            resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout)
-
-            # Raise for status to ensure errors are caught (e.g. 404, 422)
+            operation_id = str(__import__("uuid").uuid4())
+            begin_operation()
+            started = time.monotonic()
             try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 401:
-                    logger.error("GitHub API authentication failed (401). Please update your GITHUB_TOKEN. (https://github.com/settings/tokens)")
-                    raise
-                else:
-                    raise
+                resp = client.request(method=verb, url=url, headers=headers, content=content_data, json=json_data, params=query, follow_redirects=True, timeout=timeout, extensions={"auto_coder_operation_id": operation_id})
+            except GitHubRequestError:
+                raise
+            wire_outcomes = take_wire_outcomes()
 
-            # Update last headers
+            # A response without a transport observation was satisfied locally
+            # by hishel. It is useful evidence, but never fresh quota evidence.
+            if wire_outcomes:
+                outcome = finalize_response(resp, wire_outcomes[-1], observation_hook)
+            else:
+                origin = httpx.URL(url)
+                context = GitHubRequestContext(operation_id, f"cache-{operation_id}", subsystem, f"{origin.scheme}://{origin.host}", verb, "read" if verb in ("GET", "HEAD") else "mutation", path, cache_mode="normal")
+                base = GitHubRequestOutcome(context, resp.status_code, GitHubApiOutcome.SUCCESS, RequestProvenance.LOCAL_CACHE, DeliveryCertainty.HTTP_RESPONSE_RECEIVED, response_metadata(resp.headers), (time.monotonic() - started) * 1000)
+                outcome = finalize_response(resp, base, observation_hook, "local_cache_hit")
+
+            # Preserve headers before translating the typed failure.
             try:
                 self.recv_hdrs = dict(resp.headers)
-            except:
-                pass
+            except TypeError:
+                # Non-httpx adapters may not expose an iterable header mapping.
+                self.recv_hdrs = {}
+            if outcome.classification is not GitHubApiOutcome.SUCCESS:
+                raise GitHubRequestError(outcome)
 
             # ghapi expects parsed JSON or None
             if resp.status_code == 204 or (not resp.text and not resp.content):
