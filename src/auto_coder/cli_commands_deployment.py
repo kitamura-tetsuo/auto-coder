@@ -1,12 +1,14 @@
 """Operator commands for release/beta repository routing."""
 
 import os
+import subprocess
 from pathlib import Path
 
 import click
 
 from .deployment_channel import VALID_CHANNELS, DeploymentChannelError, assign_repository
 from .release_catalog import ReleaseCatalog, ReleaseCatalogError, new_record
+from .release_promotion import Registry, ReleasePromotion, ReleasePromotionError, write_summary
 from .util.gh_cache import GitHubGitDataClient
 
 
@@ -72,4 +74,23 @@ def read_release_catalog(repository: str, release_tag: str, github_token: str | 
     try:
         click.echo(_catalog(repository, github_token, api_url).read(release_tag).to_json())
     except (ReleaseCatalogError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@deployment_group.command("promote-release")
+@click.option("--repository", required=True)
+@click.option("--run-id", required=True, type=int)
+@click.option("--run-attempt", required=True, type=int)
+@click.option("--memo-env", default="PROMOTION_MEMO", hidden=True)
+@click.option("--github-token", envvar="GITHUB_TOKEN", hidden=True)
+@click.option("--api-url", envvar="GITHUB_API_URL", default="https://api.github.com", hidden=True)
+def promote_release(repository: str, run_id: int, run_attempt: int, memo_env: str, github_token: str | None, api_url: str) -> None:
+    """Promote once or conservatively reconcile an existing operation."""
+    if not github_token:
+        raise click.ClickException("catalog token is required")
+    try:
+        outcome = ReleasePromotion(GitHubGitDataClient(github_token, repository, api_url), Registry(), repository, run_id, run_attempt, os.environ.get(memo_env, "")).execute()
+        write_summary(outcome)
+        click.echo(f"{outcome.result}: {outcome.record.release_tag} {outcome.release_url}")
+    except (ReleasePromotionError, ReleaseCatalogError, RuntimeError, subprocess.SubprocessError) as exc:
         raise click.ClickException(str(exc)) from exc
