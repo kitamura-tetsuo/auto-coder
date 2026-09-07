@@ -337,6 +337,17 @@ class AutomationEngine:
 
         return get_pr_adversarial_validation_from_config(repo_name=repo_name)
 
+    def _is_pr_review_thread_gate_enabled(self, repo_name: str, config: Optional[AutomationConfig] = None) -> bool:
+        """Return whether PR review thread gate is enabled."""
+        cfg = config or self.config
+        if cfg is not None and getattr(cfg, "repo_name", None) == repo_name:
+            return bool(getattr(cfg, "pr_review_thread_gate", True))
+        if cfg is not None and not getattr(cfg, "pr_review_thread_gate", True):
+            return False
+        from .llm_backend_config import get_pr_review_thread_gate_from_config
+
+        return get_pr_review_thread_gate_from_config(repo_name=repo_name)
+
     def _get_decomposition_validator(self, repo_name: str) -> DecompositionValidationLifecycle:
         validator = self._decomposition_validators.get(repo_name)
         if validator is None:

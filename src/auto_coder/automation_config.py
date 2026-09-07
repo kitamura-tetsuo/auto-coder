@@ -185,6 +185,7 @@ class AutomationConfig:
         max_adversarial_reviews: Optional[int] = None,
         pr_adversarial_validation: Optional[bool] = None,
         enable_adversarial_validation: Optional[bool] = None,
+        pr_review_thread_gate: Optional[bool] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -201,6 +202,7 @@ class AutomationConfig:
             max_adversarial_reviews: Optional alias for max_adversarial_validations.
             pr_adversarial_validation: Optional canonical switch for PR adversarial validation.
             enable_adversarial_validation: Optional alias for pr_adversarial_validation.
+            pr_review_thread_gate: Optional canonical switch for PR review-thread gating.
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -287,6 +289,8 @@ class AutomationConfig:
         elif enable_adversarial_validation is not None:
             object.__setattr__(self, "pr_adversarial_validation", enable_adversarial_validation)
         object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", self.pr_adversarial_validation)
+        if pr_review_thread_gate is not None:
+            object.__setattr__(self, "pr_review_thread_gate", pr_review_thread_gate)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
         object.__setattr__(self, "JULES_ONLY_MODE", False)
@@ -566,6 +570,13 @@ class AutomationConfig:
             object.__setattr__(self, "pr_adversarial_validation", enabled)
             object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", enabled)
             logger.info(f"Loaded pr_adversarial_validation={enabled} from environment")
+
+        # Read review thread gate flag from environment variable
+        thread_gate_env = os.environ.get("AUTO_CODER_PR_REVIEW_THREAD_GATE")
+        if thread_gate_env is not None:
+            enabled = thread_gate_env.strip().lower() not in ("false", "0", "no")
+            object.__setattr__(self, "pr_review_thread_gate", enabled)
+            logger.info(f"Loaded pr_review_thread_gate={enabled} from environment")
 
         # Max adversarial validation executions override
         max_adv_val_env = os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_REVIEWS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATION_ATTEMPTS")
