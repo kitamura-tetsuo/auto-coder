@@ -1,0 +1,44 @@
+{
+  "fixture_version": 1,
+  "source": {
+    "repository": "kitamura-tetsuo/auto-coder",
+    "issue_number": 1774,
+    "url": "https://github.com/kitamura-tetsuo/auto-coder/issues/1774",
+    "title": "Reconcile Parent-Issue relationships before eager specification validation",
+    "historical_revision": "before the first and second serial-review corrections",
+    "body_sha256": "eb6fb671d699d56fb7bf7f2d97cdd1cf6578fba242137cd5dc9b278d43855132"
+  },
+  "authoritative_relationship_context": {
+    "role": "child",
+    "related_contracts": "[{\"issue_number\":1730,\"relationship\":\"parent\",\"title\":\"Specification validation before implementation dispatch\"}]"
+  },
+  "expected_specification_review": {
+    "verdict": "BLOCKED",
+    "required_defects": [
+      {
+        "key": "stale_individual_completion_authority",
+        "acceptable_categories": ["false_success_gap", "material_ambiguity", "unverifiable_requirement"],
+        "requirement_ids_any": ["REQ-003", "REQ-011", "REQ-012"],
+        "semantic_term_groups": [
+          ["stale", "late", "superseded"],
+          ["individual", "title/body", "title or body", "text edit"],
+          ["completion", "result", "evidence"],
+          ["current readiness", "current state", "authorize implementation", "authority"]
+        ]
+      },
+      {
+        "key": "child_edit_decomposition_identity_boundary",
+        "acceptable_categories": ["material_ambiguity", "false_success_gap", "unverifiable_requirement"],
+        "requirement_ids_any": ["REQ-003", "REQ-010", "REQ-011", "REQ-012"],
+        "semantic_term_groups": [
+          ["direct child", "direct-child", "child"],
+          ["title/body", "title or body", "specification edit", "content mutation"],
+          ["decomposition"],
+          ["identity", "evidence", "validation"],
+          ["undefined", "ambiguous", "does not determine", "unspecified", "unclear"]
+        ]
+      }
+    ]
+  },
+  "provenance_note": "Stable reconstruction of the historical Issue body whose two co-visible gaps were reported serially. It deliberately predates both corrections: generalized stale-completion authority and explicit direct-child title/body inputs in decomposition identity. Do not replace it with the corrected live Issue."
+}

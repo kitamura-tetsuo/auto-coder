@@ -2,8 +2,10 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from src.auto_coder.requirement_contract import build_normative_issue_manifest
-from src.auto_coder.specification_analyzer import analyze_issue_specification
+from src.auto_coder.specification_analyzer import IndividualRelationshipContext, analyze_issue_specification
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "specification_regressions"
 
@@ -88,3 +90,156 @@ def test_outliner_5290_complete_fixture_reaches_strengthened_review_policy() -> 
     assert result.findings[0].requirement_ids == ("REQ-002", "REQ-010")
     assert oracle["missing_normative_boundary"] in result.findings[0].explanation
     assert "AS-009" in result.findings[0].explanation
+
+
+def _issue_1774_fixture():
+    metadata = json.loads((FIXTURE_DIR / "auto-coder-1774-pre-second-fix.json").read_text(encoding="utf-8"))
+    body = (FIXTURE_DIR / "auto-coder-1774-pre-second-fix.md").read_text(encoding="utf-8")
+    return metadata, body
+
+
+def _assert_1774_semantic_oracle(result, oracle) -> None:
+    """Require both defect boundaries without coupling the fixture to model prose."""
+    assert result.verdict == oracle["verdict"]
+    missing = []
+    for expected in oracle["required_defects"]:
+        covered = False
+        for finding in result.findings:
+            searchable = " ".join(
+                (
+                    finding.explanation,
+                    finding.clarification,
+                    finding.counterexample,
+                    finding.missing_normative_boundary,
+                )
+            ).casefold()
+            if finding.category in expected["acceptable_categories"] and set(finding.requirement_ids).intersection(expected["requirement_ids_any"]) and all(any(term.casefold() in searchable for term in alternatives) for alternatives in expected["semantic_term_groups"]):
+                covered = True
+                break
+        if not covered:
+            missing.append(expected["key"])
+    assert missing == [], f"Missing required semantic defect coverage: {missing}"
+
+
+def _issue_1774_finding(category, requirement_ids, explanation, clarification):
+    return {
+        "category": category,
+        "requirement_ids": requirement_ids,
+        "explanation": explanation,
+        "clarification": clarification,
+        "counterexample": ("A superseded individual result can still alter current readiness." if category == "false_success_gap" else ""),
+        "missing_normative_boundary": ("No authority check covers a stale result after a title/body edit." if category == "false_success_gap" else ""),
+    }
+
+
+def test_auto_coder_1774_child_review_reports_both_defects_in_one_production_path_pass() -> None:
+    metadata, body = _issue_1774_fixture()
+    source = metadata["source"]
+    oracle = metadata["expected_specification_review"]
+    relationship = metadata["authoritative_relationship_context"]
+
+    assert hashlib.sha256(body.encode("utf-8")).hexdigest() == source["body_sha256"]
+    assert "REQ-015" not in body
+    assert "every direct child's current individual specification generation" not in body
+    assert "direct-child title/body change must create a new decomposition" not in body
+
+    manifest = build_normative_issue_manifest(source["issue_number"], source["title"], body)
+    assert manifest.explicit_contract_valid is True
+    assert [item.requirement_id for item in manifest.requirements] == [f"REQ-{number:03d}" for number in range(1, 15)]
+
+    invocations = []
+
+    def deterministic_prompt_provider(prompt: str) -> str:
+        invocations.append(prompt)
+        assert body in prompt
+        assert "Authoritative relationship role selected by the caller after reconciliation: child" in prompt
+        assert relationship["related_contracts"] in prompt
+        assert "perform an ambiguity-closure pass" in prompt
+        assert "perform a next-review-prediction pass" in prompt
+        assert "child specification mutation can materially change whether parent/set evidence remains valid" in prompt
+        return json.dumps(
+            {
+                "verdict": "BLOCKED",
+                "remediation": "EDIT_IN_PLACE",
+                "findings": [
+                    _issue_1774_finding(
+                        "false_success_gap",
+                        ["REQ-003", "REQ-011", "REQ-012"],
+                        "A stale individual validation completion after a title/body edit can retain current readiness or authorize implementation.",
+                        "Require completion authority to match the current individual text identity.",
+                    ),
+                    _issue_1774_finding(
+                        "material_ambiguity",
+                        ["REQ-003", "REQ-010", "REQ-011"],
+                        "It is undefined whether a direct-child title/body content mutation supersedes the parent decomposition validation identity or permits evidence reuse.",
+                        "Specify child-to-parent invalidation for decomposition evidence.",
+                    ),
+                ],
+            }
+        )
+
+    result = analyze_issue_specification(
+        manifest,
+        body,
+        relationship_context=IndividualRelationshipContext(
+            role=relationship["role"],
+            related_contracts=relationship["related_contracts"],
+        ),
+        prompt_runner=deterministic_prompt_provider,
+    )
+
+    assert len(invocations) == 1
+    _assert_1774_semantic_oracle(result, oracle)
+
+
+def test_auto_coder_1774_blocked_with_only_stale_completion_is_regression_failure() -> None:
+    metadata, body = _issue_1774_fixture()
+    source = metadata["source"]
+    manifest = build_normative_issue_manifest(source["issue_number"], source["title"], body)
+    response = json.dumps(
+        {
+            "verdict": "BLOCKED",
+            "remediation": "EDIT_IN_PLACE",
+            "findings": [
+                _issue_1774_finding(
+                    "false_success_gap",
+                    ["REQ-003", "REQ-011"],
+                    "A superseded individual result after a title/body edit can retain current state authority.",
+                    "Reject each stale validation completion before it can authorize implementation.",
+                )
+            ],
+        }
+    )
+    result = analyze_issue_specification(manifest, body, prompt_runner=lambda _prompt: response)
+
+    with pytest.raises(AssertionError, match="child_edit_decomposition_identity_boundary"):
+        _assert_1774_semantic_oracle(result, metadata["expected_specification_review"])
+
+
+def test_auto_coder_1774_oracle_accepts_equivalent_wording_and_order() -> None:
+    metadata, body = _issue_1774_fixture()
+    source = metadata["source"]
+    manifest = build_normative_issue_manifest(source["issue_number"], source["title"], body)
+    response = json.dumps(
+        {
+            "verdict": "BLOCKED",
+            "remediation": "EDIT_IN_PLACE",
+            "findings": [
+                _issue_1774_finding(
+                    "unverifiable_requirement",
+                    ["REQ-010", "REQ-012"],
+                    "The contract is unclear about decomposition evidence reuse after a child specification edit.",
+                    "Define whether that content mutation changes the set identity.",
+                ),
+                _issue_1774_finding(
+                    "material_ambiguity",
+                    ["REQ-003", "REQ-011"],
+                    "A late result for individual text edit validation has unspecified current state authority.",
+                    "Define the completion guard for the superseded generation.",
+                ),
+            ],
+        }
+    )
+    result = analyze_issue_specification(manifest, body, prompt_runner=lambda _prompt: response)
+
+    _assert_1774_semantic_oracle(result, metadata["expected_specification_review"])
