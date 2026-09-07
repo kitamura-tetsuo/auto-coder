@@ -1238,6 +1238,29 @@ class AutomationEngine:
         # Maintenance and GitHub work have independent scheduling paths.
         producer_task = asyncio.create_task(self._producer_loop(repo_name), name="producer")
         invalidation_task = asyncio.create_task(self._invalidation_loop(repo_name), name="github-invalidations")
+        # Accepted Codex runs are durable and therefore need no webhook to
+        # resume initial-PR recovery after registration or process restart.
+        from .cloud_run import CloudRunRepository
+        from .codex_observation import CodexObservationService
+        from .codex_pr_recovery import CodexPRRecoveryMonitor, CodexPRRecoveryStore
+        from .codex_wham_client import CodexWhamClient
+
+        codex_recovery_task: Optional[asyncio.Task[Any]] = None
+        try:
+            cloud_runs = CloudRunRepository(repo_name)
+            wham = CodexWhamClient()
+            recovery = CodexPRRecoveryMonitor(
+                cloud_runs,
+                CodexObservationService(self.github, cloud_runs, wham),
+                wham,
+                CodexPRRecoveryStore(),
+                lambda number: self.invalidate_entity(repo_name, "pr", number),
+            )
+            codex_recovery_task = asyncio.create_task(recovery.run(self._shutdown_event), name="codex-initial-pr-recovery")
+        except Exception as exc:
+            # Corrupt/unwritable claim state fails closed for reminders without
+            # preventing ordinary Issue/PR work from serving the repository.
+            logger.error(f"Codex initial-PR recovery is unavailable for {repo_name}: {type(exc).__name__}")
         slot_repository = self._get_implementation_slots(repo_name)
         capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
 
@@ -1245,6 +1268,8 @@ class AutomationEngine:
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
 
         all_loop_tasks = [producer_task, invalidation_task, *workers]
+        if codex_recovery_task is not None:
+            all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
             all_loop_tasks.append(capacity_task)
         shutdown_wait = asyncio.create_task(self._shutdown_event.wait(), name="graceful-shutdown-request")
