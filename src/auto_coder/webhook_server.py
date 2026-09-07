@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import time
 from collections.abc import Mapping
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -176,6 +176,8 @@ async def process_github_payload(
                 identities.update(("pr", number) for number in numbers)
 
     for entity_type, number in sorted(identities):
+        changed_label = payload.get("label")
+        urgent_admission = entity_type == "issue" and event_type == "issues" and action == "labeled" and isinstance(changed_label, Mapping) and changed_label.get("name") == "urgent"
         not_before = None
         if entity_type == "issue":
             issue = payload.get("issue")
@@ -185,10 +187,16 @@ async def process_github_payload(
                 if not_before is None:
                     logger.warning(f"Invalid created_at for issue #{number}; scheduling immediate authoritative reevaluation")
         invalidation_args = (repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
-        if not_before is None:
-            accepted = await engine.invalidate_entity(*invalidation_args)
-        else:
+        if urgent_admission:
+            accepted = await engine.invalidate_entity(
+                *invalidation_args,
+                not_before=not_before,
+                urgent_admission=True,
+            )
+        elif not_before is not None:
             accepted = await engine.invalidate_entity(*invalidation_args, not_before=not_before)
+        else:
+            accepted = await engine.invalidate_entity(*invalidation_args)
         logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 

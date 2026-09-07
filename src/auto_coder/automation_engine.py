@@ -1219,7 +1219,11 @@ class AutomationEngine:
 
                 try:
                     if candidate.invalidation_generation is not None:
-                        invalidation_claim = ClaimedInvalidation(EntityIdentity(repo_name, candidate.type, int(item_number)), candidate.invalidation_generation)
+                        invalidation_claim = ClaimedInvalidation(
+                            EntityIdentity(repo_name, candidate.type, int(item_number)),
+                            candidate.invalidation_generation,
+                            candidate.urgent_admission,
+                        )
                         if not await asyncio.to_thread(self.invalidations.begin_processing, invalidation_claim):
                             continue
                         authoritative_candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, candidate.type, int(item_number), True)
@@ -1229,6 +1233,7 @@ class AutomationEngine:
                             decision_completed = True
                             continue
                         authoritative_candidate.invalidation_generation = candidate.invalidation_generation
+                        authoritative_candidate.urgent_admission = candidate.urgent_admission
                         candidate = authoritative_candidate
 
                         if candidate.type == "issue":
@@ -1268,7 +1273,7 @@ class AutomationEngine:
                         repo_name,
                         candidate,
                     )
-                    decision_completed = not bool(result.error)
+                    decision_completed = not bool(result.error) and not (candidate.urgent_admission and result.capacity_deferred)
 
                     if result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
@@ -1316,9 +1321,18 @@ class AutomationEngine:
         event_type: Optional[str] = None,
         action: Optional[str] = None,
         not_before: Optional[float] = None,
+        urgent_admission: bool = False,
     ) -> bool:
         """Durably mark an entity dirty and arrange an authoritative reevaluation."""
-        accepted = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, entity_type, number), delivery_id, event_type, action, not_before)
+        accepted = await asyncio.to_thread(
+            self.invalidations.invalidate,
+            EntityIdentity(repo_name, entity_type, number),
+            delivery_id,
+            event_type,
+            action,
+            not_before,
+            urgent_admission,
+        )
         if accepted and not self.is_draining:
             await self._enqueue_pending_invalidations(repo_name)
             if self._invalidation_wake_event is not None:
@@ -1340,6 +1354,7 @@ class AutomationEngine:
                     priority=0,
                     issue_number=claim.identity.number if claim.identity.entity_type == "issue" else None,
                     invalidation_generation=claim.generation,
+                    urgent_admission=claim.urgent_admission,
                 )
                 await self.queue.put(candidate)
 
@@ -2132,6 +2147,7 @@ class AutomationEngine:
                         branch_name=candidate.branch_name,
                         related_issues=candidate.related_issues,
                         invalidation_generation=candidate.invalidation_generation,
+                        urgent_admission=candidate.urgent_admission,
                     )
                 except ParentSpecificationError as exc:
                     result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
@@ -2656,6 +2672,10 @@ class AutomationEngine:
             child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == expected_identity
             if not child_current:
                 return False
+            latest_labels = latest.get("labels", [])
+            latest_is_urgent = isinstance(latest_labels, list) and any(label == "urgent" or (isinstance(label, dict) and label.get("name") == "urgent") for label in latest_labels)
+            if urgent_issue and not latest_is_urgent:
+                return False
             if inherited_parent_number is not None:
                 current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 if (
@@ -2731,6 +2751,7 @@ class AutomationEngine:
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
             result.actions = [f"Deferred - {reason} ({owner.key})"]
+            result.capacity_deferred = not bool(slots.active_execution_ids(owner))
             return result
 
         if candidate.type == "issue" and not inherited_execution:
