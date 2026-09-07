@@ -117,6 +117,50 @@ def test_stale_reissue_required_does_not_mark_subject(tmp_path):
     assert github.removals == 0
 
 
+def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_chance(tmp_path):
+    """AS-001/002/003/004/005/007/008 cross analysis, persistence and GitHub application."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    decisions_path = tmp_path / "decisions.json"
+
+    for generation in range(3):
+        body = BODY + f"\nGeneration {generation}"
+        gate = SpecificationValidationLifecycle("owner/repo", f"policy-{generation}", decisions_path, lambda *_args: blocked)
+        decision = gate.decide(build_normative_issue_manifest(1728, "Title", body), "Title", body)
+        assert gate.apply_blocked(GitHubFlow([snapshot(body=body)] * 4), decision) is None
+
+    restarted = SpecificationValidationLifecycle("owner/repo", "policy-final", decisions_path, lambda *_args: blocked)
+    assert restarted.repair_rounds.count("individual", 1728) == 3
+
+    # An ERROR beyond the limit remains unpersisted/retryable, and READY is not rewritten.
+    final_body = BODY + "\nFinal chance"
+    error_then_ready = Mock(side_effect=[SpecificationAnalysisResult("ERROR", error="temporary"), SpecificationAnalysisResult("READY")])
+    ready_gate = SpecificationValidationLifecycle("owner/repo", "policy-ready", decisions_path, error_then_ready)
+    manifest = build_normative_issue_manifest(1728, "Title", final_body)
+    assert ready_gate.decide(manifest, "Title", final_body).verdict == "ERROR"
+    assert ready_gate.decide(manifest, "Title", final_body).verdict == "READY"
+    assert ready_gate.repair_rounds.count("individual", 1728) == 3
+
+    blocked_body = BODY + "\nStill blocked"
+    blocked_gate = SpecificationValidationLifecycle("owner/repo", "policy-blocked", decisions_path, lambda *_args: blocked)
+    blocked_decision = blocked_gate.decide(build_normative_issue_manifest(1728, "Title", blocked_body), "Title", blocked_body)
+    github = GitHubFlow([snapshot(body=blocked_body)] * 8)
+    assert blocked_gate.apply_blocked(github, blocked_decision) is None
+    applied = blocked_gate.store.get(blocked_decision.identity)
+    assert applied is not None and applied.remediation == "REISSUE_REQUIRED"
+    assert applied.remediation_reason == "repair_round_limit_exhausted(limit=3,previously_applied_edit_in_place_rounds=3)"
+    assert blocked_gate.is_reissue_required(1728)
+    assert len(github.comments) == 1
+    assert applied.remediation_reason in github.comments[0]["body"]
+
+    # Exact/policy-only reuse is one generation, while a replacement number is clean.
+    duplicate_body = BODY + "\nGeneration 0"
+    duplicate_gate = SpecificationValidationLifecycle("owner/repo", "another-policy", decisions_path, lambda *_args: blocked)
+    duplicate = duplicate_gate.decide(build_normative_issue_manifest(1728, "Title", duplicate_body), "Title", duplicate_body)
+    duplicate_gate.apply_blocked(GitHubFlow([snapshot(body=duplicate_body)] * 4), duplicate)
+    assert duplicate_gate.repair_rounds.count("individual", 1728) == 3
+    assert duplicate_gate.repair_rounds.count("individual", 200) == 0
+
+
 def test_concurrent_paths_coalesce_semantic_validation(tmp_path):
     barrier = Barrier(2)
     calls = 0

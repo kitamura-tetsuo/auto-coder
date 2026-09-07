@@ -23,6 +23,7 @@ from .decomposition_analyzer import (
 )
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
+from .specification_repair_rounds import SpecificationRepairRoundStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
@@ -58,6 +59,7 @@ class DecompositionDecision:
     findings_published: bool = False
     readiness_removed: bool = False
     remediation: str = "NONE"
+    remediation_reason: Optional[str] = None
 
 
 def decomposition_policy_identity(provider_identity: str) -> str:
@@ -121,7 +123,7 @@ class DecompositionValidationStore:
             for item in raw.get("findings", [])
             if isinstance(item, dict)
         )
-        return DecompositionDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), str(raw.get("remediation", "NONE")))
+        return DecompositionDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), str(raw.get("remediation", "NONE")), raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None)
 
     def save(self, decision: DecompositionDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -135,6 +137,7 @@ class DecompositionValidationStore:
                 "findings_published": decision.findings_published,
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
+                "remediation_reason": decision.remediation_reason,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -228,6 +231,8 @@ class DecompositionValidationLifecycle:
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
         history_path = path.with_name("decomposition_review_history.json") if path is not None else None
         self.history_store = DecompositionReviewHistoryStore(repository, history_path)
+        rounds_path = path.with_name("specification_repair_rounds.json") if path is not None else None
+        self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer or (lambda parent, children: analyze_issue_decomposition(parent, children))
 
     def identity(self, parent: dict[str, object], children: Sequence[dict[str, object]]) -> DecompositionIdentity:
@@ -279,6 +284,36 @@ class DecompositionValidationLifecycle:
 
             if not still_current():
                 return None
+            from .llm_backend_config import get_specification_repair_round_limit_from_config
+
+            generation = hashlib.sha256(
+                json.dumps(
+                    {
+                        "parent": [current.identity.parent.issue_number, current.identity.parent.specification_digest],
+                        "children": [[item.issue_number, item.specification_digest] for item in current.identity.children],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            applied = self.repair_rounds.apply(
+                "decomposition",
+                current.identity.parent.issue_number,
+                generation,
+                current.remediation,
+                get_specification_repair_round_limit_from_config(repo_name=self.repository),
+            )
+            if (applied.remediation, applied.reason) != (current.remediation, current.remediation_reason):
+                current = DecompositionDecision(
+                    current.identity,
+                    current.verdict,
+                    current.findings,
+                    current.findings_published,
+                    current.readiness_removed,
+                    applied.remediation,
+                    applied.reason,
+                )
+                self.store.save(current)
             self.history_store.record_applied(
                 current.identity.parent.issue_number,
                 current.identity.key,
@@ -315,13 +350,13 @@ class DecompositionValidationLifecycle:
                         except Exception as exc:
                             failures.append(f"findings publication failed: {exc}")
                     if published:
-                        current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation)
+                        current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation, current.remediation_reason)
                         self.store.save(current)
             if not still_current():
                 return "; ".join(failures) or None
             try:
                 github.remove_labels(self.repository, current.identity.parent.issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation))
+                self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation, current.remediation_reason))
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
@@ -330,6 +365,8 @@ class DecompositionValidationLifecycle:
     def findings_comment(decision: DecompositionDecision) -> str:
         remedy = "Replace this parent Issue and submitted set with a new parent Issue number." if decision.remediation == "REISSUE_REQUIRED" else "Edit the submitted Issue set in place and resubmit it for validation."
         lines = [f"<!-- {DECOMPOSITION_FINDINGS_MARKER}:{decision.identity.key} -->", "## Auto-Coder decomposition validation", "", "Implementation is blocked by defects in the submitted parent/child specification set:", "", f"**Remediation:** {remedy}"]
+        if decision.remediation_reason:
+            lines.extend(["", f"**Reason:** `{decision.remediation_reason}`"])
         for finding in decision.findings:
             affected = ", ".join(f"#{item.issue_number} ({', '.join(item.requirement_ids) or 'contract-wide'})" for item in finding.affected_issues)
             lines.extend(["", f"- **{finding.category}** — {affected}: {finding.explanation}", f"  Clarification required: {finding.clarification}"])
