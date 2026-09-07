@@ -16,8 +16,8 @@
 - description: Presentation child does not inherit parent's persistence scope
   vars:
     <<: *base
-    parent_specification: '{"issue_number":1856,"title":"Preview","requirements":[{"requirement_id":"REQ-001","text":"Compose the projection returned by child 1857 with presentation by child 1858 without writing live state."}]}'
-    direct_child_specifications: '[{"issue_number":1857,"title":"Projection","requirements":[{"requirement_id":"REQ-001","text":"Load the stored draft and return its projection without writing live state."}]},{"issue_number":1858,"title":"Presentation","requirements":[{"requirement_id":"REQ-001","text":"Present the projection supplied by child 1857."}]}]'
+    parent_specification: '{"issue_number":1856,"title":"Preview","requirements":[{"requirement_id":"REQ-001","text":"Child 1857 returns the stored-draft projection without writing live state, and child 1858 presents that returned projection without writing draft or live state."}]}'
+    direct_child_specifications: '[{"issue_number":1857,"title":"Projection","requirements":[{"requirement_id":"REQ-001","text":"Load the stored draft and return its projection without writing live state."}]},{"issue_number":1858,"title":"Presentation","requirements":[{"requirement_id":"REQ-001","text":"Present the projection supplied by child 1857 without writing draft or live state."}]}]'
     objective_evidence: '[{"issue_number":1856,"state":"ANCHORED","original_text":"Preview stored drafts without applying them.","source_identity":"creation:v1","current":{"status":"PRESENT","text":"Preview stored drafts without applying them."}},{"issue_number":1857,"state":"ANCHORED","original_text":"Produce a projection from a stored draft.","source_identity":"creation:v1","current":{"status":"PRESENT","text":"Produce a projection from a stored draft."}},{"issue_number":1858,"state":"ANCHORED","original_text":"Present a supplied projection.","source_identity":"creation:v1","current":{"status":"PRESENT","text":"Present a supplied projection."}}]'
   assert:
     - type: is-json
@@ -28,7 +28,7 @@
 - description: Narrow owning-child correction closes aggregate gap
   vars:
     <<: *base
-    parent_specification: '{"issue_number":1856,"title":"Preview","requirements":[{"requirement_id":"REQ-001","text":"Compose child 1857 projection with child 1858 presentation without applying the draft."}]}'
+    parent_specification: '{"issue_number":1856,"title":"Preview","requirements":[{"requirement_id":"REQ-001","text":"Child 1857 returns a projection without applying the draft, and child 1858 presents exactly that returned projection without applying the draft."}]}'
     direct_child_specifications: '[{"issue_number":1857,"title":"Projection","requirements":[{"requirement_id":"REQ-001","text":"Produce and return the draft projection without applying or writing the draft to live state."}]},{"issue_number":1858,"title":"Presentation","requirements":[{"requirement_id":"REQ-001","text":"Present the projection returned by child 1857 without writing draft or live state."}]}]'
   assert:
     - type: is-json
