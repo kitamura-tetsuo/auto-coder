@@ -791,7 +791,8 @@ def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp
         await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", "edited-error")
         await run_attempt(expect_pending=True)
 
-        child_identity = individual.identity(11, child["title"], child["body"])
+        relationship = engine._child_review_context(parent, [child], 11)
+        child_identity = individual.identity(11, child["title"], child["body"], relationship)
         assert individual.store.get(child_identity) is None
         assert set_calls == ["set"]
         assert child_calls == [11]
@@ -806,7 +807,8 @@ def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp
 
     assert set_calls == ["set"]
     assert child_calls == [11, 11]
-    child_identity = individual.identity(11, child["title"], child["body"])
+    relationship = engine._child_review_context(parent, [child], 11)
+    child_identity = individual.identity(11, child["title"], child["body"], relationship)
     assert individual.store.get(child_identity) is not None
     assert individual.store.get(child_identity).verdict == "READY"
     assert parent["labels"] == [{"name": "implementation-ready"}]

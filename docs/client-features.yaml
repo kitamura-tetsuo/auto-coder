@@ -27,7 +27,7 @@ This file documents the client-facing features and tools provided by auto-coder.
 
 Auto-Coder exposes canonical, repo-scoped boolean feature settings for optional
 pipeline gates and self-repair loops:
-- `issue_specification_validation`: Controls whether individual Issue specification validation runs before implementation admission.
+- `issue_specification_validation`: Controls whether individual Issue specification validation runs before implementation admission. Individual reviews perform ambiguity closure and next-review prediction; caller-reconciled child reviews additionally check material cross-Issue dependencies, propagation, invalidation, evidence reuse, and stale-result authority without treating related prose as normative.
 - `issue_decomposition_validation`: Controls whether parent/child decomposition validation runs before sub-issue implementation admission.
 - `pr_adversarial_validation`: Canonical switch for pre-merge adversarial review validation.
 - `pr_review_thread_gate`: Controls whether unresolved PR review threads gate PR processing and merge.

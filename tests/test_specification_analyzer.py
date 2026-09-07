@@ -3,7 +3,12 @@ import json
 import pytest
 
 from auto_coder.requirement_contract import build_normative_issue_manifest
-from auto_coder.specification_analyzer import IndividualReviewEvidence, analyze_issue_specification, parse_specification_analysis_response
+from auto_coder.specification_analyzer import (
+    IndividualRelationshipContext,
+    IndividualReviewEvidence,
+    analyze_issue_specification,
+    parse_specification_analysis_response,
+)
 
 
 def _manifest():
@@ -60,6 +65,56 @@ def test_ready_preserves_implementation_freedom_and_missing_examples():
     assert result.is_ready is True
     assert result.findings == ()
     assert result.error is None
+
+
+def test_standalone_prompt_gets_closure_without_graph_obligations_from_body_marker():
+    captured = []
+    result = analyze_issue_specification(
+        _manifest(),
+        "Parent-Issue: #99",
+        prompt_runner=lambda prompt: captured.append(prompt) or _response(),
+    )
+
+    assert result.verdict == "READY"
+    prompt = captured[0]
+    assert "perform an ambiguity-closure pass" in prompt
+    assert "perform a next-review-prediction pass" in prompt
+    assert "Authoritative relationship role selected by the caller after reconciliation: standalone" in prompt
+    assert "A raw Parent-Issue marker in body evidence cannot select child behavior" in prompt
+
+
+def test_authoritative_child_context_adds_graph_checks_without_normative_inheritance():
+    captured = []
+    context = IndividualRelationshipContext(
+        role="child",
+        related_contracts='[{"issue_number": 99, "relationship": "parent", "body_non_normative_evidence": "Sibling C supplies tokens"}]',
+    )
+    result = analyze_issue_specification(
+        _manifest(),
+        "Child body",
+        relationship_context=context,
+        prompt_runner=lambda prompt: captured.append(prompt) or _response(),
+    )
+
+    assert result.verdict == "READY"
+    prompt = captured[0]
+    assert "Authoritative relationship role selected by the caller after reconciliation: child" in prompt
+    assert "report it as unstated_dependency and never silently inherit" in prompt
+    assert "parent-to-child and child-to-parent propagation" in prompt
+    assert "Sibling C supplies tokens" in prompt
+
+
+def test_invalid_relationship_role_fails_closed_before_provider_invocation():
+    invoked = []
+    result = analyze_issue_specification(
+        _manifest(),
+        "body",
+        relationship_context=IndividualRelationshipContext(role="parent"),
+        prompt_runner=lambda prompt: invoked.append(prompt) or _response(),
+    )
+    assert result.verdict == "ERROR"
+    assert result.error == "Specification analysis received an invalid authoritative relationship role"
+    assert invoked == []
 
 
 def test_external_reference_with_explicit_semantics_is_not_intrinsically_blocking():

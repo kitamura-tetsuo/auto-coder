@@ -58,7 +58,16 @@ class IndividualReviewEvidence:
     prior_applied_outcomes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class IndividualRelationshipContext:
+    """Caller-reconciled relationship evidence for an individual review."""
+
+    role: str = "standalone"
+    related_contracts: str = "(No authoritative cross-Issue relationship context supplied.)"
+
+
 _REVIEW_EVIDENCE: ContextVar[Optional[IndividualReviewEvidence]] = ContextVar("individual_review_evidence", default=None)
+_RELATIONSHIP_CONTEXT: ContextVar[Optional[IndividualRelationshipContext]] = ContextVar("individual_relationship_context", default=None)
 
 
 @contextmanager
@@ -69,6 +78,16 @@ def individual_review_evidence(evidence: IndividualReviewEvidence) -> Iterator[N
         yield
     finally:
         _REVIEW_EVIDENCE.reset(token)
+
+
+@contextmanager
+def individual_relationship_context(context: IndividualRelationshipContext) -> Iterator[None]:
+    """Carry reconciled role evidence through the lifecycle's stable analyzer API."""
+    token = _RELATIONSHIP_CONTEXT.set(context)
+    try:
+        yield
+    finally:
+        _RELATIONSHIP_CONTEXT.reset(token)
 
 
 def _error(message: str) -> SpecificationAnalysisResult:
@@ -155,6 +174,7 @@ def analyze_issue_specification(
     backend_manager: Optional[BackendManager] = None,
     prompt_runner: Optional[Callable[[str], str]] = None,
     review_evidence: Optional[IndividualReviewEvidence] = None,
+    relationship_context: Optional[IndividualRelationshipContext] = None,
 ) -> SpecificationAnalysisResult:
     """Adversarially decide whether an Issue is an independent contract.
 
@@ -165,6 +185,9 @@ def analyze_issue_specification(
         return _error(manifest.error or "A valid explicit normative Requirement manifest is required")
 
     review_evidence = review_evidence or _REVIEW_EVIDENCE.get()
+    relationship_context = relationship_context or _RELATIONSHIP_CONTEXT.get() or IndividualRelationshipContext()
+    if relationship_context.role not in {"standalone", "child"}:
+        return _error("Specification analysis received an invalid authoritative relationship role")
     requirements = json.dumps(
         [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
         ensure_ascii=False,
@@ -177,6 +200,8 @@ def analyze_issue_specification(
         normative_manifest=requirements,
         issue_body=issue_body,
         parent_context=parent_context or "(No parent Issue context supplied.)",
+        relationship_role=relationship_context.role,
+        related_contracts=relationship_context.related_contracts,
         durable_baseline=review_evidence.baseline if review_evidence else "(No earlier baseline is available.)",
         prior_applied_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material review outcomes.)"),
     )
