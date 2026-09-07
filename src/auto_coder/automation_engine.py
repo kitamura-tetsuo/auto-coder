@@ -2144,7 +2144,12 @@ class AutomationEngine:
 
                         # Check comments
                         comments = self.github.get_pr_comments(repo_name, pr_number)
+                        from .util.github_action import is_verified_prompt_regression_advisory_comment
+
+                        pr_head_sha = str(pr_data.get("head", {}).get("sha") or "")
                         for comment in comments:
+                            if is_verified_prompt_regression_advisory_comment(repo_name, pr_number, pr_head_sha, comment):
+                                continue
                             user = comment.get("user")
                             if user and user.get("login") != "jules":
                                 created_at = comment.get("created_at")
