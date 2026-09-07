@@ -81,7 +81,6 @@ logger = get_logger(__name__)
 PROMPT_REGRESSION_ADVISORY_WORKFLOWS = frozenset(
     {
         ".github/workflows/prompt-regression.yml",
-        ".github/workflows/prompt-regression.yml.disabled",
         ".github/workflows/prompt-regression-report.yml",
     }
 )

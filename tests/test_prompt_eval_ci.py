@@ -40,7 +40,7 @@ def target(name: str, keys: list[str]) -> dict[str, object]:
 
 def fake_npx(tmp_path: Path) -> Path:
     script = tmp_path / "npx"
-    script.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$NPX_LOG"\nexit "${NPX_EXIT:-0}"\n')
+    script.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$NPX_LOG"\n' "for last; do :; done\n" 'printf \'%s\\n\' \'{"results":{"results":[{"success":true}]}}\' > "$last"\n' 'exit "${NPX_EXIT:-0}"\n')
     script.chmod(0o755)
     return script
 
@@ -54,16 +54,25 @@ def test_empty_registry_and_unrelated_change_do_not_invoke_provider(tmp_path: Pa
     assert "No prompt-evaluation targets affected" in result.stdout
 
 
-def test_prompt_regression_workflow_disables_selective_evaluations() -> None:
-    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml.disabled").read_text())
+def test_prompt_regression_workflow_is_active_and_advisory() -> None:
+    assert not (REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml.disabled").exists()
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml").read_text())
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["selective-prompt-evals"]
-    assert job["if"] == "${{ false }}"
+    assert "if" not in job
+    assert workflow["on"]["pull_request"]["types"] == ["opened", "synchronize", "reopened"]
     steps = job["steps"]
-    assert {"name": "Setup Node.js", "uses": "actions/setup-node@v6", "with": {"node-version": "24"}} in steps
-    evaluation_step = steps[-1]
+    evaluation_step = next(step for step in steps if step.get("name") == "Run selective advisory evaluation")
     assert evaluation_step["env"]["CODEX_AUTH_JSON"] == "${{ secrets.CODEX_AUTH_JSON }}"
-    assert 'chmod 600 "$HOME/.codex/auth.json"' in evaluation_step["run"]
+    assert "--require-credentials" in evaluation_step["run"]
+    assert "--untrusted" in evaluation_step["run"]
+
+    reporting = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression-report.yml").read_text())
+    assert reporting["permissions"]["pull-requests"] == "write"
+    script = reporting["jobs"]["publish"]["steps"][-1]["with"]["script"]
+    assert "github-actions[bot]" in script
+    assert "<!-- auto-coder:prompt-regression-advisory:v1 -->" in script
+    assert "observed.pull_requests.length !== 1" in script
 
     config = yaml.safe_load((REPOSITORY_ROOT / "prompt-evals/targets/individual-objective-scope/promptfooconfig.yaml").read_text())
     provider = config["providers"][0]
@@ -83,7 +92,7 @@ def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_pat
         directory = repo / f"prompt-evals/targets/{name}"
         (directory / "cases").mkdir(parents=True)
         (directory / "promptfooconfig.yaml").write_text("description: test\n")
-        (directory / "cases/case.yaml").write_text("tests: []\n")
+        (directory / "cases/case.yaml").write_text("tests: [{vars: {id: smoke}}]\n")
     commit(repo, "register fixtures")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     (repo / "src/prompts.yaml").write_text("a: {prompt: changed}\nb: {prompt: original}\nshared: original\n")
@@ -115,7 +124,7 @@ def test_flat_dotted_shared_dependency_selects_only_consumers(tmp_path: Path) ->
         directory = repo / f"prompt-evals/targets/{name}"
         (directory / "cases").mkdir(parents=True)
         (directory / "promptfooconfig.yaml").write_text("description: test\n")
-        (directory / "cases/case.yaml").write_text("tests: []\n")
+        (directory / "cases/case.yaml").write_text("tests: [{vars: {id: smoke}}]\n")
     commit(repo, "evaluation fixtures")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     (repo / "src/prompts.yaml").write_text("a: {prompt: original}\nb: {prompt: original}\nshared: original\nshared.safety: changed\n")
@@ -134,7 +143,7 @@ def test_renamed_dependency_is_not_silently_ignored(tmp_path: Path) -> None:
     directory = repo / "prompt-evals/targets/a"
     (directory / "cases").mkdir(parents=True)
     (directory / "promptfooconfig.yaml").write_text("description: test\n")
-    (directory / "cases/case.yaml").write_text("tests: []\n")
+    (directory / "cases/case.yaml").write_text("tests: [{vars: {id: smoke}}]\n")
     commit(repo, "evaluation fixtures")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     (repo / "src/prompts.yaml").rename(repo / "src/renamed.yaml")
@@ -155,7 +164,7 @@ def test_recursive_corpus_change_selects_owning_target(tmp_path: Path) -> None:
         directory = repo / f"prompt-evals/targets/{name}"
         (directory / "cases/deep/nested").mkdir(parents=True)
         (directory / "promptfooconfig.yaml").write_text("description: test\n")
-        (directory / "cases/deep/nested/case.yaml").write_text("tests: []\n")
+        (directory / "cases/deep/nested/case.yaml").write_text("tests: [{vars: {id: smoke}}]\n")
     commit(repo, "evaluation fixtures")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     (repo / "prompt-evals/targets/a/cases/deep/nested/case.yaml").write_text("tests: [{vars: {changed: true}}]\n")
@@ -183,7 +192,7 @@ def test_hidden_files_excluded_by_corpus_glob_do_not_select_target(tmp_path: Pat
     directory = repo / "prompt-evals/targets/a"
     (directory / "cases").mkdir(parents=True)
     (directory / "promptfooconfig.yaml").write_text("tests: cases/case.yaml\n")
-    (directory / "cases/case.yaml").write_text("tests: []\n")
+    (directory / "cases/case.yaml").write_text("tests: [{vars: {id: smoke}}]\n")
     hidden = directory / "cases" / hidden_path
     hidden.parent.mkdir(parents=True, exist_ok=True)
     hidden.write_text("draft: original\n")
@@ -204,7 +213,7 @@ def test_corpus_change_runs_promptfoo_and_propagates_failure(tmp_path: Path) -> 
     (directory / "promptfooconfig.yaml").write_text("description: test\n")
     commit(repo, "config")
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
-    (directory / "cases/new.yaml").write_text("tests: []\n")
+    (directory / "cases/new.yaml").write_text("tests: [{vars: {id: smoke}}]\n")
     commit(repo, "case")
     os.environ["NPX_LOG"] = str(repo / "npx.log")
     os.environ["NPX_EXIT"] = "7"
@@ -212,6 +221,55 @@ def test_corpus_change_runs_promptfoo_and_propagates_failure(tmp_path: Path) -> 
     os.environ.pop("NPX_EXIT")
     assert result.returncode == 7
     assert "target: a" in result.stdout
+
+
+def test_selected_empty_executable_set_is_not_run_without_credentials(tmp_path: Path) -> None:
+    repo, base = setup_repo(tmp_path, [target("a", ["a.prompt"])])
+    directory = repo / "prompt-evals/targets/a"
+    (directory / "cases").mkdir(parents=True)
+    (directory / "promptfooconfig.yaml").write_text("description: test\n")
+    commit(repo, "config")
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    (directory / "cases/empty.yaml").write_text("tests: []\n")
+    commit(repo, "empty corpus")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    report = repo / "report.json"
+
+    result = subprocess.run(
+        [
+            "python",
+            str(RUNNER),
+            "--repo",
+            str(repo),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--npx",
+            str(repo / "missing-npx"),
+            "--report",
+            str(report),
+            "--require-credentials",
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    record = json.loads(report.read_text())
+    assert record["base_sha"] == base
+    assert record["head_sha"] == head
+    assert record["selected_targets"] == ["a"]
+    assert record["targets"] == [
+        {
+            "executed_cases": 0,
+            "expected_cases": 0,
+            "failures": [],
+            "id": "a",
+            "outcome": "NOT_RUN",
+            "reason": "Selected corpus has no executable cases; no provider was invoked.",
+        }
+    ]
 
 
 def test_malformed_affected_dependency_fails_closed(tmp_path: Path) -> None:

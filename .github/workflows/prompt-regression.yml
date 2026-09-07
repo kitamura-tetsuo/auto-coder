@@ -1,0 +1,90 @@
+name: Prompt Regression (Advisory)
+
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base commit or ref (defaults to the dispatched head's first parent)
+        required: false
+      head:
+        description: Head commit or ref (defaults to the dispatched workflow revision)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  selective-prompt-evals:
+    name: Selective Promptfoo Evaluations (Advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve immutable evaluation revisions
+        id: revisions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          INPUT_BASE: ${{ inputs.base }}
+          INPUT_HEAD: ${{ inputs.head }}
+          DISPATCH_HEAD: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            base="$PR_BASE"; head="$PR_HEAD"
+          else
+            head="${INPUT_HEAD:-$DISPATCH_HEAD}"; base="$INPUT_BASE"
+          fi
+          printf 'base=%s\nhead=%s\n' "$base" "$head" >> "$GITHUB_OUTPUT"
+      - name: Checkout exact evaluation head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.revisions.outputs.head }}
+          fetch-depth: 0
+      - name: Resolve manual default base
+        id: resolved
+        env:
+          BASE: ${{ steps.revisions.outputs.base }}
+          HEAD: ${{ steps.revisions.outputs.head }}
+        run: |
+          head_sha=$(git rev-parse --verify "${HEAD}^{commit}")
+          test "$(git rev-parse HEAD)" = "$head_sha"
+          if [ -n "$BASE" ]; then base_sha=$(git rev-parse --verify "${BASE}^{commit}"); else base_sha=$(git rev-parse --verify "${head_sha}^1"); fi
+          printf 'base=%s\nhead=%s\n' "$base_sha" "$head_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Run selective advisory evaluation
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = pull_request ] && [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then args+=(--untrusted); fi
+          python -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+          python prompt-evals/run_prompt_evals.py --base '${{ steps.resolved.outputs.base }}' --head '${{ steps.resolved.outputs.head }}' --report prompt-eval-report/report.json --require-credentials --repository '${{ github.repository }}' --pr-number '${{ github.event.pull_request.number || 0 }}' --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' "${args[@]}"
+      - name: Upload structured advisory record
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: prompt-regression-report-${{ github.run_attempt }}
+          path: prompt-eval-report/report.json
+          if-no-files-found: warn
+      - name: Write evaluation summary
+        if: ${{ always() }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path("prompt-eval-report/report.json")
+          report = json.loads(path.read_text()) if path.exists() else {"error": "Evaluation report was not produced."}
+          lines = ["# Prompt regression advisory", "", f"Base: `{report.get('base_sha') or 'unavailable'}`", f"Head: `{report.get('head_sha') or 'unavailable'}`", ""]
+          for target in report.get("targets", []): lines.append(f"- **{target['id']}**: {target['outcome']} — {target['reason']}")
+          if report.get("error"): lines.append(f"- **pipeline**: ERROR — {report['error']}")
+          if not report.get("targets") and not report.get("error"): lines.append(f"- **selection**: NOT_RUN — {report.get('reason', 'No work selected.')}")
+          lines += ["", "These results are advisory for humans, are not merge blockers or automatic repair instructions, and require no acknowledgement or resolution before merging."]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary: summary.write("\n".join(lines) + "\n")
+          PY
