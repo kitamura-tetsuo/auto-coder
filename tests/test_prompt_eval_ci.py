@@ -4,8 +4,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 RUNNER = Path(__file__).parents[1] / "prompt-evals/run_prompt_evals.py"
+REPOSITORY_ROOT = Path(__file__).parents[1]
 pytestmark = pytest.mark.usefixtures("_use_real_commands")
 
 
@@ -52,6 +54,26 @@ def test_empty_registry_and_unrelated_change_do_not_invoke_provider(tmp_path: Pa
     assert "No prompt-evaluation targets affected" in result.stdout
 
 
+def test_prompt_regression_workflow_supplies_codex_credentials() -> None:
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/prompt-regression.yml").read_text())
+    assert workflow["permissions"] == {"contents": "read"}
+    steps = workflow["jobs"]["selective-prompt-evals"]["steps"]
+    assert {"name": "Setup Node.js", "uses": "actions/setup-node@v6", "with": {"node-version": "24"}} in steps
+    evaluation_step = steps[-1]
+    assert evaluation_step["env"]["CODEX_AUTH_JSON"] == "${{ secrets.CODEX_AUTH_JSON }}"
+    assert 'chmod 600 "$HOME/.codex/auth.json"' in evaluation_step["run"]
+
+    config = yaml.safe_load((REPOSITORY_ROOT / "prompt-evals/targets/individual-objective-scope/promptfooconfig.yaml").read_text())
+    provider = config["providers"][0]
+    assert provider == {
+        "id": "openai:codex-sdk:gpt-5.6-sol",
+        "config": {
+            "sandbox_mode": "read-only",
+            "model_reasoning_effort": "high",
+        },
+    }
+
+
 def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_path: Path) -> None:
     targets = [target("a", ["a.prompt", "shared"]), target("b", ["b.prompt", "shared"]), target("c", ["b.prompt"])]
     repo, base = setup_repo(tmp_path, targets)
@@ -71,7 +93,7 @@ def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_pat
     assert "target: a" in result.stdout
     assert "target: b" not in result.stdout
     assert "target: c" not in result.stdout
-    assert log.read_text().count("promptfoo@0.118.8") == 1
+    assert log.read_text().count("promptfoo@0.122.2") == 1
 
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     (repo / "src/prompts.yaml").write_text("a: {prompt: changed}\nb: {prompt: original}\nshared: changed\n")
@@ -81,7 +103,7 @@ def test_prompt_key_and_shared_dependencies_select_only_affected_targets(tmp_pat
     assert result.returncode == 0
     assert "target: a" in result.stdout and "target: b" in result.stdout
     assert "target: c" not in result.stdout
-    assert log.read_text().count("promptfoo@0.118.8") == 2
+    assert log.read_text().count("promptfoo@0.122.2") == 2
 
 
 def test_flat_dotted_shared_dependency_selects_only_consumers(tmp_path: Path) -> None:
@@ -102,7 +124,7 @@ def test_flat_dotted_shared_dependency_selects_only_consumers(tmp_path: Path) ->
     assert result.returncode == 0
     assert "target: a" in result.stdout and "target: b" in result.stdout
     assert "target: independent" not in result.stdout
-    assert log.read_text().count("promptfoo@0.118.8") == 2
+    assert log.read_text().count("promptfoo@0.122.2") == 2
 
 
 def test_renamed_dependency_is_not_silently_ignored(tmp_path: Path) -> None:
@@ -120,7 +142,7 @@ def test_renamed_dependency_is_not_silently_ignored(tmp_path: Path) -> None:
     result = invoke(repo, base, fake_npx(repo))
     assert result.returncode == 0
     assert "target: a" in result.stdout
-    assert log.read_text().count("promptfoo@0.118.8") == 1
+    assert log.read_text().count("promptfoo@0.122.2") == 1
 
 
 def test_recursive_corpus_change_selects_owning_target(tmp_path: Path) -> None:
@@ -142,7 +164,7 @@ def test_recursive_corpus_change_selects_owning_target(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "target: a" in result.stdout
     assert "target: b" not in result.stdout
-    assert log.read_text().count("promptfoo@0.118.8") == 1
+    assert log.read_text().count("promptfoo@0.122.2") == 1
 
 
 @pytest.mark.parametrize(

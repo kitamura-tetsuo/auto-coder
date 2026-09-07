@@ -2,13 +2,25 @@ import json
 
 import pytest
 
+from auto_coder.objective_evidence import ObjectiveAnchor, ObjectiveExtraction
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import (
     IndividualRelationshipContext,
     IndividualReviewEvidence,
-    analyze_issue_specification,
-    parse_specification_analysis_response,
 )
+from auto_coder.specification_analyzer import analyze_issue_specification as _analyze_issue_specification
+from auto_coder.specification_analyzer import parse_specification_analysis_response
+
+
+def analyze_issue_specification(manifest, issue_body, **kwargs):
+    kwargs.setdefault(
+        "review_evidence",
+        IndividualReviewEvidence(
+            "{}",
+            objective=ObjectiveAnchor(manifest.issue_number, "UNANCHORED", None, "test:v1", ObjectiveExtraction("ABSENT")),
+        ),
+    )
+    return _analyze_issue_specification(manifest, issue_body, **kwargs)
 
 
 def _manifest():
@@ -146,6 +158,7 @@ def test_scope_drift_evidence_is_rendered_only_as_remediation_evidence():
     evidence = IndividualReviewEvidence(
         '{"title":"Original lifecycle boundary"}',
         ('{"verdict":"BLOCKED","finding":"added persistence clarification"}',),
+        ObjectiveAnchor(1727, "UNANCHORED", None, "test:v1", ObjectiveExtraction("ABSENT")),
     )
     result = analyze_issue_specification(
         _manifest(),

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-PROMPTFOO_VERSION = "0.118.8"
+PROMPTFOO_VERSION = "0.122.2"
 INFRASTRUCTURE_PATHS = {
     ".github/workflows/prompt-regression.yml",
     "prompt-evals/registry.json",

@@ -1,0 +1,38 @@
+- description: A concrete live-write gap conflicts with the fixed preview purpose
+  vars:
+    issue_number: 1858
+    issue_title: Saved-draft preview
+    normative_manifest: '[{"requirement_id":"REQ-001","text":"Render the selected draft successfully."}]'
+    issue_body: "## Objective\nPreview a saved draft without changing live configuration.\n\n## Requirements\nREQ-001: Render the selected draft successfully."
+    parent_context: (none)
+    relationship_role: standalone
+    related_contracts: (none)
+    durable_baseline: (none)
+    prior_applied_outcomes: (none)
+    objective_evidence: '{"state":"ANCHORED","original_text":"Preview a saved draft without changing live configuration.","source_identity":"creation:v1","current":{"status":"PRESENT","text":"Preview a saved draft without changing live configuration."}}'
+  assert:
+    - type: is-json
+    - type: javascript
+      value: |
+        const r = JSON.parse(output);
+        const f = r.findings && r.findings.find(x => x.category === 'objective_conflict');
+        return r.verdict === 'BLOCKED' && f && f.requirement_ids.length === 0 && /live configuration/.test(f.explanation) && /Requirement/i.test(f.clarification);
+
+- description: Hypothetical distributed ownership is adjacent and non-blocking
+  vars:
+    issue_number: 1858
+    issue_title: Saved-draft preview
+    normative_manifest: '[{"requirement_id":"REQ-001","text":"Given one caller-supplied saved-draft payload as input, return a preview payload with exactly the same bytes."},{"requirement_id":"REQ-002","text":"Use no source other than that caller-supplied payload."},{"requirement_id":"REQ-003","text":"Do not write draft or live configuration state."}]'
+    issue_body: "## Objective\nPreview a saved draft without changing live configuration.\n\n## Requirements\nREQ-001: Given one caller-supplied saved-draft payload as input, return a preview payload with exactly the same bytes.\nREQ-002: Use no source other than that caller-supplied payload.\nREQ-003: Do not write draft or live configuration state.\n\nPrior feedback proposed a distributed ownership registry for hypothetical future multi-controller deployment."
+    parent_context: (none)
+    relationship_role: standalone
+    related_contracts: (none)
+    durable_baseline: (none)
+    prior_applied_outcomes: "A prior reviewer requested a distributed ownership registry solely for hypothetical future multi-controller deployment."
+    objective_evidence: '{"state":"ANCHORED","original_text":"Preview a saved draft without changing live configuration.","source_identity":"creation:v1","current":{"status":"PRESENT","text":"Preview a saved draft without changing live configuration."}}'
+  assert:
+    - type: is-json
+    - type: javascript
+      value: |
+        const r = JSON.parse(output);
+        return r.verdict === 'READY' && r.remediation === 'NONE' && Array.isArray(r.findings) && r.findings.length === 0;

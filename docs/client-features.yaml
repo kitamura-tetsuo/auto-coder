@@ -38,6 +38,13 @@ concurrent review work, and restart. Individual and decomposition prompts receiv
 the immutable original state separately from the current structural extraction,
 and Objective evidence never enters the normative Requirement manifest. Invalid,
 unreadable, or unpersistable required evidence fails closed before semantic review.
+Before semantic execution or cached-result reuse, an anchored current Objective is
+compared literally after CRLF normalization and outer-whitespace trimming. Missing,
+empty, duplicate, or changed text produces a structured `objective_conflict` and
+in-place restoration guidance; legacy `UNANCHORED` Issues continue ordinary review.
+With an intact anchor, semantic review uses its purpose only to detect concrete
+outcome conflicts and reject adjacent scope, never to promote Objective prose into
+Requirements.
 
 ## Native sibling dependency reconciliation
 
