@@ -2,13 +2,19 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+from auto_coder.issue_processor import (
+    _process_issue_cloud_backend,
+    _process_issue_high_score_cloud,
+)
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 
 
-def test_initial_dispatch_renders_and_transports_complete_provider_prompt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dispatcher_name", ["ordinary", "high-score"])
+def test_initial_dispatch_renders_and_transports_complete_provider_prompt(tmp_path, monkeypatch, dispatcher_name):
     """The production dispatcher and argv adapter preserve exact hostile Issue data."""
     sentinel = tmp_path / "must-not-exist"
     issue_body = "## Objective\n背景を維持する。\n\n## Requirements\n" "REQ-001: preserve `code`, quotes \"and 'quotes'\", and literal $HOME.\n" f"REQ-LAST: never execute $(touch {sentinel})."
@@ -16,6 +22,12 @@ def test_initial_dispatch_renders_and_transports_complete_provider_prompt(tmp_pa
 
     backend_name = "codex-cloud-repository-special"
     llm_config = LLMBackendConfiguration()
+    if dispatcher_name == "ordinary":
+        llm_config.backend_cloud_order = [backend_name]
+        dispatcher = _process_issue_cloud_backend
+    else:
+        llm_config.backend_with_high_score_cloud_order = [backend_name]
+        dispatcher = _process_issue_high_score_cloud
     llm_config.backends[backend_name] = BackendConfig(
         name=backend_name,
         backend_type="codex-cloud",
@@ -39,10 +51,18 @@ def test_initial_dispatch_renders_and_transports_complete_provider_prompt(tmp_pa
     }
 
     with (
+        patch(
+            "auto_coder.llm_backend_config.get_llm_config",
+            return_value=llm_config,
+        ),
         patch("auto_coder.codex_cloud_client.get_llm_config", return_value=llm_config),
         patch("auto_coder.codex_cloud_client.codex_cloud_quota_allows_task", return_value=True),
         patch("auto_coder.issue_processor.get_current_attempt", return_value=4),
         patch("auto_coder.issue_processor.get_commit_log", return_value="commit context"),
+        patch(
+            "auto_coder.quota_selector.rank_high_score_backends_by_quota",
+            return_value=[backend_name],
+        ),
         patch("auto_coder.issue_processor.CloudManager") as cloud_manager_type,
         patch("auto_coder.codex_cloud_client.CommandExecutor.run_command") as run_command,
     ):
@@ -52,7 +72,7 @@ def test_initial_dispatch_renders_and_transports_complete_provider_prompt(tmp_pa
             stdout="https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
             stderr="",
         )
-        actions = _process_issue_codex_cloud_mode("owner/repo", issue, config, MagicMock(), backend_name=backend_name)
+        actions = dispatcher("owner/repo", issue, config, MagicMock())
 
     argv = run_command.call_args.args[0]
     assert argv[:-1] == [
