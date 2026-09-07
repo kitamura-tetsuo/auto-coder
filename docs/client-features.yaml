@@ -96,6 +96,13 @@ boundaries:
 
 ## PR adversarial validation kill switch
 
+Each adversarial-validation attempt binds repository-relative subprocesses to
+its own detached worktree without changing the service process working
+directory. The worktree HEAD is verified against the selected PR SHA before
+evidence collection and at LLM and dynamic-check boundaries; unverifiable or
+redirected execution fails closed. Concurrent attempts own and clean up only
+their respective worktrees.
+
 When `pr_adversarial_validation` is set to `false`, Auto-Coder completely bypasses
 PR adversarial validation during PR candidate prioritization and merge-gate evaluation:
 - No adversarial validation reviewer is invoked, scheduled, or executed for PRs.

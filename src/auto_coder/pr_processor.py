@@ -78,7 +78,7 @@ from .test_log_utils import extract_all_failed_tests, extract_first_failed_test,
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .util.github_action import _create_github_action_log_summary
-from .utils import CommandExecutor, CommandResult, get_pr_author_login, is_same_github_login, log_action
+from .utils import CommandExecutor, CommandResult, bind_command_execution_cwd, get_pr_author_login, is_same_github_login, log_action, reset_command_execution_cwd
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -2322,30 +2322,33 @@ def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional
         raise ValueError(f"head_sha is required for isolated worktree validation of PR #{pr_number}")
 
     worktree_dir = None
-    original_cwd = os.getcwd()
+    repository_cwd = os.getcwd()
+    execution_token = None
     try:
         # Ensure the exact head_sha / pull head is fetched locally
-        cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head"])
+        cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head"], cwd=repository_cwd)
 
         worktree_dir = tempfile.mkdtemp(prefix=f"auto_coder_val_pr{pr_number}_")
 
-        add_res = cmd.run_command(["git", "worktree", "add", "--detach", worktree_dir, head_sha])
+        add_res = cmd.run_command(["git", "worktree", "add", "--detach", worktree_dir, head_sha], cwd=repository_cwd)
         if not add_res.success:
             logger.warning(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
             raise RuntimeError(f"Failed to create isolated git worktree at {head_sha[:8]}: {add_res.stderr}")
 
-        os.chdir(worktree_dir)
-        logger.info(f"Entered isolated detached worktree at {head_sha[:8]} ({worktree_dir}) for validation")
+        verified = cmd.run_command(["git", "rev-parse", "HEAD"], cwd=worktree_dir)
+        if not verified.success or verified.stdout.strip().lower() != head_sha.strip().lower():
+            actual = verified.stdout.strip() or verified.stderr.strip() or "unavailable"
+            raise RuntimeError(f"Isolated validation target mismatch: expected {head_sha}, found {actual}")
+        execution_token = bind_command_execution_cwd(worktree_dir)
+        logger.info(f"Bound isolated detached worktree at {head_sha[:8]} ({worktree_dir}) for validation")
         yield worktree_dir
     finally:
-        try:
-            os.chdir(original_cwd)
-        except Exception as e:
-            logger.error(f"Failed to restore original cwd '{original_cwd}': {e}")
+        if execution_token is not None:
+            reset_command_execution_cwd(execution_token)
 
         if worktree_dir and os.path.exists(worktree_dir):
             try:
-                cmd.run_command(["git", "worktree", "remove", "--force", worktree_dir])
+                cmd.run_command(["git", "worktree", "remove", "--force", worktree_dir], cwd=repository_cwd)
                 shutil.rmtree(worktree_dir, ignore_errors=True)
                 logger.debug(f"Cleaned up isolated worktree at {worktree_dir}")
             except Exception as e:
@@ -2827,7 +2830,7 @@ def _handle_pr_merge(
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
                         try:
-                            with isolated_pr_head_worktree(repo_name, pr_number, head_sha):
+                            with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
                                 val_result = run_adversarial_validation(
                                     repo_name,
@@ -2836,6 +2839,7 @@ def _handle_pr_merge(
                                     github_client=github_client,
                                     claimed_review_threads_section=claimed_review_threads_section,
                                     claimed_review_threads=claimed_review_threads,
+                                    execution_cwd=validation_worktree,
                                 )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -22,6 +23,22 @@ from .security_utils import redact_string
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
+
+# Repository-bound jobs run in worker threads.  A ContextVar gives each job an
+# inherited subprocess working directory without changing the process-global
+# cwd (which would redirect every other worker in the service).
+_COMMAND_EXECUTION_CWD: ContextVar[Optional[str]] = ContextVar("auto_coder_command_execution_cwd", default=None)
+
+
+def bind_command_execution_cwd(cwd: str):
+    """Bind implicit CommandExecutor calls in the current context to ``cwd``."""
+    return _COMMAND_EXECUTION_CWD.set(cwd)
+
+
+def reset_command_execution_cwd(token: object) -> None:
+    """Restore a previous command execution binding."""
+    _COMMAND_EXECUTION_CWD.reset(token)  # type: ignore[arg-type]
+
 
 # CSI/OSC escape sequences emitted by interactive terminal UIs
 _ANSI_ESCAPE_RE = re.compile(r"\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -648,6 +665,8 @@ class CommandExecutor:
         use_pty: attach the command to a pseudo terminal, for CLIs that refuse to
         run without an interactive terminal.
         """
+        if cwd is None:
+            cwd = _COMMAND_EXECUTION_CWD.get()
         if timeout is None:
             # Auto-detect timeout based on command type
             cmd_type = cmd[0] if cmd else "default"
