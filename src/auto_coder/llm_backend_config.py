@@ -1358,6 +1358,70 @@ def reset_llm_config() -> None:
     _active_repo_name.set(None)
 
 
+FEATURE_SWITCH_NAMES = (
+    "issue_specification_validation",
+    "issue_decomposition_validation",
+    "pr_adversarial_validation",
+    "pr_review_thread_gate",
+    "automatic_test_fix",
+)
+
+
+def validate_feature_switches_in_config_dict(data: Dict[str, Any]) -> None:
+    """Validate that any configured pipeline feature switches are strictly boolean values.
+
+    Args:
+        data: The configuration dictionary to validate.
+
+    Raises:
+        ValueError: If any known feature switch has a non-boolean value.
+    """
+    if not isinstance(data, dict):
+        return
+
+    # Check top-level keys
+    for switch_name in FEATURE_SWITCH_NAMES:
+        if switch_name in data:
+            val = data[switch_name]
+            if type(val) is not bool:
+                raise ValueError(f"Invalid boolean value for feature setting '{switch_name}': {val!r}")
+
+    # Check sections
+    for section_name in ("features", "feature_switches", "feature_gates"):
+        section = data.get(section_name)
+        if isinstance(section, dict):
+            for switch_name in FEATURE_SWITCH_NAMES:
+                if switch_name in section:
+                    val = section[switch_name]
+                    if type(val) is not bool:
+                        raise ValueError(f"Invalid boolean value for feature setting '{switch_name}': {val!r}")
+        elif section is not None:
+            raise ValueError(f"[{section_name}] configuration section must be a TOML table")
+
+
+def _normalize_feature_switches_dict(data: Dict[str, Any]) -> None:
+    """Validate and normalize feature switch keys into data['features']."""
+    if not isinstance(data, dict):
+        return
+
+    validate_feature_switches_in_config_dict(data)
+
+    features = data.setdefault("features", {})
+    if not isinstance(features, dict):
+        raise ValueError("[features] configuration section must be a TOML table")
+
+    for section_name in ("feature_switches", "feature_gates"):
+        section = data.get(section_name)
+        if isinstance(section, dict):
+            for k in FEATURE_SWITCH_NAMES:
+                if k in section and k not in features:
+                    features[k] = section[k]
+
+    for k in FEATURE_SWITCH_NAMES:
+        if k in data:
+            features[k] = data[k]
+
+
 def load_app_config_data(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,
@@ -1402,6 +1466,8 @@ def load_app_config_data(
     if not isinstance(base_data, dict):
         base_data = {}
 
+    _normalize_feature_switches_dict(base_data)
+
     effective_repo = repo_name if repo_name is not None else get_active_repo_name()
     if effective_repo:
         override_path = resolve_repo_override_path(effective_repo, filename="config.toml")
@@ -1415,7 +1481,10 @@ def load_app_config_data(
             if not isinstance(override_data, dict):
                 raise ValueError(f"Repository configuration override at {override_path} must be a TOML table")
 
+            _normalize_feature_switches_dict(override_data)
             base_data = deep_merge_config_dict(base_data, override_data)
+
+    validate_feature_switches_in_config_dict(base_data)
 
     return base_data
 
@@ -1871,3 +1940,100 @@ def get_adversarial_validation_max_reviews_from_config(
         if val is not None:
             return val
     return None
+
+
+def get_feature_switch_from_config(
+    feature_name: str,
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+    default: bool = True,
+    apply_env: bool = True,
+) -> bool:
+    """Get the effective value of a repo-scoped boolean feature switch.
+
+    Checks [features], [feature_switches], [feature_gates] sections as well
+    as top-level keys in config.toml, with repo-specific overrides taking precedence.
+
+    Args:
+        feature_name: The canonical feature name (e.g., 'issue_specification_validation').
+        config_path: Optional explicit path to base config.toml file.
+        repo_name: Optional GitHub repository ('owner/repo') for repo-scoped override.
+        default: Default value if not configured (default: True).
+        apply_env: If True, environment variable overrides (e.g. AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION)
+                   are applied where supported.
+
+    Returns:
+        Effective boolean value for the active repository.
+
+    Raises:
+        ValueError: If a configured value is not a boolean.
+    """
+    if apply_env and feature_name == "pr_adversarial_validation":
+        adv_val_env = os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
+        if adv_val_env is not None:
+            return adv_val_env.strip().lower() not in ("false", "0", "no")
+
+    data = load_app_config_data(config_path=config_path, repo_name=repo_name)
+
+    features = data.get("features", {})
+    if isinstance(features, dict) and feature_name in features:
+        val = features[feature_name]
+        if type(val) is not bool:
+            raise ValueError(f"Invalid boolean value for feature setting '{feature_name}': {val!r}")
+        return val
+
+    if feature_name in data:
+        val = data[feature_name]
+        if type(val) is not bool:
+            raise ValueError(f"Invalid boolean value for feature setting '{feature_name}': {val!r}")
+        return val
+
+    return default
+
+
+def get_issue_specification_validation_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Get the effective value of issue_specification_validation (default: True)."""
+    return get_feature_switch_from_config("issue_specification_validation", config_path=config_path, repo_name=repo_name)
+
+
+def get_issue_decomposition_validation_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Get the effective value of issue_decomposition_validation (default: True)."""
+    return get_feature_switch_from_config("issue_decomposition_validation", config_path=config_path, repo_name=repo_name)
+
+
+def get_pr_adversarial_validation_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Get the effective value of pr_adversarial_validation (default: True)."""
+    return get_feature_switch_from_config("pr_adversarial_validation", config_path=config_path, repo_name=repo_name)
+
+
+def get_pr_review_thread_gate_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Get the effective value of pr_review_thread_gate (default: True)."""
+    return get_feature_switch_from_config("pr_review_thread_gate", config_path=config_path, repo_name=repo_name)
+
+
+def get_automatic_test_fix_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Get the effective value of automatic_test_fix (default: True)."""
+    return get_feature_switch_from_config("automatic_test_fix", config_path=config_path, repo_name=repo_name)
+
+
+def get_all_feature_switches_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Dict[str, bool]:
+    """Get dictionary of all effective feature switches for the active repository."""
+    return {name: get_feature_switch_from_config(name, config_path=config_path, repo_name=repo_name) for name in FEATURE_SWITCH_NAMES}
