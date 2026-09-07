@@ -1,0 +1,26 @@
+{
+  "fixture_version": 1,
+  "source": {
+    "repository": "kitamura-tetsuo/auto-coder",
+    "issue_number": 1790,
+    "url": "https://github.com/kitamura-tetsuo/auto-coder/issues/1790"
+  },
+  "normative_status": "historical_negative_example_only",
+  "provenance_note": "The ordinary GitHub Issue API does not expose every pre-edit body. Every stored generation is therefore an intentionally concise synthetic reconstruction, not an exact GitHub snapshot; it encodes only responsibility changes supported by the named validation or supersession comment.",
+  "generations": [
+    {"id": "baseline", "file": "00-baseline.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [], "responsibilities": ["coordination-retirement", "manual-ci-duplicate-dispatch"]},
+    {"id": "ownership", "file": "01-ownership.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [5558139139], "responsibilities": ["coordination-retirement", "manual-ci-duplicate-dispatch", "ownership-preservation", "label-reevaluation", "ci-claim-postconditions"]},
+    {"id": "urgent-capacity", "file": "02-urgent-capacity.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [5558158773], "responsibilities": ["coordination-retirement", "ownership-preservation", "urgent-emergency-capacity"]},
+    {"id": "retained-lifecycle", "file": "03-retained-lifecycle.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [5558178680], "responsibilities": ["coordination-retirement", "ownership-preservation", "urgent-emergency-capacity", "retained-lifecycle-blocking", "urgent-pr-propagation"]},
+    {"id": "semantic-resolution", "file": "04-semantic-resolution.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [5558200482, 5558239835], "responsibilities": ["coordination-retirement", "ownership-preservation", "urgent-emergency-capacity", "semantic-pr-label-resolution", "prompt-selection", "auto-coder-label-filtering"]},
+    {"id": "logical-owner", "file": "05-logical-owner.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [5558260865], "responsibilities": ["coordination-retirement", "ownership-preservation", "urgent-emergency-capacity", "semantic-pr-label-resolution", "prompt-selection", "logical-owner-identity"]},
+    {"id": "superseded", "file": "06-superseded.md", "content_kind": "synthetic_reconstruction", "source_comment_ids": [5558400048], "responsibilities": ["supersession-decision"]}
+  ],
+  "oracle": {
+    "blocked_drift_generation": "semantic-resolution",
+    "verdict": "BLOCKED",
+    "remediation": "REISSUE_REQUIRED",
+    "reason_kind": "responsibility_boundary_drift",
+    "production_policy_sources": [1799, 1800, 1807, 1808]
+  }
+}
