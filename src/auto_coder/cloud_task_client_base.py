@@ -22,6 +22,7 @@ class CloudTaskState(Enum):
     PAUSED = auto()
     COMPLETED = auto()
     FAILED = auto()
+    CANCELLED = auto()
     UNKNOWN = auto()
 
 

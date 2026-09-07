@@ -1870,3 +1870,12 @@ specification-review-regression-fixtures:
         - blocked-verdict-alone-is-insufficient
         - wording-order-and-extra-findings-are-not-fixed
         - corrected-decomposition-identity-requirement-is-excluded
+
+codex-authoritative-recovery-observations:
+  description: "Read-only, identity-bound Codex execution and GitHub publication evidence (Issue #1863)."
+  implementation: "CodexObservationService and immutable evidence types in src/auto_coder/codex_observation.py; structured task-details parsing in src/auto_coder/codex_wham_client.py; fresh strict REST readers in src/auto_coder/util/gh_cache.py."
+  behavior:
+    - "Observations retain repository, Issue, attempt, provider task, backend, environment, base branch, read generation, and activity generation; stale concurrent reads cannot replace a newer observation."
+    - "Only current_assistant_turn.id and turn_status, corroborated by latest-turn metadata and without pending newer user work, establish recovery-eligible completion; unavailable, malformed, contradictory, or mismatched evidence is UNKNOWN."
+    - "GitHub publication discovery completely reads fresh Issue relationships, known durable run PRs, and repository open PRs, then verifies every candidate; incomplete reads fail closed rather than proving absence."
+    - "Open, closed, merged, absent, ambiguous, and unavailable publication evidence remain distinct, and every operation is read-only."

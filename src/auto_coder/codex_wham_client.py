@@ -43,6 +43,10 @@ class WhamTask:
     title: Optional[str] = None
     turns: list[WhamTurn] = field(default_factory=list)
     raw_data: Optional[object] = None
+    current_user_turn: Optional[WhamTurn] = None
+    current_assistant_turn: Optional[WhamTurn] = None
+    latest_turn_status: str = ""
+    environment_id: str = ""
 
 
 class FollowUpDeliveryOutcome(str, Enum):
@@ -153,7 +157,9 @@ class CodexWhamClient:
             if isinstance(author_obj, dict):
                 role = author_obj.get("role", "")
 
-        status = turn_data.get("status") or turn_data.get("state") or ""
+        # ``turn_status`` is the authoritative WHAM protocol field.  Do not
+        # reinterpret narrative or legacy status-like fields here.
+        status = turn_data.get("turn_status") or ""
         created_at = turn_data.get("created_at") or turn_data.get("timestamp")
         created_at_str = str(created_at) if created_at is not None else None
 
@@ -204,7 +210,13 @@ class CodexWhamClient:
             task_obj = data.get("task")
             raw_task: dict[str, object] = task_obj if isinstance(task_obj, dict) else data
             tid = str(raw_task.get("id") or raw_task.get("task_id") or task_id)
-            status = str(raw_task.get("status") or raw_task.get("state") or "")
+            status_display = data.get("task_status_display") or raw_task.get("task_status_display")
+            latest_status = ""
+            if isinstance(status_display, dict):
+                latest = status_display.get("latest_turn_status_display")
+                if isinstance(latest, dict):
+                    latest_status = str(latest.get("turn_status") or "")
+            status = latest_status or str(raw_task.get("status") or "")
             title = raw_task.get("title")
             title_str = str(title) if title is not None else None
 
@@ -219,10 +231,19 @@ class CodexWhamClient:
 
             # Extract current_assistant_turn / current_user_turn if present
             current_asst = data.get("current_assistant_turn")
+            if not isinstance(current_asst, dict):
+                current_asst = raw_task.get("current_assistant_turn")
+            asst_turn = self._parse_turn_dict(current_asst) if isinstance(current_asst, dict) else None
             if isinstance(current_asst, dict):
-                asst_turn = self._parse_turn_dict(current_asst)
                 if asst_turn and not any(t.id == asst_turn.id for t in turns):
                     turns.append(asst_turn)
+
+            current_user = data.get("current_user_turn")
+            if not isinstance(current_user, dict):
+                current_user = raw_task.get("current_user_turn")
+            user_turn = self._parse_turn_dict(current_user) if isinstance(current_user, dict) else None
+
+            environment = raw_task.get("environment_id") or data.get("environment_id") or ""
 
             return WhamTask(
                 id=tid,
@@ -230,6 +251,10 @@ class CodexWhamClient:
                 title=title_str,
                 turns=turns,
                 raw_data=data,
+                current_user_turn=user_turn,
+                current_assistant_turn=asst_turn,
+                latest_turn_status=latest_status,
+                environment_id=str(environment),
             )
         except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as e:
             logger.warning(f"Failed to fetch WHAM task '{task_id}': {type(e).__name__}")
