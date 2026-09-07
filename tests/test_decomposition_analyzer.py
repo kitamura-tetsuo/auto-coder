@@ -240,3 +240,47 @@ def test_parent_implementation_ownership_premise_is_explicit_in_prompt():
         prompt_runner=lambda prompt: captured.append(prompt) or _response(),
     )
     assert "Parent independently implemented: true" in captured[0]
+
+
+def test_decomposition_prompt_composes_ambiguity_and_graph_wide_closure():
+    parent, children = _set()
+    captured = []
+
+    result = analyze_issue_decomposition(
+        parent,
+        children,
+        prompt_runner=lambda prompt: captured.append(prompt) or _response(),
+    )
+
+    assert result.verdict == "READY"
+    prompt = captured[0]
+    assert "perform an ambiguity-closure pass for every material ambiguity" in prompt
+    assert "every specification-defined parent or member mutation" in prompt
+    assert "every directly related identity and graph consumer" in prompt
+    assert "Treat direct-child membership mutations and direct-child specification-content mutations as separate events" in prompt
+    assert "Unchanged membership never proves that decomposition evidence is reusable" in prompt
+    assert "which individual evidence remains reusable, which set-level evidence becomes stale" in prompt
+    assert "delayed completion can still act on current readiness or authorization" in prompt
+    assert "parent-to-child or child-to-parent consequence" in prompt
+    assert "every child can satisfy its own Requirements" in prompt
+    assert "perform a final next-review-prediction pass" in prompt
+
+
+def test_decomposition_prompt_closure_is_evidence_constrained_and_membership_bounded():
+    parent, children = _set()
+    captured = []
+
+    result = analyze_issue_decomposition(
+        parent,
+        children,
+        prompt_runner=lambda prompt: captured.append(prompt) or _response(),
+    )
+
+    assert result.verdict == "READY"
+    prompt = captured[0]
+    assert "one parent Requirement is shared by multiple children" in prompt
+    assert "children use different internal designs" in prompt
+    assert "hypothetical future lifecycle" in prompt
+    assert "caller-supplied parent and complete direct-child membership are the exact review boundary" in prompt
+    assert "Raw Parent-Issue body markers" in prompt
+    assert "unrelated Issues, grandchildren, repository code, and historical relationships" in prompt

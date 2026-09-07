@@ -160,7 +160,13 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
     )
     ready = '{"verdict":"READY","remediation":"NONE","findings":[]}'
     monkeypatch.setattr("auto_coder.specification_analyzer.run_llm_prompt", lambda *_args, **_kwargs: ready)
-    monkeypatch.setattr("auto_coder.decomposition_analyzer.run_llm_prompt", lambda *_args, **_kwargs: ready)
+    decomposition_prompts: list[str] = []
+
+    def run_decomposition(prompt: str, **_kwargs: object) -> str:
+        decomposition_prompts.append(prompt)
+        return ready
+
+    monkeypatch.setattr("auto_coder.decomposition_analyzer.run_llm_prompt", run_decomposition)
     from auto_coder.specification_analyzer import analyze_issue_specification
 
     monkeypatch.setattr(
@@ -188,6 +194,14 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
         assert child_jobs[30].result().verdict == "READY"
 
     assert observed_models == [{"codex": "repo-model"}] * 3
+    assert len(decomposition_prompts) == 1
+    decomposition_prompt = decomposition_prompts[0]
+    assert "perform an ambiguity-closure pass" in decomposition_prompt
+    assert "perform a final next-review-prediction pass" in decomposition_prompt
+    assert "direct-child membership mutations and direct-child specification-content mutations as separate events" in decomposition_prompt
+    assert '"issue_number": 10' in decomposition_prompt
+    assert '"issue_number": 20' in decomposition_prompt
+    assert '"issue_number": 30' in decomposition_prompt
     engine.validation_scheduler.shutdown()
 
 
