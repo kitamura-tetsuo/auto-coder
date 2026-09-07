@@ -13,8 +13,10 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from .logger_config import get_logger
 from .progress_footer import get_progress_footer
@@ -22,6 +24,26 @@ from .security_utils import redact_string
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
+
+_COMMAND_CWD: ContextVar[Optional[str]] = ContextVar("auto_coder_command_cwd", default=None)
+
+
+@contextmanager
+def command_execution_context(cwd: str) -> Iterator[None]:
+    """Bind commands in the current worker context to an explicit directory.
+
+    Context variables are local to a thread/task, unlike ``os.chdir()``, so
+    overlapping workers cannot redirect each other's subprocesses.
+    """
+    resolved = os.path.realpath(cwd)
+    if not os.path.isdir(resolved):
+        raise RuntimeError(f"Command execution directory does not exist: {resolved}")
+    token = _COMMAND_CWD.set(resolved)
+    try:
+        yield
+    finally:
+        _COMMAND_CWD.reset(token)
+
 
 # CSI/OSC escape sequences emitted by interactive terminal UIs
 _ANSI_ESCAPE_RE = re.compile(r"\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -648,6 +670,8 @@ class CommandExecutor:
         use_pty: attach the command to a pseudo terminal, for CLIs that refuse to
         run without an interactive terminal.
         """
+        if cwd is None:
+            cwd = _COMMAND_CWD.get()
         if timeout is None:
             # Auto-detect timeout based on command type
             cmd_type = cmd[0] if cmd else "default"
