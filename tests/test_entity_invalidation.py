@@ -89,14 +89,17 @@ def test_new_issue_webhooks_preserve_creation_anchored_stabilization(tmp_path: P
 
     asyncio.run(receive_mutations())
     assert engine.queue.qsize() == 0
-    assert engine.invalidations.pending_count("owner/repo") == 1
+    assert engine.invalidations.pending_count("owner/repo") == 2
     assert 0 < engine.invalidations.seconds_until_next_ready("owner/repo") <= 60
 
     monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: (created + timedelta(seconds=60)).timestamp())
     asyncio.run(engine._enqueue_pending_invalidations("owner/repo"))
-    queued = engine.queue.get_nowait()
-    assert queued.data == {"number": 200}
-    assert queued.invalidation_generation == 1
+    queued = [engine.queue.get_nowait(), engine.queue.get_nowait()]
+    assert [(candidate.type, candidate.data) for candidate in queued] == [
+        ("dependency", {"number": 1}),
+        ("issue", {"number": 200}),
+    ]
+    assert all(candidate.invalidation_generation == 1 for candidate in queued)
 
 
 def test_mutation_deadlines_cannot_extend_existing_issue_window(tmp_path: Path, monkeypatch):
@@ -667,6 +670,7 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_issue_dispatch_snapshot_strict = MagicMock(return_value=strict_snapshot)
     github.get_parent_issue_details_strict = MagicMock(return_value=None)
     github.get_issue = MagicMock(side_effect=RuntimeError("second request unavailable"))
+    github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[], pull_requests=[]))
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data) or CandidateProcessingResult(type="issue", number=42, success=True))
@@ -680,6 +684,54 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 42)
     github.get_issue.assert_not_called()
     assert processed[0]["body"] == "Current body"
+    assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+def test_dependency_close_http_delivery_discovers_dependent_through_worker(tmp_path: Path, monkeypatch):
+    """A native close endpoint reaches normal processing without a dependent event."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = MagicMock()
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(
+        issues=[OpenGitHubIssue(number=205, created_at="2020-01-01T00:00:00Z")],
+        pull_requests=[],
+    )
+    snapshots = {
+        101: {"number": 101, "state": "closed", "labels": []},
+        205: {"number": 205, "state": "open", "labels": [{"name": "implementation-ready"}]},
+    }
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue_details.side_effect = lambda issue: dict(issue)
+    engine = AutomationEngine(github, AutomationConfig())
+    processed = []
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda _repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=candidate.data["number"], success=True),
+    )
+
+    payload = {
+        "action": "blocked_by_removed",
+        "blocked_issue": {"number": 205, "repository_url": "https://api.github.com/repos/owner/repo"},
+        "blocking_issue": {"number": 101, "repository_url": "https://api.github.com/repos/owner/repo"},
+        "repository": {"full_name": "owner/repo"},
+    }
+
+    async def scenario():
+        with patch("src.auto_coder.webhook_server.init_dashboard"):
+            app = create_app(engine, "owner/repo")
+        with TestClient(app) as client:
+            assert (
+                client.post(
+                    "/hooks/github",
+                    json=payload,
+                    headers={"X-GitHub-Event": "issue_dependencies", "X-GitHub-Delivery": "close-edge"},
+                ).status_code
+                == 200
+            )
+        await _run_worker_until(engine, 1, processed)
+
+    asyncio.run(scenario())
+    assert processed == [205]
     assert engine.invalidations.pending_count("owner/repo") == 0
 
 

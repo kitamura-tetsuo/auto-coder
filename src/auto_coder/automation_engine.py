@@ -1542,6 +1542,10 @@ class AutomationEngine:
                         )
                         if not await asyncio.to_thread(self.invalidations.begin_processing, invalidation_claim):
                             continue
+                        if candidate.type == "dependency":
+                            await self._expand_dependency_obligation(repo_name)
+                            decision_completed = True
+                            continue
                         authoritative_candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, candidate.type, int(item_number), True)
                         if authoritative_candidate is None:
                             # A successful authoritative read can decide that an
@@ -1627,6 +1631,24 @@ class AutomationEngine:
                 if self.is_draining:
                     logger.info(f"Worker {worker_id} reached its graceful drain checkpoint")
                     return
+
+    async def _expand_dependency_obligation(self, repo_name: str) -> None:
+        """Discover affected Issues from a complete, current open-Issue scan.
+
+        Discovery deliberately precedes candidate filtering and does not rely
+        on native reverse edges.  Each discovered identity becomes its own
+        durable generation before the scoped obligation is acknowledged.
+        """
+        entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+        issues = getattr(entities, "issues", None)
+        if not isinstance(issues, list):
+            raise RuntimeError("authoritative dependency discovery returned malformed Issues")
+        for issue in issues:
+            number = getattr(issue, "number", None)
+            if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+                raise RuntimeError("authoritative dependency discovery returned an invalid Issue")
+            deadline = issue_stabilization_deadline(issue.created_at) if issue.created_at is not None else None
+            await self.invalidate_entity(repo_name, "issue", number, not_before=deadline)
 
     async def invalidate_entity(
         self,

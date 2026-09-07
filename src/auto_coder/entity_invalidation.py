@@ -29,8 +29,8 @@ class EntityIdentity:
     number: int
 
     def __post_init__(self) -> None:
-        if self.entity_type not in {"issue", "pr"}:
-            raise ValueError("entity_type must be 'issue' or 'pr'")
+        if self.entity_type not in {"issue", "pr", "dependency"}:
+            raise ValueError("entity_type must be 'issue', 'pr', or 'dependency'")
         if not self.repository or self.number <= 0:
             raise ValueError("repository and a positive entity number are required")
 
@@ -62,7 +62,7 @@ class DurableInvalidationQueue:
             """
             CREATE TABLE IF NOT EXISTS entity_invalidations (
                 repository TEXT NOT NULL,
-                entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr')),
+                entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr', 'dependency')),
                 entity_number INTEGER NOT NULL,
                 generation INTEGER NOT NULL,
                 claimed_generation INTEGER,
@@ -74,7 +74,7 @@ class DurableInvalidationQueue:
             CREATE TABLE IF NOT EXISTS github_deliveries (
                 repository TEXT NOT NULL,
                 delivery_id TEXT NOT NULL,
-                entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr')),
+                entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr', 'dependency')),
                 entity_number INTEGER NOT NULL,
                 event_type TEXT,
                 action TEXT,
@@ -110,6 +110,34 @@ class DurableInvalidationQueue:
                 """
             )
 
+        # Dependency reevaluation is represented by one coalescing repository
+        # obligation.  Rebuild older CHECK-constrained databases before that
+        # identity can be persisted.
+        schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entity_invalidations'").fetchone()[0]
+        if "'dependency'" not in schema:
+            self._connection.executescript(
+                """
+                ALTER TABLE entity_invalidations RENAME TO entity_invalidations_v2;
+                CREATE TABLE entity_invalidations (
+                    repository TEXT NOT NULL,
+                    entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr', 'dependency')),
+                    entity_number INTEGER NOT NULL, generation INTEGER NOT NULL,
+                    claimed_generation INTEGER,
+                    state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
+                    not_before REAL, urgent_admission INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(repository, entity_type, entity_number)
+                );
+                INSERT INTO entity_invalidations(
+                    repository, entity_type, entity_number, generation,
+                    claimed_generation, state, not_before, urgent_admission
+                )
+                SELECT repository, entity_type, entity_number, generation,
+                    claimed_generation, state, not_before, 0
+                FROM entity_invalidations_v2;
+                DROP TABLE entity_invalidations_v2;
+                """
+            )
+
         invalidation_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(entity_invalidations)")}
         if "not_before" not in invalidation_columns:
             self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN not_before REAL")
@@ -139,6 +167,21 @@ class DurableInvalidationQueue:
                     "INSERT OR IGNORE INTO legacy_github_deliveries(repository, delivery_id) VALUES (?, ?)",
                     ((repository, self._raw_legacy_delivery_id(delivery_id)) for repository, delivery_id in legacy_rows),
                 )
+        delivery_schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'github_deliveries'").fetchone()[0]
+        if "'dependency'" not in delivery_schema:
+            self._connection.executescript(
+                """
+                ALTER TABLE github_deliveries RENAME TO github_deliveries_v2;
+                CREATE TABLE github_deliveries (
+                    repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
+                    entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr', 'dependency')),
+                    entity_number INTEGER NOT NULL, event_type TEXT, action TEXT,
+                    PRIMARY KEY(repository, delivery_id, entity_type, entity_number)
+                );
+                INSERT INTO github_deliveries SELECT * FROM github_deliveries_v2;
+                DROP TABLE github_deliveries_v2;
+                """
+            )
 
     @staticmethod
     def _raw_legacy_delivery_id(delivery_id: str) -> str:

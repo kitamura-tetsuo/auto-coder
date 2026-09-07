@@ -196,6 +196,38 @@ def test_near_miss_label_changes_still_invalidate(mock_init_dashboard, label_nam
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
+def test_native_dependency_payload_records_local_numbers_and_scoped_obligation(mock_init_dashboard):
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": "blocked_by_added",
+        "blocked_issue": {
+            "id": 900000205,
+            "number": 205,
+            "repository_url": "https://api.github.com/repos/owner/repo",
+        },
+        "blocking_issue": {
+            "id": 900000101,
+            "number": 101,
+            "repository_url": "https://api.github.com/repos/foreign/repo",
+        },
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "issue_dependencies", "X-GitHub-Delivery": "native-edge"},
+        )
+
+    assert response.status_code == 200
+    assert engine.invalidations == [
+        ("owner/repo", "dependency", 1, "native-edge", "issue_dependencies", "blocked_by_added"),
+        ("owner/repo", "issue", 205, "native-edge", "issue_dependencies", "blocked_by_added"),
+    ]
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
 def test_legacy_label_removal_also_suppressed(mock_init_dashboard):
     """AS-001 covers both labeled and unlabeled actions for the exact retired label."""
     engine = MockEngine()

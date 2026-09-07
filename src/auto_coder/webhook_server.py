@@ -18,6 +18,20 @@ logger = get_logger(__name__)
 
 # Webhook actions whose payload carries the single label that was added/removed.
 _LABEL_CHANGE_ACTIONS = {"labeled", "unlabeled"}
+_DEPENDENCY_EVENTS = {"issue_dependencies", "sub_issues"}
+
+
+def _endpoint_is_local(endpoint: Mapping[str, Any], repo_name: str) -> bool:
+    """Validate an endpoint's repository identity without comparing global IDs."""
+    repository = endpoint.get("repository")
+    full_name = repository.get("full_name") if isinstance(repository, Mapping) else None
+    if isinstance(full_name, str):
+        return full_name.casefold() == repo_name.casefold()
+    repository_url = endpoint.get("repository_url")
+    if isinstance(repository_url, str):
+        return repository_url.rstrip("/").casefold().endswith(f"/repos/{repo_name}".casefold())
+    html_url = endpoint.get("html_url")
+    return isinstance(html_url, str) and html_url.casefold().startswith(f"https://github.com/{repo_name}/issues/".casefold())
 
 
 def _is_legacy_auto_coder_label_change(event_type: Optional[str], action: Optional[str], payload: Dict[str, Any]) -> bool:
@@ -124,6 +138,7 @@ async def process_github_payload(
     """Translate relevant webhook notifications into durable entity invalidations."""
     action = payload.get("action")
     identities: set[tuple[str, int]] = set()
+    dependency_reevaluation = False
     entity_actions = {
         "pull_request": {"opened", "edited", "closed", "reopened", "synchronize", "converted_to_draft", "ready_for_review", "labeled", "unlabeled", "assigned", "unassigned"},
         "issues": {"opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned", "deleted", "transferred"},
@@ -143,10 +158,34 @@ async def process_github_payload(
         number = entity.get("number") if isinstance(entity, Mapping) else None
         if isinstance(number, int):
             identities.add((entity_type, number))
+        # Issue lifecycle, declarations, and readiness labels can change the
+        # eligibility of Issues which never receive their own webhook.
+        if event_type == "issues":
+            changed_label = payload.get("label")
+            dependency_reevaluation = action in {"opened", "closed", "reopened", "deleted", "transferred"}
+            dependency_reevaluation = dependency_reevaluation or (action == "edited" and isinstance(payload.get("changes"), Mapping) and "body" in payload["changes"])
+            dependency_reevaluation = dependency_reevaluation or (action in _LABEL_CHANGE_ACTIONS and isinstance(changed_label, Mapping) and changed_label.get("name") == "implementation-ready")
         if event_type == "pull_request" and action == "closed":
             engine.notify_pr_merged_or_closed()
     elif event_type in entity_actions and action in entity_actions[event_type]:
         logger.info(f"Ignoring {event_type} {action} webhook for the retired '{LEGACY_AUTO_CODER_LABEL}' label: no invalidation created")
+
+    if event_type in _DEPENDENCY_EVENTS:
+        dependency_reevaluation = True
+        endpoint_names = ("blocked_issue", "blocking_issue") if event_type == "issue_dependencies" else ("parent_issue", "sub_issue")
+        for endpoint_name in endpoint_names:
+            endpoint = payload.get(endpoint_name)
+            if not isinstance(endpoint, Mapping) or not _endpoint_is_local(endpoint, repo_name):
+                continue
+            number = endpoint.get("number")
+            if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                identities.add(("issue", number))
+
+    if dependency_reevaluation:
+        # This repository-scoped token is the durable promise to perform a
+        # conservative authoritative scan.  It is persisted before HTTP 200,
+        # so removed edges and downtime cannot erase reverse discovery.
+        identities.add(("dependency", 1))
 
     completion_events = {("workflow_run", "completed"), ("workflow_job", "completed"), ("check_run", "completed"), ("check_suite", "completed")}
     if (event_type, action) in completion_events or event_type == "status":
@@ -175,7 +214,9 @@ async def process_github_payload(
                 numbers = await asyncio.to_thread(engine.github.get_pull_request_numbers_for_commit, repo_name, sha)
                 identities.update(("pr", number) for number in numbers)
 
-    for entity_type, number in sorted(identities):
+    # Queue the scope token first. Its scan then coalesces with endpoint rows
+    # from this delivery instead of redispatching an endpoint already handled.
+    for entity_type, number in sorted(identities, key=lambda identity: (identity[0] != "dependency", identity)):
         changed_label = payload.get("label")
         urgent_admission = entity_type == "issue" and event_type == "issues" and action == "labeled" and isinstance(changed_label, Mapping) and changed_label.get("name") == "urgent"
         not_before = None
@@ -186,6 +227,11 @@ async def process_github_payload(
                 not_before = issue_stabilization_deadline(created_at)
                 if not_before is None:
                     logger.warning(f"Invalid created_at for issue #{number}; scheduling immediate authoritative reevaluation")
+        elif entity_type == "dependency" and event_type == "issues" and action == "opened":
+            issue = payload.get("issue")
+            created_at = issue.get("created_at") if isinstance(issue, Mapping) else None
+            if isinstance(created_at, str):
+                not_before = issue_stabilization_deadline(created_at)
         invalidation_args = (repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
         if urgent_admission:
             accepted = await engine.invalidate_entity(
