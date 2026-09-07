@@ -225,7 +225,7 @@ def verify_github_access() -> bool:
     try:
         import httpx
 
-        from .util.gh_cache import get_ghapi_client
+        from .util.github_request_outcome import github_http_client
 
         token = get_github_token()
         if not token:
@@ -240,7 +240,8 @@ def verify_github_access() -> bool:
         }
 
         try:
-            resp = httpx.get("https://api.github.com/user", headers=headers, timeout=60)
+            with github_http_client(subsystem="authentication", timeout=60) as client:
+                resp = client.get("https://api.github.com/user", headers=headers)
             resp.raise_for_status()
             logger.debug("GitHub access verification successful.")
             return True

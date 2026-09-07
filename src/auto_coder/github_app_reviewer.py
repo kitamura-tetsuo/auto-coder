@@ -26,6 +26,7 @@ from .adversarial_validator import (
 )
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
+from .util.github_request_outcome import instrument_github_client
 from .utils import is_same_github_login
 
 logger = get_logger(__name__)
@@ -129,7 +130,8 @@ class GitHubAppReviewer:
     ) -> None:
         self._config = config
         self._api_url = api_url.rstrip("/")
-        self._client = client or httpx.Client(timeout=30.0)
+        base_client = client or httpx.Client(timeout=30.0)
+        self._client = instrument_github_client(base_client, subsystem="reviewer-app", api_origin=self._api_url)
         self._clock = clock
         self._tokens: dict[str, _CachedToken] = {}
         self._identity: Optional[ReviewerAppIdentity] = None

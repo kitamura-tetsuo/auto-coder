@@ -33,6 +33,7 @@ from ..test_log_utils import generate_merged_playwright_report
 from ..utils import CommandExecutor, log_action
 from .gh_cache import GitHubClient, get_ghapi_client
 from .github_cache import get_github_cache
+from .github_request_outcome import github_http_client
 
 
 def _clean_log_line(line: str) -> str:
@@ -2236,9 +2237,7 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional
         list_url = f"{api_base}/repos/{repo_name}/actions/runs/{run_id}/artifacts"
 
         try:
-            import httpx
-
-            with httpx.Client() as h_client:
+            with github_http_client(subsystem="actions-artifacts") as h_client:
                 response = h_client.get(list_url, headers=headers, timeout=30)
                 if response.status_code != 200:
                     logger.warning(f"Failed to list artifacts: {response.status_code} {response.text}")
@@ -2275,12 +2274,10 @@ def _get_playwright_artifact_logs(repo_name: str, run_id: int) -> Tuple[Optional
         all_raw_artifacts = []
 
         # 2. Download and extract all artifacts
-        import httpx
-
         # We'll use a single temp directory for all downloads/extractions
         with tempfile.TemporaryDirectory() as tmp_dir:
 
-            with httpx.Client(follow_redirects=True) as h_client:
+            with github_http_client(subsystem="actions-artifacts", follow_redirects=True, timeout=300) as h_client:
 
                 for i, artifact in enumerate(target_artifacts):
                     artifact_id = artifact.get("id")

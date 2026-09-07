@@ -102,6 +102,26 @@ AdmissionHook = Callable[[GitHubRequestContext], bool | None]
 ObservationHook = Callable[[GitHubRequestOutcome], None]
 
 _state = threading.local()
+_boundary_lock = threading.Lock()
+_admission_hook: AdmissionHook | None = None
+_observation_hook: ObservationHook | None = None
+
+
+def configure_github_request_boundary(
+    admission_hook: AdmissionHook | None = None,
+    observation_hook: ObservationHook | None = None,
+) -> None:
+    """Install the process-wide controller boundary used by every GitHub adapter."""
+    global _admission_hook, _observation_hook
+    with _boundary_lock:
+        _admission_hook = admission_hook
+        _observation_hook = observation_hook
+
+
+def boundary_hooks() -> tuple[AdmissionHook | None, ObservationHook | None]:
+    """Return one consistent snapshot of the configured hooks."""
+    with _boundary_lock:
+        return _admission_hook, _observation_hook
 
 
 def begin_operation() -> None:
@@ -204,7 +224,7 @@ def _safe_endpoint(url: httpx.URL) -> tuple[str, str, str | None, str | None]:
 
 def _sensitive_endpoint(path: str) -> bool:
     lowered = path.lower()
-    return any(value in lowered for value in ("/actions/secrets", "/app/installations", "/access_tokens"))
+    return lowered in ("/app", "/user") or any(value in lowered for value in ("/actions/secrets", "/app/installations", "/access_tokens"))
 
 
 def _redact_message(message: str, credentials: tuple[str, ...]) -> str:
@@ -245,15 +265,24 @@ def log_outcome(outcome: GitHubRequestOutcome, event: str) -> None:
 class DiagnosticTransport(httpx.BaseTransport):
     """Instrument each actual send below hishel's caching controller."""
 
-    def __init__(self, transport: httpx.BaseTransport | None = None, admission_hook: AdmissionHook | None = None, observation_hook: ObservationHook | None = None, subsystem: str = "ghapi") -> None:
+    def __init__(self, transport: httpx.BaseTransport | None = None, admission_hook: AdmissionHook | None = None, observation_hook: ObservationHook | None = None, subsystem: str = "ghapi", api_origin: str = "https://api.github.com") -> None:
         self._transport = transport or httpx.HTTPTransport()
         self._admission_hook = admission_hook
         self._observation_hook = observation_hook
         self._subsystem = subsystem
+        self._api_origin = api_origin.rstrip("/")
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         origin, endpoint, repository, item = _safe_endpoint(request.url)
-        context = GitHubRequestContext(str(request.extensions.get("auto_coder_operation_id", uuid.uuid4())), str(uuid.uuid4()), self._subsystem, origin, request.method, "read" if request.method in ("GET", "HEAD") else "mutation", endpoint, repository, item)
+        # Redirected artifact bytes are not GitHub API traffic.  httpx removes
+        # Authorization on cross-origin redirects; bypassing here also prevents
+        # signed URLs and foreign quota-looking headers entering diagnostics.
+        if origin != self._api_origin:
+            return self._transport.handle_request(request)
+        strict_read = "strict" in self._subsystem and request.method in ("GET", "HEAD")
+        context = GitHubRequestContext(
+            str(request.extensions.get("auto_coder_operation_id", uuid.uuid4())), str(uuid.uuid4()), self._subsystem, origin, request.method, "read" if request.method in ("GET", "HEAD") else "mutation", endpoint, repository, item, "bypass" if strict_read else "normal", strict_read
+        )
         header_credentials = tuple(value for key, value in request.headers.items() if key.lower() in ("authorization", "cookie"))
         credentials = header_credentials + tuple(part for value in header_credentials for part in value.split() if len(part) >= 4)
         if self._admission_hook is not None and self._admission_hook(context) is False:
@@ -282,6 +311,65 @@ class DiagnosticTransport(httpx.BaseTransport):
 
     def close(self) -> None:
         self._transport.close()
+
+
+def github_http_client(
+    *,
+    subsystem: str,
+    api_origin: str = "https://api.github.com",
+    timeout: float | httpx.Timeout = 30.0,
+    follow_redirects: bool = False,
+    transport: httpx.BaseTransport | None = None,
+    admission_hook: AdmissionHook | None = None,
+    observation_hook: ObservationHook | None = None,
+) -> httpx.Client:
+    """Build an uncached client whose GitHub-origin sends share one boundary."""
+    configured_admission, configured_observation = boundary_hooks()
+    admission = admission_hook if admission_hook is not None else configured_admission
+    observation = observation_hook if observation_hook is not None else configured_observation
+
+    def observe(response: httpx.Response) -> None:
+        outcomes = getattr(_state, "wire_outcomes", [])
+        if not outcomes:
+            return
+        base = outcomes.pop()
+        response.read()
+        finalize_response(response, base, observation)
+
+    return httpx.Client(
+        transport=DiagnosticTransport(transport, admission, observation, subsystem, api_origin),
+        timeout=timeout,
+        follow_redirects=follow_redirects,
+        event_hooks={"response": [observe]},
+    )
+
+
+def instrument_github_client(
+    client: httpx.Client,
+    *,
+    subsystem: str,
+    api_origin: str = "https://api.github.com",
+) -> httpx.Client:
+    """Instrument an already-created client while retaining its wire adapter."""
+    transport = getattr(client, "_transport", None)
+    if transport is None or not hasattr(transport, "handle_request"):
+        return client
+    admission, observation = boundary_hooks()
+    client._transport = DiagnosticTransport(transport, admission, observation, subsystem, api_origin)  # type: ignore[attr-defined]
+    # httpx may install environment-proxy transports as URL mounts.  They are
+    # equally real wire routes and therefore must not bypass admission.
+    for pattern, mounted in list(getattr(client, "_mounts", {}).items()):
+        if mounted is not None and hasattr(mounted, "handle_request"):
+            client._mounts[pattern] = DiagnosticTransport(mounted, admission, observation, subsystem, api_origin)  # type: ignore[attr-defined]
+
+    def observe(response: httpx.Response) -> None:
+        outcomes = getattr(_state, "wire_outcomes", [])
+        if outcomes:
+            response.read()
+            finalize_response(response, outcomes.pop(), observation)
+
+    client.event_hooks["response"].append(observe)
+    return client
 
 
 def finalize_response(
