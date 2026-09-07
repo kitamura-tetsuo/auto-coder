@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.cloud_task_client_base import CloudTaskState
-from auto_coder.codex_cloud_client import CodexCloudClient
+from auto_coder.codex_cloud_client import CodexCloudClient, CodexSubmissionOutcome
 from auto_coder.codex_usage_checker import codex_cloud_quota_allows_task, parse_codex_weekly_usage
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration, reset_llm_config
@@ -171,6 +171,30 @@ environment_id = "env_from_toml"
             with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
                 with pytest.raises(RuntimeError, match="environment not found"):
                     client.start_task("Implement the issue")
+
+    def test_submission_accepts_valid_identity_from_stderr_despite_nonzero_exit(self, mock_backend_config):
+        """Provider identity is stronger evidence than generic CLI diagnostics."""
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            result = MagicMock(
+                returncode=1,
+                stdout="A diagnostic was emitted",
+                stderr="Accepted: https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
+            )
+            with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
+                submission = client.submit_task("Implement the issue")
+
+        assert submission.outcome is CodexSubmissionOutcome.ACCEPTED
+        assert submission.task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+
+    def test_started_cli_without_identity_is_indeterminate(self, mock_backend_config):
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            result = MagicMock(returncode=1, stdout="", stderr="connection lost")
+            with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
+                submission = client.submit_task("Implement the issue")
+
+        assert submission.outcome is CodexSubmissionOutcome.INDETERMINATE
 
     def test_start_task_rejects_placeholder_task_id(self, mock_backend_config):
         """A successful CLI exit must not make placeholder output authoritative."""

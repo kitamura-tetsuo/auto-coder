@@ -356,20 +356,41 @@ def _process_issue_codex_cloud_mode(
     remains effective across a process restart or when the label is absent,
     stale, or temporarily inconsistent (see issue #1606).
     """
+    from .cloud_manager import CloudTaskBinding
     from .cloud_run import CloudRun, CloudRunRepository
-    from .codex_cloud_client import CodexCloudClient
+    from .codex_cloud_client import CodexCloudClient, CodexSubmissionOutcome
 
     issue_number = issue_data["number"]
     issue_title = issue_data.get("title", "Unknown")
 
     attempt = get_current_attempt(repo_name, issue_number)
     cloud_run_repo = CloudRunRepository(repo_name)
-    existing_run = cloud_run_repo.get(issue_number, attempt)
-    if existing_run is not None and existing_run.provider == "codex-cloud":
-        logger.info(f"Codex Cloud run '{existing_run.task_id}' already exists for issue #{issue_number} attempt {attempt}; not starting a duplicate task")
+    cloud_manager = CloudManager(repo_name)
+    try:
+        existing_run = cloud_run_repo.get(issue_number, attempt)
+        candidate_binding = cloud_manager.read_bindings_strict().get(str(issue_number))
+        csv_binding = candidate_binding if isinstance(candidate_binding, CloudTaskBinding) else None
+    except Exception as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: required ownership state is unreadable: {exc}"]
+
+    if existing_run is not None:
+        if existing_run.provider != "codex-cloud":
+            return [f"Deferred Codex Cloud task for issue #{issue_number}: contradictory provider ownership"]
+        if not existing_run.task_id:
+            return [f"Deferred Codex Cloud task for issue #{issue_number}: submission is {existing_run.submission_outcome}; provider task identity is unresolved and requires operator attention"]
+        expected = CloudTaskBinding("codex-cloud", existing_run.task_id, existing_run.backend_name)
+        try:
+            if csv_binding is not None and csv_binding != expected:
+                raise ValueError("cloud.csv names a different task, provider, or backend")
+            if not cloud_manager.ensure_binding(issue_number, expected):
+                raise OSError("cloud.csv write failed")
+        except Exception as exc:
+            return [f"Accepted Codex Cloud task '{existing_run.task_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
         if label_context:
             label_context.keep_label()
         return [f"Codex Cloud task '{existing_run.task_id}' already running for issue #{issue_number} attempt {attempt}; skipped duplicate dispatch"]
+    if csv_binding is not None:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: legacy cloud.csv ownership has no authoritative Issue attempt; operator attention required"]
 
     # Extract issue labels, excluding the retired "@auto-coder" legacy label
     # so it never reaches the LLM prompt (FTR-1792).
@@ -391,24 +412,52 @@ def _process_issue_codex_cloud_mode(
         return [f"Deferred Codex Cloud task for issue #{issue_number}: graceful shutdown is draining"]
 
     client = CodexCloudClient(backend_name=backend_name, repo_name=repo_name)
-    task_id = client.start_task(
-        prompt,
+    claim = CloudRun(
         repo_name=repo_name,
+        issue_number=issue_number,
+        attempt=attempt,
+        provider="codex-cloud",
+        backend_name=backend_name,
+        environment_id=client.environment_id if isinstance(client.environment_id, str) else "",
         base_branch=config.MAIN_BRANCH,
-        title=f"{issue_title} (#{issue_number})",
+        submission_outcome="indeterminate",
     )
-    cloud_run_repo.save(
-        CloudRun(
-            repo_name=repo_name,
-            issue_number=issue_number,
-            attempt=attempt,
-            provider="codex-cloud",
-            task_id=task_id,
-        )
-    )
-    CloudManager(repo_name).add_session(issue_number, task_id, provider="codex-cloud")
+    try:
+        claim, acquired = cloud_run_repo.acquire_submission_claim(claim)
+    except Exception as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: could not persist submission claim: {exc}"]
+    if not acquired:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: a suppressing submission claim already exists"]
 
-    task_url = client.task_urls.get(task_id)
+    try:
+        submission = client.submit_task(prompt, repo_name=repo_name, base_branch=config.MAIN_BRANCH, title=f"{issue_title} (#{issue_number})")
+    except AutoCoderUsageLimitError:
+        claim.submission_outcome = "definitely-not-submitted"
+        cloud_run_repo.update_claim(claim)
+        cloud_run_repo.release_definitely_not_submitted(issue_number, attempt)
+        raise
+    claim.submission_outcome = submission.outcome.value
+    claim.task_id = submission.task_id
+    claim.task_url = submission.task_url
+    try:
+        cloud_run_repo.update_claim(claim)
+    except Exception as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: submission outcome could not be persisted and is indeterminate: {exc}"]
+    if submission.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
+        cloud_run_repo.release_definitely_not_submitted(issue_number, attempt)
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: definitely not submitted: {submission.diagnostic}"]
+    if submission.outcome is CodexSubmissionOutcome.INDETERMINATE:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: submission is indeterminate and requires operator attention: {submission.diagnostic}"]
+
+    task_id = submission.task_id
+    try:
+        binding = CloudTaskBinding("codex-cloud", task_id, backend_name)
+        if not cloud_manager.ensure_binding(issue_number, binding):
+            raise OSError("cloud.csv write failed")
+    except Exception as exc:
+        return [f"Accepted Codex Cloud task '{task_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
+
+    task_url = submission.task_url
     comment = f"I started a Codex Cloud task to work on this issue. Task ID: {task_id}"
     if task_url:
         comment += f"\n\n{task_url}"

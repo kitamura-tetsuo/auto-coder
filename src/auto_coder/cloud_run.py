@@ -14,13 +14,14 @@ it must not be migrated to this abstraction here.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
 
@@ -59,7 +60,12 @@ class CloudRun:
     issue_number: int
     attempt: int
     provider: str
-    task_id: str
+    task_id: str = ""
+    backend_name: str = ""
+    environment_id: str = ""
+    base_branch: str = ""
+    submission_outcome: str = "accepted"
+    task_url: str = ""
     pull_request_numbers: List[int] = field(default_factory=list)
 
     def add_pull_request(self, pr_number: int) -> None:
@@ -74,6 +80,11 @@ class CloudRun:
             "attempt": self.attempt,
             "provider": self.provider,
             "task_id": self.task_id,
+            "backend_name": self.backend_name,
+            "environment_id": self.environment_id,
+            "base_branch": self.base_branch,
+            "submission_outcome": self.submission_outcome,
+            "task_url": self.task_url,
             "pull_request_numbers": list(self.pull_request_numbers),
         }
 
@@ -85,6 +96,11 @@ class CloudRun:
             attempt=_parse_stored_int(data["attempt"], "attempt"),
             provider=str(data["provider"]),
             task_id=str(data["task_id"]),
+            backend_name=str(data.get("backend_name", "")),
+            environment_id=str(data.get("environment_id", "")),
+            base_branch=str(data.get("base_branch", "")),
+            submission_outcome=str(data.get("submission_outcome", "accepted")),
+            task_url=str(data.get("task_url", "")),
             pull_request_numbers=_parse_stored_int_list(data.get("pull_request_numbers", []), "pull_request_numbers"),
         )
 
@@ -116,6 +132,7 @@ class CloudRunRepository:
             self.storage_path = storage_path
         else:
             self.storage_path = Path.home() / ".auto-coder" / repo_name / "cloud_runs.json"
+        self.lock_path = self.storage_path.with_suffix(self.storage_path.suffix + ".lock")
 
     def _ensure_dir(self) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,35 +143,117 @@ class CloudRunRepository:
         if not self.storage_path.exists():
             return {}
 
-        try:
-            with open(self.storage_path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                return raw
-            return {}
-        except Exception as e:
-            logger.error(f"Failed to read cloud runs from {self.storage_path}: {e}")
-            return {}
+        with open(self.storage_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError(f"Cloud run state at {self.storage_path} is not an object")
+        return raw
 
     def _write_all(self, data: Dict[str, Dict[str, object]]) -> bool:
         self._ensure_dir()
 
+        temporary = self.storage_path.with_suffix(f"{self.storage_path.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
+        fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            fd = os.open(str(self.storage_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            os.chmod(self.storage_path, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self.storage_path)
+            directory_fd = os.open(str(self.storage_path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
             return True
-        except Exception as e:
-            logger.error(f"Failed to write cloud runs to {self.storage_path}: {e}")
-            return False
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def _file_lock(self):
+        """Return an opened, exclusively locked cross-process lock file."""
+        self._ensure_dir()
+        lock_file = open(self.lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            lock_file.close()
+            raise
+        return lock_file
+
+    def acquire_submission_claim(self, run: CloudRun) -> Tuple[CloudRun, bool]:
+        """Atomically publish a suppressing claim, or return the existing owner."""
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                data = self._read_all()
+                key = _run_key(run.issue_number, run.attempt)
+                raw = data.get(key)
+                if raw is not None:
+                    existing = CloudRun.from_dict(raw)
+                    if existing.repo_name != self.repo_name or existing.provider != run.provider:
+                        raise ValueError(f"Contradictory cloud ownership at {key}")
+                    return existing, False
+                data[key] = run.to_dict()
+                self._write_all(data)
+                return run, True
+            finally:
+                lock_file.close()
+
+    def update_claim(self, run: CloudRun) -> None:
+        """Update a claim without permitting its provider task identity to change."""
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                data = self._read_all()
+                key = _run_key(run.issue_number, run.attempt)
+                current_raw = data.get(key)
+                if current_raw is None:
+                    raise ValueError("Submission claim disappeared")
+                current = CloudRun.from_dict(current_raw)
+                if current.provider != run.provider or (current.task_id and current.task_id != run.task_id):
+                    raise ValueError("Contradictory cloud task binding")
+                data[key] = run.to_dict()
+                self._write_all(data)
+            finally:
+                lock_file.close()
+
+    def release_definitely_not_submitted(self, issue_number: int, attempt: int) -> None:
+        """Release only a claim explicitly proven not to have crossed the boundary."""
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                data = self._read_all()
+                key = _run_key(issue_number, attempt)
+                current = CloudRun.from_dict(data[key])
+                if current.submission_outcome != "definitely-not-submitted":
+                    raise ValueError("Only definitely-not-submitted claims may be released")
+                del data[key]
+                self._write_all(data)
+            finally:
+                lock_file.close()
+
+    def list_all(self) -> List[CloudRun]:
+        """Enumerate accepted tasks and unresolved claims for this repository."""
+        with self._lock:
+            return [CloudRun.from_dict(raw) for raw in self._read_all().values()]
 
     def save(self, run: CloudRun) -> bool:
         """Persist (create or update) a cloud run durably."""
         with self._lock:
-            data = self._read_all()
-            data[_run_key(run.issue_number, run.attempt)] = run.to_dict()
-            success = self._write_all(data)
+            lock_file = self._file_lock()
+            try:
+                data = self._read_all()
+                key = _run_key(run.issue_number, run.attempt)
+                old_raw = data.get(key)
+                if old_raw is not None:
+                    old = CloudRun.from_dict(old_raw)
+                    if old.provider != run.provider or (old.task_id and run.task_id and old.task_id != run.task_id):
+                        raise ValueError("Contradictory cloud task binding")
+                data[key] = run.to_dict()
+                success = self._write_all(data)
+            finally:
+                lock_file.close()
             if success:
                 logger.info(f"Persisted cloud run for issue #{run.issue_number} attempt {run.attempt} " f"(provider={run.provider}, task_id={run.task_id})")
             return success

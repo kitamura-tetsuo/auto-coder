@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.issue_processor import _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
 
 
@@ -102,8 +103,8 @@ class TestCodexCloudDispatchIgnoresLegacyAutoCoderLabel:
     def _dispatch(self, issue_number, raw_labels, mock_client_cls, mock_cloud_manager_cls, mock_get_current_attempt, mock_get_commit_log, home_dir, monkeypatch):
         monkeypatch.setenv("HOME", str(home_dir))
         mock_client = MagicMock()
-        mock_client.start_task.return_value = f"task-{issue_number}"
-        mock_client.task_urls = {}
+        mock_client.environment_id = "env-test"
+        mock_client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, f"task-{issue_number}")
         mock_client_cls.return_value = mock_client
         mock_cloud_manager_cls.return_value.add_session.return_value = True
 
@@ -117,8 +118,8 @@ class TestCodexCloudDispatchIgnoresLegacyAutoCoderLabel:
             backend_name="codex-cloud-luna",
         )
 
-        mock_client.start_task.assert_called_once()
-        return mock_client.start_task.call_args[0][0]
+        mock_client.submit_task.assert_called_once()
+        return mock_client.submit_task.call_args[0][0]
 
     def test_prompt_identical_with_and_without_legacy_label(self, tmp_path_factory, monkeypatch):
         # Each call gets its own isolated $HOME so the durable CloudRunRepository

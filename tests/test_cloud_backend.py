@@ -9,6 +9,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine, Candidate
 from auto_coder.cli_helpers import create_cloud_backend_manager
+from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.issue_processor import (
     _process_issue_claude_routine_mode,
@@ -249,8 +250,8 @@ backend_type = "codex-cloud"
         """A successful asynchronous dispatch must publish its task on the issue."""
         monkeypatch.setenv("HOME", str(tmp_path))
         client = mock_client_type.return_value
-        client.start_task.return_value = "task_e_123"
-        client.task_urls = {"task_e_123": "https://chatgpt.com/codex/tasks/task_e_123"}
+        client.environment_id = "env-test"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task_e_123", "https://chatgpt.com/codex/tasks/task_e_123")
         github_client = MagicMock()
         label_context = MagicMock()
 
@@ -264,7 +265,7 @@ backend_type = "codex-cloud"
                 label_context=label_context,
             )
 
-        mock_cloud_manager_type.return_value.add_session.assert_called_once_with(10, "task_e_123", provider="codex-cloud")
+        mock_cloud_manager_type.return_value.ensure_binding.assert_called_once()
         github_client.add_comment_to_issue.assert_called_once_with(
             "owner/repo",
             10,

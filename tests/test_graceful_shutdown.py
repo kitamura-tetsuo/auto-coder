@@ -12,6 +12,7 @@ import yaml
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine, EngineLifecycle
 from auto_coder.backend_manager import BackendManager
+from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.issue_processor import _apply_issue_actions_directly, _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
@@ -882,8 +883,8 @@ def test_remote_cloud_ownership_survives_graceful_stop_and_restart(monkeypatch, 
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
         patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
     ):
-        client_type.return_value.start_task.return_value = "remote-task"
-        client_type.return_value.task_urls = {}
+        client_type.return_value.environment_id = "env-test"
+        client_type.return_value.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "remote-task")
         first = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), backend_name="codex-cloud-luna")
         assert first == ["Started Codex Cloud task 'remote-task' for issue #1777"]
 
@@ -897,7 +898,7 @@ def test_remote_cloud_ownership_survives_graceful_stop_and_restart(monkeypatch, 
         restarted_client = MagicMock()
         client_type.return_value = restarted_client
         second = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), backend_name="codex-cloud-luna")
-        restarted_client.start_task.assert_not_called()
+        restarted_client.submit_task.assert_not_called()
         assert second == ["Codex Cloud task 'remote-task' already running for issue #1777 attempt 0; skipped duplicate dispatch"]
 
 
@@ -910,8 +911,8 @@ def test_initial_cloud_launch_rechecks_drain_after_prompt_context(monkeypatch, t
     entered = threading.Event()
     release = threading.Event()
     client = MagicMock()
-    client.start_task.return_value = "task-after-restart"
-    client.task_urls = {}
+    client.environment_id = "env-test"
+    client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-after-restart")
     issue = {"number": 1778, "title": "Cloud", "body": "", "labels": []}
 
     def context_lookup(**_kwargs):
@@ -944,14 +945,14 @@ def test_initial_cloud_launch_rechecks_drain_after_prompt_context(monkeypatch, t
         assert actions == ["Deferred Codex Cloud task for issue #1778: graceful shutdown is draining"]
 
     asyncio.run(scenario())
-    client.start_task.assert_not_called()
+    client.submit_task.assert_not_called()
     assert CloudRunRepository("owner/repo").get(1778, 0) is None
 
     # Restart has a fresh RUNNING admission context and no false durable run,
     # so the same production dispatcher can launch the still-eligible Issue.
     actions = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), backend_name="codex-cloud-luna")
     assert actions == ["Started Codex Cloud task 'task-after-restart' for issue #1778"]
-    client.start_task.assert_called_once()
+    client.submit_task.assert_called_once()
 
 
 @pytest.mark.parametrize("provider", ["jules", "claude-routine"])

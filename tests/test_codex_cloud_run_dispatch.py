@@ -9,11 +9,13 @@ These tests cover the acceptance scenarios from the issue:
 - AC-005/AC-006: CodexCloudRunPolicy allows only explicit manual retries.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_run import CloudRun, CloudRunEvent, CloudRunRepository
 from auto_coder.cloud_run_policies import MANUAL_RETRY_REASON, CodexCloudRunPolicy
+from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
 
 
@@ -30,8 +32,8 @@ class TestCodexCloudDispatchDuplicateProtection:
         """AC-001: exactly one task is started and durably associated with the attempt."""
         monkeypatch.setenv("HOME", str(tmp_path))
         client = mock_client_type.return_value
-        client.start_task.return_value = "task-A"
-        client.task_urls = {"task-A": "https://chatgpt.com/codex/tasks/task-A"}
+        client.environment_id = "env-test"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-A", "https://chatgpt.com/codex/tasks/task-A")
         github_client = MagicMock()
 
         with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=0):
@@ -43,7 +45,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 backend_name="codex-cloud-luna",
             )
 
-        client.start_task.assert_called_once()
+        client.submit_task.assert_called_once()
         assert actions == ["Started Codex Cloud task 'task-A' for issue #100"]
 
         run = CloudRunRepository("owner/repo").get(issue_number=100, attempt=0)
@@ -71,7 +73,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 label_context=label_context,
             )
 
-        client.start_task.assert_not_called()
+        client.submit_task.assert_not_called()
         github_client.add_comment_to_issue.assert_not_called()
         label_context.keep_label.assert_called_once_with()
         assert actions == ["Codex Cloud task 'task-A' already running for issue #100 attempt 0; skipped duplicate dispatch"]
@@ -102,7 +104,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 backend_name="codex-cloud-luna",
             )
 
-        client.start_task.assert_not_called()
+        client.submit_task.assert_not_called()
         assert "task-A" in actions[0]
 
     @patch("auto_coder.issue_processor.CloudManager")
@@ -127,7 +129,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 backend_name="codex-cloud-luna",
             )
 
-        client.start_task.assert_not_called()
+        client.submit_task.assert_not_called()
         assert "task-A" in actions[0]
 
     @patch("auto_coder.issue_processor.CloudManager")
@@ -142,8 +144,8 @@ class TestCodexCloudDispatchDuplicateProtection:
         monkeypatch.setenv("HOME", str(tmp_path))
         CloudRunRepository("owner/repo").save(CloudRun(repo_name="owner/repo", issue_number=100, attempt=0, provider="codex-cloud", task_id="task-A"))
         client = mock_client_type.return_value
-        client.start_task.return_value = "task-B"
-        client.task_urls = {}
+        client.environment_id = "env-test"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-B")
 
         with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=1):
             actions = _process_issue_codex_cloud_mode(
@@ -154,13 +156,53 @@ class TestCodexCloudDispatchDuplicateProtection:
                 backend_name="codex-cloud-luna",
             )
 
-        client.start_task.assert_called_once()
+        client.submit_task.assert_called_once()
         assert actions == ["Started Codex Cloud task 'task-B' for issue #100"]
 
         # The old run for attempt 0 is untouched; the new attempt owns task-B.
         repo = CloudRunRepository("owner/repo")
         assert repo.get(issue_number=100, attempt=0).task_id == "task-A"
         assert repo.get(issue_number=100, attempt=1).task_id == "task-B"
+
+    @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+    def test_concurrent_production_dispatch_crosses_submission_once(self, mock_client_type, tmp_path, monkeypatch):
+        """Two supported processors coordinate through the repository lock and claim."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        client = mock_client_type.return_value
+        client.environment_id = "env-production"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task_e_123")
+
+        def dispatch() -> list[str]:
+            return _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "codex-cloud-luna")
+
+        with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=0), ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: dispatch(), range(2)))
+
+        client.submit_task.assert_called_once()
+        run = CloudRunRepository("owner/repo").get(100, 0)
+        assert run is not None
+        assert run.task_id == "task_e_123"
+        assert run.backend_name == "codex-cloud-luna"
+        assert run.environment_id == "env-production"
+        assert any("Started Codex Cloud" in result[0] for result in results)
+
+    @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+    def test_indeterminate_submission_survives_restart_and_suppresses_retry(self, mock_client_type, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        client = mock_client_type.return_value
+        client.environment_id = "env-production"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.INDETERMINATE, diagnostic="response lost")
+        common = patch("auto_coder.issue_processor.get_commit_log", return_value="")
+        attempt = patch("auto_coder.issue_processor.get_current_attempt", return_value=0)
+        with common, attempt:
+            first = _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "named")
+        with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=0):
+            second = _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "changed")
+
+        client.submit_task.assert_called_once()
+        assert "indeterminate" in first[0]
+        assert "operator attention" in second[0]
+        assert CloudRunRepository("owner/repo").list_all()[0].backend_name == "named"
 
 
 class TestCodexCloudRunPolicy:
