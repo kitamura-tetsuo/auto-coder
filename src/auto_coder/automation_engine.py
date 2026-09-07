@@ -304,6 +304,17 @@ class AutomationEngine:
             self._specification_validators[repo_name] = validator
         return validator
 
+    def _is_issue_specification_validation_enabled(self, repo_name: str, config: Optional[AutomationConfig] = None) -> bool:
+        """Return whether individual Issue specification validation is enabled."""
+        cfg = config or self.config
+        if cfg is not None and getattr(cfg, "repo_name", None) == repo_name:
+            return bool(getattr(cfg, "issue_specification_validation", True))
+        if cfg is not None and not getattr(cfg, "issue_specification_validation", True):
+            return False
+        from .llm_backend_config import get_issue_specification_validation_from_config
+
+        return get_issue_specification_validation_from_config(repo_name=repo_name)
+
     def _get_decomposition_validator(self, repo_name: str) -> DecompositionValidationLifecycle:
         validator = self._decomposition_validators.get(repo_name)
         if validator is None:
@@ -466,6 +477,7 @@ class AutomationEngine:
         self,
         repo_name: str,
         authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
+        config: Optional[AutomationConfig] = None,
     ) -> tuple[ValidationJob[DecompositionDecision], dict[int, ValidationJob[ValidationDecision]]]:
         """Eagerly submit a stable parent generation under the shared bound."""
         parent, children = authoritative_set
@@ -483,18 +495,19 @@ class AutomationEngine:
             f"decomposition:{set_identity.key}",
             lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
         )
-        individual = self._get_specification_validator(repo_name)
         child_jobs: dict[int, ValidationJob[ValidationDecision]] = {}
-        for child in children:
-            number = int(child["number"])
-            title = str(child.get("title") or "")
-            body = str(child.get("body") or "")
-            manifest = build_normative_issue_manifest(number, title, body)
-            identity = individual.identity(number, title, body)
-            child_jobs[number] = self.validation_scheduler.submit(
-                f"individual:{identity.key}",
-                partial(individual.decide, manifest, title, body),
-            )
+        if self._is_issue_specification_validation_enabled(repo_name, config):
+            individual = self._get_specification_validator(repo_name)
+            for child in children:
+                number = int(child["number"])
+                title = str(child.get("title") or "")
+                body = str(child.get("body") or "")
+                manifest = build_normative_issue_manifest(number, title, body)
+                identity = individual.identity(number, title, body)
+                child_jobs[number] = self.validation_scheduler.submit(
+                    f"individual:{identity.key}",
+                    partial(individual.decide, manifest, title, body),
+                )
         return set_job, child_jobs
 
     @staticmethod
@@ -677,35 +690,39 @@ class AutomationEngine:
             return None
         validator = self._get_specification_validator(repo_name)
         individual_identity = validator.identity(issue_number, title, body)
-        if parent_number is not None:
-            decision = joined_child_decisions[issue_number]
-        else:
-            decision = self.validation_scheduler.submit(
-                f"individual:{individual_identity.key}",
-                lambda: validator.decide(manifest, title, body),
-            ).result()
-        if decision.verdict == "BLOCKED":
-            if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
-                validator.apply_inherited_blocked(
-                    self.github,
-                    decision,
-                    parent_number,
-                    lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
-                )
+        spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name)
+        decision: Optional[ValidationDecision] = None
+        if spec_validation_enabled:
+            if parent_number is not None:
+                decision = joined_child_decisions[issue_number]
             else:
-                validator.apply_blocked(
-                    self.github,
-                    decision,
-                    lambda: self._standalone_validation_is_current(repo_name, decision),
-                )
-            return None
-        if decision.verdict != "READY":
-            return None
+                decision = self.validation_scheduler.submit(
+                    f"individual:{individual_identity.key}",
+                    lambda: validator.decide(manifest, title, body),
+                ).result()
+            if decision.verdict == "BLOCKED":
+                if decomposition_decision is not None and decomposition_validator is not None and parent_number is not None:
+                    validator.apply_inherited_blocked(
+                        self.github,
+                        decision,
+                        parent_number,
+                        lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
+                    )
+                else:
+                    validator.apply_blocked(
+                        self.github,
+                        decision,
+                        lambda: self._standalone_validation_is_current(repo_name, decision),
+                    )
+                return None
+            if decision.verdict != "READY":
+                return None
         refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         if not isinstance(refreshed, dict) or not self._is_open_issue(refreshed):
             return None
         identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
-        if identity != decision.identity:
+        expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
+        if identity != expected_identity:
             return None
         refreshed_children = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
         refreshed_parent = self._get_authoritative_parent_number(repo_name, issue_number, refreshed)
@@ -2030,7 +2047,7 @@ class AutomationEngine:
                     # Validation eligibility belongs to the submitted generation,
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
-                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set)
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config=config)
                     parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
@@ -2120,7 +2137,7 @@ class AutomationEngine:
                         owned_title = str(owned_snapshot.get("title") or "")
                         owned_body = str(owned_snapshot.get("body") or "")
                         owned_manifest = build_normative_issue_manifest(item_number, owned_title, owned_body)
-                        if owned_manifest.error is None:
+                        if owned_manifest.error is None and self._is_issue_specification_validation_enabled(repo_name, config):
                             owned_validator = self._get_specification_validator(repo_name)
                             owned_identity = owned_validator.identity(item_number, owned_title, owned_body)
                             owned_decision = self.validation_scheduler.submit(
@@ -2249,11 +2266,12 @@ class AutomationEngine:
                     result.error = "Parent specification set requires a replacement Issue number"
                     result.actions = ["Rejected - parent set is durably reissue-required"]
                     return result
-                if individual_validator.is_reissue_required(item_number) is True:
+                spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name, config)
+                if spec_validation_enabled and individual_validator.is_reissue_required(item_number) is True:
                     result.error = "Child specification requires a replacement Issue number"
                     result.actions = ["Rejected - child is durably reissue-required"]
                     return result
-                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config=config)
                 decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_decision.verdict == "ERROR":
                     result.error = "Decomposition validation failed; parent readiness was preserved for retry"
@@ -2273,11 +2291,12 @@ class AutomationEngine:
                     if side_effect_error:
                         result.error += f"; GitHub side effect failed: {side_effect_error}"
                     return result
-                for eager_decision in eager_child_decisions.values():
-                    if eager_decision.verdict == "ERROR":
-                        result.error = "Individual validation failed; parent readiness was preserved for retry"
-                        result.actions = ["Deferred - child specification validation error"]
-                        return result
+                if spec_validation_enabled:
+                    for eager_decision in eager_child_decisions.values():
+                        if eager_decision.verdict == "ERROR":
+                            result.error = "Individual validation failed; parent readiness was preserved for retry"
+                            result.actions = ["Deferred - child specification validation error"]
+                            return result
                 open_predecessors = sorted(int(child["number"]) for child in child_snapshots if child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number)
                 if open_predecessors:
                     result.actions = [f"Deferred - earlier sibling(s) remain open: {open_predecessors}"]
@@ -2317,50 +2336,53 @@ class AutomationEngine:
             # body, repository, Issue and validator policy. It deliberately runs
             # before implementation ownership/capacity is consulted.
             validator = self._get_specification_validator(repo_name)
-            if validator.is_reissue_required(item_number) is True:
-                result.error = "Specification requires a replacement Issue number"
-                result.actions = ["Rejected - Issue is durably reissue-required"]
-                return result
-            if inherited_ready:
-                # This job was submitted alongside decomposition validation, so
-                # READY completion order cannot bypass either authorization gate.
-                decision = eager_child_jobs[item_number].result()
-            else:
-                individual_identity = validator.identity(item_number, current_title, current_body)
-                decision = self.validation_scheduler.submit(
-                    f"individual:{individual_identity.key}",
-                    lambda: validator.decide(contract, current_title, current_body),
-                ).result()
-            if decision.verdict == "ERROR":
-                result.error = "Specification validation failed; implementation-ready was preserved for retry"
-                result.actions = ["Deferred - specification validation error"]
-                result.refill_retry_required = True
-                return result
-            if decision.verdict == "BLOCKED":
-                try:
-                    if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
-                        side_effect_error = validator.apply_inherited_blocked(
-                            self.github,
-                            decision,
-                            inherited_parent_number,
-                            lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
-                        )
-                    else:
-                        side_effect_error = validator.apply_blocked(
-                            self.github,
-                            decision,
-                            lambda: self._standalone_validation_is_current(repo_name, decision),
-                        )
-                except Exception as exc:
-                    side_effect_error = str(exc)
-                if side_effect_error:
-                    logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
-                    result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
-                    result.actions = ["Rejected - blocked specification (side effects incomplete)"]
+            spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name, config)
+            decision: Optional[ValidationDecision] = None
+            individual_identity = validator.identity(item_number, current_title, current_body)
+            if spec_validation_enabled:
+                if validator.is_reissue_required(item_number) is True:
+                    result.error = "Specification requires a replacement Issue number"
+                    result.actions = ["Rejected - Issue is durably reissue-required"]
                     return result
-                result.error = "Specification validation found material defects"
-                result.actions = ["Rejected - blocked specification"]
-                return result
+                if inherited_ready:
+                    # This job was submitted alongside decomposition validation, so
+                    # READY completion order cannot bypass either authorization gate.
+                    decision = eager_child_jobs[item_number].result()
+                else:
+                    decision = self.validation_scheduler.submit(
+                        f"individual:{individual_identity.key}",
+                        lambda: validator.decide(contract, current_title, current_body),
+                    ).result()
+                if decision.verdict == "ERROR":
+                    result.error = "Specification validation failed; implementation-ready was preserved for retry"
+                    result.actions = ["Deferred - specification validation error"]
+                    result.refill_retry_required = True
+                    return result
+                if decision.verdict == "BLOCKED":
+                    try:
+                        if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
+                            side_effect_error = validator.apply_inherited_blocked(
+                                self.github,
+                                decision,
+                                inherited_parent_number,
+                                lambda: ((latest := self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)) is not None and is_implementation_ready(latest[0]) and decomposition_validator.identity(*latest) == decomposition_decision.identity),
+                            )
+                        else:
+                            side_effect_error = validator.apply_blocked(
+                                self.github,
+                                decision,
+                                lambda: self._standalone_validation_is_current(repo_name, decision),
+                            )
+                    except Exception as exc:
+                        side_effect_error = str(exc)
+                    if side_effect_error:
+                        logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
+                        result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
+                        result.actions = ["Rejected - blocked specification (side effects incomplete)"]
+                        return result
+                    result.error = "Specification validation found material defects"
+                    result.actions = ["Rejected - blocked specification"]
+                    return result
 
             # This is the final cache-bypassing check immediately before slot and
             # ownership handling. READY for an edited or withdrawn submission is
@@ -2377,7 +2399,7 @@ class AutomationEngine:
                 str(dispatch_snapshot.get("body") or ""),
             )
             submission_current = self._is_open_issue(dispatch_snapshot) and is_implementation_ready(dispatch_snapshot)
-            if validator.is_reissue_required(item_number) is True:
+            if spec_validation_enabled and validator.is_reissue_required(item_number) is True:
                 submission_current = False
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
                 latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
@@ -2395,7 +2417,8 @@ class AutomationEngine:
                 direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
                 latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
                 submission_current = not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, dispatch_snapshot)
-            if not submission_current or dispatch_identity != decision.identity:
+            expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
+            if not submission_current or dispatch_identity != expected_identity:
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
@@ -2443,7 +2466,7 @@ class AutomationEngine:
             if candidate.type != "issue":
                 return True
             latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
-            child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == decision.identity
+            child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or "")) == expected_identity
             if not child_current:
                 return False
             if decomposition_decision is not None and decomposition_validator is not None and inherited_parent_number is not None:
@@ -2518,7 +2541,7 @@ class AutomationEngine:
             return result
 
         if candidate.type == "issue" and not inherited_execution:
-            if not slots.record_validation_identity(owner, decision.identity.key):
+            if not slots.record_validation_identity(owner, expected_identity.key):
                 slots.finish_execution(owner, execution_id)
                 result.error = "Could not bind implementation ownership to validated Issue generation"
                 return result
