@@ -678,6 +678,60 @@ class GitHubClient:
             logger.error(f"Failed to get pull requests from {repo_name}: {e}")
             raise
 
+    @retry_with_backoff()
+    def get_open_pull_requests_strict(self, repo_name: str) -> List[Dict[str, Any]]:
+        """Enumerate every open PR from live REST pages, bypassing caches."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page=100"
+        result: List[Dict[str, Any]] = []
+        visited: set[str] = set()
+        while url:
+            if url in visited or len(visited) >= 1000:
+                raise RuntimeError("GitHub open-PR pagination did not terminate safely")
+            visited.add(url)
+            response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise RuntimeError("GitHub open-PR response was malformed")
+            result.extend(page)
+            link = response.links.get("next", {})
+            next_url = link.get("url") if isinstance(link, Mapping) else None
+            if next_url is not None and not isinstance(next_url, str):
+                raise RuntimeError("GitHub open-PR pagination link was invalid")
+            url = next_url
+        return result
+
+    @retry_with_backoff()
+    def get_issue_timeline_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        """Read the complete live Issue timeline without the shared cache."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/timeline?per_page=100"
+        events: List[Dict[str, Any]] = []
+        visited: set[str] = set()
+        while url:
+            if url in visited or len(visited) >= TIMELINE_MAX_PAGES:
+                raise RuntimeError("GitHub Issue timeline pagination did not terminate safely")
+            visited.add(url)
+            response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise RuntimeError("GitHub Issue timeline response was malformed")
+            events.extend(page)
+            link = response.links.get("next", {})
+            next_url = link.get("url") if isinstance(link, Mapping) else None
+            if next_url is not None and not isinstance(next_url, str):
+                raise RuntimeError("GitHub Issue timeline pagination link was invalid")
+            url = next_url
+        return events
+
     def get_pull_request(self, repo_name: str, pr_number: int) -> Optional[Any]:
         """Get a single pull request by number using REST API (cached).
 
