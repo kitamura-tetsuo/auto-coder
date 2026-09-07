@@ -1879,3 +1879,13 @@ codex-authoritative-recovery-observations:
     - "Only current_assistant_turn.id and turn_status, corroborated by latest-turn metadata and without pending newer user work, establish recovery-eligible completion; unavailable, malformed, contradictory, or mismatched evidence is UNKNOWN."
     - "GitHub publication discovery completely reads fresh Issue relationships, known durable run PRs, and repository open PRs, then verifies every candidate; incomplete reads fail closed rather than proving absence."
     - "Open, closed, merged, absent, ambiguous, and unavailable publication evidence remain distinct, and every operation is read-only."
+
+immutable-release-catalog-records:
+  description: "Persists complete release preparation metadata in create-only annotated Git tag refs (Issue #1848)."
+  implementation: "ReleaseCatalog in src/auto_coder/release_catalog.py and `auto-coder deployment release-catalog prepare|read`."
+  behavior:
+    - "A strict version-1 JSON record binds lowercase repository, original Actions run identity/time, derived JST tag, actual image source commit, GHCR image digest, and inert memo text."
+    - "The exact refs/tags/release-<JST time>-r<run ID> ref points to an annotated tag object that directly targets the recorded commit; readers reject lightweight, nested, malformed, cross-repository, and schema-drifted data."
+    - "Preparation validates before mutation, creates refs without update or deletion, reuses only an identical binding, and reports success only after a fresh exact-ref read validates all data."
+    - "Unavailable or malformed reads never prove absence; ambiguous and conflicting writes are reconciled by exact-ref validation and cannot overwrite a winner."
+    - "These commands make only Git tag-object and ref requests and do not publish Releases, alter branches, build images, or mutate GHCR."

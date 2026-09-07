@@ -25,6 +25,36 @@ logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
 
 
+@dataclass(frozen=True)
+class GitDataResponse:
+    """Status and decoded body from an uncached Git-data request."""
+
+    status: int
+    data: object = None
+
+
+class GitHubGitDataClient:
+    """Small uncached REST boundary for exact Git tag/ref operations."""
+
+    def __init__(self, token: str, repository: str, api_url: str = "https://api.github.com", timeout: float = 30.0) -> None:
+        self._repository = repository
+        self._base = f"{api_url.rstrip('/')}/repos/{repository}"
+        self._timeout = timeout
+        self._headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+
+    def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
+        """Perform one non-cached request; transport ambiguity remains an error."""
+        try:
+            response = httpx.request(method, f"{self._base}/{path}", headers=self._headers, json=payload, timeout=self._timeout)
+        except httpx.RequestError as exc:
+            raise RuntimeError("GitHub Git-data request unavailable") from exc
+        try:
+            data: object = response.json() if response.content else None
+        except ValueError:
+            data = None
+        return GitDataResponse(response.status_code, data)
+
+
 class InvalidSubIssueRelationshipError(ValueError):
     """GitHub definitively rejected the requested native Issue hierarchy."""
 
