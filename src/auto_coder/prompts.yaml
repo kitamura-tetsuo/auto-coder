@@ -950,15 +950,25 @@ issue:
 
     Output exactly one JSON object and no other text:
     {"verdict":"READY|BLOCKED|ERROR","remediation":"NONE|EDIT_IN_PLACE|REISSUE_REQUIRED","findings":[{"category":"one allowed category","affected_issues":[{"issue_number":123,"requirement_ids":["REQ-001"]}],"explanation":"demonstrated material cross-Issue defect","clarification":"smallest specification clarification"}]}
-    READY and ERROR require remediation NONE and no findings. BLOCKED requires at least one finding and exactly one remediation: EDIT_IN_PLACE when the smallest correct remedy preserves the reviewed parent/direct-child responsibility boundaries, or REISSUE_REQUIRED when it requires replacing that reviewed set. Never reference an Issue outside the supplied membership or a Requirement ID outside that Issue's manifest.
+      First complete the current-set defect analysis, ambiguity-closure pass, next-review-prediction pass, membership/content mutation analysis, transitive invalidation, and graph-wide false-success checks. Only after those passes produce semantic BLOCKED may baseline/history evidence select remediation. READY and ERROR always require remediation NONE and no findings; history must never manufacture a blocker or make a removed historical Requirement current.
+
+      BLOCKED requires at least one finding and exactly one remediation. Use REISSUE_REQUIRED when the smallest safe correction must replace the parent/direct-child responsibility graph: independent correctness layers need new staged children, a broad child must be materially split, dependency/order direction must be rebuilt, or cumulative applied repairs compared with the immutable baseline have materially transformed responsibility allocation. Cumulative graph drift takes precedence even when the newest blocker alone looks local. For REISSUE_REQUIRED, at least one finding explanation must state the concrete graph/responsibility reason the same parent Issue number is not a safe repair subject. Use EDIT_IN_PLACE only when no reissue condition applies and the correction preserves the fundamental baseline/current graph, such as ownership clarification, contradiction repair, shared-boundary definition, or stronger set-level test oracles without new independent stages. Child count, Requirement count, finding count, graph size, persistence/concurrency, or mere membership change is never sufficient by itself. A set-level reissue disposition applies only to the parent lifecycle, not to each child's individual lifecycle.
+
+      The baseline and applied outcomes are non-normative remediation evidence. They may show graph drift only for an independently established current BLOCKED verdict; they cannot redefine membership, import historical Requirements, satisfy current missing ownership, or alter finding categories. Never reference an Issue outside the supplied current membership or a Requirement ID outside that Issue's current manifest.
 
     Parent independently implemented: $parent_implemented_independently
 
     Parent specification (manifest is normative; title/body are evidence only):
     $parent_specification
 
-    Complete authoritative direct-child membership and specifications (manifests are normative; title/body are evidence only):
-    $direct_child_specifications
+      Complete authoritative direct-child membership and specifications (manifests are normative; title/body are evidence only):
+      $direct_child_specifications
+
+      Immutable first valid decomposition-review baseline (non-normative; remediation evidence only):
+      $durable_decomposition_baseline
+
+      Prior applied material decomposition-review outcomes (non-normative; remediation evidence only):
+      $prior_applied_decomposition_outcomes
 
   adversarial_specification_analysis: |-
     Evaluate whether Issue #$issue_number is a precise, independent implementation and verification contract.

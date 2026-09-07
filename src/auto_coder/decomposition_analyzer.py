@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Iterator, Optional, Sequence
 
 from .backend_manager import BackendManager, run_llm_prompt
 from .prompt_loader import render_prompt
@@ -62,6 +64,27 @@ class DecompositionAnalysisResult:
     @property
     def is_ready(self) -> bool:
         return self.verdict == "READY"
+
+
+@dataclass(frozen=True)
+class DecompositionReviewEvidence:
+    """Immutable set baseline and applied reviews used only for remediation."""
+
+    baseline: str
+    prior_applied_outcomes: tuple[str, ...] = ()
+
+
+_REVIEW_EVIDENCE: ContextVar[Optional[DecompositionReviewEvidence]] = ContextVar("decomposition_review_evidence", default=None)
+
+
+@contextmanager
+def decomposition_review_evidence(evidence: DecompositionReviewEvidence) -> Iterator[None]:
+    """Make lifecycle evidence available without widening analyzer adapters."""
+    token = _REVIEW_EVIDENCE.set(evidence)
+    try:
+        yield
+    finally:
+        _REVIEW_EVIDENCE.reset(token)
 
 
 def _error(message: str) -> DecompositionAnalysisResult:
@@ -154,6 +177,7 @@ def analyze_issue_decomposition(
     parent_implemented_independently: bool = False,
     backend_manager: Optional[BackendManager] = None,
     prompt_runner: Optional[Callable[[str], str]] = None,
+    review_evidence: Optional[DecompositionReviewEvidence] = None,
 ) -> DecompositionAnalysisResult:
     """Analyze exactly the supplied parent and complete direct-child set."""
     membership = _membership(parent, children)
@@ -171,11 +195,14 @@ def analyze_issue_decomposition(
             "body_evidence": issue.body,
         }
 
+    review_evidence = review_evidence or _REVIEW_EVIDENCE.get()
     prompt = render_prompt(
         "issue.adversarial_decomposition_analysis",
         parent_implemented_independently=json.dumps(parent_implemented_independently),
         parent_specification=json.dumps(issue_payload(parent), ensure_ascii=False, indent=2),
         direct_child_specifications=json.dumps([issue_payload(child) for child in children], ensure_ascii=False, indent=2),
+        durable_decomposition_baseline=review_evidence.baseline if review_evidence else "(No earlier decomposition baseline is available.)",
+        prior_applied_decomposition_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material decomposition-review outcomes.)"),
     )
     try:
         if prompt_runner is not None:

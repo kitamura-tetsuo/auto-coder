@@ -17,14 +17,16 @@ from .decomposition_analyzer import (
     DecompositionAnalysisResult,
     DecompositionFinding,
     DecompositionIssue,
+    DecompositionReviewEvidence,
     analyze_issue_decomposition,
+    decomposition_review_evidence,
 )
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v2-remediation"
+DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v3-graph-drift"
 DECOMPOSITION_FINDINGS_MARKER = "auto-coder-decomposition-validation"
 
 
@@ -140,6 +142,78 @@ class DecompositionValidationStore:
             os.replace(temporary, self.path)
 
 
+class DecompositionReviewHistoryStore:
+    """Atomic immutable baseline and applied BLOCKED history per parent number."""
+
+    def __init__(self, repository: str, path: Optional[Path] = None) -> None:
+        root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
+        self.path = path or root / repository / "decomposition_review_history.json"
+
+    def _read(self) -> dict[str, object]:
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except FileNotFoundError:
+            return {}
+
+    def _write(self, state: dict[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
+        temporary.write_text(json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, self.path)
+
+    def evidence(self, parent_number: int, contract: str) -> DecompositionReviewEvidence:
+        key = str(parent_number)
+        lock = DecompositionValidationStore("", self.path)
+        with lock.locked("history"):
+            state = self._read()
+            raw = state.get(key)
+            if raw is None:
+                raw = {"baseline": contract, "applied_outcomes": [], "applied_identity_keys": []}
+                state[key] = raw
+                self._write(state)
+            if not isinstance(raw, dict) or not isinstance(raw.get("baseline"), str):
+                raise ValueError(f"Invalid decomposition-review history for parent Issue #{parent_number}")
+            outcomes = raw.get("applied_outcomes", [])
+            if not isinstance(outcomes, list) or any(not isinstance(item, str) for item in outcomes):
+                raise ValueError(f"Invalid applied decomposition-review outcomes for parent Issue #{parent_number}")
+            return DecompositionReviewEvidence(raw["baseline"], tuple(outcomes))
+
+    def record_applied(self, parent_number: int, identity_key: str, outcome: str) -> None:
+        lock = DecompositionValidationStore("", self.path)
+        with lock.locked("history"):
+            state = self._read()
+            raw = state.get(str(parent_number))
+            if not isinstance(raw, dict):
+                return
+            outcomes = raw.setdefault("applied_outcomes", [])
+            keys = raw.setdefault("applied_identity_keys", [])
+            if not isinstance(outcomes, list) or not isinstance(keys, list) or identity_key in keys:
+                return
+            outcomes.append(outcome)
+            keys.append(identity_key)
+            self._write(state)
+
+
+def _set_contract_evidence(parent: DecompositionIssue, children: Sequence[DecompositionIssue]) -> str:
+    """Serialize the exact first semantically analyzed authoritative set."""
+
+    def member(issue: DecompositionIssue) -> dict[str, object]:
+        return {
+            "issue_number": issue.manifest.issue_number,
+            "title": issue.manifest.title,
+            "body": issue.body,
+            "requirements": [{"requirement_id": requirement.requirement_id, "text": requirement.text} for requirement in issue.manifest.requirements],
+        }
+
+    return json.dumps(
+        {"parent": member(parent), "direct_children": [member(child) for child in children]},
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+
+
 Analyzer = Callable[[DecompositionIssue, Sequence[DecompositionIssue]], DecompositionAnalysisResult]
 
 
@@ -152,6 +226,8 @@ class DecompositionValidationLifecycle:
         self.store = DecompositionValidationStore(repository, path)
         terminal_path = path.with_name("reissue_required.json") if path is not None else None
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
+        history_path = path.with_name("decomposition_review_history.json") if path is not None else None
+        self.history_store = DecompositionReviewHistoryStore(repository, history_path)
         self.analyzer = analyzer or (lambda parent, children: analyze_issue_decomposition(parent, children))
 
     def identity(self, parent: dict[str, object], children: Sequence[dict[str, object]]) -> DecompositionIdentity:
@@ -174,7 +250,14 @@ class DecompositionValidationLifecycle:
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
-            analyzed = self.analyzer(parent, children)
+            members = (parent, *children)
+            valid = all(item.manifest.explicit_contract_present and item.manifest.explicit_contract_valid for item in members)
+            if valid:
+                evidence = self.history_store.evidence(parent.manifest.issue_number, _set_contract_evidence(parent, children))
+                with decomposition_review_evidence(evidence):
+                    analyzed = self.analyzer(parent, children)
+            else:
+                analyzed = self.analyzer(parent, children)
             decision = DecompositionDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
             if decision.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
@@ -196,6 +279,19 @@ class DecompositionValidationLifecycle:
 
             if not still_current():
                 return None
+            self.history_store.record_applied(
+                current.identity.parent.issue_number,
+                current.identity.key,
+                json.dumps(
+                    {
+                        "reviewed_set": asdict(current.identity),
+                        "remediation": current.remediation,
+                        "findings": [asdict(finding) for finding in current.findings],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
             if current.remediation == "REISSUE_REQUIRED":
                 try:
                     self.reissue_store.mark(current.identity.parent.issue_number)

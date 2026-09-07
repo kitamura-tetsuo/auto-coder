@@ -190,6 +190,21 @@ the baseline responsibility selects `EDIT_IN_PLACE`. History, Issue size,
 difficulty, and mere textual change cannot turn `READY` or `ERROR` into
 `BLOCKED`, and child-level reissue remains scoped to the child.
 
+Each stable parent Issue number likewise receives an immutable decomposition
+baseline when its first valid authoritative parent and complete direct-child set
+enter semantic analysis. The baseline preserves every stable Issue number,
+title, body, and Requirement manifest exactly; later edits, membership changes,
+readiness changes, and validation-policy changes do not rewrite it. Applied
+material set-review outcomes are retained and supplied as non-normative evidence.
+After the current-set analyzer independently returns `BLOCKED`, the reviewer
+selects `REISSUE_REQUIRED` when the smallest safe remedy replaces the
+parent/direct-child responsibility graph or accumulated applied repairs have
+materially transformed it. Otherwise a same-graph correction remains
+`EDIT_IN_PLACE`. Historical drift and simple size or membership changes cannot
+create a blocker, change current Requirements, or alter a current `READY` /
+`NONE` result. Set reissue marks only the stable parent; children remain subject
+to their independent review lifecycles.
+
 ## Durable direct parent/child implementation exclusion
 
 Every production Issue implementation admission obtains cache-bypassing native

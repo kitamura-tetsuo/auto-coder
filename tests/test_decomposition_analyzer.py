@@ -4,6 +4,7 @@ import pytest
 
 from auto_coder.decomposition_analyzer import (
     DecompositionIssue,
+    DecompositionReviewEvidence,
     analyze_issue_decomposition,
     parse_decomposition_analysis_response,
 )
@@ -64,6 +65,29 @@ def test_authoritative_manifest_origin_reaches_complete_set_analysis_unchanged()
     assert '"requirement_id": "REQ-001"' in captured[0]
     assert "Context evidence" in captured[0]
     assert "sole authoritative normative Requirements" in captured[0]
+
+
+def test_graph_drift_evidence_reaches_review_without_becoming_current_authority():
+    parent, children = _set()
+    evidence = DecompositionReviewEvidence(
+        '{"parent":{"issue_number":1730,"requirements":[{"requirement_id":"REQ-OLD","text":"Removed behavior"}]}}',
+        ('{"remediation":"EDIT_IN_PLACE","finding":"earlier ownership repair"}',),
+    )
+    captured = []
+
+    result = analyze_issue_decomposition(
+        parent,
+        children,
+        review_evidence=evidence,
+        prompt_runner=lambda prompt: captured.append(prompt) or _response(),
+    )
+
+    assert result.verdict == "READY"
+    assert "Removed behavior" in captured[0]
+    assert "earlier ownership repair" in captured[0]
+    assert "history must never manufacture a blocker" in captured[0]
+    assert "READY and ERROR always require remediation NONE" in captured[0]
+    assert "same parent Issue number is not a safe repair subject" in captured[0]
 
 
 def test_supplied_manifest_remains_authoritative_when_body_evidence_disagrees():
