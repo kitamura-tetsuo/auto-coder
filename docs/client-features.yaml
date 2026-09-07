@@ -2,6 +2,15 @@
 
 ## Native sibling dependency reconciliation
 
+GitHub Issue lifecycle, native dependency, and sub-issue deliveries now create
+a durable repository-scoped reevaluation obligation before acknowledgement.
+The obligation conservatively rediscovers every open Issue (including body-only
+declarations), coalesces duplicate deliveries, survives restart, and feeds each
+identity through normal authoritative intake. Endpoint Issue numbers are used
+only when their repository identity matches the monitored repository. Startup
+performs the same open-Issue reconstruction, while creation-anchored
+stabilization remains the only fixed eligibility delay.
+
 After the Issue creation-stabilization window, production intake treats a
 supported `Blocked-By:` line as the complete desired native GitHub incoming
 dependency set. It first materializes declared parent relationships, requires
