@@ -87,14 +87,28 @@ jobs:
           echo "CLI entry point test passed!"
 
       - name: Run tests with coverage (shard ${{ matrix.group }}/4)
+        timeout-minutes: 8
         run: |
-          bash scripts/test.sh --splits 4 --group ${{ matrix.group }}
+          uv run python scripts/run_pr_test_shard.py \
+            --group ${{ matrix.group }} \
+            --attempt-timeout 180 \
+            --termination-grace 10 \
+            --max-attempts 2 \
+            --log-dir pr-test-logs/shard-${{ matrix.group }}
+
+      - name: Upload shard diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr-test-diagnostics-${{ matrix.group }}-${{ github.run_attempt }}
+          path: pr-test-logs/shard-${{ matrix.group }}/
+          if-no-files-found: ignore
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: coverage-report-${{ matrix.group }}
+          name: coverage-report-${{ matrix.group }}-${{ github.run_attempt }}
           path: htmlcov/
           if-no-files-found: ignore
 
